@@ -35,13 +35,17 @@ draw_too_small(int rows, int columns)
 static void
 draw_frame(int rows, int columns)
 {
+    int journal_row = rows - 7;
     int footer_row = rows - 3;
 
     (void)box(stdscr, 0, 0);
     (void)mvhline(2, 1, ACS_HLINE, columns - 2);
+    (void)mvhline(journal_row, 1, ACS_HLINE, columns - 2);
     (void)mvhline(footer_row, 1, ACS_HLINE, columns - 2);
     (void)mvaddch(2, 0, ACS_LTEE);
     (void)mvaddch(2, columns - 1, ACS_RTEE);
+    (void)mvaddch(journal_row, 0, ACS_LTEE);
+    (void)mvaddch(journal_row, columns - 1, ACS_RTEE);
     (void)mvaddch(footer_row, 0, ACS_LTEE);
     (void)mvaddch(footer_row, columns - 1, ACS_RTEE);
 }
@@ -83,22 +87,39 @@ screen_texts(
 }
 
 static void
-draw_content(Lardon3DScreen screen, int rows, int columns)
+draw_content(const Lardon3DAppState *state, int rows, int columns)
 {
     const char *title;
     const char *content;
     const char *footer;
-    screen_texts(screen, &title, &content, &footer);
+    screen_texts(state->screen, &title, &content, &footer);
     int title_length = (int)strlen(title);
     int content_length = (int)strlen(content);
+    int journal_row = rows - 7;
+    const char *project = state->project_loaded
+        ? state->project_name
+        : "Aucun projet chargé.";
 
     draw_text(1, (columns - title_length) / 2, title_length, title);
-    draw_text(rows / 2, (columns - content_length) / 2, content_length, content);
+    draw_text(3, 2, columns - 4, "Projet");
+    draw_text(4, 4, columns - 6, project);
+    draw_text(
+        (3 + journal_row) / 2,
+        (columns - content_length) / 2,
+        content_length,
+        content
+    );
+    draw_text(journal_row + 1, 2, columns - 4, "Journal");
+    draw_text(journal_row + 2, 4, columns - 6, state->status_message);
     draw_text(rows - 2, 2, columns - 4, footer);
 }
 
 void
-lardon3d_layout_draw(Lardon3DScreen screen, int rows, int columns)
+lardon3d_layout_draw(
+    const Lardon3DAppState *state,
+    int rows,
+    int columns
+)
 {
     (void)erase();
 
@@ -106,7 +127,7 @@ lardon3d_layout_draw(Lardon3DScreen screen, int rows, int columns)
         draw_too_small(rows, columns);
     } else {
         draw_frame(rows, columns);
-        draw_content(screen, rows, columns);
+        draw_content(state, rows, columns);
     }
 
     (void)refresh();

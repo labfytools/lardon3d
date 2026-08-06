@@ -24,6 +24,7 @@ executable(
     sources: [
         'src/main.c',
         'src/app.c',
+        'src/app_state.c',
         'src/tui.c',
         'src/layout.c',
     ],

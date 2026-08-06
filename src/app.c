@@ -2,11 +2,15 @@
 #include <stdlib.h>
 
 #include <lardon3d/app.h>
+#include <lardon3d/app_state.h>
 #include <lardon3d/tui.h>
 
 int
 lardon3d_app_run(void)
 {
+    Lardon3DAppState state;
+    lardon3d_app_state_init(&state);
+
     if (!setlocale(LC_ALL, "")) {
         return EXIT_FAILURE;
     }
@@ -15,7 +19,7 @@ lardon3d_app_run(void)
         return EXIT_FAILURE;
     }
 
-    bool success = lardon3d_tui_run();
+    bool success = lardon3d_tui_run(&state);
     lardon3d_tui_shutdown();
 
     return success ? EXIT_SUCCESS : EXIT_FAILURE;
