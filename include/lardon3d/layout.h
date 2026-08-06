@@ -1,8 +1,8 @@
 #ifndef LARDON3D_LAYOUT_H
 #define LARDON3D_LAYOUT_H
 
-#include <stdbool.h>
+#include <lardon3d/tui.h>
 
-bool lardon3d_layout_draw(void);
+void lardon3d_layout_draw(Lardon3DScreen screen, int rows, int cols);
 
 #endif

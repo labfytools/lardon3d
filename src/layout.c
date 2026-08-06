@@ -1,5 +1,4 @@
 #include <ncurses.h>
-#include <stdbool.h>
 #include <string.h>
 
 #include <lardon3d/layout.h>
@@ -36,71 +35,79 @@ draw_too_small(int rows, int columns)
 static void
 draw_frame(int rows, int columns)
 {
-    int middle_column = columns / 2;
-    int journal_row = rows / 2;
     int footer_row = rows - 3;
 
     (void)box(stdscr, 0, 0);
     (void)mvhline(2, 1, ACS_HLINE, columns - 2);
-    (void)mvhline(journal_row, 1, ACS_HLINE, columns - 2);
     (void)mvhline(footer_row, 1, ACS_HLINE, columns - 2);
-    (void)mvvline(3, middle_column, ACS_VLINE, journal_row - 3);
-
     (void)mvaddch(2, 0, ACS_LTEE);
-    (void)mvaddch(2, middle_column, ACS_TTEE);
     (void)mvaddch(2, columns - 1, ACS_RTEE);
-    (void)mvaddch(journal_row, 0, ACS_LTEE);
-    (void)mvaddch(journal_row, middle_column, ACS_BTEE);
-    (void)mvaddch(journal_row, columns - 1, ACS_RTEE);
     (void)mvaddch(footer_row, 0, ACS_LTEE);
     (void)mvaddch(footer_row, columns - 1, ACS_RTEE);
 }
 
 static void
-draw_content(int rows, int columns)
+screen_texts(
+    Lardon3DScreen screen,
+    const char **title,
+    const char **content,
+    const char **footer
+)
 {
-    int middle_column = columns / 2;
-    int journal_row = rows / 2;
+    *footer = "ESC Accueil   F1 Aide   F2 Projets   F3 Import   F4 Viewer   Q Quit";
 
-    draw_text(1, 2, middle_column - 3, "Lardon3D");
-    draw_text(1, columns - 7, 5, "Heure");
-
-    draw_text(3, 2, middle_column - 3, "Projet");
-    draw_text(5, 4, middle_column - 5, "Aucun projet chargé.");
-
-    draw_text(3, middle_column + 2, columns - middle_column - 3, "Informations");
-    draw_text(5, middle_column + 4, columns - middle_column - 5, "Lardon3D");
-    draw_text(6, middle_column + 4, columns - middle_column - 5, "Reconstruction 3D");
-    draw_text(7, middle_column + 4, columns - middle_column - 5, "Version 0.1");
-
-    draw_text(journal_row + 1, 2, columns - 4, "Journal");
-    draw_text(journal_row + 3, 4, columns - 6, "Bienvenue dans Lardon3D");
-
-    draw_text(
-        rows - 2,
-        2,
-        columns - 4,
-        "F1 Aide   F2 Projet   F3 Import   F4 Viewer   Q Quit"
-    );
+    switch (screen) {
+    case LARDON3D_SCREEN_PROJECTS:
+        *title = "Projets";
+        *content = "Gestion des projets";
+        break;
+    case LARDON3D_SCREEN_IMPORT:
+        *title = "Import";
+        *content = "Import des images";
+        break;
+    case LARDON3D_SCREEN_VIEWER:
+        *title = "Viewer";
+        *content = "Le viewer Vulkan n'est pas encore disponible.";
+        break;
+    case LARDON3D_SCREEN_HELP:
+        *title = "Aide";
+        *content = "Raccourcis clavier.";
+        break;
+    case LARDON3D_SCREEN_HOME:
+    default:
+        *title = "Accueil";
+        *content = "Bienvenue dans Lardon3D";
+        *footer = "F1 Aide   F2 Projets   F3 Import   F4 Viewer   Q Quit";
+        break;
+    }
 }
 
-bool
-lardon3d_layout_draw(void)
+static void
+draw_content(Lardon3DScreen screen, int rows, int columns)
 {
-    int rows;
-    int columns;
-    getmaxyx(stdscr, rows, columns);
+    const char *title;
+    const char *content;
+    const char *footer;
+    screen_texts(screen, &title, &content, &footer);
+    int title_length = (int)strlen(title);
+    int content_length = (int)strlen(content);
 
-    if (erase() == ERR) {
-        return false;
-    }
+    draw_text(1, (columns - title_length) / 2, title_length, title);
+    draw_text(rows / 2, (columns - content_length) / 2, content_length, content);
+    draw_text(rows - 2, 2, columns - 4, footer);
+}
+
+void
+lardon3d_layout_draw(Lardon3DScreen screen, int rows, int columns)
+{
+    (void)erase();
 
     if (rows < MINIMUM_ROWS || columns < MINIMUM_COLUMNS) {
         draw_too_small(rows, columns);
     } else {
         draw_frame(rows, columns);
-        draw_content(rows, columns);
+        draw_content(screen, rows, columns);
     }
 
-    return refresh() != ERR;
+    (void)refresh();
 }
