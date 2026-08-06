@@ -61,6 +61,63 @@ indisponibles, interrompre le travail plutôt que choisir un modèle payant.
 Aucun fournisseur ni modèle local n'a été détecté dans la configuration
 OpenCode actuelle.
 
+## Optimisation du quota
+
+L'agent par défaut est `lardon-orchestrator` sur North Mini Code Free. Il charge
+seulement `AGENTS.md` et l'overview, puis demande à North Mini Code une
+exploration ciblée. DeepSeek est réservé à l'implémentation complexe ; il ne sert
+ni à l'orchestration, ni aux tests, ni à la documentation. Nemotron traite les
+reprises et analyses d'architecture ou de concurrence, MiMo les petits tickets,
+Laguna la revue et Ling la documentation.
+
+Les commandes `lardon-plan`, `lardon-small`, `lardon-ticket` et
+`lardon-ticket-backup` chargent progressivement le contexte. Elles ne lisent pas
+automatiquement toute l'architecture et transmettent uniquement objectif,
+contraintes, fichiers, API, invariants, risques et tests. Les rapports de succès
+restent courts. Le handoff ignoré `.opencode/work/current_ticket.md` permet une
+reprise sans rejouer toute l'analyse.
+
+## Chaîne de secours
+
+La voie normale est DeepSeek V4 Flash Free pour l'implémentation. En cas de 503,
+saturation, quota épuisé ou interruption, sauvegarder le handoff et reprendre
+avec Nemotron 3 Ultra Free. Si Nemotron est indisponible, MiMo V2.5 Free est
+limité aux petits changements ; il doit refuser une fondation sensible.
+
+GPT-5.6 Sol n'est pas actif dans OpenCode, car l'identifiant visible passe par
+Zen et annonce un tarif. Pour utiliser le quota ChatGPT/Codex, la voie normale
+reste Codex CLI via `lardon-codex-handoff`, puis
+`lardon-resume-from-codex`. Aucun modèle payant n'est un fallback.
+
+## GPT-5.6 Sol dans OpenCode
+
+Vérification locale du 6 août 2026 avec OpenCode 1.18.13 :
+
+- identifiant exact : `opencode/gpt-5.6-sol` ;
+- fournisseur : `opencode`, affiché comme OpenCode Zen ;
+- endpoint déclaré : `https://opencode.ai/zen/v1` ;
+- authentification active : credential Zen de type `api` ;
+- clé OpenAI API séparée : non requise par cette route Zen, mais le credential
+  Zen reste nécessaire ;
+- OAuth ChatGPT/Codex : non détecté ;
+- plugin Codex OAuth : non installé ;
+- OpenCode Zen utilisé : oui ;
+- tarif affiché : entrée 5, sortie 30, cache lecture 0,5 et écriture 6,25 dans
+  les unités tarifaires retournées par OpenCode ; tarifs supérieurs au-delà du
+  palier de contexte indiqué ;
+- facturation distincte du quota Codex : route Zen tarifée, donc à considérer
+  distincte ;
+- quota Codex partagé : non confirmé et aucune preuve locale ne l'indique ;
+- test minimal : non exécuté, car la route identifiée est payante ;
+- classement : **Q3 — GPT-5.6 Sol fourni par OpenCode Zen** ;
+- politique : aucun agent, commande active ou fallback Sol dans OpenCode.
+
+La preuve locale combine `opencode models --refresh --verbose`, qui expose le
+fournisseur, l'endpoint et le coût, et `opencode providers list`, qui expose un
+seul credential OpenCode Zen. La configuration globale ne déclare aucun
+fournisseur OpenAI ni plugin d'authentification Codex. Aucun secret n'a été lu
+ou reproduit dans ce document.
+
 ## Actualisation
 
 Les offres changent. Réexécuter :

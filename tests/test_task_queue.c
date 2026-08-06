@@ -296,6 +296,74 @@ run_test(void)
     lardon3d_task_queue_destroy(queue);
     CHECK(pthread_mutex_destroy(&wait_log.mutex) == 0);
 
+    /* Une tâche de tête bloquée en WAIT ne doit pas empêcher une tâche
+       admissible située derrière elle de démarrer. */
+    Lardon3DResourceSnapshot io_blocking_snapshot = {
+        .memory_available_bytes = UINT64_MAX,
+        .cpu_load_1m = 0.0,
+    };
+    Lardon3DResourceEstimate io_blocking_estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+        .desired_io_slots = 1,
+    };
+    Lardon3DResourceDecision io_decision;
+    Lardon3DResourceReservation *io_blocking_reservation;
+    CHECK(lardon3d_resource_governor_reserve(
+        governor,
+        &io_blocking_snapshot,
+        &io_blocking_estimate,
+        &io_decision,
+        &io_blocking_reservation
+    ));
+    CHECK(io_blocking_reservation);
+    queue = lardon3d_task_queue_create(governor);
+    CHECK(queue);
+    OrderLog bypass_log = {0};
+    CHECK(pthread_mutex_init(&bypass_log.mutex, NULL) == 0);
+    Lardon3DResourceEstimate io_estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+        .desired_io_slots = 1,
+    };
+    QueueWork blocked = {.log = &bypass_log, .value = 1, .steps = 1};
+    Lardon3DTask *blocked_task = lardon3d_task_create(
+        "Bloquée en tête",
+        &io_estimate,
+        queue_callback,
+        &blocked
+    );
+    uint64_t blocked_id;
+    CHECK(blocked_task);
+    CHECK(lardon3d_task_queue_add(queue, blocked_task, &blocked_id));
+    QueueWork bypass = {.log = &bypass_log, .value = 2, .steps = 1};
+    Lardon3DTask *bypass_task = lardon3d_task_create(
+        "Admissible derrière",
+        &estimate,
+        queue_callback,
+        &bypass
+    );
+    uint64_t bypass_id;
+    CHECK(bypass_task);
+    CHECK(lardon3d_task_queue_add(queue, bypass_task, &bypass_id));
+    CHECK(wait_terminal(queue, bypass_id, &snapshot));
+    CHECK(snapshot.state == TASK_COMPLETED);
+    CHECK(bypass.contract_seen);
+    CHECK(lardon3d_task_queue_get(queue, blocked_id, &snapshot));
+    CHECK(snapshot.state == TASK_PENDING);
+    CHECK(!blocked.contract_seen);
+    CHECK(lardon3d_resource_governor_release(governor, io_blocking_reservation));
+    lardon3d_task_queue_resources_changed(queue);
+    CHECK(wait_terminal(queue, blocked_id, &snapshot));
+    CHECK(snapshot.state == TASK_COMPLETED);
+    CHECK(blocked.contract_seen);
+    CHECK(bypass_log.count == 2);
+    CHECK(lardon3d_resource_governor_reservation_count(governor) == 0);
+    lardon3d_task_queue_destroy(queue);
+    CHECK(pthread_mutex_destroy(&bypass_log.mutex) == 0);
+
     queue = lardon3d_task_queue_create(governor);
     CHECK(queue);
     OrderLog contract_log = {0};

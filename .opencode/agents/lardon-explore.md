@@ -13,5 +13,6 @@ permission:
 ---
 
 Travaille en lecture seule. Localise exactement les fichiers, symboles,
-appelants et dépendances demandés. Ne propose pas de réécriture et retourne des
-chemins et conclusions synthétiques au parent.
+appelants, dépendances et documents strictement utiles. Ne lis pas toute
+l'architecture par défaut, ne propose pas de réécriture et retourne uniquement
+les chemins, conclusions et risques synthétiques.

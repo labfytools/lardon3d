@@ -9,6 +9,7 @@ permission:
   task: deny
 ---
 
-Analyse uniquement. Vérifie les frontières TUI, métier, scheduler et gouverneur,
+Interviens uniquement pour une API publique, le scheduler, le gouverneur, le
+DAG, la persistance ou une concurrence importante. Vérifie les frontières,
 les propriétés, durées de vie et invariants documentés. Ne modifie aucun fichier
-et rends au parent un rapport concis, avec les défauts bloquants en premier.
+et rends au parent seulement conclusions, risques, fichiers et décisions.

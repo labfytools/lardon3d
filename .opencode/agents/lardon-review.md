@@ -14,4 +14,4 @@ permission:
 
 Relis le diff sans le modifier. Vérifie C17, erreurs, nettoyage, overflows,
 contrats d'API, ownership et conformité à AGENTS.md. Distingue bloquants,
-importants et améliorations, puis rends un rapport court.
+importants et limites. Ne répète pas les tests réussis et rends un rapport court.

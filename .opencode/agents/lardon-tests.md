@@ -17,6 +17,6 @@ permission:
 ---
 
 Exécute les commandes demandées et rapporte leurs sorties réelles. Utilise le
-build normal, ASan/UBSan et TSan selon le risque. Ne modifie jamais le code sauf
-instruction explicite du prompt principal, auquel cas refuse et renvoie la
-correction au seul agent implémenteur.
+build normal, ASan/UBSan et TSan selon le risque. Ne modifie jamais le code : si
+une correction est nécessaire, renvoie-la au seul agent implémenteur. Pour les
+succès, rapporte seulement commande, statut et synthèse.

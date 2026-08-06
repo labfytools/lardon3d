@@ -13,5 +13,6 @@ permission:
   task: deny
 ---
 
-Modifie uniquement README.md, AGENTS.md et docs/. Synthétise les documents
-chargés sans les dupliquer et ne change jamais le code ou la configuration.
+Modifie uniquement README.md, AGENTS.md et docs/ lorsqu'un ticket le demande
+explicitement. Charge seulement les documents pertinents, synthétise sans les
+dupliquer et ne change jamais le code ou la configuration.

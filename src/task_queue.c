@@ -34,6 +34,82 @@ terminal_state(Lardon3DTaskState state)
         || state == TASK_COMPLETED;
 }
 
+static void
+unlink_pending(Lardon3DTaskQueue *queue, TaskNode *previous, TaskNode *node)
+{
+    if (previous) {
+        previous->next_pending = node->next_pending;
+    } else {
+        queue->pending_head = node->next_pending;
+    }
+    if (queue->pending_tail == node) {
+        queue->pending_tail = previous;
+    }
+    node->next_pending = NULL;
+}
+
+/* Parcourt la file d'attente et sélectionne la première tâche admissible.
+ * Les tâches terminales ou refusées sont retirées de la file d'attente.
+ * Une tâche en attente de ressources reste en file et sera réévaluée.
+ * Retourne NULL si aucune tâche ne peut démarrer immédiatement. */
+static Lardon3DTask *
+select_admissible(
+    Lardon3DTaskQueue *queue,
+    Lardon3DResourceReservation **reservation
+)
+{
+    TaskNode *previous = NULL;
+    TaskNode *node = queue->pending_head;
+    while (node) {
+        TaskNode *next = node->next_pending;
+        Lardon3DTaskSnapshot task_snapshot;
+        if (!lardon3d_task_snapshot(node->task, &task_snapshot)) {
+            unlink_pending(queue, previous, node);
+            node = next;
+            continue;
+        }
+        if (terminal_state(task_snapshot.state)) {
+            unlink_pending(queue, previous, node);
+            node = next;
+            continue;
+        }
+        Lardon3DResourceEstimate estimate;
+        Lardon3DResourceDecision decision;
+        Lardon3DResourceReservation *candidate = NULL;
+        bool evaluated = lardon3d_task_resource_estimate(node->task, &estimate)
+            && lardon3d_resource_governor_reserve_available(
+                queue->governor,
+                &estimate,
+                &decision,
+                &candidate
+            );
+        if (!evaluated) {
+            (void)lardon3d_task_reject(
+                node->task,
+                "Impossible d'évaluer les ressources disponibles."
+            );
+            unlink_pending(queue, previous, node);
+            node = next;
+            continue;
+        }
+        if (decision.kind == LARDON3D_RESOURCE_WAIT) {
+            previous = node;
+            node = next;
+            continue;
+        }
+        if (decision.kind == LARDON3D_RESOURCE_REJECT || !candidate) {
+            (void)lardon3d_task_reject(node->task, decision.reason);
+            unlink_pending(queue, previous, node);
+            node = next;
+            continue;
+        }
+        unlink_pending(queue, previous, node);
+        *reservation = candidate;
+        return node->task;
+    }
+    return NULL;
+}
+
 static void *
 queue_worker(void *context)
 {
@@ -47,64 +123,19 @@ queue_worker(void *context)
             (void)pthread_mutex_unlock(&queue->mutex);
             return NULL;
         }
-        TaskNode *node = queue->pending_head;
-        Lardon3DTaskSnapshot task_snapshot;
-        if (!lardon3d_task_snapshot(node->task, &task_snapshot)) {
-            (void)pthread_mutex_unlock(&queue->mutex);
-            continue;
-        }
-        if (terminal_state(task_snapshot.state)) {
-            queue->pending_head = node->next_pending;
-            if (!queue->pending_head) {
-                queue->pending_tail = NULL;
-            }
-            node->next_pending = NULL;
-            (void)pthread_mutex_unlock(&queue->mutex);
-            continue;
-        }
-        Lardon3DResourceEstimate estimate;
-        Lardon3DResourceDecision decision;
         Lardon3DResourceReservation *reservation = NULL;
-        bool evaluated = lardon3d_task_resource_estimate(node->task, &estimate)
-            && lardon3d_resource_governor_reserve_available(
-                queue->governor,
-                &estimate,
-                &decision,
-                &reservation
-            );
-        if (!evaluated) {
-            (void)lardon3d_task_reject(
-                node->task,
-                "Impossible d'évaluer les ressources disponibles."
-            );
-            (void)pthread_mutex_unlock(&queue->mutex);
-            continue;
-        }
-        if (decision.kind == LARDON3D_RESOURCE_WAIT) {
+        Lardon3DTask *selected = select_admissible(queue, &reservation);
+        if (!selected) {
             (void)pthread_cond_wait(&queue->condition, &queue->mutex);
             (void)pthread_mutex_unlock(&queue->mutex);
             continue;
         }
-        if (decision.kind == LARDON3D_RESOURCE_REJECT || !reservation) {
-            (void)lardon3d_task_reject(node->task, decision.reason);
-            (void)pthread_mutex_unlock(&queue->mutex);
-            continue;
-        }
-        queue->pending_head = node->next_pending;
-        if (!queue->pending_head) {
-            queue->pending_tail = NULL;
-        }
-        node->next_pending = NULL;
-        queue->active = node->task;
+        queue->active = selected;
         (void)pthread_mutex_unlock(&queue->mutex);
 
-        if (!lardon3d_task_start(
-                node->task,
-                queue->governor,
-                reservation
-            )) {
+        if (!lardon3d_task_start(selected, queue->governor, reservation)) {
             (void)lardon3d_task_reject(
-                node->task,
+                selected,
                 "Réservation de ressources invalide."
             );
         }
@@ -290,14 +321,7 @@ lardon3d_task_queue_remove(Lardon3DTaskQueue *queue, uint64_t task_id)
         pending = pending->next_pending;
     }
     if (pending) {
-        if (pending_previous) {
-            pending_previous->next_pending = pending->next_pending;
-        } else {
-            queue->pending_head = pending->next_pending;
-        }
-        if (queue->pending_tail == pending) {
-            queue->pending_tail = pending_previous;
-        }
+        unlink_pending(queue, pending_previous, pending);
     }
     --queue->count;
     (void)pthread_mutex_unlock(&queue->mutex);

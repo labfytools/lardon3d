@@ -1,14 +1,19 @@
 ---
-description: Traiter un ticket Lardon3D avec exploration, architecture, tests et revue
-agent: lardon-build
+description: Traiter un ticket gratuit avec contexte progressif et handoff
+agent: lardon-orchestrator
 subtask: false
 ---
 
 Traite ce ticket : $ARGUMENTS
 
-Lis les instructions déjà chargées, inspecte Git et les fichiers concernés.
-Utilise lardon-explore puis lardon-architect seulement si pertinents. Après leur
-rapport, implémente seul et minimalement. Délègue la validation à lardon-tests,
-puis la revue finale à lardon-review et obligatoirement à lardon-concurrency si
-task, task_queue, resource_governor ou pthread sont touchés. Aucun sous-agent
-imbriqué, commit, push ou ajout de scan3d/.
+1. Initialise `.opencode/work/current_ticket.md` avec les rubriques prescrites.
+2. Demande à lardon-explore les seuls fichiers et documents utiles.
+3. Charge uniquement ce contexte. Appelle lardon-architect seulement pour une
+   abstraction importante, puis transmets un résumé concis à lardon-build.
+4. Après l'implémentation, appelle lardon-tests une fois, puis lardon-review une
+   fois. Ajoute lardon-concurrency uniquement pour du code concurrent.
+5. Mets le handoff à jour après chaque phase avec conclusions, commandes,
+   erreurs et prochaine action, sans documentation, sources ou logs complets.
+
+Un seul agent écrit les sources. Aucun sous-agent imbriqué, commit, push,
+fallback payant ou modification de scan3d/.
