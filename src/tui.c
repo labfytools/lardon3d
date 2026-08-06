@@ -4,40 +4,46 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+#include <lardon3d/import.h>
 #include <lardon3d/layout.h>
 #include <lardon3d/project.h>
 #include <lardon3d/tui.h>
 
 enum {
-    PROJECT_INPUT_CAPACITY = 256,
     MINIMUM_ROWS = 20,
     MINIMUM_COLUMNS = 72,
 };
 
+typedef enum {
+    INPUT_NONE = 0,
+    INPUT_PROJECT_CREATE,
+    INPUT_PROJECT_OPEN,
+    INPUT_IMPORT_DIRECTORY,
+} InputMode;
+
 typedef struct {
-    enum {
-        PROJECT_INPUT_NONE = 0,
-        PROJECT_INPUT_CREATE,
-        PROJECT_INPUT_OPEN,
-    } mode;
-    char text[PROJECT_INPUT_CAPACITY];
+    InputMode mode;
+    char text[PATH_MAX];
     size_t length;
-} ProjectInput;
+} TuiInput;
 
 static void
-redraw(const Lardon3DAppState *state, const ProjectInput *input)
+redraw(const Lardon3DAppState *state, const TuiInput *input)
 {
     int rows;
     int columns;
     getmaxyx(stdscr, rows, columns);
 
-    const char *text = input->mode != PROJECT_INPUT_NONE ? input->text : NULL;
-    const char *label = input->mode == PROJECT_INPUT_OPEN
-        ? "Nom du dossier projet :"
-        : "Nom du nouveau projet :";
+    const char *text = input->mode != INPUT_NONE ? input->text : NULL;
+    const char *label = "Nom du nouveau projet :";
+    if (input->mode == INPUT_PROJECT_OPEN) {
+        label = "Nom du dossier projet :";
+    } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
+        label = "Dossier source :";
+    }
     lardon3d_layout_draw(state, text, label, rows, columns);
     (void)curs_set(
-        input->mode != PROJECT_INPUT_NONE
+        input->mode != INPUT_NONE
             && rows >= MINIMUM_ROWS
             && columns >= MINIMUM_COLUMNS
             ? 1
@@ -46,9 +52,9 @@ redraw(const Lardon3DAppState *state, const ProjectInput *input)
 }
 
 static bool
-handle_project_input(
+handle_active_input(
     Lardon3DAppState *state,
-    ProjectInput *input,
+    TuiInput *input,
     int key
 )
 {
@@ -57,10 +63,13 @@ handle_project_input(
     }
 
     if (key == 27) {
-        const char *message = input->mode == PROJECT_INPUT_OPEN
-            ? "Ouverture du projet annulée."
-            : "Création du projet annulée.";
-        input->mode = PROJECT_INPUT_NONE;
+        const char *message = "Création du projet annulée.";
+        if (input->mode == INPUT_PROJECT_OPEN) {
+            message = "Ouverture du projet annulée.";
+        } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
+            message = "Import annulé.";
+        }
+        input->mode = INPUT_NONE;
         (void)snprintf(
             state->status_message,
             sizeof(state->status_message),
@@ -71,12 +80,15 @@ handle_project_input(
     }
 
     if (key == '\n' || key == '\r' || key == KEY_ENTER) {
-        if (input->mode == PROJECT_INPUT_OPEN) {
+        if (input->mode == INPUT_PROJECT_OPEN) {
             (void)lardon3d_project_open(state, input->text);
+        } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
+            Lardon3DImportResult result;
+            (void)lardon3d_import_directory(state, input->text, &result);
         } else {
             (void)lardon3d_project_create(state, input->text);
         }
-        input->mode = PROJECT_INPUT_NONE;
+        input->mode = INPUT_NONE;
         return true;
     }
 
@@ -90,12 +102,15 @@ handle_project_input(
 
     if (key >= 0 && key <= UCHAR_MAX && isprint((unsigned char)key)) {
         if (input->length + 1 >= sizeof(input->text)) {
-            if (input->mode == PROJECT_INPUT_OPEN) {
+            if (input->mode == INPUT_PROJECT_OPEN) {
                 (void)lardon3d_project_open(state, input->text);
+            } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
+                Lardon3DImportResult result;
+                (void)lardon3d_import_directory(state, input->text, &result);
             } else {
                 (void)lardon3d_project_create(state, input->text);
             }
-            input->mode = PROJECT_INPUT_NONE;
+            input->mode = INPUT_NONE;
             return true;
         }
 
@@ -111,7 +126,7 @@ handle_project_input(
 static bool
 handle_normal_input(
     Lardon3DAppState *state,
-    ProjectInput *input,
+    TuiInput *input,
     int key
 )
 {
@@ -141,8 +156,8 @@ handle_normal_input(
     case 'n':
     case 'N':
         if (state->screen == LARDON3D_SCREEN_PROJECTS) {
-            *input = (ProjectInput) {
-                .mode = PROJECT_INPUT_CREATE,
+            *input = (TuiInput) {
+                .mode = INPUT_PROJECT_CREATE,
                 .text = "",
                 .length = 0,
             };
@@ -152,8 +167,27 @@ handle_normal_input(
     case 'o':
     case 'O':
         if (state->screen == LARDON3D_SCREEN_PROJECTS) {
-            *input = (ProjectInput) {
-                .mode = PROJECT_INPUT_OPEN,
+            *input = (TuiInput) {
+                .mode = INPUT_PROJECT_OPEN,
+                .text = "",
+                .length = 0,
+            };
+            return true;
+        }
+        return false;
+    case 'i':
+    case 'I':
+        if (state->screen == LARDON3D_SCREEN_IMPORT) {
+            if (!state->project_loaded) {
+                (void)snprintf(
+                    state->status_message,
+                    sizeof(state->status_message),
+                    "Aucun projet chargé."
+                );
+                return true;
+            }
+            *input = (TuiInput) {
+                .mode = INPUT_IMPORT_DIRECTORY,
                 .text = "",
                 .length = 0,
             };
@@ -195,7 +229,7 @@ lardon3d_tui_run(Lardon3DAppState *state)
         return false;
     }
 
-    ProjectInput input = {0};
+    TuiInput input = {0};
     redraw(state, &input);
 
     while (state->running) {
@@ -204,8 +238,8 @@ lardon3d_tui_run(Lardon3DAppState *state)
             return false;
         }
 
-        bool should_redraw = input.mode != PROJECT_INPUT_NONE
-            ? handle_project_input(state, &input, key)
+        bool should_redraw = input.mode != INPUT_NONE
+            ? handle_active_input(state, &input, key)
             : handle_normal_input(state, &input, key);
 
         if (should_redraw) {

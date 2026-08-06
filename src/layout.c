@@ -69,6 +69,7 @@ screen_texts(
     case LARDON3D_SCREEN_IMPORT:
         *title = "Import";
         *content = "Import des images";
+        *footer = "I Importer des images   ESC Accueil   Q Quit";
         break;
     case LARDON3D_SCREEN_VIEWER:
         *title = "Viewer";
@@ -88,9 +89,36 @@ screen_texts(
 }
 
 static void
+draw_input_field(
+    const char *input_text,
+    const char *input_label,
+    int row,
+    int columns
+)
+{
+    if (!input_text) {
+        return;
+    }
+
+    draw_text(row, 4, columns - 6, input_label);
+    (void)mvaddch(row + 1, 2, '[');
+    (void)mvaddch(row + 1, columns - 3, ']');
+
+    int available = columns - 8;
+    size_t length = strlen(input_text);
+    const char *visible = input_text;
+    if (length > (size_t)available) {
+        visible += length - (size_t)available;
+        length = (size_t)available;
+    }
+    draw_text(row + 1, 4, available, visible);
+    (void)move(row + 1, 4 + (int)length);
+}
+
+static void
 draw_project_screen(
-    const char *project_name_input,
-    const char *project_input_label,
+    const char *input_text,
+    const char *input_label,
     int columns
 )
 {
@@ -99,31 +127,27 @@ draw_project_screen(
     draw_text(8, 4, columns - 6, "C : Fermer le projet");
     draw_text(9, 4, columns - 6, "ESC : Accueil");
     draw_text(10, 4, columns - 6, "Q : Quitter");
+    draw_input_field(input_text, input_label, 11, columns);
+}
 
-    if (!project_name_input) {
-        return;
-    }
-
-    draw_text(11, 4, columns - 6, project_input_label);
-    (void)mvaddch(12, 2, '[');
-    (void)mvaddch(12, columns - 3, ']');
-
-    int available = columns - 8;
-    size_t length = strlen(project_name_input);
-    const char *visible = project_name_input;
-    if (length > (size_t)available) {
-        visible += length - (size_t)available;
-        length = (size_t)available;
-    }
-    draw_text(12, 4, available, visible);
-    (void)move(12, 4 + (int)length);
+static void
+draw_import_screen(
+    const char *input_text,
+    const char *input_label,
+    int columns
+)
+{
+    draw_text(7, 4, columns - 6, "I : Importer des images");
+    draw_text(8, 4, columns - 6, "ESC : Accueil");
+    draw_text(9, 4, columns - 6, "Q : Quitter");
+    draw_input_field(input_text, input_label, 10, columns);
 }
 
 static void
 draw_content(
     const Lardon3DAppState *state,
-    const char *project_name_input,
-    const char *project_input_label,
+    const char *input_text,
+    const char *input_label,
     int rows,
     int columns
 )
@@ -147,10 +171,12 @@ draw_content(
     }
     if (state->screen == LARDON3D_SCREEN_PROJECTS) {
         draw_project_screen(
-            project_name_input,
-            project_input_label,
+            input_text,
+            input_label,
             columns
         );
+    } else if (state->screen == LARDON3D_SCREEN_IMPORT) {
+        draw_import_screen(input_text, input_label, columns);
     } else {
         draw_text(
             (3 + journal_row) / 2,
@@ -167,8 +193,8 @@ draw_content(
 void
 lardon3d_layout_draw(
     const Lardon3DAppState *state,
-    const char *project_name_input,
-    const char *project_input_label,
+    const char *input_text,
+    const char *input_label,
     int rows,
     int columns
 )
@@ -181,8 +207,8 @@ lardon3d_layout_draw(
         draw_frame(rows, columns);
         draw_content(
             state,
-            project_name_input,
-            project_input_label,
+            input_text,
+            input_label,
             rows,
             columns
         );

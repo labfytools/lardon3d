@@ -1,0 +1,812 @@
+#include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#include <lardon3d/import.h>
+
+enum {
+    MANIFEST_LINE_CAPACITY = PATH_MAX + 512,
+};
+
+typedef struct {
+    FILE *file;
+    char temporary_path[PATH_MAX];
+    char final_path[PATH_MAX];
+    bool previous_exists;
+} ManifestWriter;
+
+typedef struct {
+    char filename[NAME_MAX + 1];
+    bool created;
+} ImportCandidate;
+
+typedef struct {
+    ImportCandidate *items;
+    size_t count;
+    size_t capacity;
+} CandidateList;
+
+static void
+set_status(Lardon3DAppState *state, const char *message)
+{
+    (void)snprintf(
+        state->status_message,
+        sizeof(state->status_message),
+        "%s",
+        message
+    );
+}
+
+static bool
+join_path(
+    char destination[PATH_MAX],
+    const char *parent,
+    const char *child
+)
+{
+    int written = snprintf(destination, PATH_MAX, "%s/%s", parent, child);
+    return written >= 0 && (size_t)written < PATH_MAX;
+}
+
+static bool
+trim_source_path(
+    Lardon3DAppState *state,
+    const char *input,
+    char output[PATH_MAX]
+)
+{
+    if (!input) {
+        set_status(state, "Erreur : dossier source vide.");
+        return false;
+    }
+
+    const char *start = input;
+    while (*start && isspace((unsigned char)*start)) {
+        ++start;
+    }
+    const char *end = input + strlen(input);
+    while (end > start && isspace((unsigned char)end[-1])) {
+        --end;
+    }
+
+    size_t length = (size_t)(end - start);
+    if (length == 0) {
+        set_status(state, "Erreur : dossier source vide.");
+        return false;
+    }
+    if (length >= PATH_MAX) {
+        set_status(state, "Erreur : chemin source trop long.");
+        return false;
+    }
+    (void)memcpy(output, start, length);
+    output[length] = '\0';
+    return true;
+}
+
+static bool
+resolve_source_path(
+    Lardon3DAppState *state,
+    const char *source,
+    char absolute_source[PATH_MAX]
+)
+{
+    if (source[0] == '/') {
+        int written = snprintf(absolute_source, PATH_MAX, "%s", source);
+        if (written >= 0 && (size_t)written < PATH_MAX) {
+            return true;
+        }
+    } else {
+        char current_directory[PATH_MAX];
+        if (getcwd(current_directory, sizeof(current_directory))
+            && join_path(absolute_source, current_directory, source)) {
+            return true;
+        }
+    }
+
+    set_status(state, "Erreur : chemin source trop long ou inaccessible.");
+    return false;
+}
+
+static bool
+has_supported_extension(const char *filename)
+{
+    const char *extension = strrchr(filename, '.');
+    if (!extension) {
+        return false;
+    }
+
+    return strcasecmp(extension, ".jpg") == 0
+        || strcasecmp(extension, ".jpeg") == 0
+        || strcasecmp(extension, ".png") == 0
+        || strcasecmp(extension, ".tif") == 0
+        || strcasecmp(extension, ".tiff") == 0
+        || strcasecmp(extension, ".heic") == 0;
+}
+
+static bool
+has_forbidden_manifest_character(const char *text)
+{
+    return strchr(text, '\t') || strchr(text, '\n') || strchr(text, '\r');
+}
+
+static bool
+candidate_list_append(
+    Lardon3DAppState *state,
+    CandidateList *candidates,
+    const char *filename
+)
+{
+    if (candidates->count == candidates->capacity) {
+        size_t capacity = candidates->capacity == 0
+            ? 16
+            : candidates->capacity * 2;
+        if (capacity < candidates->capacity
+            || capacity > SIZE_MAX / sizeof(*candidates->items)) {
+            set_status(state, "Erreur : trop de fichiers à importer.");
+            return false;
+        }
+        void *items = realloc(
+            candidates->items,
+            capacity * sizeof(*candidates->items)
+        );
+        if (!items) {
+            set_status(state, "Erreur : mémoire insuffisante pour l'import.");
+            return false;
+        }
+        candidates->items = items;
+        candidates->capacity = capacity;
+    }
+
+    ImportCandidate *candidate = &candidates->items[candidates->count];
+    int written = snprintf(
+        candidate->filename,
+        sizeof(candidate->filename),
+        "%s",
+        filename
+    );
+    if (written < 0 || (size_t)written >= sizeof(candidate->filename)) {
+        set_status(state, "Erreur : nom de fichier trop long.");
+        return false;
+    }
+    candidate->created = false;
+    ++candidates->count;
+    return true;
+}
+
+static bool
+ensure_originals_directory(
+    Lardon3DAppState *state,
+    char images_path[PATH_MAX],
+    char originals_path[PATH_MAX]
+)
+{
+    if (!join_path(images_path, state->project_path, "images")
+        || !join_path(originals_path, images_path, "originals")) {
+        set_status(state, "Erreur : chemin du projet trop long.");
+        return false;
+    }
+
+    struct stat info;
+    if (lstat(images_path, &info) != 0 || !S_ISDIR(info.st_mode)) {
+        set_status(state, "Erreur : dossier images absent ou invalide.");
+        return false;
+    }
+    if (lstat(originals_path, &info) == 0) {
+        if (!S_ISDIR(info.st_mode)) {
+            set_status(state, "Erreur : images/originals n'est pas un dossier.");
+            return false;
+        }
+        return true;
+    }
+    if (errno != ENOENT || mkdir(originals_path, 0755) != 0) {
+        set_status(state, "Erreur : impossible de créer images/originals.");
+        return false;
+    }
+    return true;
+}
+
+static bool
+manifest_line_is_valid(const char *line)
+{
+    const char *first_tab = strchr(line, '\t');
+    if (!first_tab || first_tab == line) {
+        return false;
+    }
+    const char *second_tab = strchr(first_tab + 1, '\t');
+    if (!second_tab || second_tab == first_tab + 1) {
+        return false;
+    }
+    if (strchr(second_tab + 1, '\t') || !strchr(second_tab + 1, '\n')) {
+        return false;
+    }
+    for (const char *digit = first_tab + 1; digit < second_tab; ++digit) {
+        if (!isdigit((unsigned char)*digit)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void
+manifest_abort(ManifestWriter *writer)
+{
+    if (writer->file) {
+        (void)fclose(writer->file);
+        writer->file = NULL;
+    }
+    if (writer->temporary_path[0]) {
+        (void)unlink(writer->temporary_path);
+    }
+}
+
+static bool
+manifest_begin(
+    Lardon3DAppState *state,
+    const char *images_path,
+    ManifestWriter *writer
+)
+{
+    *writer = (ManifestWriter) {0};
+    if (!join_path(writer->final_path, images_path, "manifest.tsv")
+        || !join_path(
+            writer->temporary_path,
+            images_path,
+            ".manifest.tsv.tmp.XXXXXX"
+        )) {
+        set_status(state, "Erreur : chemin du manifeste trop long.");
+        return false;
+    }
+
+    FILE *previous = NULL;
+    int previous_descriptor = open(
+        writer->final_path,
+        O_RDONLY | O_NOFOLLOW
+    );
+    if (previous_descriptor >= 0) {
+        struct stat info;
+        if (fstat(previous_descriptor, &info) != 0 || !S_ISREG(info.st_mode)) {
+            (void)close(previous_descriptor);
+            set_status(state, "Erreur : manifest.tsv invalide.");
+            return false;
+        }
+        previous = fdopen(previous_descriptor, "r");
+        if (!previous) {
+            (void)close(previous_descriptor);
+            set_status(state, "Erreur : impossible de lire manifest.tsv.");
+            return false;
+        }
+        writer->previous_exists = true;
+    } else if (errno != ENOENT) {
+        set_status(state, "Erreur : impossible de lire manifest.tsv.");
+        return false;
+    }
+
+    int descriptor = mkstemp(writer->temporary_path);
+    if (descriptor < 0) {
+        if (previous) {
+            (void)fclose(previous);
+        }
+        set_status(state, "Erreur : impossible de préparer manifest.tsv.");
+        return false;
+    }
+    writer->file = fdopen(descriptor, "w");
+    if (!writer->file) {
+        (void)close(descriptor);
+        if (previous) {
+            (void)fclose(previous);
+        }
+        manifest_abort(writer);
+        set_status(state, "Erreur : impossible d'écrire manifest.tsv.");
+        return false;
+    }
+
+    bool success = fputs(
+        "filename\tsize_bytes\tsource_path\n",
+        writer->file
+    ) >= 0;
+    if (previous) {
+        char line[MANIFEST_LINE_CAPACITY];
+        if (!fgets(line, sizeof(line), previous)
+            || strcmp(line, "filename\tsize_bytes\tsource_path\n") != 0) {
+            success = false;
+        }
+        while (success && fgets(line, sizeof(line), previous)) {
+            if (!manifest_line_is_valid(line)
+                || fputs(line, writer->file) < 0) {
+                success = false;
+            }
+        }
+        if (ferror(previous) || fclose(previous) != 0) {
+            success = false;
+        }
+    }
+
+    if (!success) {
+        manifest_abort(writer);
+        set_status(state, "Erreur : manifest.tsv invalide ou illisible.");
+    }
+    return success;
+}
+
+static int
+manifest_contains(const ManifestWriter *writer, const char *filename)
+{
+    if (!writer->previous_exists) {
+        return 0;
+    }
+
+    int descriptor = open(writer->final_path, O_RDONLY | O_NOFOLLOW);
+    if (descriptor < 0) {
+        return -1;
+    }
+    FILE *file = fdopen(descriptor, "r");
+    if (!file) {
+        (void)close(descriptor);
+        return -1;
+    }
+
+    int found = 0;
+    char line[MANIFEST_LINE_CAPACITY];
+    (void)fgets(line, sizeof(line), file);
+    size_t filename_length = strlen(filename);
+    while (fgets(line, sizeof(line), file)) {
+        const char *tab = strchr(line, '\t');
+        if (tab && (size_t)(tab - line) == filename_length
+            && memcmp(line, filename, filename_length) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    if (ferror(file) || fclose(file) != 0) {
+        return -1;
+    }
+    return found;
+}
+
+static bool
+manifest_append(
+    ManifestWriter *writer,
+    const char *filename,
+    off_t size,
+    const char *source_path
+)
+{
+    return fprintf(
+        writer->file,
+        "%s\t%" PRIdMAX "\t%s\n",
+        filename,
+        (intmax_t)size,
+        source_path
+    ) >= 0;
+}
+
+static bool
+manifest_commit(Lardon3DAppState *state, ManifestWriter *writer)
+{
+    bool success = fflush(writer->file) == 0;
+    if (success) {
+        success = fsync(fileno(writer->file)) == 0;
+    }
+    if (fclose(writer->file) != 0) {
+        success = false;
+    }
+    writer->file = NULL;
+    if (success) {
+        success = rename(writer->temporary_path, writer->final_path) == 0;
+    }
+    if (!success) {
+        (void)unlink(writer->temporary_path);
+        set_status(state, "Erreur : impossible de mettre à jour manifest.tsv.");
+    }
+    return success;
+}
+
+static int
+copy_image(
+    const char *source_path,
+    const char *destination_path,
+    off_t *destination_size
+)
+{
+    int source = open(source_path, O_RDONLY | O_NOFOLLOW);
+    if (source < 0) {
+        return -1;
+    }
+
+    struct stat source_info;
+    if (fstat(source, &source_info) != 0 || !S_ISREG(source_info.st_mode)) {
+        (void)close(source);
+        return -1;
+    }
+
+    mode_t mode = source_info.st_mode & 0666;
+    if (mode == 0) {
+        mode = 0644;
+    }
+    int destination = open(
+        destination_path,
+        O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+        mode
+    );
+    if (destination < 0) {
+        (void)close(source);
+        return errno == EEXIST ? 0 : -1;
+    }
+
+    bool success = true;
+    char buffer[64 * 1024];
+    for (;;) {
+        ssize_t read_count = read(source, buffer, sizeof(buffer));
+        if (read_count == 0) {
+            break;
+        }
+        if (read_count < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            success = false;
+            break;
+        }
+
+        ssize_t written_total = 0;
+        while (written_total < read_count) {
+            ssize_t written = write(
+                destination,
+                buffer + written_total,
+                (size_t)(read_count - written_total)
+            );
+            if (written < 0 && errno == EINTR) {
+                continue;
+            }
+            if (written <= 0) {
+                success = false;
+                break;
+            }
+            written_total += written;
+        }
+        if (!success) {
+            break;
+        }
+    }
+
+    if (success) {
+        success = fsync(destination) == 0;
+    }
+    if (close(source) != 0) {
+        success = false;
+    }
+    if (close(destination) != 0) {
+        success = false;
+    }
+    if (!success) {
+        (void)unlink(destination_path);
+        return -1;
+    }
+
+    *destination_size = source_info.st_size;
+    return 1;
+}
+
+static bool
+analyze_source_directory(
+    Lardon3DAppState *state,
+    const char *absolute_source,
+    const char *originals_path,
+    Lardon3DImportResult *result,
+    CandidateList *candidates
+)
+{
+    DIR *directory = opendir(absolute_source);
+    if (!directory) {
+        set_status(state, "Erreur : impossible d'ouvrir le dossier source.");
+        return false;
+    }
+
+    bool success = true;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (!entry) {
+            if (errno != 0) {
+                set_status(state, "Erreur : lecture du dossier source impossible.");
+                success = false;
+            }
+            break;
+        }
+        if (strcmp(entry->d_name, ".") == 0
+            || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        char source_path[PATH_MAX];
+        if (!join_path(source_path, absolute_source, entry->d_name)) {
+            set_status(state, "Erreur : chemin source trop long.");
+            success = false;
+            break;
+        }
+
+        struct stat source_info;
+        if (lstat(source_path, &source_info) != 0
+            || !S_ISREG(source_info.st_mode)
+            || !has_supported_extension(entry->d_name)) {
+            ++result->ignored;
+            continue;
+        }
+        ++result->admissible_found;
+
+        if (has_forbidden_manifest_character(entry->d_name)) {
+            set_status(
+                state,
+                "Erreur : nom de fichier incompatible avec le manifeste."
+            );
+            success = false;
+            break;
+        }
+
+        char destination_path[PATH_MAX];
+        if (!join_path(destination_path, originals_path, entry->d_name)) {
+            set_status(state, "Erreur : chemin destination trop long.");
+            success = false;
+            break;
+        }
+        if (!candidate_list_append(state, candidates, entry->d_name)) {
+            success = false;
+            break;
+        }
+    }
+
+    if (closedir(directory) != 0) {
+        set_status(state, "Erreur : fermeture du dossier source impossible.");
+        success = false;
+    }
+    return success;
+}
+
+static size_t
+rollback_created_files(
+    CandidateList *candidates,
+    const char *originals_path
+)
+{
+    size_t removed = 0;
+    for (size_t index = candidates->count; index > 0; --index) {
+        ImportCandidate *candidate = &candidates->items[index - 1];
+        if (!candidate->created) {
+            continue;
+        }
+
+        char destination_path[PATH_MAX];
+        if (join_path(
+                destination_path,
+                originals_path,
+                candidate->filename
+            )
+            && unlink(destination_path) == 0) {
+            candidate->created = false;
+            ++removed;
+        }
+    }
+    return removed;
+}
+
+static bool
+fail_import(
+    Lardon3DAppState *state,
+    Lardon3DImportResult *result,
+    size_t removed,
+    const char *reason
+)
+{
+    size_t copied_before_rollback = result->copied;
+    result->copied -= removed;
+    if (copied_before_rollback > 0 && result->copied == 0) {
+        (void)snprintf(
+            state->status_message,
+            sizeof(state->status_message),
+            "Import annulé : %zu copie%s retirée%s après erreur (%s).",
+            removed,
+            removed == 1 ? "" : "s",
+            removed == 1 ? "" : "s",
+            reason
+        );
+    } else if (result->copied > 0) {
+        (void)snprintf(
+            state->status_message,
+            sizeof(state->status_message),
+            "Erreur critique : %zu copie%s conservée%s sans manifeste (%s).",
+            result->copied,
+            result->copied == 1 ? "" : "s",
+            result->copied == 1 ? "" : "s",
+            reason
+        );
+    } else {
+        (void)snprintf(
+            state->status_message,
+            sizeof(state->status_message),
+            "Erreur d'import : %s.",
+            reason
+        );
+    }
+    return false;
+}
+
+bool
+lardon3d_import_directory(
+    Lardon3DAppState *state,
+    const char *source_directory,
+    Lardon3DImportResult *result
+)
+{
+    if (!state || !result) {
+        return false;
+    }
+    *result = (Lardon3DImportResult) {0};
+
+    if (!state->project_loaded) {
+        set_status(state, "Aucun projet chargé.");
+        return false;
+    }
+
+    char trimmed_source[PATH_MAX];
+    char absolute_source[PATH_MAX];
+    if (!trim_source_path(state, source_directory, trimmed_source)) {
+        return false;
+    }
+    if (!resolve_source_path(state, trimmed_source, absolute_source)) {
+        return false;
+    }
+    if (has_forbidden_manifest_character(absolute_source)) {
+        set_status(state, "Erreur : chemin source incompatible avec le manifeste.");
+        return false;
+    }
+
+    struct stat source_directory_info;
+    if (lstat(absolute_source, &source_directory_info) != 0) {
+        set_status(state, "Erreur : dossier source inexistant.");
+        return false;
+    }
+    if (!S_ISDIR(source_directory_info.st_mode)) {
+        set_status(state, "Erreur : la source n'est pas un dossier.");
+        return false;
+    }
+
+    char images_path[PATH_MAX];
+    char originals_path[PATH_MAX];
+    if (!join_path(images_path, state->project_path, "images")
+        || !join_path(originals_path, images_path, "originals")) {
+        set_status(state, "Erreur : chemin du projet trop long.");
+        return false;
+    }
+
+    CandidateList candidates = {0};
+    if (!analyze_source_directory(
+            state,
+            absolute_source,
+            originals_path,
+            result,
+            &candidates
+        )) {
+        free(candidates.items);
+        return false;
+    }
+
+    if (!ensure_originals_directory(state, images_path, originals_path)) {
+        free(candidates.items);
+        return false;
+    }
+
+    ManifestWriter manifest;
+    if (!manifest_begin(state, images_path, &manifest)) {
+        free(candidates.items);
+        return false;
+    }
+
+    bool success = true;
+    const char *failure_reason = NULL;
+    for (size_t index = 0; index < candidates.count; ++index) {
+        ImportCandidate *candidate = &candidates.items[index];
+        char source_path[PATH_MAX];
+        char destination_path[PATH_MAX];
+        if (!join_path(source_path, absolute_source, candidate->filename)
+            || !join_path(
+                destination_path,
+                originals_path,
+                candidate->filename
+            )) {
+            success = false;
+            failure_reason = "chemin de fichier trop long";
+            break;
+        }
+
+        off_t size = 0;
+        int copied = copy_image(source_path, destination_path, &size);
+        if (copied < 0) {
+            success = false;
+            failure_reason = "copie d'une image impossible";
+            break;
+        }
+        if (copied == 0) {
+            ++result->already_present;
+            struct stat destination_info;
+            bool destination_is_regular = false;
+            if (lstat(destination_path, &destination_info) == 0
+                && S_ISREG(destination_info.st_mode)) {
+                size = destination_info.st_size;
+                destination_is_regular = true;
+            }
+            if (!destination_is_regular) {
+                continue;
+            }
+        } else {
+            ++result->copied;
+            candidate->created = true;
+        }
+
+        int already_listed = manifest_contains(
+            &manifest,
+            candidate->filename
+        );
+        if (already_listed < 0) {
+            success = false;
+            failure_reason = "lecture du manifeste impossible";
+            break;
+        }
+        if (!already_listed
+            && !manifest_append(
+                &manifest,
+                candidate->filename,
+                size,
+                source_path
+            )) {
+            success = false;
+            failure_reason = "écriture du manifeste impossible";
+            break;
+        }
+    }
+
+    if (!success) {
+        manifest_abort(&manifest);
+        size_t removed = rollback_created_files(
+            &candidates,
+            originals_path
+        );
+        free(candidates.items);
+        return fail_import(state, result, removed, failure_reason);
+    }
+    if (!manifest_commit(state, &manifest)) {
+        size_t removed = rollback_created_files(
+            &candidates,
+            originals_path
+        );
+        free(candidates.items);
+        return fail_import(
+            state,
+            result,
+            removed,
+            "mise à jour du manifeste impossible"
+        );
+    }
+    free(candidates.items);
+
+    (void)snprintf(
+        state->status_message,
+        sizeof(state->status_message),
+        "Import terminé : %zu copiée%s, %zu déjà présente%s.",
+        result->copied,
+        result->copied == 1 ? "" : "s",
+        result->already_present,
+        result->already_present == 1 ? "" : "s"
+    );
+    return true;
+}

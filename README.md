@@ -29,3 +29,7 @@ La TUI s'affiche directement dans le terminal courant. Appuyez sur `q` ou `Q` po
 
 Les projets sont enregistrés par défaut dans `~/Documents/Lardon/Projets3D`.
 La variable `LARDON3D_PROJECTS_ROOT` permet de choisir un autre répertoire racine à l'exécution.
+
+L'import accepte les images JPEG, PNG, TIFF et HEIC présentes directement dans
+le dossier choisi, sans parcourir ses sous-dossiers. Elles sont copiées vers
+`images/originals` et répertoriées dans `images/manifest.tsv`.
