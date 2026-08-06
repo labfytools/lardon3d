@@ -36,6 +36,8 @@ executable(
         'src/project.c',
         'src/task.c',
         'src/task_queue.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
         'src/hardware_profile.c',
         'src/resource_snapshot.c',
         'src/resource_governor.c',
@@ -100,6 +102,8 @@ task_test = executable(
     sources: [
         'tests/test_task.c',
         'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
     ],
     include_directories: include_directories('include'),
     dependencies: [threads],
@@ -113,6 +117,8 @@ task_queue_test = executable(
         'tests/test_task_queue.c',
         'src/task.c',
         'src/task_queue.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
     ],
     include_directories: include_directories('include'),
     dependencies: [threads],
@@ -148,6 +154,7 @@ resource_governor_test = executable(
     sources: [
         'tests/test_resource_governor.c',
         'src/resource_governor.c',
+        'src/resource_snapshot.c',
     ],
     include_directories: include_directories('include'),
     dependencies: [threads],
@@ -160,6 +167,7 @@ resource_reservation_test = executable(
     sources: [
         'tests/test_resource_reservation.c',
         'src/resource_governor.c',
+        'src/resource_snapshot.c',
     ],
     include_directories: include_directories('include'),
     dependencies: [threads],

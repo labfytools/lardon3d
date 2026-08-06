@@ -139,6 +139,12 @@ bool lardon3d_resource_governor_reserve(
     Lardon3DResourceDecision *decision,
     Lardon3DResourceReservation **reservation
 );
+bool lardon3d_resource_governor_reserve_available(
+    Lardon3DResourceGovernor *governor,
+    const Lardon3DResourceEstimate *estimate,
+    Lardon3DResourceDecision *decision,
+    Lardon3DResourceReservation **reservation
+);
 bool lardon3d_resource_governor_release(
     Lardon3DResourceGovernor *governor,
     Lardon3DResourceReservation *reservation
@@ -148,6 +154,11 @@ bool lardon3d_resource_governor_reservation_is_valid(
     const Lardon3DResourceReservation *reservation
 );
 bool lardon3d_resource_reservation_get(
+    Lardon3DResourceGovernor *governor,
+    const Lardon3DResourceReservation *reservation,
+    Lardon3DResourceReservationInfo *information
+);
+bool lardon3d_resource_reservation_get_active(
     Lardon3DResourceGovernor *governor,
     const Lardon3DResourceReservation *reservation,
     Lardon3DResourceReservationInfo *information

@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include <lardon3d/resource_governor.h>
+
 enum {
     LARDON3D_TASK_NAME_CAPACITY = 128,
     LARDON3D_TASK_MESSAGE_CAPACITY = 256,
@@ -32,14 +34,28 @@ typedef struct {
     struct timespec finished_at;
 } Lardon3DTaskSnapshot;
 
+typedef struct {
+    size_t batch_size;
+    uint64_t memory_bytes;
+    uint64_t gpu_memory_bytes;
+    unsigned int cpu_threads;
+    unsigned int gpu_slots;
+    unsigned int io_slots;
+} Lardon3DTaskExecutionContract;
+
 Lardon3DTask *lardon3d_task_create(
     const char *name,
+    const Lardon3DResourceEstimate *estimate,
     Lardon3DTaskCallback callback,
     void *userdata
 );
 void lardon3d_task_destroy(Lardon3DTask *task);
 /* Exécute le callback dans le thread appelant. */
-bool lardon3d_task_start(Lardon3DTask *task);
+bool lardon3d_task_start(
+    Lardon3DTask *task,
+    Lardon3DResourceGovernor *governor,
+    const Lardon3DResourceReservation *reservation
+);
 void lardon3d_task_request_cancel(Lardon3DTask *task);
 bool lardon3d_task_pause(Lardon3DTask *task);
 bool lardon3d_task_resume(Lardon3DTask *task);
@@ -57,6 +73,15 @@ bool lardon3d_task_snapshot(
 );
 uint64_t lardon3d_task_id(const Lardon3DTask *task);
 bool lardon3d_task_assign_id(Lardon3DTask *task, uint64_t id);
+bool lardon3d_task_resource_estimate(
+    const Lardon3DTask *task,
+    Lardon3DResourceEstimate *estimate
+);
+bool lardon3d_task_execution_contract(
+    const Lardon3DTask *task,
+    Lardon3DTaskExecutionContract *contract
+);
+bool lardon3d_task_reject(Lardon3DTask *task, const char *message);
 const char *lardon3d_task_state_name(Lardon3DTaskState state);
 
 #endif

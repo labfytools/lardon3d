@@ -17,6 +17,9 @@ struct Lardon3DTask {
     struct timespec finished_at;
     Lardon3DTaskCallback callback;
     void *userdata;
+    Lardon3DResourceEstimate estimate;
+    Lardon3DTaskExecutionContract contract;
+    bool has_contract;
     bool pause_requested;
     bool cancel_requested;
     bool executing;
@@ -57,11 +60,12 @@ finish_locked(
 Lardon3DTask *
 lardon3d_task_create(
     const char *name,
+    const Lardon3DResourceEstimate *estimate,
     Lardon3DTaskCallback callback,
     void *userdata
 )
 {
-    if (!name || !name[0] || !callback) {
+    if (!name || !name[0] || !estimate || !callback) {
         return NULL;
     }
     Lardon3DTask *task = calloc(1, sizeof(*task));
@@ -82,6 +86,7 @@ lardon3d_task_create(
     task->state = TASK_PENDING;
     task->callback = callback;
     task->userdata = userdata;
+    task->estimate = *estimate;
     copy_text(task->message, sizeof(task->message), "En attente.");
     return task;
 }
@@ -100,9 +105,18 @@ lardon3d_task_destroy(Lardon3DTask *task)
 }
 
 bool
-lardon3d_task_start(Lardon3DTask *task)
+lardon3d_task_start(
+    Lardon3DTask *task,
+    Lardon3DResourceGovernor *governor,
+    const Lardon3DResourceReservation *reservation
+)
 {
-    if (!task) {
+    Lardon3DResourceReservationInfo information;
+    if (!task || !lardon3d_resource_reservation_get_active(
+            governor,
+            reservation,
+            &information
+        )) {
         return false;
     }
     (void)pthread_mutex_lock(&task->mutex);
@@ -111,6 +125,15 @@ lardon3d_task_start(Lardon3DTask *task)
         return false;
     }
     task->executing = true;
+    task->contract = (Lardon3DTaskExecutionContract) {
+        .batch_size = information.batch_size,
+        .memory_bytes = information.memory_bytes,
+        .gpu_memory_bytes = information.gpu_memory_bytes,
+        .cpu_threads = information.cpu_threads,
+        .gpu_slots = information.gpu_slots,
+        .io_slots = information.io_slots,
+    };
+    task->has_contract = true;
     (void)clock_gettime(CLOCK_REALTIME, &task->started_at);
     if (task->cancel_requested) {
         finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
@@ -328,6 +351,60 @@ lardon3d_task_assign_id(Lardon3DTask *task, uint64_t id)
     bool accepted = task->id == 0 && task->state == TASK_PENDING;
     if (accepted) {
         task->id = id;
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return accepted;
+}
+
+bool
+lardon3d_task_resource_estimate(
+    const Lardon3DTask *task,
+    Lardon3DResourceEstimate *estimate
+)
+{
+    if (!task || !estimate) {
+        return false;
+    }
+    Lardon3DTask *mutable_task = (Lardon3DTask *)task;
+    (void)pthread_mutex_lock(&mutable_task->mutex);
+    *estimate = task->estimate;
+    (void)pthread_mutex_unlock(&mutable_task->mutex);
+    return true;
+}
+
+bool
+lardon3d_task_execution_contract(
+    const Lardon3DTask *task,
+    Lardon3DTaskExecutionContract *contract
+)
+{
+    if (!task || !contract) {
+        return false;
+    }
+    Lardon3DTask *mutable_task = (Lardon3DTask *)task;
+    (void)pthread_mutex_lock(&mutable_task->mutex);
+    bool available = task->has_contract;
+    if (available) {
+        *contract = task->contract;
+    }
+    (void)pthread_mutex_unlock(&mutable_task->mutex);
+    return available;
+}
+
+bool
+lardon3d_task_reject(Lardon3DTask *task, const char *message)
+{
+    if (!task) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    bool accepted = !task->executing && !is_terminal(task->state);
+    if (accepted) {
+        finish_locked(
+            task,
+            TASK_FAILED,
+            message ? message : "Ressources impossibles à réserver."
+        );
     }
     (void)pthread_mutex_unlock(&task->mutex);
     return accepted;

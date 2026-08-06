@@ -20,6 +20,12 @@ typedef struct {
     long pause_ns;
 } Work;
 
+typedef struct {
+    Lardon3DTask *task;
+    Lardon3DResourceGovernor *governor;
+    Lardon3DResourceReservation *reservation;
+} StartContext;
+
 static void
 short_pause(long nanoseconds)
 {
@@ -54,8 +60,12 @@ failure_callback(Lardon3DTask *task, void *userdata)
 static void *
 start_task(void *context)
 {
-    Lardon3DTask *task = context;
-    return (void *)(uintptr_t)(lardon3d_task_start(task) ? 1 : 0);
+    StartContext *start = context;
+    return (void *)(uintptr_t)(lardon3d_task_start(
+        start->task,
+        start->governor,
+        start->reservation
+    ) ? 1 : 0);
 }
 
 static bool
@@ -77,14 +87,46 @@ wait_for_state(Lardon3DTask *task, Lardon3DTaskState expected)
 static bool
 run_test(void)
 {
-    CHECK(!lardon3d_task_create(NULL, work_callback, NULL));
-    CHECK(!lardon3d_task_create("", work_callback, NULL));
-    CHECK(!lardon3d_task_create("invalide", NULL, NULL));
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = 4,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = UINT64_MAX,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 100.0,
+        .io_slot_capacity = 1,
+    };
+    Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(
+        &profile,
+        &policy
+    );
+    Lardon3DResourceSnapshot resource_snapshot = {
+        .memory_available_bytes = UINT64_MAX,
+        .cpu_load_1m = 0.0,
+    };
+    Lardon3DResourceDecision decision;
+    Lardon3DResourceReservation *reservation;
+    CHECK(governor);
+    CHECK(!lardon3d_task_create(NULL, &estimate, work_callback, NULL));
+    CHECK(!lardon3d_task_create("", &estimate, work_callback, NULL));
+    CHECK(!lardon3d_task_create("invalide", &estimate, NULL, NULL));
     lardon3d_task_destroy(NULL);
     CHECK(!lardon3d_task_join(NULL));
 
     Work work = {.steps = 100, .pause_ns = 1000000};
-    Lardon3DTask *task = lardon3d_task_create("Tâche de test", work_callback, &work);
+    Lardon3DTask *task = lardon3d_task_create(
+        "Tâche de test",
+        &estimate,
+        work_callback,
+        &work
+    );
     CHECK(task);
     CHECK(lardon3d_task_assign_id(task, 42));
     CHECK(!lardon3d_task_assign_id(task, 43));
@@ -96,7 +138,11 @@ run_test(void)
     CHECK(strcmp(snapshot.name, "Tâche de test") == 0);
 
     pthread_t thread;
-    CHECK(pthread_create(&thread, NULL, start_task, task) == 0);
+    CHECK(lardon3d_resource_governor_reserve(
+        governor, &resource_snapshot, &estimate, &decision, &reservation
+    ));
+    StartContext start = {task, governor, reservation};
+    CHECK(pthread_create(&thread, NULL, start_task, &start) == 0);
     CHECK(wait_for_state(task, TASK_RUNNING));
     CHECK(lardon3d_task_pause(task));
     CHECK(wait_for_state(task, TASK_PAUSED));
@@ -111,34 +157,51 @@ run_test(void)
     void *thread_result;
     CHECK(pthread_join(thread, &thread_result) == 0);
     CHECK((uintptr_t)thread_result == 1);
+    CHECK(lardon3d_resource_governor_release(governor, reservation));
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_COMPLETED);
     CHECK(snapshot.progress == 100);
     CHECK(snapshot.started_at.tv_sec > 0);
     CHECK(snapshot.finished_at.tv_sec > 0);
-    CHECK(!lardon3d_task_start(task));
+    CHECK(!lardon3d_task_start(task, NULL, NULL));
     lardon3d_task_destroy(task);
 
     work = (Work) {.steps = 1000, .pause_ns = 1000000};
-    task = lardon3d_task_create("Annulation", work_callback, &work);
-    CHECK(task && pthread_create(&thread, NULL, start_task, task) == 0);
+    task = lardon3d_task_create("Annulation", &estimate, work_callback, &work);
+    CHECK(task);
+    CHECK(lardon3d_resource_governor_reserve(
+        governor, &resource_snapshot, &estimate, &decision, &reservation
+    ));
+    start = (StartContext) {task, governor, reservation};
+    CHECK(pthread_create(&thread, NULL, start_task, &start) == 0);
     CHECK(wait_for_state(task, TASK_RUNNING));
     lardon3d_task_request_cancel(task);
     CHECK(lardon3d_task_join(task));
     CHECK(pthread_join(thread, NULL) == 0);
+    CHECK(lardon3d_resource_governor_release(governor, reservation));
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_CANCELLED);
     CHECK(snapshot.progress < 100);
     lardon3d_task_destroy(task);
 
-    task = lardon3d_task_create("Échec", failure_callback, NULL);
-    CHECK(task && lardon3d_task_start(task));
+    task = lardon3d_task_create("Échec", &estimate, failure_callback, NULL);
+    CHECK(task);
+    CHECK(lardon3d_resource_governor_reserve(
+        governor, &resource_snapshot, &estimate, &decision, &reservation
+    ));
+    CHECK(lardon3d_task_start(task, governor, reservation));
+    CHECK(lardon3d_resource_governor_release(governor, reservation));
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_FAILED);
     CHECK(strcmp(snapshot.message, "Erreur contrôlée.") == 0);
     lardon3d_task_destroy(task);
 
-    task = lardon3d_task_create("Pause avant départ", work_callback, &work);
+    task = lardon3d_task_create(
+        "Pause avant départ",
+        &estimate,
+        work_callback,
+        &work
+    );
     CHECK(task && lardon3d_task_pause(task));
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_PAUSED);
@@ -146,6 +209,7 @@ run_test(void)
     lardon3d_task_request_cancel(task);
     CHECK(lardon3d_task_join(task));
     lardon3d_task_destroy(task);
+    lardon3d_resource_governor_destroy(governor);
     return true;
 }
 

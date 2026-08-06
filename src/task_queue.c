@@ -17,6 +17,7 @@ struct Lardon3DTaskQueue {
     pthread_t worker;
     bool worker_started;
     bool stopping;
+    Lardon3DResourceGovernor *governor;
     uint64_t next_id;
     TaskNode *all_head;
     TaskNode *all_tail;
@@ -47,6 +48,48 @@ queue_worker(void *context)
             return NULL;
         }
         TaskNode *node = queue->pending_head;
+        Lardon3DTaskSnapshot task_snapshot;
+        if (!lardon3d_task_snapshot(node->task, &task_snapshot)) {
+            (void)pthread_mutex_unlock(&queue->mutex);
+            continue;
+        }
+        if (terminal_state(task_snapshot.state)) {
+            queue->pending_head = node->next_pending;
+            if (!queue->pending_head) {
+                queue->pending_tail = NULL;
+            }
+            node->next_pending = NULL;
+            (void)pthread_mutex_unlock(&queue->mutex);
+            continue;
+        }
+        Lardon3DResourceEstimate estimate;
+        Lardon3DResourceDecision decision;
+        Lardon3DResourceReservation *reservation = NULL;
+        bool evaluated = lardon3d_task_resource_estimate(node->task, &estimate)
+            && lardon3d_resource_governor_reserve_available(
+                queue->governor,
+                &estimate,
+                &decision,
+                &reservation
+            );
+        if (!evaluated) {
+            (void)lardon3d_task_reject(
+                node->task,
+                "Impossible d'évaluer les ressources disponibles."
+            );
+            (void)pthread_mutex_unlock(&queue->mutex);
+            continue;
+        }
+        if (decision.kind == LARDON3D_RESOURCE_WAIT) {
+            (void)pthread_cond_wait(&queue->condition, &queue->mutex);
+            (void)pthread_mutex_unlock(&queue->mutex);
+            continue;
+        }
+        if (decision.kind == LARDON3D_RESOURCE_REJECT || !reservation) {
+            (void)lardon3d_task_reject(node->task, decision.reason);
+            (void)pthread_mutex_unlock(&queue->mutex);
+            continue;
+        }
         queue->pending_head = node->next_pending;
         if (!queue->pending_head) {
             queue->pending_tail = NULL;
@@ -55,7 +98,20 @@ queue_worker(void *context)
         queue->active = node->task;
         (void)pthread_mutex_unlock(&queue->mutex);
 
-        (void)lardon3d_task_start(node->task);
+        if (!lardon3d_task_start(
+                node->task,
+                queue->governor,
+                reservation
+            )) {
+            (void)lardon3d_task_reject(
+                node->task,
+                "Réservation de ressources invalide."
+            );
+        }
+        (void)lardon3d_resource_governor_release(
+            queue->governor,
+            reservation
+        );
 
         (void)pthread_mutex_lock(&queue->mutex);
         queue->active = NULL;
@@ -65,8 +121,11 @@ queue_worker(void *context)
 }
 
 Lardon3DTaskQueue *
-lardon3d_task_queue_create(void)
+lardon3d_task_queue_create(Lardon3DResourceGovernor *governor)
 {
+    if (!governor) {
+        return NULL;
+    }
     Lardon3DTaskQueue *queue = calloc(1, sizeof(*queue));
     if (!queue) {
         return NULL;
@@ -81,6 +140,7 @@ lardon3d_task_queue_create(void)
         return NULL;
     }
     queue->next_id = 1;
+    queue->governor = governor;
     if (pthread_create(&queue->worker, NULL, queue_worker, queue) != 0) {
         (void)pthread_cond_destroy(&queue->condition);
         (void)pthread_mutex_destroy(&queue->mutex);
@@ -89,6 +149,36 @@ lardon3d_task_queue_create(void)
     }
     queue->worker_started = true;
     return queue;
+}
+
+bool
+lardon3d_task_queue_cancel(Lardon3DTaskQueue *queue, uint64_t task_id)
+{
+    if (!queue || task_id == 0) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&queue->mutex);
+    TaskNode *node = queue->all_head;
+    while (node && lardon3d_task_id(node->task) != task_id) {
+        node = node->next_all;
+    }
+    if (node) {
+        lardon3d_task_request_cancel(node->task);
+        (void)pthread_cond_broadcast(&queue->condition);
+    }
+    (void)pthread_mutex_unlock(&queue->mutex);
+    return node != NULL;
+}
+
+void
+lardon3d_task_queue_resources_changed(Lardon3DTaskQueue *queue)
+{
+    if (!queue) {
+        return;
+    }
+    (void)pthread_mutex_lock(&queue->mutex);
+    (void)pthread_cond_broadcast(&queue->condition);
+    (void)pthread_mutex_unlock(&queue->mutex);
 }
 
 void

@@ -558,6 +558,33 @@ lardon3d_resource_governor_reserve(
     return true;
 }
 
+bool
+lardon3d_resource_governor_reserve_available(
+    Lardon3DResourceGovernor *governor,
+    const Lardon3DResourceEstimate *estimate,
+    Lardon3DResourceDecision *decision,
+    Lardon3DResourceReservation **reservation
+)
+{
+    if (!governor || !estimate || !decision || !reservation) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    Lardon3DHardwareProfile profile = governor->profile;
+    (void)pthread_mutex_unlock(&governor->mutex);
+    Lardon3DResourceSnapshot snapshot;
+    if (!lardon3d_resource_snapshot_capture(&profile, &snapshot, NULL, 0)) {
+        return false;
+    }
+    return lardon3d_resource_governor_reserve(
+        governor,
+        &snapshot,
+        estimate,
+        decision,
+        reservation
+    );
+}
+
 static Lardon3DResourceReservation *
 find_reservation(
     Lardon3DResourceReservation *head,
@@ -645,6 +672,28 @@ lardon3d_resource_reservation_get(
     if (!found) {
         found = find_reservation(governor->released, reservation);
     }
+    if (found) {
+        *information = found->information;
+    }
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return found != NULL;
+}
+
+bool
+lardon3d_resource_reservation_get_active(
+    Lardon3DResourceGovernor *governor,
+    const Lardon3DResourceReservation *reservation,
+    Lardon3DResourceReservationInfo *information
+)
+{
+    if (!governor || !reservation || !information) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    Lardon3DResourceReservation *found = find_reservation(
+        governor->active,
+        reservation
+    );
     if (found) {
         *information = found->information;
     }

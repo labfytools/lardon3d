@@ -16,7 +16,9 @@ typedef struct {
     size_t total;
 } Lardon3DTaskQueueSummary;
 
-Lardon3DTaskQueue *lardon3d_task_queue_create(void);
+Lardon3DTaskQueue *lardon3d_task_queue_create(
+    Lardon3DResourceGovernor *governor
+);
 void lardon3d_task_queue_destroy(Lardon3DTaskQueue *queue);
 /* La file devient propriétaire de task uniquement en cas de succès. */
 bool lardon3d_task_queue_add(
@@ -25,6 +27,8 @@ bool lardon3d_task_queue_add(
     uint64_t *task_id
 );
 bool lardon3d_task_queue_remove(Lardon3DTaskQueue *queue, uint64_t task_id);
+bool lardon3d_task_queue_cancel(Lardon3DTaskQueue *queue, uint64_t task_id);
+void lardon3d_task_queue_resources_changed(Lardon3DTaskQueue *queue);
 size_t lardon3d_task_queue_count(Lardon3DTaskQueue *queue);
 bool lardon3d_task_queue_get(
     Lardon3DTaskQueue *queue,
