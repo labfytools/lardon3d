@@ -34,6 +34,8 @@ executable(
         'src/image_catalog.c',
         'src/image_view.c',
         'src/project.c',
+        'src/task.c',
+        'src/task_queue.c',
     ],
     include_directories: include_directories('include'),
     dependencies: [ncursesw, threads],
@@ -89,3 +91,28 @@ image_view_test = executable(
 )
 
 test('image-view', image_view_test, timeout: 30)
+
+task_test = executable(
+    'test-task',
+    sources: [
+        'tests/test_task.c',
+        'src/task.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads],
+)
+
+test('task', task_test, timeout: 30)
+
+task_queue_test = executable(
+    'test-task-queue',
+    sources: [
+        'tests/test_task_queue.c',
+        'src/task.c',
+        'src/task_queue.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads],
+)
+
+test('task-queue', task_queue_test, timeout: 30)

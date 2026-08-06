@@ -61,7 +61,7 @@ screen_texts(
     const char **footer
 )
 {
-    *footer = "ESC Accueil   F1 Aide   F2 Projets   F3 Import   F4 Viewer   Q Quit";
+    *footer = "ESC Accueil  F1 Aide  F2 Projets  F3 Import  F4 Viewer  F5 Tâches  Q";
 
     switch (screen) {
     case LARDON3D_SCREEN_PROJECTS:
@@ -82,11 +82,16 @@ screen_texts(
         *title = "Aide";
         *content = "Raccourcis clavier.";
         break;
+    case LARDON3D_SCREEN_TASKS:
+        *title = "Tâches";
+        *content = "Tâches en arrière-plan";
+        *footer = "F5 Tâches   ESC Accueil   Q Quit";
+        break;
     case LARDON3D_SCREEN_HOME:
     default:
         *title = "Accueil";
         *content = "Bienvenue dans Lardon3D";
-        *footer = "F1 Aide   F2 Projets   F3 Import   F4 Viewer   Q Quit";
+        *footer = "F1 Aide  F2 Projets  F3 Import  F4 Viewer  F5 Tâches  Q Quit";
         break;
     }
 }
@@ -297,11 +302,57 @@ draw_import_screen(
 }
 
 static void
+draw_tasks(
+    const Lardon3DTaskSnapshot *snapshots,
+    size_t count,
+    const Lardon3DTaskQueueSummary *summary,
+    int rows,
+    int columns
+)
+{
+    char line[512];
+    (void)snprintf(
+        line,
+        sizeof(line),
+        "Nombre de tâches : %zu   En cours : %zu   En attente : %zu   Terminées : %zu",
+        summary->total,
+        summary->running,
+        summary->pending,
+        summary->completed
+    );
+    draw_text(6, 2, columns - 4, line);
+    draw_text(8, 2, columns - 4, "ID     Nom                  Etat        Progression  Message");
+    int journal_row = rows - 7;
+    size_t visible = journal_row > 9 ? (size_t)(journal_row - 9) : 0;
+    if (count == 0) {
+        draw_text(10, 4, columns - 6, "Aucune tâche.");
+        return;
+    }
+    size_t displayed = count < visible ? count : visible;
+    for (size_t index = 0; index < displayed; ++index) {
+        (void)snprintf(
+            line,
+            sizeof(line),
+            "%-6llu %-20.20s %-12.12s %3u %%       %s",
+            (unsigned long long)snapshots[index].id,
+            snapshots[index].name,
+            lardon3d_task_state_name(snapshots[index].state),
+            snapshots[index].progress,
+            snapshots[index].message
+        );
+        draw_text(9 + (int)index, 2, columns - 4, line);
+    }
+}
+
+static void
 draw_content(
     const Lardon3DAppState *state,
     const char *input_text,
     const char *input_label,
     const Lardon3DImportTaskSnapshot *import_snapshot,
+    const Lardon3DTaskSnapshot *task_snapshots,
+    size_t task_count,
+    const Lardon3DTaskQueueSummary *task_summary,
     int rows,
     int columns
 )
@@ -343,6 +394,14 @@ draw_content(
             rows,
             columns
         );
+    } else if (state->screen == LARDON3D_SCREEN_TASKS) {
+        draw_tasks(
+            task_snapshots,
+            task_count,
+            task_summary,
+            rows,
+            columns
+        );
     } else {
         draw_text(
             (3 + journal_row) / 2,
@@ -367,6 +426,9 @@ lardon3d_layout_draw(
     const char *input_text,
     const char *input_label,
     const Lardon3DImportTaskSnapshot *import_snapshot,
+    const Lardon3DTaskSnapshot *task_snapshots,
+    size_t task_count,
+    const Lardon3DTaskQueueSummary *task_summary,
     int rows,
     int columns
 )
@@ -382,6 +444,9 @@ lardon3d_layout_draw(
             input_text,
             input_label,
             import_snapshot,
+            task_snapshots,
+            task_count,
+            task_summary,
             rows,
             columns
         );

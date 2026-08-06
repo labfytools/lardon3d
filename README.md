@@ -43,3 +43,8 @@ La touche `S` fait défiler les tris par ordre d'import, nom ou taille, dans les
 deux directions. `/` filtre les noms d'images sans distinction de casse ASCII et
 `X` efface le filtre. Le tri et le filtre restent entièrement en mémoire et ne
 modifient ni le manifeste ni les images.
+
+Un moteur générique exécute les tâches en file FIFO sur un worker unique. Il
+prend en charge progression, pause, reprise et annulation coopérative sans
+dépendre de la TUI ni des modules métier. L'écran `F5` affiche l'état courant de
+la file et de ses tâches.

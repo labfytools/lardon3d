@@ -5,6 +5,7 @@
 #include <lardon3d/app_state.h>
 #include <lardon3d/image_catalog.h>
 #include <lardon3d/image_view.h>
+#include <lardon3d/task_queue.h>
 #include <lardon3d/tui.h>
 
 int
@@ -16,8 +17,13 @@ lardon3d_app_run(void)
     if (!setlocale(LC_ALL, "")) {
         return EXIT_FAILURE;
     }
+    state.task_queue = lardon3d_task_queue_create();
+    if (!state.task_queue) {
+        return EXIT_FAILURE;
+    }
 
     if (!lardon3d_tui_init()) {
+        lardon3d_task_queue_destroy(state.task_queue);
         return EXIT_FAILURE;
     }
 
@@ -25,6 +31,7 @@ lardon3d_app_run(void)
     lardon3d_image_view_destroy(state.image_view);
     lardon3d_image_catalog_destroy(state.image_catalog);
     lardon3d_tui_shutdown();
+    lardon3d_task_queue_destroy(state.task_queue);
 
     return success ? EXIT_SUCCESS : EXIT_FAILURE;
 }

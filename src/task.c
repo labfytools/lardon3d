@@ -1,0 +1,355 @@
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <lardon3d/task.h>
+
+struct Lardon3DTask {
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    uint64_t id;
+    char name[LARDON3D_TASK_NAME_CAPACITY];
+    unsigned int progress;
+    Lardon3DTaskState state;
+    char message[LARDON3D_TASK_MESSAGE_CAPACITY];
+    struct timespec started_at;
+    struct timespec finished_at;
+    Lardon3DTaskCallback callback;
+    void *userdata;
+    bool pause_requested;
+    bool cancel_requested;
+    bool executing;
+};
+
+static bool
+is_terminal(Lardon3DTaskState state)
+{
+    return state == TASK_CANCELLED || state == TASK_FAILED
+        || state == TASK_COMPLETED;
+}
+
+static void
+copy_text(char *destination, size_t capacity, const char *text)
+{
+    (void)snprintf(destination, capacity, "%s", text ? text : "");
+}
+
+static void
+finish_locked(
+    Lardon3DTask *task,
+    Lardon3DTaskState state,
+    const char *message
+)
+{
+    task->state = state;
+    if (state == TASK_COMPLETED) {
+        task->progress = 100;
+    }
+    if (message) {
+        copy_text(task->message, sizeof(task->message), message);
+    }
+    (void)clock_gettime(CLOCK_REALTIME, &task->finished_at);
+    task->executing = false;
+    (void)pthread_cond_broadcast(&task->condition);
+}
+
+Lardon3DTask *
+lardon3d_task_create(
+    const char *name,
+    Lardon3DTaskCallback callback,
+    void *userdata
+)
+{
+    if (!name || !name[0] || !callback) {
+        return NULL;
+    }
+    Lardon3DTask *task = calloc(1, sizeof(*task));
+    if (!task) {
+        return NULL;
+    }
+    int written = snprintf(task->name, sizeof(task->name), "%s", name);
+    if (written < 0 || (size_t)written >= sizeof(task->name)
+        || pthread_mutex_init(&task->mutex, NULL) != 0) {
+        free(task);
+        return NULL;
+    }
+    if (pthread_cond_init(&task->condition, NULL) != 0) {
+        (void)pthread_mutex_destroy(&task->mutex);
+        free(task);
+        return NULL;
+    }
+    task->state = TASK_PENDING;
+    task->callback = callback;
+    task->userdata = userdata;
+    copy_text(task->message, sizeof(task->message), "En attente.");
+    return task;
+}
+
+void
+lardon3d_task_destroy(Lardon3DTask *task)
+{
+    if (!task) {
+        return;
+    }
+    lardon3d_task_request_cancel(task);
+    (void)lardon3d_task_join(task);
+    (void)pthread_cond_destroy(&task->condition);
+    (void)pthread_mutex_destroy(&task->mutex);
+    free(task);
+}
+
+bool
+lardon3d_task_start(Lardon3DTask *task)
+{
+    if (!task) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    if (task->executing || is_terminal(task->state)) {
+        (void)pthread_mutex_unlock(&task->mutex);
+        return false;
+    }
+    task->executing = true;
+    (void)clock_gettime(CLOCK_REALTIME, &task->started_at);
+    if (task->cancel_requested) {
+        finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
+        (void)pthread_mutex_unlock(&task->mutex);
+        return true;
+    }
+    while (task->pause_requested && !task->cancel_requested) {
+        task->state = TASK_PAUSED;
+        copy_text(task->message, sizeof(task->message), "Tâche en pause.");
+        (void)pthread_cond_wait(&task->condition, &task->mutex);
+    }
+    if (task->cancel_requested) {
+        finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
+        (void)pthread_mutex_unlock(&task->mutex);
+        return true;
+    }
+    task->state = TASK_RUNNING;
+    copy_text(task->message, sizeof(task->message), "Tâche en cours.");
+    (void)pthread_mutex_unlock(&task->mutex);
+
+    bool succeeded = task->callback(task, task->userdata);
+
+    (void)pthread_mutex_lock(&task->mutex);
+    if (task->cancel_requested) {
+        finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
+    } else if (task->state == TASK_FAILED || !succeeded) {
+        finish_locked(
+            task,
+            TASK_FAILED,
+            task->message[0] ? NULL : "Échec de la tâche."
+        );
+    } else {
+        finish_locked(task, TASK_COMPLETED, "Tâche terminée.");
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return true;
+}
+
+void
+lardon3d_task_request_cancel(Lardon3DTask *task)
+{
+    if (!task) {
+        return;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    if (!is_terminal(task->state)) {
+        task->cancel_requested = true;
+        copy_text(task->message, sizeof(task->message), "Annulation demandée.");
+        if (!task->executing) {
+            finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
+        }
+        (void)pthread_cond_broadcast(&task->condition);
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+}
+
+bool
+lardon3d_task_pause(Lardon3DTask *task)
+{
+    if (!task) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    bool accepted = !is_terminal(task->state) && !task->cancel_requested;
+    if (accepted) {
+        task->pause_requested = true;
+        if (!task->executing) {
+            task->state = TASK_PAUSED;
+            copy_text(task->message, sizeof(task->message), "Tâche en pause.");
+        }
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return accepted;
+}
+
+bool
+lardon3d_task_resume(Lardon3DTask *task)
+{
+    if (!task) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    bool accepted = !is_terminal(task->state) && task->pause_requested;
+    if (accepted) {
+        task->pause_requested = false;
+        if (!task->executing) {
+            task->state = TASK_PENDING;
+            copy_text(task->message, sizeof(task->message), "En attente.");
+        }
+        (void)pthread_cond_broadcast(&task->condition);
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return accepted;
+}
+
+bool
+lardon3d_task_join(Lardon3DTask *task)
+{
+    if (!task) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    while (task->executing) {
+        (void)pthread_cond_wait(&task->condition, &task->mutex);
+    }
+    bool terminal = is_terminal(task->state);
+    (void)pthread_mutex_unlock(&task->mutex);
+    return terminal;
+}
+
+bool
+lardon3d_task_checkpoint(Lardon3DTask *task)
+{
+    if (!task) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    while (task->pause_requested && !task->cancel_requested) {
+        task->state = TASK_PAUSED;
+        copy_text(task->message, sizeof(task->message), "Tâche en pause.");
+        (void)pthread_cond_broadcast(&task->condition);
+        (void)pthread_cond_wait(&task->condition, &task->mutex);
+    }
+    if (!task->cancel_requested && task->executing) {
+        task->state = TASK_RUNNING;
+    }
+    bool continuing = !task->cancel_requested;
+    (void)pthread_mutex_unlock(&task->mutex);
+    return continuing;
+}
+
+bool
+lardon3d_task_set_progress(
+    Lardon3DTask *task,
+    unsigned int progress,
+    const char *message
+)
+{
+    if (!task || progress > 100) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    bool accepted = !is_terminal(task->state);
+    if (accepted) {
+        task->progress = progress;
+        if (message) {
+            copy_text(task->message, sizeof(task->message), message);
+        }
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return accepted;
+}
+
+bool
+lardon3d_task_fail(Lardon3DTask *task, const char *message)
+{
+    if (!task) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    bool accepted = task->executing && !is_terminal(task->state);
+    if (accepted) {
+        task->state = TASK_FAILED;
+        copy_text(
+            task->message,
+            sizeof(task->message),
+            message ? message : "Échec de la tâche."
+        );
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return accepted;
+}
+
+bool
+lardon3d_task_snapshot(
+    const Lardon3DTask *task,
+    Lardon3DTaskSnapshot *snapshot
+)
+{
+    if (!task || !snapshot) {
+        return false;
+    }
+    Lardon3DTask *mutable_task = (Lardon3DTask *)task;
+    (void)pthread_mutex_lock(&mutable_task->mutex);
+    *snapshot = (Lardon3DTaskSnapshot) {
+        .id = task->id,
+        .progress = task->progress,
+        .state = task->state,
+        .started_at = task->started_at,
+        .finished_at = task->finished_at,
+    };
+    copy_text(snapshot->name, sizeof(snapshot->name), task->name);
+    copy_text(snapshot->message, sizeof(snapshot->message), task->message);
+    (void)pthread_mutex_unlock(&mutable_task->mutex);
+    return true;
+}
+
+uint64_t
+lardon3d_task_id(const Lardon3DTask *task)
+{
+    if (!task) {
+        return 0;
+    }
+    Lardon3DTaskSnapshot snapshot;
+    return lardon3d_task_snapshot(task, &snapshot) ? snapshot.id : 0;
+}
+
+bool
+lardon3d_task_assign_id(Lardon3DTask *task, uint64_t id)
+{
+    if (!task || id == 0) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    bool accepted = task->id == 0 && task->state == TASK_PENDING;
+    if (accepted) {
+        task->id = id;
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return accepted;
+}
+
+const char *
+lardon3d_task_state_name(Lardon3DTaskState state)
+{
+    switch (state) {
+    case TASK_PENDING:
+        return "En attente";
+    case TASK_RUNNING:
+        return "En cours";
+    case TASK_PAUSED:
+        return "En pause";
+    case TASK_CANCELLED:
+        return "Annulée";
+    case TASK_FAILED:
+        return "Échec";
+    case TASK_COMPLETED:
+        return "Terminée";
+    default:
+        return "Inconnu";
+    }
+}

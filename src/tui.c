@@ -10,11 +10,13 @@
 #include <lardon3d/image_view.h>
 #include <lardon3d/layout.h>
 #include <lardon3d/project.h>
+#include <lardon3d/task_queue.h>
 #include <lardon3d/tui.h>
 
 enum {
     MINIMUM_ROWS = 20,
     MINIMUM_COLUMNS = 72,
+    DISPLAYED_TASK_CAPACITY = 64,
 };
 
 typedef enum {
@@ -170,11 +172,22 @@ redraw(
     if (task && lardon3d_import_task_snapshot(task, &snapshot)) {
         displayed_snapshot = &snapshot;
     }
+    Lardon3DTaskSnapshot task_snapshots[DISPLAYED_TASK_CAPACITY];
+    Lardon3DTaskQueueSummary task_summary;
+    size_t task_count = lardon3d_task_queue_snapshot(
+        state->task_queue,
+        task_snapshots,
+        DISPLAYED_TASK_CAPACITY,
+        &task_summary
+    );
     lardon3d_layout_draw(
         state,
         text,
         label,
         displayed_snapshot,
+        task_snapshots,
+        task_count,
+        &task_summary,
         rows,
         columns
     );
@@ -395,6 +408,9 @@ handle_normal_input(
         return true;
     case KEY_F(4):
         state->screen = LARDON3D_SCREEN_VIEWER;
+        return true;
+    case KEY_F(5):
+        state->screen = LARDON3D_SCREEN_TASKS;
         return true;
     case 27:
         state->screen = LARDON3D_SCREEN_HOME;
@@ -634,7 +650,8 @@ lardon3d_tui_run(Lardon3DAppState *state)
     while (state->running) {
         int key = getch();
 
-        bool should_redraw = task != NULL;
+        bool should_redraw = task != NULL
+            || state->screen == LARDON3D_SCREEN_TASKS;
         if (task && lardon3d_import_task_is_finished(task)) {
             Lardon3DImportTaskSnapshot snapshot;
             if (!lardon3d_import_task_join(task)
