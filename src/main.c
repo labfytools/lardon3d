@@ -1,7 +1,7 @@
-#include <scan3d/app.h>
+#include <lardon3d/app.h>
 
 int
 main(void)
 {
-    return scan3d_app_run();
+    return lardon3d_app_run();
 }

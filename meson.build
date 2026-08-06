@@ -1,5 +1,5 @@
 project(
-    'scan3d-vulkan',
+    'lardon3d',
     'c',
     version: '0.1.0',
     license: 'MIT',
@@ -20,11 +20,12 @@ add_project_arguments(
 ncursesw = dependency('ncursesw', required: true)
 
 executable(
-    'scan3d-vulkan',
+    'lardon3d',
     sources: [
         'src/main.c',
         'src/app.c',
         'src/tui.c',
+        'src/layout.c',
     ],
     include_directories: include_directories('include'),
     dependencies: [ncursesw],
