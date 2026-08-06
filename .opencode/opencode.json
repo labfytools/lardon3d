@@ -1,0 +1,46 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "lardon-build",
+  "model": "opencode/deepseek-v4-flash-free",
+  "subagent_depth": 1,
+  "instructions": [
+    "AGENTS.md",
+    "docs/architecture/overview.md",
+    "docs/architecture/resource_governor.md",
+    "docs/architecture/scheduler_resource_integration.md",
+    "docs/architecture/foundation_review.md",
+    "docs/opencode_handoff.md"
+  ],
+  "permission": {
+    "*": "ask",
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "lsp": "allow",
+    "external_directory": "deny",
+    "edit": {
+      "*": "allow",
+      "scan3d/**": "deny"
+    },
+    "bash": {
+      "*": "ask",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git commit*": "deny",
+      "git push*": "deny",
+      "git add -A*": "deny",
+      "git clean*": "deny",
+      "git reset*": "deny",
+      "rm *": "deny",
+      "sudo *": "deny"
+    }
+  },
+  "watcher": {
+    "ignore": [
+      ".git/**",
+      "build*/**",
+      "scan3d/**"
+    ]
+  }
+}
