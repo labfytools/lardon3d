@@ -52,4 +52,6 @@ la file et de ses tâches.
 Les fondations du moteur de ressources séparent la détection matérielle, les
 instantanés de disponibilité et les décisions du gouverneur. Le gouverneur
 conserve des marges système et GPU, puis autorise, diffère, réduit ou refuse un
-lot sans dépendre du scheduler ni d'un traitement métier.
+lot sans dépendre du scheduler ni d'un traitement métier. Les admissions
+acceptées créent désormais une réservation atomique ; l'écran `F6` affiche les
+budgets engagés et restants.

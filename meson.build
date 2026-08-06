@@ -154,3 +154,15 @@ resource_governor_test = executable(
 )
 
 test('resource-governor', resource_governor_test, timeout: 30)
+
+resource_reservation_test = executable(
+    'test-resource-reservation',
+    sources: [
+        'tests/test_resource_reservation.c',
+        'src/resource_governor.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads],
+)
+
+test('resource-reservation', resource_reservation_test, timeout: 60)

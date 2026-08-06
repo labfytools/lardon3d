@@ -39,6 +39,13 @@ decide_repeatedly(void *argument)
             )
             || decision.kind != LARDON3D_RESOURCE_START
             || decision.batch_size != context->request.preferred_batch_size) {
+            (void)fprintf(
+                stderr,
+                "Décision concurrente : kind=%d batch=%zu cpu=%u\n",
+                (int)decision.kind,
+                decision.batch_size,
+                decision.cpu_threads
+            );
             atomic_store(context->failed, true);
             break;
         }
@@ -65,6 +72,7 @@ run_test(void)
         .system_cpu_reserve = 1,
         .maximum_cpu_load_ratio = 0.90,
         .maximum_io_pressure_avg10 = 80.0,
+        .io_slot_capacity = 8,
     };
     CHECK(!lardon3d_resource_governor_create(NULL, &policy));
     Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(
@@ -89,7 +97,7 @@ run_test(void)
         &request,
         &decision
     ));
-    CHECK(decision.kind == LARDON3D_RESOURCE_START);
+    CHECK(decision.kind == LARDON3D_RESOURCE_REDUCE_BATCH);
     CHECK(decision.batch_size == 8);
     CHECK(decision.cpu_threads == 15);
     CHECK(decision.reason[0]);
@@ -134,6 +142,7 @@ run_test(void)
     profile.gpu_available = true;
     profile.gpu_uses_shared_memory = true;
     policy.gpu_memory_reserve_bytes = 0;
+    policy.gpu_slot_capacity = 2;
     governor = lardon3d_resource_governor_create(&profile, &policy);
     CHECK(governor);
     request = (Lardon3DResourceRequest) {

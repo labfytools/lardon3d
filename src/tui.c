@@ -10,6 +10,8 @@
 #include <lardon3d/image_view.h>
 #include <lardon3d/layout.h>
 #include <lardon3d/project.h>
+#include <lardon3d/resource_governor.h>
+#include <lardon3d/resource_snapshot.h>
 #include <lardon3d/task_queue.h>
 #include <lardon3d/tui.h>
 
@@ -180,6 +182,23 @@ redraw(
         DISPLAYED_TASK_CAPACITY,
         &task_summary
     );
+    Lardon3DResourceSnapshot resource_snapshot;
+    Lardon3DResourceAvailability resource_availability;
+    const Lardon3DResourceAvailability *displayed_resources = NULL;
+    if (state->screen == LARDON3D_SCREEN_RESOURCES
+        && lardon3d_resource_snapshot_capture(
+            &state->hardware_profile,
+            &resource_snapshot,
+            NULL,
+            0
+        )
+        && lardon3d_resource_governor_availability(
+            state->resource_governor,
+            &resource_snapshot,
+            &resource_availability
+        )) {
+        displayed_resources = &resource_availability;
+    }
     lardon3d_layout_draw(
         state,
         text,
@@ -188,6 +207,7 @@ redraw(
         task_snapshots,
         task_count,
         &task_summary,
+        displayed_resources,
         rows,
         columns
     );
@@ -411,6 +431,9 @@ handle_normal_input(
         return true;
     case KEY_F(5):
         state->screen = LARDON3D_SCREEN_TASKS;
+        return true;
+    case KEY_F(6):
+        state->screen = LARDON3D_SCREEN_RESOURCES;
         return true;
     case 27:
         state->screen = LARDON3D_SCREEN_HOME;
@@ -651,7 +674,8 @@ lardon3d_tui_run(Lardon3DAppState *state)
         int key = getch();
 
         bool should_redraw = task != NULL
-            || state->screen == LARDON3D_SCREEN_TASKS;
+            || state->screen == LARDON3D_SCREEN_TASKS
+            || state->screen == LARDON3D_SCREEN_RESOURCES;
         if (task && lardon3d_import_task_is_finished(task)) {
             Lardon3DImportTaskSnapshot snapshot;
             if (!lardon3d_import_task_join(task)

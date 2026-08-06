@@ -3,9 +3,11 @@
 
 #include <stdbool.h>
 #include <limits.h>
+#include <lardon3d/hardware_profile.h>
 typedef struct Lardon3DImageCatalog Lardon3DImageCatalog;
 typedef struct Lardon3DImageView Lardon3DImageView;
 typedef struct Lardon3DTaskQueue Lardon3DTaskQueue;
+typedef struct Lardon3DResourceGovernor Lardon3DResourceGovernor;
 
 typedef enum {
     LARDON3D_SCREEN_HOME = 0,
@@ -13,7 +15,8 @@ typedef enum {
     LARDON3D_SCREEN_IMPORT,
     LARDON3D_SCREEN_VIEWER,
     LARDON3D_SCREEN_HELP,
-    LARDON3D_SCREEN_TASKS
+    LARDON3D_SCREEN_TASKS,
+    LARDON3D_SCREEN_RESOURCES
 } Lardon3DScreen;
 
 typedef struct {
@@ -26,6 +29,8 @@ typedef struct {
     Lardon3DImageCatalog *image_catalog;
     Lardon3DImageView *image_view;
     Lardon3DTaskQueue *task_queue;
+    Lardon3DHardwareProfile hardware_profile;
+    Lardon3DResourceGovernor *resource_governor;
 } Lardon3DAppState;
 
 void lardon3d_app_state_init(Lardon3DAppState *state);

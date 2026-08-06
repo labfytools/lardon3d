@@ -61,7 +61,7 @@ screen_texts(
     const char **footer
 )
 {
-    *footer = "ESC Accueil  F1 Aide  F2 Projets  F3 Import  F4 Viewer  F5 Tâches  Q";
+    *footer = "ESC Accueil  F1 Aide  F2 Projets  F3 Import  F4 Viewer  F5 Tâches  F6 Ressources  Q";
 
     switch (screen) {
     case LARDON3D_SCREEN_PROJECTS:
@@ -87,11 +87,16 @@ screen_texts(
         *content = "Tâches en arrière-plan";
         *footer = "F5 Tâches   ESC Accueil   Q Quit";
         break;
+    case LARDON3D_SCREEN_RESOURCES:
+        *title = "Ressources";
+        *content = "Gouverneur de ressources";
+        *footer = "F6 Ressources   ESC Accueil   Q Quit";
+        break;
     case LARDON3D_SCREEN_HOME:
     default:
         *title = "Accueil";
         *content = "Bienvenue dans Lardon3D";
-        *footer = "F1 Aide  F2 Projets  F3 Import  F4 Viewer  F5 Tâches  Q Quit";
+        *footer = "F1 Aide  F2 Projets  F3 Import  F4 Viewer  F5 Tâches  F6 Ressources  Q";
         break;
     }
 }
@@ -345,6 +350,104 @@ draw_tasks(
 }
 
 static void
+draw_resource_line(
+    int row,
+    int columns,
+    const char *label,
+    uint64_t reserved,
+    uint64_t available
+)
+{
+    char reserved_text[64];
+    char available_text[64];
+    char line[256];
+    lardon3d_image_catalog_format_size(
+        reserved,
+        reserved_text,
+        sizeof(reserved_text)
+    );
+    lardon3d_image_catalog_format_size(
+        available,
+        available_text,
+        sizeof(available_text)
+    );
+    (void)snprintf(
+        line,
+        sizeof(line),
+        "%s réservée : %s   Restante : %s",
+        label,
+        reserved_text,
+        available_text
+    );
+    draw_text(row, 4, columns - 6, line);
+}
+
+static void
+draw_resources(
+    const Lardon3DResourceAvailability *availability,
+    int columns
+)
+{
+    if (!availability) {
+        draw_text(7, 4, columns - 6, "Ressources système indisponibles.");
+        return;
+    }
+    char line[256];
+    (void)snprintf(
+        line,
+        sizeof(line),
+        "Réservations actives : %zu",
+        availability->active_reservations
+    );
+    draw_text(6, 4, columns - 6, line);
+    draw_resource_line(
+        8,
+        columns,
+        "RAM",
+        availability->memory_reserved_bytes,
+        availability->memory_available_bytes
+    );
+    if (availability->gpu_memory_known) {
+        draw_resource_line(
+            9,
+            columns,
+            "GPU",
+            availability->gpu_memory_reserved_bytes,
+            availability->gpu_memory_available_bytes
+        );
+    } else {
+        draw_text(9, 4, columns - 6, "Mémoire GPU disponible : inconnue");
+    }
+    (void)snprintf(
+        line,
+        sizeof(line),
+        "CPU réservés : %u   Restants : %u / %u",
+        availability->cpu_reserved,
+        availability->cpu_available,
+        availability->cpu_budget
+    );
+    draw_text(10, 4, columns - 6, line);
+    (void)snprintf(
+        line,
+        sizeof(line),
+        "Slots GPU réservés : %u   Restants : %u / %u",
+        availability->gpu_slots_reserved,
+        availability->gpu_slots_available,
+        availability->gpu_slot_budget
+    );
+    draw_text(11, 4, columns - 6, line);
+    (void)snprintf(
+        line,
+        sizeof(line),
+        "Slots IO réservés : %u   Restants : %u / %u",
+        availability->io_slots_reserved,
+        availability->io_slots_available,
+        availability->io_slot_budget
+    );
+    draw_text(12, 4, columns - 6, line);
+}
+
+static void
 draw_content(
     const Lardon3DAppState *state,
     const char *input_text,
@@ -353,6 +456,7 @@ draw_content(
     const Lardon3DTaskSnapshot *task_snapshots,
     size_t task_count,
     const Lardon3DTaskQueueSummary *task_summary,
+    const Lardon3DResourceAvailability *resource_availability,
     int rows,
     int columns
 )
@@ -402,6 +506,8 @@ draw_content(
             rows,
             columns
         );
+    } else if (state->screen == LARDON3D_SCREEN_RESOURCES) {
+        draw_resources(resource_availability, columns);
     } else {
         draw_text(
             (3 + journal_row) / 2,
@@ -429,6 +535,7 @@ lardon3d_layout_draw(
     const Lardon3DTaskSnapshot *task_snapshots,
     size_t task_count,
     const Lardon3DTaskQueueSummary *task_summary,
+    const Lardon3DResourceAvailability *resource_availability,
     int rows,
     int columns
 )
@@ -447,6 +554,7 @@ lardon3d_layout_draw(
             task_snapshots,
             task_count,
             task_summary,
+            resource_availability,
             rows,
             columns
         );
