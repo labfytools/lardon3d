@@ -5,6 +5,7 @@
 
 void lardon3d_layout_draw(
     const Lardon3DAppState *state,
+    const char *project_name_input,
     int rows,
     int cols
 );

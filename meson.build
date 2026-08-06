@@ -27,6 +27,7 @@ executable(
         'src/app_state.c',
         'src/tui.c',
         'src/layout.c',
+        'src/project.c',
     ],
     include_directories: include_directories('include'),
     dependencies: [ncursesw],

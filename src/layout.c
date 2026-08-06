@@ -64,6 +64,7 @@ screen_texts(
     case LARDON3D_SCREEN_PROJECTS:
         *title = "Projets";
         *content = "Gestion des projets";
+        *footer = "N Nouveau projet   C Fermer le projet   ESC Accueil   Q Quit";
         break;
     case LARDON3D_SCREEN_IMPORT:
         *title = "Import";
@@ -87,7 +88,39 @@ screen_texts(
 }
 
 static void
-draw_content(const Lardon3DAppState *state, int rows, int columns)
+draw_project_screen(const char *project_name_input, int columns)
+{
+    draw_text(6, 4, columns - 6, "N : Nouveau projet");
+    draw_text(7, 4, columns - 6, "C : Fermer le projet");
+    draw_text(8, 4, columns - 6, "ESC : Accueil");
+    draw_text(9, 4, columns - 6, "Q : Quitter");
+
+    if (!project_name_input) {
+        return;
+    }
+
+    draw_text(10, 4, columns - 6, "Nom du nouveau projet :");
+    (void)mvaddch(11, 2, '[');
+    (void)mvaddch(11, columns - 3, ']');
+
+    int available = columns - 8;
+    size_t length = strlen(project_name_input);
+    const char *visible = project_name_input;
+    if (length > (size_t)available) {
+        visible += length - (size_t)available;
+        length = (size_t)available;
+    }
+    draw_text(11, 4, available, visible);
+    (void)move(11, 4 + (int)length);
+}
+
+static void
+draw_content(
+    const Lardon3DAppState *state,
+    const char *project_name_input,
+    int rows,
+    int columns
+)
 {
     const char *title;
     const char *content;
@@ -103,12 +136,16 @@ draw_content(const Lardon3DAppState *state, int rows, int columns)
     draw_text(1, (columns - title_length) / 2, title_length, title);
     draw_text(3, 2, columns - 4, "Projet");
     draw_text(4, 4, columns - 6, project);
-    draw_text(
-        (3 + journal_row) / 2,
-        (columns - content_length) / 2,
-        content_length,
-        content
-    );
+    if (state->screen == LARDON3D_SCREEN_PROJECTS) {
+        draw_project_screen(project_name_input, columns);
+    } else {
+        draw_text(
+            (3 + journal_row) / 2,
+            (columns - content_length) / 2,
+            content_length,
+            content
+        );
+    }
     draw_text(journal_row + 1, 2, columns - 4, "Journal");
     draw_text(journal_row + 2, 4, columns - 6, state->status_message);
     draw_text(rows - 2, 2, columns - 4, footer);
@@ -117,6 +154,7 @@ draw_content(const Lardon3DAppState *state, int rows, int columns)
 void
 lardon3d_layout_draw(
     const Lardon3DAppState *state,
+    const char *project_name_input,
     int rows,
     int columns
 )
@@ -127,7 +165,7 @@ lardon3d_layout_draw(
         draw_too_small(rows, columns);
     } else {
         draw_frame(rows, columns);
-        draw_content(state, rows, columns);
+        draw_content(state, project_name_input, rows, columns);
     }
 
     (void)refresh();
