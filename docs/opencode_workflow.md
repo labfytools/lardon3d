@@ -9,14 +9,18 @@ erreurs, modèle actif et prochaine action sûre.
 ## A. Ticket gratuit normal
 
 Lancer `/lardon-plan`, puis `/lardon-ticket`. North orchestre et explore via des
-agents distincts, puis DeepSeek implémente. Architect et concurrency ne sont appelés que si le
-périmètre l'exige. Tests et revue interviennent une seule fois après le code.
+agents distincts, puis DeepSeek implémente. Architect et concurrency ne sont
+appelés que si le périmètre l'exige. Tests et revue Nemotron interviennent une
+seule fois après le code.
 
 ## B. DeepSeek retourne 503
 
 Lancer `/lardon-save-handoff`, puis `/lardon-resume-backup`. Nemotron lit le
 handoff et le diff, reprend la prochaine action et ne refait pas l'analyse si
-les informations suffisent.
+les informations suffisent. Nemotron ne peut ensuite pas fournir une revue
+indépendante de son propre travail : MiMo effectue une première revue locale
+simple. Toute revue de concurrence sensible attend le prochain passage Codex,
+et le rapport indique explicitement l'absence de revue indépendante forte.
 
 ## C. DeepSeek et Nemotron sont indisponibles
 

@@ -13,11 +13,11 @@ entrée, sortie et cache :
 
 - `opencode/deepseek-v4-flash-free` : agent principal `lardon-build` ; repli
   recommandé `opencode/nemotron-3-ultra-free` en cas de saturation 503.
-- `opencode/nemotron-3-ultra-free` : architecture et concurrence ; repli de
-  l'agent principal.
+- `opencode/nemotron-3-ultra-free` : architecture, concurrence, revue et repli
+  de l'agent principal.
 - `opencode/north-mini-code-free` : exploration rapide et validations.
-- `opencode/laguna-s-2.1-free` : revue indépendante ; repli économique pour les
-  analyses générales.
+- `opencode/laguna-s-2.1-free` : testé comme reviewer sur Lardon3D ; résultats
+  jugés insuffisants. Non utilisé dans les rôles actifs.
 - `opencode/ling-3.0-flash-free` : documentation.
 - `opencode/longcat-2.0-free` : disponible, non configuré actuellement.
 - `opencode/mimo-v2.5-free` : disponible, non configuré actuellement.
@@ -67,8 +67,8 @@ L'agent par défaut est `lardon-orchestrator` sur North Mini Code Free. Il charg
 seulement `AGENTS.md` et l'overview, puis demande à North Mini Code une
 exploration ciblée. DeepSeek est réservé à l'implémentation complexe ; il ne sert
 ni à l'orchestration, ni aux tests, ni à la documentation. Nemotron traite les
-reprises et analyses d'architecture ou de concurrence, MiMo les petits tickets,
-Laguna la revue et Ling la documentation.
+reprises, revues et analyses d'architecture ou de concurrence, MiMo les petits
+tickets et Ling la documentation.
 
 Les commandes `lardon-plan`, `lardon-small`, `lardon-ticket` et
 `lardon-ticket-backup` chargent progressivement le contexte. Elles ne lisent pas
@@ -76,6 +76,11 @@ automatiquement toute l'architecture et transmettent uniquement objectif,
 contraintes, fichiers, API, invariants, risques et tests. Les rapports de succès
 restent courts. Le handoff ignoré `.opencode/work/current_ticket.md` permet une
 reprise sans rejouer toute l'analyse.
+
+Nemotron ne relit jamais sa propre implémentation lorsqu'il a servi de backup.
+MiMo fournit alors seulement une première revue locale simple. La revue de
+concurrence sensible est différée jusqu'au prochain passage Codex, et le workflow
+signale explicitement qu'aucune revue indépendante forte n'a eu lieu.
 
 ## Chaîne de secours
 
