@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <lardon3d/project.h>
+#include <lardon3d/image_catalog.h>
 
 enum {
     MAX_CREATED_DIRECTORIES = 16,
@@ -30,6 +31,15 @@ set_status(Lardon3DAppState *state, const char *message)
         "%s",
         message
     );
+}
+
+static void
+clear_catalog(Lardon3DAppState *state)
+{
+    lardon3d_image_catalog_destroy(state->image_catalog);
+    state->image_catalog = NULL;
+    state->image_selection = 0;
+    state->image_offset = 0;
 }
 
 static bool
@@ -346,6 +356,7 @@ lardon3d_project_create(Lardon3DAppState *state, const char *name)
         return false;
     }
 
+    clear_catalog(state);
     state->project_loaded = true;
     (void)copy_path(
         state->project_name,
@@ -495,6 +506,7 @@ lardon3d_project_open(
         return false;
     }
 
+    clear_catalog(state);
     state->project_loaded = true;
     (void)copy_path(
         state->project_name,
@@ -527,6 +539,7 @@ lardon3d_project_close(Lardon3DAppState *state)
         return;
     }
 
+    clear_catalog(state);
     state->project_loaded = false;
     state->project_name[0] = '\0';
     state->project_path[0] = '\0';

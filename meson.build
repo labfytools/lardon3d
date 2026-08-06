@@ -31,6 +31,7 @@ executable(
         'src/layout.c',
         'src/import.c',
         'src/import_task.c',
+        'src/image_catalog.c',
         'src/project.c',
     ],
     include_directories: include_directories('include'),
@@ -62,3 +63,15 @@ import_task_test = executable(
 )
 
 test('import-task', import_task_test, timeout: 30)
+
+image_catalog_test = executable(
+    'test-image-catalog',
+    sources: [
+        'tests/test_image_catalog.c',
+        'src/app_state.c',
+        'src/image_catalog.c',
+    ],
+    include_directories: include_directories('include'),
+)
+
+test('image-catalog', image_catalog_test, timeout: 30)

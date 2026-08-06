@@ -35,3 +35,7 @@ le dossier choisi, sans parcourir ses sous-dossiers. Elles sont copiées vers
 `images/originals` et répertoriées dans `images/manifest.tsv`.
 L'import s'exécute en arrière-plan afin que la TUI reste réactive. Pendant une
 opération, la touche `C` demande son annulation.
+
+L'écran Import présente un catalogue en mémoire vérifié par rapport au manifeste
+et aux fichiers de `images/originals`. Les flèches, `j`/`k`, PageUp, PageDown,
+Home et End naviguent dans la liste ; `R` recharge le catalogue.

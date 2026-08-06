@@ -3,6 +3,7 @@
 
 #include <lardon3d/app.h>
 #include <lardon3d/app_state.h>
+#include <lardon3d/image_catalog.h>
 #include <lardon3d/tui.h>
 
 int
@@ -20,6 +21,7 @@ lardon3d_app_run(void)
     }
 
     bool success = lardon3d_tui_run(&state);
+    lardon3d_image_catalog_destroy(state.image_catalog);
     lardon3d_tui_shutdown();
 
     return success ? EXIT_SUCCESS : EXIT_FAILURE;

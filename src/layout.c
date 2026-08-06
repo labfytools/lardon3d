@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <lardon3d/layout.h>
+#include <lardon3d/image_catalog.h>
 
 enum {
     MINIMUM_ROWS = 20,
@@ -70,7 +71,7 @@ screen_texts(
     case LARDON3D_SCREEN_IMPORT:
         *title = "Import";
         *content = "Import des images";
-        *footer = "I Importer des images   ESC Accueil   Q Quit";
+        *footer = "I Importer   R Recharger   ↑/↓ Naviguer   ESC Accueil   Q Quit";
         break;
     case LARDON3D_SCREEN_VIEWER:
         *title = "Viewer";
@@ -132,10 +133,73 @@ draw_project_screen(
 }
 
 static void
+draw_catalog(
+    const Lardon3DAppState *state,
+    int rows,
+    int columns
+)
+{
+    if (!state->project_loaded) {
+        draw_text(7, 4, columns - 6, "Aucun projet chargé.");
+        return;
+    }
+    size_t count = lardon3d_image_catalog_count(state->image_catalog);
+    char line[512];
+    (void)snprintf(
+        line,
+        sizeof(line),
+        "Images importées : %zu",
+        count
+    );
+    draw_text(6, 4, columns - 6, line);
+    char size_text[64];
+    lardon3d_image_catalog_format_size(
+        lardon3d_image_catalog_total_size(state->image_catalog),
+        size_text,
+        sizeof(size_text)
+    );
+    (void)snprintf(line, sizeof(line), "Taille totale : %s", size_text);
+    draw_text(7, 4, columns - 6, line);
+    if (count == 0) {
+        draw_text(9, 4, columns - 6, "Aucune image importée.");
+        return;
+    }
+
+    int journal_row = rows - 7;
+    size_t visible = journal_row > 9 ? (size_t)(journal_row - 9) : 0;
+    for (size_t row = 0; row < visible; ++row) {
+        size_t index = state->image_offset + row;
+        const Lardon3DImageEntry *entry = lardon3d_image_catalog_get(
+            state->image_catalog,
+            index
+        );
+        if (!entry) {
+            break;
+        }
+        lardon3d_image_catalog_format_size(
+            entry->size_bytes,
+            size_text,
+            sizeof(size_text)
+        );
+        (void)snprintf(
+            line,
+            sizeof(line),
+            "%c %s    %s",
+            index == state->image_selection ? '>' : ' ',
+            entry->filename,
+            size_text
+        );
+        draw_text(9 + (int)row, 4, columns - 6, line);
+    }
+}
+
+static void
 draw_import_screen(
+    const Lardon3DAppState *state,
     const char *input_text,
     const char *input_label,
     const Lardon3DImportTaskSnapshot *snapshot,
+    int rows,
     int columns
 )
 {
@@ -191,10 +255,11 @@ draw_import_screen(
         draw_text(12, 4, columns - 6, "C : Annuler l'import");
         return;
     }
-    draw_text(7, 4, columns - 6, "I : Importer des images");
-    draw_text(8, 4, columns - 6, "ESC : Accueil");
-    draw_text(9, 4, columns - 6, "Q : Quitter");
-    draw_input_field(input_text, input_label, 10, columns);
+    if (input_text) {
+        draw_input_field(input_text, input_label, 7, columns);
+        return;
+    }
+    draw_catalog(state, rows, columns);
 }
 
 static void
@@ -237,9 +302,11 @@ draw_content(
         );
     } else if (state->screen == LARDON3D_SCREEN_IMPORT) {
         draw_import_screen(
+            state,
             input_text,
             input_label,
             import_snapshot,
+            rows,
             columns
         );
     } else {
