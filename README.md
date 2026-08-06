@@ -39,3 +39,7 @@ opération, la touche `C` demande son annulation.
 L'écran Import présente un catalogue en mémoire vérifié par rapport au manifeste
 et aux fichiers de `images/originals`. Les flèches, `j`/`k`, PageUp, PageDown,
 Home et End naviguent dans la liste ; `R` recharge le catalogue.
+La touche `S` fait défiler les tris par ordre d'import, nom ou taille, dans les
+deux directions. `/` filtre les noms d'images sans distinction de casse ASCII et
+`X` efface le filtre. Le tri et le filtre restent entièrement en mémoire et ne
+modifient ni le manifeste ni les images.

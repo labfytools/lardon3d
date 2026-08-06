@@ -3,9 +3,11 @@
 #include <ncurses.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <lardon3d/import_task.h>
 #include <lardon3d/image_catalog.h>
+#include <lardon3d/image_view.h>
 #include <lardon3d/layout.h>
 #include <lardon3d/project.h>
 #include <lardon3d/tui.h>
@@ -20,6 +22,7 @@ typedef enum {
     INPUT_PROJECT_CREATE,
     INPUT_PROJECT_OPEN,
     INPUT_IMPORT_DIRECTORY,
+    INPUT_IMAGE_FILTER,
 } InputMode;
 
 typedef struct {
@@ -35,58 +38,108 @@ catalog_page_size(void)
     int columns;
     getmaxyx(stdscr, rows, columns);
     (void)columns;
-    return rows > 16 ? (size_t)(rows - 16) : 1;
+    return rows > 18 ? (size_t)(rows - 18) : 1;
 }
 
 static void
-normalize_catalog_navigation(Lardon3DAppState *state)
+normalize_view_navigation(Lardon3DAppState *state)
 {
-    size_t count = lardon3d_image_catalog_count(state->image_catalog);
-    if (count == 0) {
-        state->image_selection = 0;
-        state->image_offset = 0;
-        return;
-    }
-    if (state->image_selection >= count) {
-        state->image_selection = count - 1;
-    }
-    if (state->image_offset > state->image_selection) {
-        state->image_offset = state->image_selection;
-    }
-    size_t page_size = catalog_page_size();
-    if (state->image_selection - state->image_offset >= page_size) {
-        state->image_offset = state->image_selection - page_size + 1;
-    }
+    lardon3d_image_view_normalize(state->image_view, catalog_page_size());
 }
 
 static bool
 reload_catalog(Lardon3DAppState *state, bool announce_success)
 {
+    Lardon3DImageSort sort = lardon3d_image_view_sort(state->image_view);
+    char filter[LARDON3D_IMAGE_FILTER_CAPACITY];
+    (void)snprintf(
+        filter,
+        sizeof(filter),
+        "%s",
+        lardon3d_image_view_filter(state->image_view)
+    );
+    size_t selected_catalog = 0;
+    bool preserve_selection = lardon3d_image_view_catalog_index(
+        state->image_view,
+        lardon3d_image_view_selection(state->image_view),
+        &selected_catalog
+    );
+    lardon3d_image_view_destroy(state->image_view);
+    state->image_view = NULL;
     lardon3d_image_catalog_destroy(state->image_catalog);
     state->image_catalog = NULL;
-    char message[sizeof(state->status_message)];
+    char message[sizeof(state->status_message)] = "";
     state->image_catalog = lardon3d_image_catalog_load(
         state,
         message,
         sizeof(message)
     );
-    normalize_catalog_navigation(state);
-    if (!state->image_catalog || message[0]) {
+    if (!state->image_catalog) {
         (void)snprintf(
             state->status_message,
             sizeof(state->status_message),
             "%s",
             message
         );
-        return state->image_catalog != NULL;
+        return false;
+    }
+    char catalog_message[sizeof(message)];
+    (void)snprintf(catalog_message, sizeof(catalog_message), "%s", message);
+    char view_error[sizeof(message)];
+    state->image_view = lardon3d_image_view_create(state->image_catalog);
+    if (!state->image_view
+        || !lardon3d_image_view_set_sort(state->image_view, sort)
+        || !lardon3d_image_view_set_filter(
+            state->image_view,
+            filter,
+            view_error,
+            sizeof(view_error)
+        )) {
+        (void)snprintf(
+            state->status_message,
+            sizeof(state->status_message),
+            "Erreur : impossible de construire la vue des images."
+        );
+        lardon3d_image_view_destroy(state->image_view);
+        state->image_view = NULL;
+        return false;
+    }
+    if (preserve_selection) {
+        size_t count = lardon3d_image_view_count(state->image_view);
+        for (size_t index = 0; index < count; ++index) {
+            size_t catalog_index;
+            if (lardon3d_image_view_catalog_index(
+                    state->image_view,
+                    index,
+                    &catalog_index
+                )
+                && catalog_index == selected_catalog) {
+                lardon3d_image_view_select(
+                    state->image_view,
+                    index,
+                    catalog_page_size()
+                );
+                break;
+            }
+        }
+    }
+    normalize_view_navigation(state);
+    if (catalog_message[0]) {
+        (void)snprintf(
+            state->status_message,
+            sizeof(state->status_message),
+            "%s",
+            catalog_message
+        );
+        return true;
     }
     if (announce_success) {
         (void)snprintf(
             state->status_message,
             sizeof(state->status_message),
             "Catalogue rechargé : %zu image%s.",
-            lardon3d_image_catalog_count(state->image_catalog),
-            lardon3d_image_catalog_count(state->image_catalog) == 1 ? "" : "s"
+            lardon3d_image_view_count(state->image_view),
+            lardon3d_image_view_count(state->image_view) == 1 ? "" : "s"
         );
     }
     return true;
@@ -109,6 +162,8 @@ redraw(
         label = "Nom du dossier projet :";
     } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
         label = "Dossier source :";
+    } else if (input->mode == INPUT_IMAGE_FILTER) {
+        label = "Filtre :";
     }
     Lardon3DImportTaskSnapshot snapshot;
     const Lardon3DImportTaskSnapshot *displayed_snapshot = NULL;
@@ -187,6 +242,8 @@ handle_active_input(
             message = "Ouverture du projet annulée.";
         } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
             message = "Import annulé.";
+        } else if (input->mode == INPUT_IMAGE_FILTER) {
+            message = "Filtre annulé.";
         }
         input->mode = INPUT_NONE;
         (void)snprintf(
@@ -205,6 +262,37 @@ handle_active_input(
             }
         } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
             (void)start_import_task(state, input, task);
+        } else if (input->mode == INPUT_IMAGE_FILTER) {
+            char message[sizeof(state->status_message)];
+            if (lardon3d_image_view_set_filter(
+                    state->image_view,
+                    input->text,
+                    message,
+                    sizeof(message)
+                )) {
+                normalize_view_navigation(state);
+                if (lardon3d_image_view_count(state->image_view) == 0) {
+                    (void)snprintf(
+                        state->status_message,
+                        sizeof(state->status_message),
+                        "Aucune image ne correspond au filtre."
+                    );
+                } else {
+                    (void)snprintf(
+                        state->status_message,
+                        sizeof(state->status_message),
+                        "Filtre appliqué : %.230s",
+                        input->text
+                    );
+                }
+            } else {
+                (void)snprintf(
+                    state->status_message,
+                    sizeof(state->status_message),
+                    "%s",
+                    message
+                );
+            }
         } else {
             if (lardon3d_project_create(state, input->text)) {
                 (void)reload_catalog(state, false);
@@ -223,7 +311,18 @@ handle_active_input(
     }
 
     if (key >= 0 && key <= UCHAR_MAX && isprint((unsigned char)key)) {
-        if (input->length + 1 >= sizeof(input->text)) {
+        size_t capacity = input->mode == INPUT_IMAGE_FILTER
+            ? LARDON3D_IMAGE_FILTER_CAPACITY
+            : sizeof(input->text);
+        if (input->length + 1 >= capacity) {
+            if (input->mode == INPUT_IMAGE_FILTER) {
+                (void)snprintf(
+                    state->status_message,
+                    sizeof(state->status_message),
+                    "Erreur : filtre trop long."
+                );
+                return true;
+            }
             if (input->mode == INPUT_PROJECT_OPEN) {
                 if (lardon3d_project_open(state, input->text)) {
                     (void)reload_catalog(state, false);
@@ -301,24 +400,31 @@ handle_normal_input(
         state->screen = LARDON3D_SCREEN_HOME;
         return true;
     case KEY_RESIZE:
-        normalize_catalog_navigation(state);
+        normalize_view_navigation(state);
         return true;
     case KEY_UP:
     case 'k':
         if (state->screen == LARDON3D_SCREEN_IMPORT
-            && state->image_selection > 0) {
-            --state->image_selection;
-            normalize_catalog_navigation(state);
+            && lardon3d_image_view_selection(state->image_view) > 0) {
+            lardon3d_image_view_select(
+                state->image_view,
+                lardon3d_image_view_selection(state->image_view) - 1,
+                catalog_page_size()
+            );
             return true;
         }
         return false;
     case KEY_DOWN:
     case 'j': {
-        size_t count = lardon3d_image_catalog_count(state->image_catalog);
+        size_t count = lardon3d_image_view_count(state->image_view);
+        size_t selection = lardon3d_image_view_selection(state->image_view);
         if (state->screen == LARDON3D_SCREEN_IMPORT
-            && state->image_selection + 1 < count) {
-            ++state->image_selection;
-            normalize_catalog_navigation(state);
+            && selection < count && selection + 1 < count) {
+            lardon3d_image_view_select(
+                state->image_view,
+                selection + 1,
+                catalog_page_size()
+            );
             return true;
         }
         return false;
@@ -326,39 +432,53 @@ handle_normal_input(
     case KEY_PPAGE:
         if (state->screen == LARDON3D_SCREEN_IMPORT) {
             size_t page_size = catalog_page_size();
-            state->image_selection = state->image_selection > page_size
-                ? state->image_selection - page_size
+            size_t selection = lardon3d_image_view_selection(state->image_view);
+            selection = selection > page_size
+                ? selection - page_size
                 : 0;
-            normalize_catalog_navigation(state);
+            lardon3d_image_view_select(state->image_view, selection, page_size);
             return true;
         }
         return false;
     case KEY_NPAGE:
         if (state->screen == LARDON3D_SCREEN_IMPORT) {
-            size_t count = lardon3d_image_catalog_count(state->image_catalog);
+            size_t count = lardon3d_image_view_count(state->image_view);
             if (count > 0) {
-                size_t remaining = count - 1 - state->image_selection;
+                size_t selection = lardon3d_image_view_selection(
+                    state->image_view
+                );
+                size_t remaining = count - 1 - selection;
                 size_t page_size = catalog_page_size();
-                state->image_selection += remaining < page_size
+                selection += remaining < page_size
                     ? remaining
                     : page_size;
-                normalize_catalog_navigation(state);
+                lardon3d_image_view_select(
+                    state->image_view,
+                    selection,
+                    page_size
+                );
             }
             return true;
         }
         return false;
     case KEY_HOME:
         if (state->screen == LARDON3D_SCREEN_IMPORT) {
-            state->image_selection = 0;
-            normalize_catalog_navigation(state);
+            lardon3d_image_view_select(
+                state->image_view,
+                0,
+                catalog_page_size()
+            );
             return true;
         }
         return false;
     case KEY_END:
         if (state->screen == LARDON3D_SCREEN_IMPORT) {
-            size_t count = lardon3d_image_catalog_count(state->image_catalog);
-            state->image_selection = count > 0 ? count - 1 : 0;
-            normalize_catalog_navigation(state);
+            size_t count = lardon3d_image_view_count(state->image_view);
+            lardon3d_image_view_select(
+                state->image_view,
+                count > 0 ? count - 1 : 0,
+                catalog_page_size()
+            );
             return true;
         }
         return false;
@@ -414,6 +534,59 @@ handle_normal_input(
                 );
             } else {
                 (void)reload_catalog(state, true);
+            }
+            return true;
+        }
+        return false;
+    case 's':
+    case 'S':
+        if (state->screen == LARDON3D_SCREEN_IMPORT && state->image_view) {
+            Lardon3DImageSort sort = lardon3d_image_view_sort(
+                state->image_view
+            );
+            sort = (Lardon3DImageSort)(
+                ((int)sort + 1) % ((int)LARDON3D_IMAGE_SORT_SIZE_DESC + 1)
+            );
+            if (lardon3d_image_view_set_sort(state->image_view, sort)) {
+                normalize_view_navigation(state);
+                (void)snprintf(
+                    state->status_message,
+                    sizeof(state->status_message),
+                    "Tri : %s.",
+                    lardon3d_image_view_sort_name(sort)
+                );
+            }
+            return true;
+        }
+        return false;
+    case '/':
+        if (state->screen == LARDON3D_SCREEN_IMPORT && state->image_view) {
+            const char *filter = lardon3d_image_view_filter(state->image_view);
+            *input = (TuiInput) {
+                .mode = INPUT_IMAGE_FILTER,
+                .text = "",
+                .length = strlen(filter),
+            };
+            (void)snprintf(input->text, sizeof(input->text), "%s", filter);
+            return true;
+        }
+        return false;
+    case 'x':
+    case 'X':
+        if (state->screen == LARDON3D_SCREEN_IMPORT && state->image_view) {
+            char message[sizeof(state->status_message)];
+            if (lardon3d_image_view_set_filter(
+                    state->image_view,
+                    "",
+                    message,
+                    sizeof(message)
+                )) {
+                normalize_view_navigation(state);
+                (void)snprintf(
+                    state->status_message,
+                    sizeof(state->status_message),
+                    "Filtre effacé."
+                );
             }
             return true;
         }

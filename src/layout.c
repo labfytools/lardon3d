@@ -4,6 +4,7 @@
 
 #include <lardon3d/layout.h>
 #include <lardon3d/image_catalog.h>
+#include <lardon3d/image_view.h>
 
 enum {
     MINIMUM_ROWS = 20,
@@ -71,7 +72,7 @@ screen_texts(
     case LARDON3D_SCREEN_IMPORT:
         *title = "Import";
         *content = "Import des images";
-        *footer = "I Importer   R Recharger   ↑/↓ Naviguer   ESC Accueil   Q Quit";
+        *footer = "I Importer  R Recharger  S Tri  / Filtre  X Effacer  ↑/↓  ESC  Q";
         break;
     case LARDON3D_SCREEN_VIEWER:
         *title = "Viewer";
@@ -143,34 +144,67 @@ draw_catalog(
         draw_text(7, 4, columns - 6, "Aucun projet chargé.");
         return;
     }
-    size_t count = lardon3d_image_catalog_count(state->image_catalog);
+    size_t count = lardon3d_image_view_count(state->image_view);
+    size_t total = lardon3d_image_catalog_count(state->image_catalog);
     char line[512];
     (void)snprintf(
         line,
         sizeof(line),
-        "Images importées : %zu",
-        count
+        "Images visibles : %zu / %zu",
+        count,
+        total
     );
     draw_text(6, 4, columns - 6, line);
     char size_text[64];
     lardon3d_image_catalog_format_size(
-        lardon3d_image_catalog_total_size(state->image_catalog),
+        lardon3d_image_view_total_size(state->image_view),
         size_text,
         sizeof(size_text)
     );
-    (void)snprintf(line, sizeof(line), "Taille totale : %s", size_text);
+    (void)snprintf(
+        line,
+        sizeof(line),
+        "Taille totale visible : %s",
+        size_text
+    );
     draw_text(7, 4, columns - 6, line);
+    (void)snprintf(
+        line,
+        sizeof(line),
+        "Tri : %s",
+        lardon3d_image_view_sort_name(
+            lardon3d_image_view_sort(state->image_view)
+        )
+    );
+    draw_text(8, 4, columns - 6, line);
+    const char *filter = lardon3d_image_view_filter(state->image_view);
+    (void)snprintf(
+        line,
+        sizeof(line),
+        "Filtre : %s",
+        filter[0] ? filter : "Aucun"
+    );
+    draw_text(9, 4, columns - 6, line);
     if (count == 0) {
-        draw_text(9, 4, columns - 6, "Aucune image importée.");
+        draw_text(
+            11,
+            4,
+            columns - 6,
+            filter[0]
+                ? "Aucune image ne correspond au filtre."
+                : "Aucune image importée."
+        );
         return;
     }
 
     int journal_row = rows - 7;
-    size_t visible = journal_row > 9 ? (size_t)(journal_row - 9) : 0;
+    size_t visible = journal_row > 11 ? (size_t)(journal_row - 11) : 0;
+    size_t offset = lardon3d_image_view_offset(state->image_view);
+    size_t selection = lardon3d_image_view_selection(state->image_view);
     for (size_t row = 0; row < visible; ++row) {
-        size_t index = state->image_offset + row;
-        const Lardon3DImageEntry *entry = lardon3d_image_catalog_get(
-            state->image_catalog,
+        size_t index = offset + row;
+        const Lardon3DImageEntry *entry = lardon3d_image_view_get(
+            state->image_view,
             index
         );
         if (!entry) {
@@ -185,11 +219,11 @@ draw_catalog(
             line,
             sizeof(line),
             "%c %s    %s",
-            index == state->image_selection ? '>' : ' ',
+            index == selection ? '>' : ' ',
             entry->filename,
             size_text
         );
-        draw_text(9 + (int)row, 4, columns - 6, line);
+        draw_text(11 + (int)row, 4, columns - 6, line);
     }
 }
 

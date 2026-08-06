@@ -3,9 +3,8 @@
 
 #include <stdbool.h>
 #include <limits.h>
-#include <stddef.h>
-
 typedef struct Lardon3DImageCatalog Lardon3DImageCatalog;
+typedef struct Lardon3DImageView Lardon3DImageView;
 
 typedef enum {
     LARDON3D_SCREEN_HOME = 0,
@@ -23,8 +22,7 @@ typedef struct {
     char project_path[PATH_MAX];
     char status_message[256];
     Lardon3DImageCatalog *image_catalog;
-    size_t image_selection;
-    size_t image_offset;
+    Lardon3DImageView *image_view;
 } Lardon3DAppState;
 
 void lardon3d_app_state_init(Lardon3DAppState *state);

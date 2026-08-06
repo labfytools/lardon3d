@@ -11,6 +11,7 @@
 
 #include <lardon3d/project.h>
 #include <lardon3d/image_catalog.h>
+#include <lardon3d/image_view.h>
 
 enum {
     MAX_CREATED_DIRECTORIES = 16,
@@ -36,10 +37,10 @@ set_status(Lardon3DAppState *state, const char *message)
 static void
 clear_catalog(Lardon3DAppState *state)
 {
+    lardon3d_image_view_destroy(state->image_view);
+    state->image_view = NULL;
     lardon3d_image_catalog_destroy(state->image_catalog);
     state->image_catalog = NULL;
-    state->image_selection = 0;
-    state->image_offset = 0;
 }
 
 static bool
