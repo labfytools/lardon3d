@@ -1,4 +1,5 @@
 #include <ncurses.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <lardon3d/layout.h>
@@ -134,9 +135,62 @@ static void
 draw_import_screen(
     const char *input_text,
     const char *input_label,
+    const Lardon3DImportTaskSnapshot *snapshot,
     int columns
 )
 {
+    if (snapshot && snapshot->status == LARDON3D_IMPORT_TASK_RUNNING) {
+        draw_text(6, 4, columns - 6, "Import en cours");
+        char line[128];
+        (void)snprintf(
+            line,
+            sizeof(line),
+            "Fichiers : %zu / %zu",
+            snapshot->processed,
+            snapshot->total
+        );
+        draw_text(7, 4, columns - 6, line);
+        (void)snprintf(line, sizeof(line), "Copiés : %zu", snapshot->copied);
+        draw_text(8, 4, columns - 6, line);
+        (void)snprintf(
+            line,
+            sizeof(line),
+            "Déjà présents : %zu",
+            snapshot->already_present
+        );
+        draw_text(9, 4, columns - 6, line);
+        (void)snprintf(line, sizeof(line), "Ignorés : %zu", snapshot->ignored);
+        draw_text(10, 4, columns - 6, line);
+
+        int percent = snapshot->total == 0
+            ? 0
+            : (int)((snapshot->processed * 100) / snapshot->total);
+        if (percent > 100) {
+            percent = 100;
+        }
+        int bar_width = columns - 18;
+        if (bar_width > 40) {
+            bar_width = 40;
+        }
+        if (bar_width < 1) {
+            bar_width = 1;
+        }
+        int filled = (bar_width * percent) / 100;
+        char bar[64];
+        bar[0] = '[';
+        for (int index = 0; index < bar_width; ++index) {
+            bar[index + 1] = index < filled ? '#' : '-';
+        }
+        (void)snprintf(
+            bar + bar_width + 1,
+            sizeof(bar) - (size_t)bar_width - 1,
+            "] %d %%",
+            percent
+        );
+        draw_text(11, 4, columns - 6, bar);
+        draw_text(12, 4, columns - 6, "C : Annuler l'import");
+        return;
+    }
     draw_text(7, 4, columns - 6, "I : Importer des images");
     draw_text(8, 4, columns - 6, "ESC : Accueil");
     draw_text(9, 4, columns - 6, "Q : Quitter");
@@ -148,6 +202,7 @@ draw_content(
     const Lardon3DAppState *state,
     const char *input_text,
     const char *input_label,
+    const Lardon3DImportTaskSnapshot *import_snapshot,
     int rows,
     int columns
 )
@@ -156,6 +211,11 @@ draw_content(
     const char *content;
     const char *footer;
     screen_texts(state->screen, &title, &content, &footer);
+    bool import_running = import_snapshot
+        && import_snapshot->status == LARDON3D_IMPORT_TASK_RUNNING;
+    if (import_running) {
+        footer = "C Annuler l'import   Q désactivé";
+    }
     int title_length = (int)strlen(title);
     int content_length = (int)strlen(content);
     int journal_row = rows - 7;
@@ -176,7 +236,12 @@ draw_content(
             columns
         );
     } else if (state->screen == LARDON3D_SCREEN_IMPORT) {
-        draw_import_screen(input_text, input_label, columns);
+        draw_import_screen(
+            input_text,
+            input_label,
+            import_snapshot,
+            columns
+        );
     } else {
         draw_text(
             (3 + journal_row) / 2,
@@ -186,7 +251,12 @@ draw_content(
         );
     }
     draw_text(journal_row + 1, 2, columns - 4, "Journal");
-    draw_text(journal_row + 2, 4, columns - 6, state->status_message);
+    draw_text(
+        journal_row + 2,
+        4,
+        columns - 6,
+        import_running ? import_snapshot->message : state->status_message
+    );
     draw_text(rows - 2, 2, columns - 4, footer);
 }
 
@@ -195,6 +265,7 @@ lardon3d_layout_draw(
     const Lardon3DAppState *state,
     const char *input_text,
     const char *input_label,
+    const Lardon3DImportTaskSnapshot *import_snapshot,
     int rows,
     int columns
 )
@@ -209,6 +280,7 @@ lardon3d_layout_draw(
             state,
             input_text,
             input_label,
+            import_snapshot,
             rows,
             columns
         );

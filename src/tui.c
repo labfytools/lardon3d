@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include <lardon3d/import.h>
+#include <lardon3d/import_task.h>
 #include <lardon3d/layout.h>
 #include <lardon3d/project.h>
 #include <lardon3d/tui.h>
@@ -28,7 +28,11 @@ typedef struct {
 } TuiInput;
 
 static void
-redraw(const Lardon3DAppState *state, const TuiInput *input)
+redraw(
+    const Lardon3DAppState *state,
+    const TuiInput *input,
+    Lardon3DImportTask *task
+)
 {
     int rows;
     int columns;
@@ -41,7 +45,19 @@ redraw(const Lardon3DAppState *state, const TuiInput *input)
     } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
         label = "Dossier source :";
     }
-    lardon3d_layout_draw(state, text, label, rows, columns);
+    Lardon3DImportTaskSnapshot snapshot;
+    const Lardon3DImportTaskSnapshot *displayed_snapshot = NULL;
+    if (task && lardon3d_import_task_snapshot(task, &snapshot)) {
+        displayed_snapshot = &snapshot;
+    }
+    lardon3d_layout_draw(
+        state,
+        text,
+        label,
+        displayed_snapshot,
+        rows,
+        columns
+    );
     (void)curs_set(
         input->mode != INPUT_NONE
             && rows >= MINIMUM_ROWS
@@ -52,9 +68,47 @@ redraw(const Lardon3DAppState *state, const TuiInput *input)
 }
 
 static bool
+start_import_task(
+    Lardon3DAppState *state,
+    TuiInput *input,
+    Lardon3DImportTask **task
+)
+{
+    *task = lardon3d_import_task_create();
+    if (!*task) {
+        (void)snprintf(
+            state->status_message,
+            sizeof(state->status_message),
+            "Erreur : impossible de créer la tâche d'import."
+        );
+        input->mode = INPUT_NONE;
+        return false;
+    }
+    if (!lardon3d_import_task_start(*task, state, input->text)) {
+        Lardon3DImportTaskSnapshot snapshot;
+        if (lardon3d_import_task_snapshot(*task, &snapshot)
+            && snapshot.message[0]) {
+            (void)snprintf(
+                state->status_message,
+                sizeof(state->status_message),
+                "%s",
+                snapshot.message
+            );
+        }
+        lardon3d_import_task_destroy(*task);
+        *task = NULL;
+        input->mode = INPUT_NONE;
+        return false;
+    }
+    input->mode = INPUT_NONE;
+    return true;
+}
+
+static bool
 handle_active_input(
     Lardon3DAppState *state,
     TuiInput *input,
+    Lardon3DImportTask **task,
     int key
 )
 {
@@ -83,8 +137,7 @@ handle_active_input(
         if (input->mode == INPUT_PROJECT_OPEN) {
             (void)lardon3d_project_open(state, input->text);
         } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
-            Lardon3DImportResult result;
-            (void)lardon3d_import_directory(state, input->text, &result);
+            (void)start_import_task(state, input, task);
         } else {
             (void)lardon3d_project_create(state, input->text);
         }
@@ -105,8 +158,11 @@ handle_active_input(
             if (input->mode == INPUT_PROJECT_OPEN) {
                 (void)lardon3d_project_open(state, input->text);
             } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
-                Lardon3DImportResult result;
-                (void)lardon3d_import_directory(state, input->text, &result);
+                (void)snprintf(
+                    state->status_message,
+                    sizeof(state->status_message),
+                    "Erreur : chemin source trop long."
+                );
             } else {
                 (void)lardon3d_project_create(state, input->text);
             }
@@ -127,9 +183,29 @@ static bool
 handle_normal_input(
     Lardon3DAppState *state,
     TuiInput *input,
+    Lardon3DImportTask *task,
     int key
 )
 {
+    if (task) {
+        if (key == 'c' || key == 'C') {
+            lardon3d_import_task_request_cancel(task);
+        } else if (key == 'q' || key == 'Q') {
+            (void)snprintf(
+                state->status_message,
+                sizeof(state->status_message),
+                "Quitter est désactivé pendant l'import."
+            );
+        } else if (key == 27) {
+            (void)snprintf(
+                state->status_message,
+                sizeof(state->status_message),
+                "Accueil indisponible pendant l'import."
+            );
+        }
+        return key == KEY_RESIZE || key == 'c' || key == 'C'
+            || key == 'q' || key == 'Q' || key == 27;
+    }
     if (key == 'q' || key == 'Q') {
         state->running = false;
         return false;
@@ -218,6 +294,7 @@ lardon3d_tui_init(void)
         endwin();
         return false;
     }
+    timeout(75);
 
     return true;
 }
@@ -230,21 +307,50 @@ lardon3d_tui_run(Lardon3DAppState *state)
     }
 
     TuiInput input = {0};
-    redraw(state, &input);
+    Lardon3DImportTask *task = NULL;
+    redraw(state, &input, task);
 
     while (state->running) {
         int key = getch();
-        if (key == ERR) {
-            return false;
+
+        bool should_redraw = task != NULL;
+        if (task && lardon3d_import_task_is_finished(task)) {
+            Lardon3DImportTaskSnapshot snapshot;
+            if (!lardon3d_import_task_join(task)
+                || !lardon3d_import_task_snapshot(task, &snapshot)) {
+                lardon3d_import_task_destroy(task);
+                return false;
+            }
+            (void)snprintf(
+                state->status_message,
+                sizeof(state->status_message),
+                "%s",
+                snapshot.message
+            );
+            lardon3d_import_task_destroy(task);
+            task = NULL;
+            should_redraw = true;
         }
 
-        bool should_redraw = input.mode != INPUT_NONE
-            ? handle_active_input(state, &input, key)
-            : handle_normal_input(state, &input, key);
+        if (key != ERR) {
+            should_redraw = (input.mode != INPUT_NONE
+                ? handle_active_input(state, &input, &task, key)
+                : handle_normal_input(state, &input, task, key))
+                || should_redraw;
+        }
 
         if (should_redraw) {
-            redraw(state, &input);
+            redraw(state, &input, task);
         }
+    }
+
+    if (task) {
+        lardon3d_import_task_request_cancel(task);
+        if (!lardon3d_import_task_join(task)) {
+            lardon3d_import_task_destroy(task);
+            return false;
+        }
+        lardon3d_import_task_destroy(task);
     }
 
     return true;

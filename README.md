@@ -33,3 +33,5 @@ La variable `LARDON3D_PROJECTS_ROOT` permet de choisir un autre répertoire raci
 L'import accepte les images JPEG, PNG, TIFF et HEIC présentes directement dans
 le dossier choisi, sans parcourir ses sous-dossiers. Elles sont copiées vers
 `images/originals` et répertoriées dans `images/manifest.tsv`.
+L'import s'exécute en arrière-plan afin que la TUI reste réactive. Pendant une
+opération, la touche `C` demande son annulation.

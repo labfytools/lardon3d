@@ -19,6 +19,7 @@ add_project_arguments(
 )
 
 ncursesw = dependency('ncursesw', required: true)
+threads = dependency('threads')
 
 executable(
     'lardon3d',
@@ -29,10 +30,11 @@ executable(
         'src/tui.c',
         'src/layout.c',
         'src/import.c',
+        'src/import_task.c',
         'src/project.c',
     ],
     include_directories: include_directories('include'),
-    dependencies: [ncursesw],
+    dependencies: [ncursesw, threads],
 )
 
 import_test = executable(
@@ -46,3 +48,17 @@ import_test = executable(
 )
 
 test('import', import_test)
+
+import_task_test = executable(
+    'test-import-task',
+    sources: [
+        'tests/test_import_task.c',
+        'src/app_state.c',
+        'src/import.c',
+        'src/import_task.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads],
+)
+
+test('import-task', import_task_test, timeout: 30)

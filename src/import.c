@@ -37,6 +37,13 @@ typedef struct {
     size_t capacity;
 } CandidateList;
 
+typedef enum {
+    COPY_IMAGE_ERROR = -1,
+    COPY_IMAGE_COLLISION = 0,
+    COPY_IMAGE_CREATED = 1,
+    COPY_IMAGE_CANCELLED = 2,
+} CopyImageOutcome;
+
 static void
 set_status(Lardon3DAppState *state, const char *message)
 {
@@ -46,6 +53,37 @@ set_status(Lardon3DAppState *state, const char *message)
         "%s",
         message
     );
+}
+
+static bool
+import_is_cancelled(const Lardon3DImportControl *control)
+{
+    return control && control->is_cancelled
+        && control->is_cancelled(control->context);
+}
+
+static void
+publish_progress(
+    const Lardon3DImportControl *control,
+    const Lardon3DImportResult *result,
+    size_t processed,
+    const char *message
+)
+{
+    if (!control || !control->progressed) {
+        return;
+    }
+    const Lardon3DImportProgress progress = {
+        .total = result->admissible_found,
+        .processed = processed <= result->admissible_found
+            ? processed
+            : result->admissible_found,
+        .copied = result->copied,
+        .already_present = result->already_present,
+        .ignored = result->ignored,
+        .message = message,
+    };
+    control->progressed(control->context, &progress);
 }
 
 static bool
@@ -416,7 +454,8 @@ static int
 copy_image(
     const char *source_path,
     const char *destination_path,
-    off_t *destination_size
+    off_t *destination_size,
+    const Lardon3DImportControl *control
 )
 {
     int source = open(source_path, O_RDONLY | O_NOFOLLOW);
@@ -445,8 +484,14 @@ copy_image(
     }
 
     bool success = true;
+    bool cancelled = false;
     char buffer[64 * 1024];
     for (;;) {
+        if (import_is_cancelled(control)) {
+            cancelled = true;
+            success = false;
+            break;
+        }
         ssize_t read_count = read(source, buffer, sizeof(buffer));
         if (read_count == 0) {
             break;
@@ -461,6 +506,11 @@ copy_image(
 
         ssize_t written_total = 0;
         while (written_total < read_count) {
+            if (import_is_cancelled(control)) {
+                cancelled = true;
+                success = false;
+                break;
+            }
             ssize_t written = write(
                 destination,
                 buffer + written_total,
@@ -491,11 +541,11 @@ copy_image(
     }
     if (!success) {
         (void)unlink(destination_path);
-        return -1;
+        return cancelled ? COPY_IMAGE_CANCELLED : COPY_IMAGE_ERROR;
     }
 
     *destination_size = source_info.st_size;
-    return 1;
+    return COPY_IMAGE_CREATED;
 }
 
 static bool
@@ -504,7 +554,9 @@ analyze_source_directory(
     const char *absolute_source,
     const char *originals_path,
     Lardon3DImportResult *result,
-    CandidateList *candidates
+    CandidateList *candidates,
+    const Lardon3DImportControl *control,
+    bool *cancelled
 )
 {
     DIR *directory = opendir(absolute_source);
@@ -515,6 +567,10 @@ analyze_source_directory(
 
     bool success = true;
     for (;;) {
+        if (import_is_cancelled(control)) {
+            *cancelled = true;
+            break;
+        }
         errno = 0;
         struct dirent *entry = readdir(directory);
         if (!entry) {
@@ -600,7 +656,7 @@ rollback_created_files(
     return removed;
 }
 
-static bool
+static void
 fail_import(
     Lardon3DAppState *state,
     Lardon3DImportResult *result,
@@ -638,47 +694,80 @@ fail_import(
             reason
         );
     }
-    return false;
 }
 
-bool
-lardon3d_import_directory(
+static Lardon3DImportOutcome
+cancel_import(
+    Lardon3DAppState *state,
+    Lardon3DImportResult *result,
+    size_t processed,
+    ManifestWriter *manifest,
+    CandidateList *candidates,
+    const char *originals_path,
+    const Lardon3DImportControl *control
+)
+{
+    manifest_abort(manifest);
+    size_t removed = rollback_created_files(candidates, originals_path);
+    result->copied -= removed;
+    (void)snprintf(
+        state->status_message,
+        sizeof(state->status_message),
+        "Import annulé : %zu sur %zu fichiers traités.",
+        processed,
+        result->admissible_found
+    );
+    publish_progress(control, result, processed, state->status_message);
+    free(candidates->items);
+    return LARDON3D_IMPORT_CANCELLED;
+}
+
+Lardon3DImportOutcome
+lardon3d_import_directory_controlled(
     Lardon3DAppState *state,
     const char *source_directory,
-    Lardon3DImportResult *result
+    Lardon3DImportResult *result,
+    const Lardon3DImportControl *control
 )
 {
     if (!state || !result) {
-        return false;
+        return LARDON3D_IMPORT_FAILED;
     }
     *result = (Lardon3DImportResult) {0};
+    publish_progress(control, result, 0, "Analyse du dossier source...");
 
     if (!state->project_loaded) {
         set_status(state, "Aucun projet chargé.");
-        return false;
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
     }
 
     char trimmed_source[PATH_MAX];
     char absolute_source[PATH_MAX];
     if (!trim_source_path(state, source_directory, trimmed_source)) {
-        return false;
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
     }
     if (!resolve_source_path(state, trimmed_source, absolute_source)) {
-        return false;
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
     }
     if (has_forbidden_manifest_character(absolute_source)) {
         set_status(state, "Erreur : chemin source incompatible avec le manifeste.");
-        return false;
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
     }
 
     struct stat source_directory_info;
     if (lstat(absolute_source, &source_directory_info) != 0) {
         set_status(state, "Erreur : dossier source inexistant.");
-        return false;
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
     }
     if (!S_ISDIR(source_directory_info.st_mode)) {
         set_status(state, "Erreur : la source n'est pas un dossier.");
-        return false;
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
     }
 
     char images_path[PATH_MAX];
@@ -686,35 +775,62 @@ lardon3d_import_directory(
     if (!join_path(images_path, state->project_path, "images")
         || !join_path(originals_path, images_path, "originals")) {
         set_status(state, "Erreur : chemin du projet trop long.");
-        return false;
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
     }
 
     CandidateList candidates = {0};
+    bool analysis_cancelled = false;
     if (!analyze_source_directory(
             state,
             absolute_source,
             originals_path,
             result,
-            &candidates
+            &candidates,
+            control,
+            &analysis_cancelled
         )) {
         free(candidates.items);
-        return false;
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
+    }
+    if (analysis_cancelled) {
+        free(candidates.items);
+        set_status(state, "Import annulé : 0 fichier traité.");
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_CANCELLED;
+    }
+    publish_progress(control, result, 0, "Import en cours...");
+
+    if (import_is_cancelled(control)) {
+        free(candidates.items);
+        set_status(state, "Import annulé : 0 fichier traité.");
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_CANCELLED;
     }
 
     if (!ensure_originals_directory(state, images_path, originals_path)) {
         free(candidates.items);
-        return false;
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
     }
 
     ManifestWriter manifest;
     if (!manifest_begin(state, images_path, &manifest)) {
         free(candidates.items);
-        return false;
+        publish_progress(control, result, 0, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
     }
 
     bool success = true;
+    bool cancelled = false;
+    size_t processed = 0;
     const char *failure_reason = NULL;
     for (size_t index = 0; index < candidates.count; ++index) {
+        if (import_is_cancelled(control)) {
+            cancelled = true;
+            break;
+        }
         ImportCandidate *candidate = &candidates.items[index];
         char source_path[PATH_MAX];
         char destination_path[PATH_MAX];
@@ -730,13 +846,22 @@ lardon3d_import_directory(
         }
 
         off_t size = 0;
-        int copied = copy_image(source_path, destination_path, &size);
-        if (copied < 0) {
+        int copied = copy_image(
+            source_path,
+            destination_path,
+            &size,
+            control
+        );
+        if (copied == COPY_IMAGE_CANCELLED) {
+            cancelled = true;
+            break;
+        }
+        if (copied == COPY_IMAGE_ERROR) {
             success = false;
             failure_reason = "copie d'une image impossible";
             break;
         }
-        if (copied == 0) {
+        if (copied == COPY_IMAGE_COLLISION) {
             ++result->already_present;
             struct stat destination_info;
             bool destination_is_regular = false;
@@ -746,6 +871,8 @@ lardon3d_import_directory(
                 destination_is_regular = true;
             }
             if (!destination_is_regular) {
+                ++processed;
+                publish_progress(control, result, processed, "Import en cours...");
                 continue;
             }
         } else {
@@ -773,8 +900,21 @@ lardon3d_import_directory(
             failure_reason = "écriture du manifeste impossible";
             break;
         }
+        ++processed;
+        publish_progress(control, result, processed, "Import en cours...");
     }
 
+    if (cancelled) {
+        return cancel_import(
+            state,
+            result,
+            processed,
+            &manifest,
+            &candidates,
+            originals_path,
+            control
+        );
+    }
     if (!success) {
         manifest_abort(&manifest);
         size_t removed = rollback_created_files(
@@ -782,7 +922,20 @@ lardon3d_import_directory(
             originals_path
         );
         free(candidates.items);
-        return fail_import(state, result, removed, failure_reason);
+        (void)fail_import(state, result, removed, failure_reason);
+        publish_progress(control, result, processed, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
+    }
+    if (import_is_cancelled(control)) {
+        return cancel_import(
+            state,
+            result,
+            processed,
+            &manifest,
+            &candidates,
+            originals_path,
+            control
+        );
     }
     if (!manifest_commit(state, &manifest)) {
         size_t removed = rollback_created_files(
@@ -790,12 +943,14 @@ lardon3d_import_directory(
             originals_path
         );
         free(candidates.items);
-        return fail_import(
+        (void)fail_import(
             state,
             result,
             removed,
             "mise à jour du manifeste impossible"
         );
+        publish_progress(control, result, processed, state->status_message);
+        return LARDON3D_IMPORT_FAILED;
     }
     free(candidates.items);
 
@@ -808,5 +963,21 @@ lardon3d_import_directory(
         result->already_present,
         result->already_present == 1 ? "" : "s"
     );
-    return true;
+    publish_progress(control, result, processed, "Import terminé.");
+    return LARDON3D_IMPORT_SUCCEEDED;
+}
+
+bool
+lardon3d_import_directory(
+    Lardon3DAppState *state,
+    const char *source_directory,
+    Lardon3DImportResult *result
+)
+{
+    return lardon3d_import_directory_controlled(
+        state,
+        source_directory,
+        result,
+        NULL
+    ) == LARDON3D_IMPORT_SUCCEEDED;
 }
