@@ -15,7 +15,11 @@ enum {
 };
 
 typedef struct {
-    bool active;
+    enum {
+        PROJECT_INPUT_NONE = 0,
+        PROJECT_INPUT_CREATE,
+        PROJECT_INPUT_OPEN,
+    } mode;
     char text[PROJECT_INPUT_CAPACITY];
     size_t length;
 } ProjectInput;
@@ -27,10 +31,15 @@ redraw(const Lardon3DAppState *state, const ProjectInput *input)
     int columns;
     getmaxyx(stdscr, rows, columns);
 
-    const char *text = input->active ? input->text : NULL;
-    lardon3d_layout_draw(state, text, rows, columns);
+    const char *text = input->mode != PROJECT_INPUT_NONE ? input->text : NULL;
+    const char *label = input->mode == PROJECT_INPUT_OPEN
+        ? "Nom du dossier projet :"
+        : "Nom du nouveau projet :";
+    lardon3d_layout_draw(state, text, label, rows, columns);
     (void)curs_set(
-        input->active && rows >= MINIMUM_ROWS && columns >= MINIMUM_COLUMNS
+        input->mode != PROJECT_INPUT_NONE
+            && rows >= MINIMUM_ROWS
+            && columns >= MINIMUM_COLUMNS
             ? 1
             : 0
     );
@@ -48,18 +57,26 @@ handle_project_input(
     }
 
     if (key == 27) {
-        input->active = false;
+        const char *message = input->mode == PROJECT_INPUT_OPEN
+            ? "Ouverture du projet annulée."
+            : "Création du projet annulée.";
+        input->mode = PROJECT_INPUT_NONE;
         (void)snprintf(
             state->status_message,
             sizeof(state->status_message),
-            "Création du projet annulée."
+            "%s",
+            message
         );
         return true;
     }
 
     if (key == '\n' || key == '\r' || key == KEY_ENTER) {
-        (void)lardon3d_project_set_name(state, input->text);
-        input->active = false;
+        if (input->mode == PROJECT_INPUT_OPEN) {
+            (void)lardon3d_project_open(state, input->text);
+        } else {
+            (void)lardon3d_project_create(state, input->text);
+        }
+        input->mode = PROJECT_INPUT_NONE;
         return true;
     }
 
@@ -73,8 +90,12 @@ handle_project_input(
 
     if (key >= 0 && key <= UCHAR_MAX && isprint((unsigned char)key)) {
         if (input->length + 1 >= sizeof(input->text)) {
-            (void)lardon3d_project_set_name(state, input->text);
-            input->active = false;
+            if (input->mode == PROJECT_INPUT_OPEN) {
+                (void)lardon3d_project_open(state, input->text);
+            } else {
+                (void)lardon3d_project_create(state, input->text);
+            }
+            input->mode = PROJECT_INPUT_NONE;
             return true;
         }
 
@@ -121,7 +142,18 @@ handle_normal_input(
     case 'N':
         if (state->screen == LARDON3D_SCREEN_PROJECTS) {
             *input = (ProjectInput) {
-                .active = true,
+                .mode = PROJECT_INPUT_CREATE,
+                .text = "",
+                .length = 0,
+            };
+            return true;
+        }
+        return false;
+    case 'o':
+    case 'O':
+        if (state->screen == LARDON3D_SCREEN_PROJECTS) {
+            *input = (ProjectInput) {
+                .mode = PROJECT_INPUT_OPEN,
                 .text = "",
                 .length = 0,
             };
@@ -172,7 +204,7 @@ lardon3d_tui_run(Lardon3DAppState *state)
             return false;
         }
 
-        bool should_redraw = input.active
+        bool should_redraw = input.mode != PROJECT_INPUT_NONE
             ? handle_project_input(state, &input, key)
             : handle_normal_input(state, &input, key);
 

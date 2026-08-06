@@ -26,3 +26,6 @@ meson compile -C build -j8
 ```
 
 La TUI s'affiche directement dans le terminal courant. Appuyez sur `q` ou `Q` pour quitter proprement.
+
+Les projets sont enregistrés par défaut dans `~/Documents/Lardon/Projets3D`.
+La variable `LARDON3D_PROJECTS_ROOT` permet de choisir un autre répertoire racine à l'exécution.

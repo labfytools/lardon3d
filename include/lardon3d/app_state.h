@@ -2,6 +2,7 @@
 #define LARDON3D_APP_STATE_H
 
 #include <stdbool.h>
+#include <limits.h>
 
 typedef enum {
     LARDON3D_SCREEN_HOME = 0,
@@ -16,6 +17,7 @@ typedef struct {
     bool running;
     bool project_loaded;
     char project_name[128];
+    char project_path[PATH_MAX];
     char status_message[256];
 } Lardon3DAppState;
 
