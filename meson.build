@@ -36,6 +36,9 @@ executable(
         'src/project.c',
         'src/task.c',
         'src/task_queue.c',
+        'src/hardware_profile.c',
+        'src/resource_snapshot.c',
+        'src/resource_governor.c',
     ],
     include_directories: include_directories('include'),
     dependencies: [ncursesw, threads],
@@ -116,3 +119,38 @@ task_queue_test = executable(
 )
 
 test('task-queue', task_queue_test, timeout: 30)
+
+hardware_profile_test = executable(
+    'test-hardware-profile',
+    sources: [
+        'tests/test_hardware_profile.c',
+        'src/hardware_profile.c',
+    ],
+    include_directories: include_directories('include'),
+)
+
+test('hardware-profile', hardware_profile_test, timeout: 30)
+
+resource_snapshot_test = executable(
+    'test-resource-snapshot',
+    sources: [
+        'tests/test_resource_snapshot.c',
+        'src/hardware_profile.c',
+        'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+)
+
+test('resource-snapshot', resource_snapshot_test, timeout: 30)
+
+resource_governor_test = executable(
+    'test-resource-governor',
+    sources: [
+        'tests/test_resource_governor.c',
+        'src/resource_governor.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads],
+)
+
+test('resource-governor', resource_governor_test, timeout: 30)

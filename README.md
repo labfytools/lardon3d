@@ -48,3 +48,8 @@ Un moteur générique exécute les tâches en file FIFO sur un worker unique. Il
 prend en charge progression, pause, reprise et annulation coopérative sans
 dépendre de la TUI ni des modules métier. L'écran `F5` affiche l'état courant de
 la file et de ses tâches.
+
+Les fondations du moteur de ressources séparent la détection matérielle, les
+instantanés de disponibilité et les décisions du gouverneur. Le gouverneur
+conserve des marges système et GPU, puis autorise, diffère, réduit ou refuse un
+lot sans dépendre du scheduler ni d'un traitement métier.
