@@ -114,6 +114,97 @@ Les coûts fixes ne sont payés qu'une fois par lot ; les coûts par élément
 déterminent sa capacité maximale. Les slots et threads recommandés font partie
 du même contrat et ne doivent pas être augmentés par le worker.
 
+### Adaptation par les métriques
+
+Le gouverneur peut additionally utiliser les métriques de lots déjà exécutés
+pour réduire conservativement la taille maximale des lots futurs. L'adaptation
+complète les estimations statiques ; elle ne les remplace pas.
+
+Le principe est le suivant : si le coût mémoire réel observé dépasse l'estimation
+déclarée, le gouverneur réduit la taille du lot futur afin que sa consommation
+reste dans le budget. Le coût par élément le plus défavorable observé est retenu
+afin de ne jamais sous-estimer la charge.
+
+Propriétés de l'adaptation :
+
+- Le calcul du coût par élément utilise une division entière sans overflow :
+  `quotient + (reste != 0)`.
+- L'adaptation ne peut que réduire la taille maximale du lot ; elle ne
+  l'augmente jamais.
+- `minimum_batch_size` reste garanti quelle que soit l'adaptation.
+- Les métriques restent isolées par classe de tâche.
+- L'historique est strictement borné (voir ci-dessous).
+
+## Métriques de lots
+
+Par classe de tâche, le gouverneur conserve un historique circulaire borné à
+8 entrées. Chaque entrée enregistre :
+
+- `batch_size` : taille du lot exécuté ;
+- `duration_ns` : durée d'exécution (collectée pour une adaptation future basée
+  sur le débit, mais n'influence pas encore les décisions) ;
+- `peak_memory_bytes` : pic de mémoire mesuré pendant l'exécution du lot.
+
+L'enregistrement est thread-safe : il est protégé par le mutex du gouverneur.
+La génération est incrémentée et les threads en attente sont réveillés
+uniquement lorsqu'une métrique est réellement enregistrée. Un `batch_size` égal
+à 0 est traité comme un no-op réussi : la fonction retourne `true` sans modifier
+les métriques ni la génération.
+
+L'historique étant borné, les anciennes entrées sont écrasées par les plus
+récentes. Cette contrainte garantit un temps et une mémoire d'exécution bornés.
+
+## API record_batch
+
+```text
+bool lardon3d_resource_governor_record_batch(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourceTaskClass task_class,
+    size_t batch_size,
+    uint64_t duration_ns,
+    size_t peak_memory_bytes
+);
+```
+
+Contrat :
+
+- **Thread-safe** : protégé par `governor->mutex`.
+- `governor` NULL → retourne `false`.
+- `task_class` invalide (supérieur à `LARDON3D_RESOURCE_TASK_MIXED`) → retourne
+  `false`, aucun effet secondaire.
+- `batch_size` == 0 → retourne `true`, no-op : aucune métrique enregistrée,
+  aucune modification de la génération.
+- Enregistrement valide → métrique ajoutée à l'historique circulaire de la
+  classe, génération incrémentée et threads en attente réveillés par broadcast.
+
+## Concurrence des métriques
+
+Les invariants de concurrence suivants ont été validés par TSan :
+
+- Les métriques sont protégées par `governor->mutex`.
+- La lecture adaptative (`adaptive_batch_limit`) s'effectue sous ce même verrou.
+- Aucun mutex supplémentaire n'est introduit.
+- Aucune allocation dynamique n'est effectuée pour l'historique (tableau statique
+  de taille fixe par classe).
+- Aucun broadcast n'est émis pour un no-op ou une entrée invalide.
+- L'historique étant borné (8 entrées par classe), le temps et la mémoire
+  d'exécution restent bornés.
+
+## État d'intégration
+
+**Implémenté :**
+
+- API `record_batch` et son contrat thread-safe.
+- Stockage des métriques dans un historique circulaire borné.
+- Adaptation mémoire conservative de `maximum_batch_size`.
+- Réveil via génération et broadcast.
+- Tests unitaires et validation TSan.
+
+**Pas encore câblé :**
+
+- Appel systématique de `record_batch` depuis les tâches et pipelines réels.
+- Exploitation de `duration_ns` pour une adaptation basée sur le débit.
+
 ## Utilisation future
 
 Le même protocole s'applique aux imports, miniatures et extractions EXIF, puis
@@ -122,6 +213,10 @@ estimations pourront différer par classe sans déplacer les décisions dans le
 scheduler. Le viewer Vulkan utilisera également une réservation GPU afin de ne
 pas concurrencer silencieusement une reconstruction sur une machine à mémoire
 partagée.
+
+L'API `record_batch` sera câblée dans les tâches réelles du pipeline afin
+d'alimenter les métriques d'adaptation. L'exploitation de `duration_ns` pour
+une adaptation basée sur le débit est prévue pour une itération ultérieure.
 
 Cette séparation permettra ultérieurement plusieurs workers : chacun recevra
 un contrat déjà arbitré, tandis que le gouverneur restera l'unique propriétaire
