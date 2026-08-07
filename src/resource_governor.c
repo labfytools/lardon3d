@@ -12,6 +12,16 @@ struct Lardon3DResourceReservation {
     struct Lardon3DResourceReservation *next;
 };
 
+enum {
+    LARDON3D_BATCH_METRICS_CAPACITY = 8,
+};
+
+typedef struct {
+    size_t batch_size;
+    uint64_t duration_ns;
+    size_t peak_memory_bytes;
+} Lardon3DBatchMetrics;
+
 struct Lardon3DResourceGovernor {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
@@ -24,6 +34,9 @@ struct Lardon3DResourceGovernor {
     unsigned int cpu_reserved;
     unsigned int gpu_slots_reserved;
     unsigned int io_slots_reserved;
+    Lardon3DBatchMetrics batch_metrics[LARDON3D_RESOURCE_TASK_MIXED + 1][LARDON3D_BATCH_METRICS_CAPACITY];
+    size_t batch_metrics_count[LARDON3D_RESOURCE_TASK_MIXED + 1];
+    size_t batch_metrics_head[LARDON3D_RESOURCE_TASK_MIXED + 1];
     size_t active_count;
     Lardon3DResourceReservation *active;
     Lardon3DResourceReservation *released;
@@ -143,6 +156,94 @@ batch_capacity(uint64_t available, uint64_t fixed, uint64_t per_item)
     }
     uint64_t capacity = (available - fixed) / per_item;
     return capacity > SIZE_MAX ? SIZE_MAX : (size_t)capacity;
+}
+
+static bool
+record_batch_locked(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourceTaskClass task_class,
+    size_t batch_size,
+    uint64_t duration_ns,
+    size_t peak_memory_bytes
+)
+{
+    if (batch_size == 0) {
+        return false;
+    }
+    size_t class_index = (size_t)task_class;
+    if (class_index > (size_t)LARDON3D_RESOURCE_TASK_MIXED) {
+        return false;
+    }
+    Lardon3DBatchMetrics *metrics = governor->batch_metrics[class_index];
+    size_t count = governor->batch_metrics_count[class_index];
+    size_t head = governor->batch_metrics_head[class_index];
+    metrics[head] = (Lardon3DBatchMetrics) {
+        .batch_size = batch_size,
+        .duration_ns = duration_ns,
+        .peak_memory_bytes = peak_memory_bytes,
+    };
+    head = (head + 1) % LARDON3D_BATCH_METRICS_CAPACITY;
+    governor->batch_metrics_head[class_index] = head;
+    if (count < LARDON3D_BATCH_METRICS_CAPACITY) {
+        governor->batch_metrics_count[class_index] = count + 1;
+    }
+    return true;
+}
+
+static size_t
+adaptive_batch_limit(
+    const Lardon3DResourceGovernor *governor,
+    Lardon3DResourceTaskClass task_class,
+    size_t static_batch,
+    uint64_t memory_bytes_per_item
+)
+{
+    if (memory_bytes_per_item == 0 || static_batch == 0) {
+        return static_batch;
+    }
+    size_t class_index = (size_t)task_class;
+    if (class_index > (size_t)LARDON3D_RESOURCE_TASK_MIXED) {
+        return static_batch;
+    }
+    size_t count = governor->batch_metrics_count[class_index];
+    if (count == 0) {
+        return static_batch;
+    }
+    size_t head = governor->batch_metrics_head[class_index];
+    uint64_t measured_per_item = 0;
+    size_t samples = 0;
+    for (size_t i = 0; i < count; ++i) {
+        size_t idx = (head + LARDON3D_BATCH_METRICS_CAPACITY - count + i)
+            % LARDON3D_BATCH_METRICS_CAPACITY;
+        const Lardon3DBatchMetrics *m = &governor->batch_metrics[class_index][idx];
+        if (m->batch_size > 0 && m->peak_memory_bytes > 0) {
+            /* Coût par élément le plus défavorable observé : une moyenne
+             * sous-estimerait le pic et laisserait un lot dépasser son
+             * budget. La stabilité de l'hôte prime sur le débit. */
+            uint64_t per_item = m->peak_memory_bytes / m->batch_size
+                + (m->peak_memory_bytes % m->batch_size != 0);
+            if (per_item > measured_per_item) {
+                measured_per_item = per_item;
+            }
+            ++samples;
+        }
+    }
+    if (samples == 0) {
+        return static_batch;
+    }
+    if (measured_per_item <= memory_bytes_per_item) {
+        return static_batch;
+    }
+    /* Éviter l'overflow de la multiplication : si static_batch est trop
+     * grand pour être multiplié sans débordement, on retourne 1 (le lot le
+     * plus conservateur possible) plutôt que de saturer à SIZE_MAX. */
+    if (static_batch > UINT64_MAX / memory_bytes_per_item) {
+        return 1;
+    }
+    uint64_t corrected = (uint64_t)static_batch * memory_bytes_per_item
+        / measured_per_item;
+    size_t result = corrected > SIZE_MAX ? SIZE_MAX : (size_t)corrected;
+    return result > 0 ? result : 1;
 }
 
 static void
@@ -524,7 +625,20 @@ evaluate_locked(
             )
         );
     }
-    batch = minimum_size(batch, estimate->maximum_batch_size);
+    /* Le lot maximal visé est corrigé par les métriques mesurées : c'est la
+     * nouvelle cible du contrat, pas une réduction faute de ressources. La
+     * correction ne descend jamais sous minimum_batch_size pour éviter un
+     * WAIT persistant. */
+    size_t adapted_maximum = adaptive_batch_limit(
+        governor,
+        estimate->task_class,
+        estimate->maximum_batch_size,
+        memory_per_item
+    );
+    if (adapted_maximum < estimate->minimum_batch_size) {
+        adapted_maximum = estimate->minimum_batch_size;
+    }
+    batch = minimum_size(batch, adapted_maximum);
     if (batch < estimate->minimum_batch_size) {
         set_decision(decision, LARDON3D_RESOURCE_WAIT, 0, 0, 0, 0, "Ressources déjà réservées ou temporairement insuffisantes.");
         return;
@@ -547,7 +661,7 @@ evaluate_locked(
     unsigned int io = estimate->desired_io_slots < available.io_slots_available
         ? estimate->desired_io_slots
         : available.io_slots_available;
-    bool reduced = batch < estimate->maximum_batch_size
+    bool reduced = batch < adapted_maximum
         || cpu < estimate->desired_cpu_threads
         || gpu < estimate->desired_gpu_slots
         || io < estimate->desired_io_slots;
@@ -818,6 +932,38 @@ lardon3d_resource_governor_reservation_count(
     size_t count = governor->active_count;
     (void)pthread_mutex_unlock(&governor->mutex);
     return count;
+}
+
+bool
+lardon3d_resource_governor_record_batch(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourceTaskClass task_class,
+    size_t batch_size,
+    uint64_t duration_ns,
+    size_t peak_memory_bytes
+)
+{
+    if (!governor) {
+        return false;
+    }
+    if (batch_size == 0) {
+        /* No-op réussi : aucune métrique, aucun réveil inutile. */
+        return true;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    bool recorded = record_batch_locked(
+        governor,
+        task_class,
+        batch_size,
+        duration_ns,
+        peak_memory_bytes
+    );
+    if (recorded) {
+        ++governor->generation;
+        (void)pthread_cond_broadcast(&governor->cond);
+    }
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return recorded;
 }
 
 bool

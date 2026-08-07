@@ -187,5 +187,15 @@ bool lardon3d_resource_governor_wait_for_change(
 const char *lardon3d_resource_decision_name(
     Lardon3DResourceDecisionKind kind
 );
+/* Enregistre les métriques d'un lot terminé pour l'adaptation dynamique
+ * de la taille des lots futurs. Le buffer est borné (8 entrées par classe
+ * de tâche). Thread-safe. */
+bool lardon3d_resource_governor_record_batch(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourceTaskClass task_class,
+    size_t batch_size,
+    uint64_t duration_ns,
+    size_t peak_memory_bytes
+);
 
 #endif

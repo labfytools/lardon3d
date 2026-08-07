@@ -391,10 +391,216 @@ run_generation_test(void)
     return true;
 }
 
+static bool
+run_adaptive_batch_test(void)
+{
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = 16,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = GIBIBYTES(16),
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .system_memory_reserve_bytes = GIBIBYTES(2),
+        .gpu_memory_reserve_bytes = 0,
+        .system_cpu_reserve = 1,
+        .maximum_cpu_load_ratio = 0.90,
+        .maximum_io_pressure_avg10 = 80.0,
+        .io_slot_capacity = 8,
+    };
+    Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(
+        &profile,
+        &policy
+    );
+    CHECK(governor);
+
+    Lardon3DResourceSnapshot snapshot = {
+        .memory_available_bytes = GIBIBYTES(10),
+        .cpu_load_1m = 2.0,
+    };
+    Lardon3DResourceDecision decision;
+
+    /* Test 1: Without metrics, batch is unchanged */
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &(Lardon3DResourceRequest) {
+        .memory_bytes_per_item = MEBIBYTES(100),
+        .minimum_batch_size = 2,
+        .preferred_batch_size = 8,
+        .requested_cpu_threads = 4,
+    }, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_START);
+    CHECK(decision.batch_size == 8);
+
+    /* Test 2: Record batch matching estimate → no reduction */
+    CHECK(lardon3d_resource_governor_record_batch(
+        governor,
+        LARDON3D_RESOURCE_TASK_GENERAL,
+        8,
+        1000000000ULL,
+        MEBIBYTES(800)
+    ));
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &(Lardon3DResourceRequest) {
+        .memory_bytes_per_item = MEBIBYTES(100),
+        .minimum_batch_size = 2,
+        .preferred_batch_size = 8,
+        .requested_cpu_threads = 4,
+    }, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_START);
+    CHECK(decision.batch_size == 8);
+
+    /* Test 3: Record batch with higher memory usage → batch reduced */
+    CHECK(lardon3d_resource_governor_record_batch(
+        governor,
+        LARDON3D_RESOURCE_TASK_GENERAL,
+        8,
+        1000000000ULL,
+        MEBIBYTES(1600)
+    ));
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &(Lardon3DResourceRequest) {
+        .memory_bytes_per_item = MEBIBYTES(100),
+        .minimum_batch_size = 2,
+        .preferred_batch_size = 8,
+        .requested_cpu_threads = 4,
+    }, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_START);
+    CHECK(decision.batch_size == 4);
+
+    /* Test 4: Buffer overflow (9 writes) → oldest overwritten */
+    for (size_t i = 0; i < 9; ++i) {
+        CHECK(lardon3d_resource_governor_record_batch(
+            governor,
+            LARDON3D_RESOURCE_TASK_GENERAL,
+            4,
+            1000000000ULL,
+            MEBIBYTES(400)
+        ));
+    }
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &(Lardon3DResourceRequest) {
+        .memory_bytes_per_item = MEBIBYTES(100),
+        .minimum_batch_size = 2,
+        .preferred_batch_size = 8,
+        .requested_cpu_threads = 4,
+    }, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_START);
+    CHECK(decision.batch_size == 8);
+
+    /* Test 5: Different task class not affected */
+    CHECK(lardon3d_resource_governor_record_batch(
+        governor,
+        LARDON3D_RESOURCE_TASK_IO,
+        8,
+        1000000000ULL,
+        MEBIBYTES(1600)
+    ));
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &(Lardon3DResourceRequest) {
+        .memory_bytes_per_item = MEBIBYTES(100),
+        .minimum_batch_size = 2,
+        .preferred_batch_size = 8,
+        .requested_cpu_threads = 4,
+    }, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_START);
+    CHECK(decision.batch_size == 8);
+
+    /* Test 6: record_batch increments generation */
+    uint64_t gen_before = lardon3d_resource_governor_generation(governor);
+    CHECK(lardon3d_resource_governor_record_batch(
+        governor,
+        LARDON3D_RESOURCE_TASK_GENERAL,
+        4,
+        1000000000ULL,
+        MEBIBYTES(400)
+    ));
+    CHECK(lardon3d_resource_governor_generation(governor) == gen_before + 1);
+
+    /* Test 7: NULL governor returns false */
+    CHECK(!lardon3d_resource_governor_record_batch(NULL, LARDON3D_RESOURCE_TASK_GENERAL, 4, 0, 0));
+
+    /* Test 8: Zero batch_size is ignored */
+    CHECK(lardon3d_resource_governor_record_batch(governor, LARDON3D_RESOURCE_TASK_GENERAL, 0, 0, 0));
+
+    /* T1: Invalid task class → false, generation unchanged */
+    gen_before = lardon3d_resource_governor_generation(governor);
+    CHECK(!lardon3d_resource_governor_record_batch(
+        governor,
+        (Lardon3DResourceTaskClass)999,
+        4,
+        1000000000ULL,
+        MEBIBYTES(400)
+    ));
+    CHECK(lardon3d_resource_governor_generation(governor) == gen_before);
+
+    /* T2: batch_size == 0 → true, generation unchanged */
+    gen_before = lardon3d_resource_governor_generation(governor);
+    CHECK(lardon3d_resource_governor_record_batch(
+        governor,
+        LARDON3D_RESOURCE_TASK_GENERAL,
+        0,
+        0,
+        0
+    ));
+    CHECK(lardon3d_resource_governor_generation(governor) == gen_before);
+
+    /* T3: minimum_batch_size guaranteed */
+    for (size_t i = 0; i < 8; ++i) {
+        CHECK(lardon3d_resource_governor_record_batch(
+            governor,
+            LARDON3D_RESOURCE_TASK_GENERAL,
+            8,
+            1000000000ULL,
+            GIBIBYTES(8)
+        ));
+    }
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &(Lardon3DResourceRequest) {
+        .memory_bytes_per_item = MEBIBYTES(100),
+        .minimum_batch_size = 4,
+        .preferred_batch_size = 8,
+        .requested_cpu_threads = 4,
+    }, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_START);
+    CHECK(decision.batch_size == 4);
+
+    /* T4: Overflow of static_batch * memory_bytes_per_item in uint64_t.
+     * With memory_bytes_per_item = 2 and preferred_batch_size = SIZE_MAX,
+     * the multiplication SIZE_MAX * 2 would overflow uint64_t. The overflow
+     * guard in adaptive_batch_limit returns 1 (most conservative). The result
+     * is never SIZE_MAX, the adaptive limit never increases the batch, and
+     * the final result is clamped to the minimum expected value. */
+    CHECK(lardon3d_resource_governor_record_batch(
+        governor,
+        LARDON3D_RESOURCE_TASK_GENERAL,
+        1,
+        1000000000ULL,
+        100
+    ));
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &(Lardon3DResourceRequest) {
+        .memory_bytes_per_item = 2,
+        .minimum_batch_size = 1,
+        .preferred_batch_size = SIZE_MAX,
+        .requested_cpu_threads = 1,
+    }, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_START);
+    CHECK(decision.batch_size != SIZE_MAX);
+    CHECK(decision.batch_size >= 1);
+    CHECK(decision.batch_size <= 1);
+
+    /* T5: generation increment only on real record */
+    gen_before = lardon3d_resource_governor_generation(governor);
+    CHECK(lardon3d_resource_governor_record_batch(
+        governor,
+        LARDON3D_RESOURCE_TASK_IO,
+        4,
+        1000000000ULL,
+        MEBIBYTES(400)
+    ));
+    CHECK(lardon3d_resource_governor_generation(governor) == gen_before + 1);
+
+    lardon3d_resource_governor_destroy(governor);
+    return true;
+}
+
 int
 main(void)
 {
-    return (run_test() && run_generation_test())
+    return (run_test() && run_generation_test() && run_adaptive_batch_test())
         ? EXIT_SUCCESS
         : EXIT_FAILURE;
 }
