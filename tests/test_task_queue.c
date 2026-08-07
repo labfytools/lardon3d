@@ -361,6 +361,10 @@ run_test(void)
     CHECK(blocked.contract_seen);
     CHECK(bypass_log.count == 2);
     CHECK(lardon3d_resource_governor_reservation_count(governor) == 0);
+    Lardon3DTaskQueueSummary bypass_summary;
+    lardon3d_task_queue_snapshot(queue, NULL, 0, &bypass_summary);
+    CHECK(bypass_summary.running == 0);
+    CHECK(bypass_summary.pending == 0);
     lardon3d_task_queue_destroy(queue);
     CHECK(pthread_mutex_destroy(&bypass_log.mutex) == 0);
 
