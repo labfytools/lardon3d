@@ -39,8 +39,6 @@ executable(
         'src/resource_governor.c',
         'src/resource_snapshot.c',
         'src/hardware_profile.c',
-        'src/resource_snapshot.c',
-        'src/resource_governor.c',
     ],
     include_directories: include_directories('include'),
     dependencies: [ncursesw, threads],
