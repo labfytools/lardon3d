@@ -141,8 +141,16 @@ lardon3d_task_start(
     task->has_contract = true;
     (void)clock_gettime(CLOCK_REALTIME, &task->started_at);
     if (task->cancel_requested) {
+        Lardon3DResourceReservation *reservation_copy = task->current_reservation;
+        task->current_reservation = NULL;
         finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
         (void)pthread_mutex_unlock(&task->mutex);
+        if (reservation_copy) {
+            (void)lardon3d_resource_governor_release(
+                governor,
+                reservation_copy
+            );
+        }
         return true;
     }
     while (task->pause_requested && !task->cancel_requested) {
@@ -152,8 +160,16 @@ lardon3d_task_start(
         (void)pthread_cond_wait(&task->condition, &task->mutex);
     }
     if (task->cancel_requested) {
+        Lardon3DResourceReservation *reservation_copy = task->current_reservation;
+        task->current_reservation = NULL;
         finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
         (void)pthread_mutex_unlock(&task->mutex);
+        if (reservation_copy) {
+            (void)lardon3d_resource_governor_release(
+                governor,
+                reservation_copy
+            );
+        }
         return true;
     }
     task->state = TASK_RUNNING;
