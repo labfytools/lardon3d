@@ -1,7 +1,7 @@
 ---
 description: Exécute les validations Lardon3D sans modifier le code
 mode: subagent
-model: opencode/north-mini-code-free
+model: opencode/mimo-v2.5-free
 temperature: 0.1
 permission:
   edit: deny

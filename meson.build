@@ -111,6 +111,20 @@ task_test = executable(
 
 test('task', task_test, timeout: 30)
 
+sequential_task_test = executable(
+    'test-sequential-task',
+    sources: [
+        'tests/test_sequential_task.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads],
+)
+
+test('sequential-task', sequential_task_test, timeout: 30)
+
 task_queue_test = executable(
     'test-task-queue',
     sources: [

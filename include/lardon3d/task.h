@@ -81,6 +81,17 @@ bool lardon3d_task_execution_contract(
     const Lardon3DTask *task,
     Lardon3DTaskExecutionContract *contract
 );
+/* Libère la réservation courante, en obtient une nouvelle auprès du gouverneur
+ * et met à jour le contrat. À appeler uniquement depuis le callback en cours
+ * d'exécution. Retourne false si pause/annulation est demandée ou si le
+ * gouverneur répond WAIT/REJECT (la tâche passe alors en échec). */
+bool lardon3d_task_sequence_break(
+    Lardon3DTask *task,
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourceReservation **out_reservation,
+    Lardon3DTaskExecutionContract *out_contract
+);
+unsigned int lardon3d_task_sequence_count(const Lardon3DTask *task);
 bool lardon3d_task_reject(Lardon3DTask *task, const char *message);
 const char *lardon3d_task_state_name(Lardon3DTaskState state);
 

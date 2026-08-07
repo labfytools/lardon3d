@@ -15,12 +15,11 @@ entrée, sortie et cache :
   recommandé `opencode/nemotron-3-ultra-free` en cas de saturation 503.
 - `opencode/nemotron-3-ultra-free` : architecture, concurrence, revue et repli
   de l'agent principal.
-- `opencode/north-mini-code-free` : exploration rapide et validations.
+- `opencode/mimo-v2.5-free` : exploration rapide et validations.
 - `opencode/laguna-s-2.1-free` : testé comme reviewer sur Lardon3D ; résultats
   jugés insuffisants. Non utilisé dans les rôles actifs.
 - `opencode/ling-3.0-flash-free` : documentation.
 - `opencode/longcat-2.0-free` : disponible, non configuré actuellement.
-- `opencode/mimo-v2.5-free` : disponible, non configuré actuellement.
 
 ## Gratuité non confirmée
 
@@ -63,24 +62,66 @@ OpenCode actuelle.
 
 ## Optimisation du quota
 
-L'agent par défaut est `lardon-orchestrator` sur North Mini Code Free. Il charge
-seulement `AGENTS.md` et l'overview, puis demande à North Mini Code une
-exploration ciblée. DeepSeek est réservé à l'implémentation complexe ; il ne sert
-ni à l'orchestration, ni aux tests, ni à la documentation. Nemotron traite les
-reprises, revues et analyses d'architecture ou de concurrence, MiMo les petits
-tickets et Ling la documentation.
+L’agent par défaut est `lardon-orchestrator` sur MiMo V2.5 Free.
 
-Les commandes `lardon-plan`, `lardon-small`, `lardon-ticket` et
-`lardon-ticket-backup` chargent progressivement le contexte. Elles ne lisent pas
-automatiquement toute l'architecture et transmettent uniquement objectif,
-contraintes, fichiers, API, invariants, risques et tests. Les rapports de succès
-restent courts. Le handoff ignoré `.opencode/work/current_ticket.md` permet une
-reprise sans rejouer toute l'analyse.
+Le contexte permanent est chargé depuis `.opencode/context.md`. L’orchestrateur
+ne relit pas automatiquement AGENTS.md, l’overview ni toute la documentation
+d’architecture. Il utilise uniquement le handoff courant et les documents
+directement liés au ticket.
 
-Nemotron ne relit jamais sa propre implémentation lorsqu'il a servi de backup.
-MiMo fournit alors seulement une première revue locale simple. La revue de
-concurrence sensible est différée jusqu'au prochain passage Codex, et le workflow
-signale explicitement qu'aucune revue indépendante forte n'a eu lieu.
+MiMo assure :
+
+- l’orchestration ;
+- l’exploration ciblée ;
+- les tests ;
+- les petits tickets.
+
+DeepSeek V4 Flash Free est réservé à l’implémentation complexe. Il ne sert ni à
+l’orchestration, ni à l’exploration, ni aux tests, ni à la documentation.
+
+Nemotron 3 Ultra Free assure :
+
+- les reprises après indisponibilité de DeepSeek ;
+- l’architecture ;
+- la concurrence ;
+- la revue générale.
+
+Ling 3.0 Flash Free est réservé à la documentation.
+
+North Mini Code Free n’est plus utilisé dans les rôles actifs. Il reste mentionné
+dans l’inventaire historique comme modèle testé puis écarté en raison de résultats
+jugés insuffisants et trop erratiques sur Lardon3D.
+
+Les commandes `lardon-plan`, `lardon-small`, `lardon-ticket`,
+`lardon-ticket-backup` et les commandes de reprise utilisent un contexte
+progressif.
+
+Elles ne lisent jamais automatiquement tout le dépôt ni toute l’architecture.
+Elles transmettent uniquement :
+
+- objectif ;
+- contraintes ;
+- fichiers concernés ;
+- API ;
+- invariants ;
+- risques ;
+- tests requis ;
+- prochaine action sûre.
+
+Les rapports de succès restent courts. Le handoff ignoré
+`.opencode/work/current_ticket.md` permet une reprise sans rejouer l’exploration
+ou l’analyse déjà terminée.
+
+Nemotron ne relit jamais sa propre implémentation lorsqu’il a servi de backup.
+
+Dans ce cas :
+
+- MiMo fournit seulement une première revue locale simple ;
+- la revue de concurrence sensible est différée jusqu’au prochain passage Codex ;
+- le workflow signale explicitement qu’aucune revue indépendante forte n’a eu
+  lieu.
+
+Aucun modèle payant n’est utilisé automatiquement.
 
 ## Chaîne de secours
 

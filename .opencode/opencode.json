@@ -1,10 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "lardon-orchestrator",
-  "model": "opencode/north-mini-code-free",
+  "model": "opencode/mimo-v2.5-free",
   "subagent_depth": 1,
   "instructions": [
     "AGENTS.md",
+    ".opencode/context.md",
     "docs/architecture/overview.md"
   ],
   "permission": {

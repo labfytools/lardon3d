@@ -44,10 +44,47 @@ pendant `PAUSED`. Ses ressources restent donc indisponibles pour les autres
 tâches. Ce choix évite de reprendre un callback avec un contrat qui aurait été
 attribué entre-temps à un autre travail.
 
+## Exécution séquencée adaptative
+
+Une tâche peut s'exécuter en plusieurs séquences (lots) successives. Le
+callback appelle `lardon3d_task_sequence_break()` pour libérer sa réservation
+courante, capturer un nouvel instantané système, obtenir une nouvelle
+réservation auprès du gouverneur et reprendre avec un contrat actualisé.
+
+Le cycle d'une séquence est strict :
+
+```text
+Callback
+  → sequence_break
+  → Release Reservation courante
+  → Snapshot système
+  → Governor → Reservation
+  → Contrat actualisé
+  → Reprise du callback
+```
+
+Le task conserve une référence au gouverneur et à sa réservation courante.
+`lardon3d_task_start` stocke la réservation initiale ; à la fin de l'exécution,
+il libère la réservation courante si elle est encore détenue. Le worker de la
+file libère ensuite la réservation d'origine, qui est déjà libérée si une
+séquence a eu lieu : cet appel est alors sans effet.
+
+Invariants préservés :
+
+- Aucun callback ne démarre sans réservation active.
+- Une seule réservation active par tâche à tout instant.
+- La réservation est toujours valide avant et après un `sequence_break`.
+- Le contrat est mis à jour atomiquement sous le mutex de la tâche.
+- Si pause ou annulation est demandée pendant le `sequence_break`, la fonction
+  retourne `false` et la tâche est annulée.
+- Si le gouverneur répond `WAIT` ou `REJECT`, la fonction retourne `false` et
+  la tâche passe en échec sans bloquer le callback.
+- La progression est conservée entre les séquences.
+
 ## Limites et extensions
 
 La file possède un seul worker, reste strictement FIFO et ne gère ni priorité
 ni dépendance. Une notification explicite est nécessaire lorsqu'un composant
 extérieur libère une réservation. Les prochaines étapes pourront ajouter un
-DAG, des priorités, des séquences de lots adaptatives et des pools distincts
-CPU, IO et GPU sans déplacer les décisions de ressources hors du gouverneur.
+DAG, des priorités, des pools distincts CPU, IO et GPU sans déplacer les
+décisions de ressources hors du gouverneur.

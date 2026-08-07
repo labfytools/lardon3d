@@ -139,6 +139,10 @@ queue_worker(void *context)
                 "Réservation de ressources invalide."
             );
         }
+        /* La tâche peut avoir libéré et re-réservé via sequence_break pendant
+         * son callback. Dans ce cas la réservation d'origine est déjà libérée
+         * et cet appel est sans effet ; la réservation courante de la tâche a
+         * été libérée par lardon3d_task_start. */
         (void)lardon3d_resource_governor_release(
             queue->governor,
             reservation

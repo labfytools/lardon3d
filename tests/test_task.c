@@ -157,7 +157,7 @@ run_test(void)
     void *thread_result;
     CHECK(pthread_join(thread, &thread_result) == 0);
     CHECK((uintptr_t)thread_result == 1);
-    CHECK(lardon3d_resource_governor_release(governor, reservation));
+    CHECK(!lardon3d_resource_governor_release(governor, reservation));
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_COMPLETED);
     CHECK(snapshot.progress == 100);
@@ -178,7 +178,7 @@ run_test(void)
     lardon3d_task_request_cancel(task);
     CHECK(lardon3d_task_join(task));
     CHECK(pthread_join(thread, NULL) == 0);
-    CHECK(lardon3d_resource_governor_release(governor, reservation));
+    CHECK(!lardon3d_resource_governor_release(governor, reservation));
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_CANCELLED);
     CHECK(snapshot.progress < 100);
@@ -190,7 +190,7 @@ run_test(void)
         governor, &resource_snapshot, &estimate, &decision, &reservation
     ));
     CHECK(lardon3d_task_start(task, governor, reservation));
-    CHECK(lardon3d_resource_governor_release(governor, reservation));
+    CHECK(!lardon3d_resource_governor_release(governor, reservation));
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_FAILED);
     CHECK(strcmp(snapshot.message, "Erreur contrôlée.") == 0);
