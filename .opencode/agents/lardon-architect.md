@@ -5,7 +5,12 @@ model: opencode/nemotron-3-ultra-free
 temperature: 0.1
 permission:
   edit: deny
-  bash: deny
+  bash:
+    "*": deny
+    "rg *": allow
+    "git grep*": allow
+    "git diff*": allow
+    "sed -n *": allow
   task: deny
 ---
 

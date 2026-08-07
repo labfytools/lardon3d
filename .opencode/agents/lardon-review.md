@@ -7,8 +7,12 @@ permission:
   edit: deny
   bash:
     "*": deny
-    "git diff*": allow
+    "rg *": allow
+    "git grep*": allow
     "git status*": allow
+    "git diff*": allow
+    "git log*": allow
+    "sed -n *": allow
   task: deny
 ---
 

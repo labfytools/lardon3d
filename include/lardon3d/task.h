@@ -83,8 +83,11 @@ bool lardon3d_task_execution_contract(
 );
 /* Libère la réservation courante, en obtient une nouvelle auprès du gouverneur
  * et met à jour le contrat. À appeler uniquement depuis le callback en cours
- * d'exécution. Retourne false si pause/annulation est demandée ou si le
- * gouverneur répond WAIT/REJECT (la tâche passe alors en échec). */
+ * d'exécution. Une réponse WAIT du gouverneur est une indisponibilité
+ * temporaire : la fonction attend un changement de ressources puis retente
+ * l'admission sans échouer la tâche. Retourne false si la tâche est annulée
+ * (TASK_CANCELLED), si le gouverneur répond REJECT ou en cas d'erreur interne
+ * (TASK_FAILED). */
 bool lardon3d_task_sequence_break(
     Lardon3DTask *task,
     Lardon3DResourceGovernor *governor,

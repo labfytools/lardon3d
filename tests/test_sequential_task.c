@@ -28,7 +28,14 @@ typedef struct {
 
 typedef struct {
     Lardon3DResourceGovernor *governor;
-} WaitContext;
+    pthread_mutex_t sync_mutex;
+    pthread_cond_t sync_cond;
+    bool in_break;
+} WaitRetryContext;
+
+typedef struct {
+    Lardon3DResourceGovernor *governor;
+} RejectContext;
 
 typedef struct {
     Lardon3DResourceGovernor *governor;
@@ -102,9 +109,27 @@ seq_callback(Lardon3DTask *task, void *userdata)
 }
 
 static bool
-wait_callback(Lardon3DTask *task, void *userdata)
+wait_retry_callback(Lardon3DTask *task, void *userdata)
 {
-    WaitContext *ctx = userdata;
+    WaitRetryContext *ctx = userdata;
+    (void)pthread_mutex_lock(&ctx->sync_mutex);
+    ctx->in_break = true;
+    (void)pthread_cond_broadcast(&ctx->sync_cond);
+    (void)pthread_mutex_unlock(&ctx->sync_mutex);
+    Lardon3DResourceReservation *reservation = NULL;
+    Lardon3DTaskExecutionContract contract;
+    return lardon3d_task_sequence_break(
+        task,
+        ctx->governor,
+        &reservation,
+        &contract
+    );
+}
+
+static bool
+reject_callback(Lardon3DTask *task, void *userdata)
+{
+    RejectContext *ctx = userdata;
     Lardon3DResourceReservation *reservation = NULL;
     Lardon3DTaskExecutionContract contract;
     return lardon3d_task_sequence_break(
@@ -247,7 +272,7 @@ run_sequential_test(void)
 }
 
 static bool
-run_wait_test(void)
+run_wait_retry_test(void)
 {
     const Lardon3DResourceEstimate estimate = {
         .minimum_batch_size = 1,
@@ -274,7 +299,6 @@ run_wait_test(void)
     Lardon3DResourceSnapshot resource_snapshot = {
         .memory_available_bytes = UINT64_MAX,
         .cpu_load_1m = 0.0,
-        .io_pressure_known = false,
     };
     Lardon3DResourceDecision decision;
     Lardon3DResourceReservation *reservation;
@@ -285,11 +309,255 @@ run_wait_test(void)
         &decision,
         &reservation
     ));
-    WaitContext ctx = {.governor = governor};
+    CHECK(reservation);
+    WaitRetryContext ctx = {.governor = governor};
+    CHECK(pthread_mutex_init(&ctx.sync_mutex, NULL) == 0);
+    CHECK(pthread_cond_init(&ctx.sync_cond, NULL) == 0);
     Lardon3DTask *task = lardon3d_task_create(
-        "Attente",
+        "Attente puis reprise",
         &estimate,
-        wait_callback,
+        wait_retry_callback,
+        &ctx
+    );
+    CHECK(task);
+    StartContext start = {task, governor, reservation};
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, start_task, &start) == 0);
+    (void)pthread_mutex_lock(&ctx.sync_mutex);
+    while (!ctx.in_break) {
+        (void)pthread_cond_wait(&ctx.sync_cond, &ctx.sync_mutex);
+    }
+    (void)pthread_mutex_unlock(&ctx.sync_mutex);
+    /* Tant que la politique reste bloquante, le gouverneur répond WAIT :
+     * la tâche doit rester en cours et ne jamais passer en échec. */
+    Lardon3DTaskSnapshot snapshot;
+    for (size_t attempt = 0; attempt < 50; ++attempt) {
+        CHECK(lardon3d_task_snapshot(task, &snapshot));
+        CHECK(snapshot.state == TASK_RUNNING);
+        short_pause(1000000);
+    }
+    CHECK(lardon3d_task_sequence_count(task) == 0);
+    /* Lever la contrainte : la prochaine tentative doit réussir. */
+    Lardon3DResourcePolicy allowed = policy;
+    allowed.maximum_io_pressure_avg10 = 100.0;
+    CHECK(lardon3d_resource_governor_set_policy(governor, &allowed));
+    CHECK(lardon3d_task_join(task));
+    void *thread_result;
+    CHECK(pthread_join(thread, &thread_result) == 0);
+    CHECK((uintptr_t)thread_result == 1);
+    CHECK(lardon3d_task_snapshot(task, &snapshot));
+    CHECK(snapshot.state == TASK_COMPLETED);
+    CHECK(lardon3d_task_sequence_count(task) == 1);
+    CHECK(lardon3d_resource_governor_reservation_count(governor) == 0);
+    lardon3d_task_destroy(task);
+    (void)pthread_cond_destroy(&ctx.sync_cond);
+    (void)pthread_mutex_destroy(&ctx.sync_mutex);
+    lardon3d_resource_governor_destroy(governor);
+    return true;
+}
+
+static bool
+run_cancel_during_wait_test(void)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 100,
+        .desired_cpu_threads = 1,
+        .desired_io_slots = 1,
+    };
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = 16,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = UINT64_MAX,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 0.0,
+        .io_slot_capacity = 1,
+    };
+    Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(
+        &profile,
+        &policy
+    );
+    CHECK(governor);
+    Lardon3DResourceSnapshot resource_snapshot = {
+        .memory_available_bytes = UINT64_MAX,
+        .cpu_load_1m = 0.0,
+    };
+    Lardon3DResourceDecision decision;
+    Lardon3DResourceReservation *reservation;
+    CHECK(lardon3d_resource_governor_reserve(
+        governor,
+        &resource_snapshot,
+        &estimate,
+        &decision,
+        &reservation
+    ));
+    CHECK(reservation);
+    WaitRetryContext ctx = {.governor = governor};
+    CHECK(pthread_mutex_init(&ctx.sync_mutex, NULL) == 0);
+    CHECK(pthread_cond_init(&ctx.sync_cond, NULL) == 0);
+    Lardon3DTask *task = lardon3d_task_create(
+        "Annulation pendant attente",
+        &estimate,
+        wait_retry_callback,
+        &ctx
+    );
+    CHECK(task);
+    StartContext start = {task, governor, reservation};
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, start_task, &start) == 0);
+    (void)pthread_mutex_lock(&ctx.sync_mutex);
+    while (!ctx.in_break) {
+        (void)pthread_cond_wait(&ctx.sync_cond, &ctx.sync_mutex);
+    }
+    (void)pthread_mutex_unlock(&ctx.sync_mutex);
+    /* Annuler pendant que la tâche attend les ressources. */
+    lardon3d_task_request_cancel(task);
+    CHECK(lardon3d_task_join(task));
+    CHECK(pthread_join(thread, NULL) == 0);
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(lardon3d_task_snapshot(task, &snapshot));
+    CHECK(snapshot.state == TASK_CANCELLED);
+    CHECK(lardon3d_resource_governor_reservation_count(governor) == 0);
+    lardon3d_task_destroy(task);
+    (void)pthread_cond_destroy(&ctx.sync_cond);
+    (void)pthread_mutex_destroy(&ctx.sync_mutex);
+    lardon3d_resource_governor_destroy(governor);
+    return true;
+}
+
+static bool
+run_pause_during_wait_test(void)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 100,
+        .desired_cpu_threads = 1,
+        .desired_io_slots = 1,
+    };
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = 16,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = UINT64_MAX,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 0.0,
+        .io_slot_capacity = 1,
+    };
+    Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(
+        &profile,
+        &policy
+    );
+    CHECK(governor);
+    Lardon3DResourceSnapshot resource_snapshot = {
+        .memory_available_bytes = UINT64_MAX,
+        .cpu_load_1m = 0.0,
+    };
+    Lardon3DResourceDecision decision;
+    Lardon3DResourceReservation *reservation;
+    CHECK(lardon3d_resource_governor_reserve(
+        governor,
+        &resource_snapshot,
+        &estimate,
+        &decision,
+        &reservation
+    ));
+    CHECK(reservation);
+    WaitRetryContext ctx = {.governor = governor};
+    CHECK(pthread_mutex_init(&ctx.sync_mutex, NULL) == 0);
+    CHECK(pthread_cond_init(&ctx.sync_cond, NULL) == 0);
+    Lardon3DTask *task = lardon3d_task_create(
+        "Pause pendant attente",
+        &estimate,
+        wait_retry_callback,
+        &ctx
+    );
+    CHECK(task);
+    StartContext start = {task, governor, reservation};
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, start_task, &start) == 0);
+    (void)pthread_mutex_lock(&ctx.sync_mutex);
+    while (!ctx.in_break) {
+        (void)pthread_cond_wait(&ctx.sync_cond, &ctx.sync_mutex);
+    }
+    (void)pthread_mutex_unlock(&ctx.sync_mutex);
+    /* Mettre en pause pendant l'attente, puis reprendre. */
+    CHECK(lardon3d_task_pause(task));
+    CHECK(wait_for_state(task, TASK_PAUSED));
+    CHECK(lardon3d_task_resume(task));
+    CHECK(wait_for_state(task, TASK_RUNNING));
+    /* Lever la contrainte : la tâche doit reprendre puis réussir. */
+    Lardon3DResourcePolicy allowed = policy;
+    allowed.maximum_io_pressure_avg10 = 100.0;
+    CHECK(lardon3d_resource_governor_set_policy(governor, &allowed));
+    CHECK(lardon3d_task_join(task));
+    CHECK(pthread_join(thread, NULL) == 0);
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(lardon3d_task_snapshot(task, &snapshot));
+    CHECK(snapshot.state == TASK_COMPLETED);
+    CHECK(lardon3d_task_sequence_count(task) == 1);
+    CHECK(lardon3d_resource_governor_reservation_count(governor) == 0);
+    lardon3d_task_destroy(task);
+    (void)pthread_cond_destroy(&ctx.sync_cond);
+    (void)pthread_mutex_destroy(&ctx.sync_mutex);
+    lardon3d_resource_governor_destroy(governor);
+    return true;
+}
+
+static bool
+run_reject_test(void)
+{
+    const Lardon3DResourceEstimate valid_estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    const Lardon3DResourceEstimate reject_estimate = {
+        .memory_fixed_bytes = UINT64_MAX,
+        .memory_bytes_per_item = 1,
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = 16,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = UINT64_MAX,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 100.0,
+        .io_slot_capacity = 1,
+    };
+    Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(
+        &profile,
+        &policy
+    );
+    CHECK(governor);
+    Lardon3DResourceSnapshot resource_snapshot = {
+        .memory_available_bytes = UINT64_MAX,
+        .cpu_load_1m = 0.0,
+    };
+    Lardon3DResourceDecision decision;
+    Lardon3DResourceReservation *reservation;
+    CHECK(lardon3d_resource_governor_reserve(
+        governor,
+        &resource_snapshot,
+        &valid_estimate,
+        &decision,
+        &reservation
+    ));
+    CHECK(reservation);
+    RejectContext ctx = {.governor = governor};
+    Lardon3DTask *task = lardon3d_task_create(
+        "Refus gouverneur",
+        &reject_estimate,
+        reject_callback,
         &ctx
     );
     CHECK(task);
@@ -298,6 +566,52 @@ run_wait_test(void)
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_FAILED);
     CHECK(lardon3d_resource_governor_reservation_count(governor) == 0);
+    lardon3d_task_destroy(task);
+    lardon3d_resource_governor_destroy(governor);
+    return true;
+}
+
+static bool
+run_invalid_break_test(void)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = 4,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = UINT64_MAX,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 100.0,
+        .io_slot_capacity = 1,
+    };
+    Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(
+        &profile,
+        &policy
+    );
+    CHECK(governor);
+    Lardon3DTask *task = lardon3d_task_create(
+        "Sans réservation",
+        &estimate,
+        wait_retry_callback,
+        NULL
+    );
+    CHECK(task);
+    Lardon3DResourceReservation *reservation = NULL;
+    Lardon3DTaskExecutionContract contract;
+    CHECK(!lardon3d_task_sequence_break(task, governor, &reservation, &contract));
+    CHECK(!lardon3d_task_sequence_break(NULL, governor, &reservation, &contract));
+    CHECK(!lardon3d_task_sequence_break(task, NULL, &reservation, &contract));
+    CHECK(!lardon3d_task_sequence_break(task, governor, NULL, &contract));
+    CHECK(!lardon3d_task_sequence_break(task, governor, &reservation, NULL));
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(lardon3d_task_snapshot(task, &snapshot));
+    CHECK(snapshot.state == TASK_PENDING);
     lardon3d_task_destroy(task);
     lardon3d_resource_governor_destroy(governor);
     return true;
@@ -382,10 +696,22 @@ main(void)
     if (!run_sequential_test()) {
         return EXIT_FAILURE;
     }
-    if (!run_wait_test()) {
+    if (!run_wait_retry_test()) {
         return EXIT_FAILURE;
     }
     if (!run_cancel_test()) {
+        return EXIT_FAILURE;
+    }
+    if (!run_cancel_during_wait_test()) {
+        return EXIT_FAILURE;
+    }
+    if (!run_pause_during_wait_test()) {
+        return EXIT_FAILURE;
+    }
+    if (!run_reject_test()) {
+        return EXIT_FAILURE;
+    }
+    if (!run_invalid_break_test()) {
         return EXIT_FAILURE;
     }
     return EXIT_SUCCESS;

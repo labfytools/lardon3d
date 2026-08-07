@@ -16,6 +16,7 @@ permission:
     "*": deny
     "lardon-build": allow
     "lardon-build-backup": allow
+    "lardon-build-backup-router": allow
     "lardon-build-light": allow
     "lardon-architect": allow
     "lardon-explore": allow
@@ -70,6 +71,21 @@ Cette règle s’applique même si le ticket ne crée aucun nouveau thread.
    - fichiers concernés ;
    - API et invariants ;
    - tests requis.
+
+   Chaîne d'implémentation :
+
+    1. Utiliser `lardon-build` pour l'implémentation normale.
+    2. Si `lardon-build` échoue pour indisponibilité du fournisseur, quota ou erreur
+       429/503, conserver le handoff et utiliser `lardon-build-backup`.
+    3. Si le premier backup est lui-même indisponible, utiliser
+       `lardon-build-backup-router`.
+    4. Ne jamais recommencer l'exploration ou l'architecture lors d'un fallback si
+       le handoff contient déjà les informations nécessaires.
+    5. Ne jamais basculer vers un modèle payant.
+
+    Un fallback ne doit modifier ni l'objectif, ni le périmètre, ni les invariants
+    du ticket.
+
 7. Mettre à jour le handoff après chaque phase importante.
 
 Le répertoire `.opencode/work/` est préparé localement. Ne vérifie pas son

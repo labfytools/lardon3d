@@ -278,6 +278,11 @@ lardon3d_task_checkpoint(Lardon3DTask *task)
     return continuing;
 }
 
+enum {
+    /* Attente bornée entre deux tentatives d'admission : 50 ms. */
+    LARDON3D_SEQUENCE_ADMISSION_WAIT_NS = 50000000ULL,
+};
+
 bool
 lardon3d_task_sequence_break(
     Lardon3DTask *task,
@@ -302,6 +307,7 @@ lardon3d_task_sequence_break(
         (void)pthread_cond_wait(&task->condition, &task->mutex);
     }
     if (task->cancel_requested) {
+        finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
         (void)pthread_mutex_unlock(&task->mutex);
         return false;
     }
@@ -314,95 +320,121 @@ lardon3d_task_sequence_break(
         (void)lardon3d_resource_governor_release(governor, previous);
     }
 
-    Lardon3DResourceDecision decision;
-    Lardon3DResourceReservation *next = NULL;
-    bool reserved = lardon3d_resource_governor_reserve_available(
-        governor,
-        &task->estimate,
-        &decision,
-        &next
-    );
+    for (;;) {
+        /* Vérifier pause et annulation avant chaque tentative d'admission. */
+        (void)pthread_mutex_lock(&task->mutex);
+        while (task->pause_requested && !task->cancel_requested) {
+            task->state = TASK_PAUSED;
+            copy_text(task->message, sizeof(task->message), "Tâche en pause.");
+            (void)pthread_cond_broadcast(&task->condition);
+            (void)pthread_cond_wait(&task->condition, &task->mutex);
+        }
+        if (task->cancel_requested) {
+            finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
+            (void)pthread_mutex_unlock(&task->mutex);
+            return false;
+        }
+        task->state = TASK_RUNNING;
+        (void)pthread_mutex_unlock(&task->mutex);
 
-    (void)pthread_mutex_lock(&task->mutex);
-    if (task->cancel_requested) {
-        if (next) {
-            (void)lardon3d_resource_governor_release(governor, next);
-        }
-        finish_locked(
-            task,
-            TASK_CANCELLED,
-            "Tâche annulée pendant sequence_break."
-        );
-        (void)pthread_mutex_unlock(&task->mutex);
-        return false;
-    }
-    while (task->pause_requested && !task->cancel_requested) {
-        task->state = TASK_PAUSED;
-        copy_text(task->message, sizeof(task->message), "Tâche en pause.");
-        (void)pthread_cond_broadcast(&task->condition);
-        (void)pthread_cond_wait(&task->condition, &task->mutex);
-    }
-    if (task->cancel_requested) {
-        if (next) {
-            (void)lardon3d_resource_governor_release(governor, next);
-        }
-        finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
-        (void)pthread_mutex_unlock(&task->mutex);
-        return false;
-    }
-    if (!reserved || !next) {
-        task->current_reservation = NULL;
-        finish_locked(
-            task,
-            TASK_FAILED,
-            "Impossible de réserver les ressources de la séquence."
-        );
-        (void)pthread_mutex_unlock(&task->mutex);
-        return false;
-    }
-    if (decision.kind == LARDON3D_RESOURCE_WAIT
-        || decision.kind == LARDON3D_RESOURCE_REJECT) {
-        task->current_reservation = NULL;
-        finish_locked(
-            task,
-            TASK_FAILED,
-            decision.reason[0] ? decision.reason
-                : "Ressources impossibles à réserver."
-        );
-        (void)pthread_mutex_unlock(&task->mutex);
-        return false;
-    }
-    Lardon3DResourceReservationInfo information;
-    if (!lardon3d_resource_reservation_get_active(
+        uint64_t generation = lardon3d_resource_governor_generation(governor);
+        Lardon3DResourceDecision decision;
+        Lardon3DResourceReservation *next = NULL;
+        bool admitted = lardon3d_resource_governor_reserve_available(
             governor,
-            next,
-            &information
-        )) {
-        (void)lardon3d_resource_governor_release(governor, next);
-        task->current_reservation = NULL;
-        finish_locked(
-            task,
-            TASK_FAILED,
-            "Réservation de séquence invalide."
+            &task->estimate,
+            &decision,
+            &next
         );
-        (void)pthread_mutex_unlock(&task->mutex);
-        return false;
+        if (!admitted) {
+            /* Erreur interne : échec d'allocation ou d'instantané. */
+            (void)pthread_mutex_lock(&task->mutex);
+            task->current_reservation = NULL;
+            finish_locked(
+                task,
+                TASK_FAILED,
+                "Impossible de réserver les ressources de la séquence."
+            );
+            (void)pthread_mutex_unlock(&task->mutex);
+            return false;
+        }
+        switch (decision.kind) {
+        case LARDON3D_RESOURCE_START:
+        case LARDON3D_RESOURCE_REDUCE_BATCH: {
+            if (!next) {
+                (void)pthread_mutex_lock(&task->mutex);
+                task->current_reservation = NULL;
+                finish_locked(
+                    task,
+                    TASK_FAILED,
+                    "Réservation de séquence invalide."
+                );
+                (void)pthread_mutex_unlock(&task->mutex);
+                return false;
+            }
+            Lardon3DResourceReservationInfo information;
+            if (!lardon3d_resource_reservation_get_active(
+                    governor,
+                    next,
+                    &information
+                )) {
+                (void)lardon3d_resource_governor_release(governor, next);
+                (void)pthread_mutex_lock(&task->mutex);
+                task->current_reservation = NULL;
+                finish_locked(
+                    task,
+                    TASK_FAILED,
+                    "Réservation de séquence invalide."
+                );
+                (void)pthread_mutex_unlock(&task->mutex);
+                return false;
+            }
+            (void)pthread_mutex_lock(&task->mutex);
+            task->current_reservation = next;
+            task->contract = (Lardon3DTaskExecutionContract) {
+                .batch_size = information.batch_size,
+                .memory_bytes = information.memory_bytes,
+                .gpu_memory_bytes = information.gpu_memory_bytes,
+                .cpu_threads = information.cpu_threads,
+                .gpu_slots = information.gpu_slots,
+                .io_slots = information.io_slots,
+            };
+            task->has_contract = true;
+            ++task->sequence_count;
+            *out_reservation = next;
+            *out_contract = task->contract;
+            (void)pthread_mutex_unlock(&task->mutex);
+            return true;
+        }
+        case LARDON3D_RESOURCE_REJECT:
+            if (next) {
+                (void)lardon3d_resource_governor_release(governor, next);
+            }
+            (void)pthread_mutex_lock(&task->mutex);
+            task->current_reservation = NULL;
+            finish_locked(
+                task,
+                TASK_FAILED,
+                decision.reason[0] ? decision.reason
+                    : "Ressources impossibles à réserver."
+            );
+            (void)pthread_mutex_unlock(&task->mutex);
+            return false;
+        case LARDON3D_RESOURCE_WAIT:
+        default:
+            /* Indisponibilité temporaire : ne pas échouer, attendre un
+             * changement de ressources puis retenter l'admission. */
+            if (next) {
+                (void)lardon3d_resource_governor_release(governor, next);
+            }
+            (void)lardon3d_resource_governor_wait_for_change(
+                governor,
+                generation,
+                LARDON3D_SEQUENCE_ADMISSION_WAIT_NS
+            );
+            break;
+        }
     }
-    task->current_reservation = next;
-    task->contract = (Lardon3DTaskExecutionContract) {
-        .batch_size = information.batch_size,
-        .memory_bytes = information.memory_bytes,
-        .gpu_memory_bytes = information.gpu_memory_bytes,
-        .cpu_threads = information.cpu_threads,
-        .gpu_slots = information.gpu_slots,
-        .io_slots = information.io_slots,
-    };
-    task->has_contract = true;
-    ++task->sequence_count;
-    *out_reservation = next;
-    *out_contract = task->contract;
-    (void)pthread_mutex_unlock(&task->mutex);
-    return true;
 }
 
 unsigned int

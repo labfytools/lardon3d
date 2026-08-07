@@ -8,10 +8,11 @@ permission:
   bash:
     "*": deny
     "CC=clang meson setup *": allow
+    "meson setup *": allow
     "meson compile *": allow
     "meson test *": allow
     "ninja *": allow
-    "git diff --check*": allow
+    "git diff*": allow
     "git status*": allow
   task: deny
 ---

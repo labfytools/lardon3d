@@ -9,6 +9,9 @@ permission:
     "*": deny
     "rg *": allow
     "git grep*": allow
+    "git status*": allow
+    "git diff*": allow
+    "sed -n *": allow
   task: deny
 ---
 
