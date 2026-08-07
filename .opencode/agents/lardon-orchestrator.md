@@ -1,7 +1,7 @@
 ---
 description: Orchestre les tickets avec un contexte minimal et sans écrire les sources
 mode: primary
-model: opencode/mimo-v2.5-free
+model: google/gemini-3.6-flash
 temperature: 0.1
 permission:
   edit:

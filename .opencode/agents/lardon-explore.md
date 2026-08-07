@@ -1,7 +1,7 @@
 ---
 description: Explore rapidement fichiers, symboles, appels et dépendances
 mode: subagent
-model: opencode/mimo-v2.5-free
+model: google/gemini-3.5-flash-lite
 temperature: 0.1
 permission:
   edit: deny

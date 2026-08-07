@@ -1,7 +1,7 @@
 ---
 description: Exécute les validations Lardon3D sans modifier le code
 mode: subagent
-model: opencode/mimo-v2.5-free
+model: google/gemini-3.5-flash-lite
 temperature: 0.1
 permission:
   edit: deny
