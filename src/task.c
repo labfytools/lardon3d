@@ -323,8 +323,13 @@ lardon3d_task_sequence_break(
         (void)pthread_cond_wait(&task->condition, &task->mutex);
     }
     if (task->cancel_requested) {
+        Lardon3DResourceReservation *res = task->current_reservation;
+        task->current_reservation = NULL;
         finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
         (void)pthread_mutex_unlock(&task->mutex);
+        if (res) {
+            (void)lardon3d_resource_governor_release(governor, res);
+        }
         return false;
     }
     task->state = TASK_RUNNING;
@@ -346,8 +351,13 @@ lardon3d_task_sequence_break(
             (void)pthread_cond_wait(&task->condition, &task->mutex);
         }
         if (task->cancel_requested) {
+            Lardon3DResourceReservation *res = task->current_reservation;
+            task->current_reservation = NULL;
             finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
             (void)pthread_mutex_unlock(&task->mutex);
+            if (res) {
+                (void)lardon3d_resource_governor_release(governor, res);
+            }
             return false;
         }
         task->state = TASK_RUNNING;
@@ -364,6 +374,9 @@ lardon3d_task_sequence_break(
         );
         if (!admitted) {
             /* Erreur interne : échec d'allocation ou d'instantané. */
+            if (next) {
+                (void)lardon3d_resource_governor_release(governor, next);
+            }
             (void)pthread_mutex_lock(&task->mutex);
             task->current_reservation = NULL;
             finish_locked(
@@ -437,7 +450,6 @@ lardon3d_task_sequence_break(
             (void)pthread_mutex_unlock(&task->mutex);
             return false;
         case LARDON3D_RESOURCE_WAIT:
-        default:
             /* Indisponibilité temporaire : ne pas échouer, attendre un
              * changement de ressources puis retenter l'admission. */
             if (next) {
@@ -449,6 +461,20 @@ lardon3d_task_sequence_break(
                 LARDON3D_SEQUENCE_ADMISSION_WAIT_NS
             );
             break;
+        default:
+            /* Décision inconnue : erreur interne, ne jamais boucler. */
+            if (next) {
+                (void)lardon3d_resource_governor_release(governor, next);
+            }
+            (void)pthread_mutex_lock(&task->mutex);
+            task->current_reservation = NULL;
+            finish_locked(
+                task,
+                TASK_FAILED,
+                "Décision de ressource inconnue."
+            );
+            (void)pthread_mutex_unlock(&task->mutex);
+            return false;
         }
     }
 }
