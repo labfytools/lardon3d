@@ -176,6 +176,14 @@ bool lardon3d_resource_governor_availability(
     const Lardon3DResourceSnapshot *snapshot,
     Lardon3DResourceAvailability *availability
 );
+uint64_t lardon3d_resource_governor_generation(
+    Lardon3DResourceGovernor *governor
+);
+bool lardon3d_resource_governor_wait_for_change(
+    Lardon3DResourceGovernor *governor,
+    uint64_t observed_generation,
+    uint64_t timeout_ns
+);
 const char *lardon3d_resource_decision_name(
     Lardon3DResourceDecisionKind kind
 );

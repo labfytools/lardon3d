@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -13,6 +14,8 @@ struct Lardon3DResourceReservation {
 
 struct Lardon3DResourceGovernor {
     pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    uint64_t generation;
     Lardon3DHardwareProfile profile;
     Lardon3DResourcePolicy policy;
     uint64_t next_reservation_id;
@@ -203,6 +206,26 @@ lardon3d_resource_governor_create(
         free(governor);
         return NULL;
     }
+    pthread_condattr_t attr;
+    if (pthread_condattr_init(&attr) != 0) {
+        (void)pthread_mutex_destroy(&governor->mutex);
+        free(governor);
+        return NULL;
+    }
+    if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) != 0) {
+        (void)pthread_condattr_destroy(&attr);
+        (void)pthread_mutex_destroy(&governor->mutex);
+        free(governor);
+        return NULL;
+    }
+    if (pthread_cond_init(&governor->cond, &attr) != 0) {
+        (void)pthread_condattr_destroy(&attr);
+        (void)pthread_mutex_destroy(&governor->mutex);
+        free(governor);
+        return NULL;
+    }
+    (void)pthread_condattr_destroy(&attr);
+    governor->generation = 0;
     governor->profile = *profile;
     governor->policy = *policy;
     governor->next_reservation_id = 1;
@@ -227,6 +250,7 @@ lardon3d_resource_governor_destroy(Lardon3DResourceGovernor *governor)
         free(reservation);
         reservation = next;
     }
+    (void)pthread_cond_destroy(&governor->cond);
     (void)pthread_mutex_destroy(&governor->mutex);
     free(governor);
 }
@@ -345,6 +369,62 @@ lardon3d_resource_governor_availability(
     bool success = availability_locked(governor, snapshot, availability);
     (void)pthread_mutex_unlock(&governor->mutex);
     return success;
+}
+
+uint64_t
+lardon3d_resource_governor_generation(
+    Lardon3DResourceGovernor *governor
+)
+{
+    if (!governor) {
+        return 0;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    uint64_t generation = governor->generation;
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return generation;
+}
+
+bool
+lardon3d_resource_governor_wait_for_change(
+    Lardon3DResourceGovernor *governor,
+    uint64_t observed_generation,
+    uint64_t timeout_ns
+)
+{
+    if (!governor) {
+        return false;
+    }
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
+        return false;
+    }
+    deadline.tv_sec += (time_t)(timeout_ns / 1000000000ULL);
+    uint64_t remainder = timeout_ns % 1000000000ULL;
+    deadline.tv_nsec += (long)remainder;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec += 1;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    bool changed = false;
+    while (governor->generation == observed_generation) {
+        int result = pthread_cond_timedwait(
+            &governor->cond,
+            &governor->mutex,
+            &deadline
+        );
+        if (result == ETIMEDOUT) {
+            break;
+        }
+        if (result != 0) {
+            (void)pthread_mutex_unlock(&governor->mutex);
+            return false;
+        }
+    }
+    changed = governor->generation != observed_generation;
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return changed;
 }
 
 static void
@@ -554,6 +634,8 @@ lardon3d_resource_governor_reserve(
     governor->io_slots_reserved += decision->io_slots;
     ++governor->active_count;
     *reservation = created;
+    ++governor->generation;
+    (void)pthread_cond_broadcast(&governor->cond);
     (void)pthread_mutex_unlock(&governor->mutex);
     return true;
 }
@@ -635,6 +717,8 @@ lardon3d_resource_governor_release(
     current->information.state = LARDON3D_RESERVATION_RELEASED;
     current->next = governor->released;
     governor->released = current;
+    ++governor->generation;
+    (void)pthread_cond_broadcast(&governor->cond);
     (void)pthread_mutex_unlock(&governor->mutex);
     return true;
 }
