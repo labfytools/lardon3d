@@ -27,7 +27,8 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v1** : identité, tâches/checkpoints et inventaire d'artefacts SQLite
+- **Project Database v2** : identité, tâches typées/checkpoints et inventaire d'artefacts SQLite
+- **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
 - **Task Queue** : file FIFO avec sélection adaptative et backpressure
 - **Hardware Profile** : détection des capacités matérielles
 - **Resource Snapshot** : capture instantanée des ressources
@@ -40,7 +41,7 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 
 ### Briques prévues (PLANNED)
 
-- Reconstruction des callbacks métier et resoumission des tâches récupérables
+- Premiers types métier reconstructibles et resoumission contrôlée des tâches récupérables
 - DAG de dépendances
 - Pools de workers multiples (CPU/GPU/IO)
 - Publication live validée
@@ -94,6 +95,7 @@ Acquisitions
 - [Vue d'ensemble](docs/architecture/overview.md)
 - [Runtime](docs/architecture/runtime.md)
 - [Système de tâches](docs/architecture/task_system.md)
+- [Registry des types de tâches](docs/architecture/task_kind_registry.md)
 - [File de tâches](docs/architecture/task_queue.md)
 - [Resource Governor](docs/architecture/resource_governor.md)
 - [Intégration Scheduler ↔ Governor](docs/architecture/scheduler_resource_integration.md)

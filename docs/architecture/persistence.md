@@ -108,7 +108,7 @@ par le `time_t` local avant conversion. Le format reste donc lisible entre
 plateformes uniquement pour les valeurs communes à leurs domaines `size_t` et
 `time_t`.
 
-## Project Database v1
+## Project Database v2
 
 SQLite contient l'état logique interrogable et les références aux fichiers ;
 les checkpoints et artefacts volumineux restent externes. L'enregistrement du
@@ -135,19 +135,29 @@ L'inventaire distingue checkpoint récupérable durable, récupérable mais publ
 non durable, absent, invalide, version inconnue et erreur d'I/O. Aucune réparation
 ou suppression silencieuse n'est effectuée.
 
+Le format checkpoint reste en version 1 et ne contient pas de `task_kind`. Le
+schéma SQLite v2 conserve `task_kind` et `task_kind_version` dans le résumé
+logique interrogable. La migration v1→v2 laisse ces deux colonnes à `NULL` : une
+tâche legacy reste inspectable mais ne peut pas être reconstruite ou resoumise.
+Un kind inconnu ou une version non supportée est diagnostiqué sans exécuter de
+code.
+
 ## Statut
 
 **IMPLEMENTED** — modèle durable, codec v1, lecture validée, publication
 atomique et restauration sûre d'une tâche isolée.
 
-**IMPLEMENTED** — Project Database v1 pour identité, résumés de tâches,
+**IMPLEMENTED** — Project Database v2 pour identité, résumés de tâches typées,
 références checkpoint et artefacts génériques.
+
+**IMPLEMENTED** — registry statique bornée et reconstruction explicite avec
+ownership du userdata.
 
 **IMPLEMENTED** — API projet de sauvegarde fichier+DB et inventaire validé au
 redémarrage.
 
-**NOT_YET_WIRED** — autosave complet, reconstruction des callbacks métier,
+**NOT_YET_WIRED** — autosave complet, premier type métier de production,
 resoumission scheduler et réconciliation des fichiers orphelins.
 
-**PLANNED** — catalogue d'artefacts photogrammétriques réels, migrations v2+ et
+**PLANNED** — catalogue d'artefacts photogrammétriques réels, migrations v3+ et
 reprise globale.

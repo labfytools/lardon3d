@@ -18,6 +18,9 @@ struct Lardon3DTask {
     struct timespec finished_at;
     Lardon3DTaskCallback callback;
     void *userdata;
+    Lardon3DTaskUserdataDestroy userdata_destroy;
+    char task_kind[LARDON3D_TASK_KIND_CAPACITY];
+    uint32_t task_kind_version;
     Lardon3DResourceEstimate estimate;
     Lardon3DTaskExecutionContract contract;
     bool has_contract;
@@ -40,6 +43,28 @@ static bool
 valid_state(Lardon3DTaskState state)
 {
     return state >= TASK_PENDING && state <= TASK_COMPLETED;
+}
+
+bool
+lardon3d_task_kind_is_valid(const char *task_kind)
+{
+    if (!task_kind) {
+        return false;
+    }
+    size_t length = strnlen(task_kind, LARDON3D_TASK_KIND_CAPACITY);
+    if (length == 0 || length >= LARDON3D_TASK_KIND_CAPACITY) {
+        return false;
+    }
+    for (size_t index = 0; index < length; ++index) {
+        char character = task_kind[index];
+        if (!((character >= 'a' && character <= 'z')
+                || (character >= '0' && character <= '9')
+                || (index > 0 && (character == '.' || character == '_'
+                    || character == '-')))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static Lardon3DTaskState
@@ -81,7 +106,27 @@ lardon3d_task_create(
     void *userdata
 )
 {
-    if (!name || !name[0] || !estimate || !callback) {
+    return lardon3d_task_create_typed(
+        name, estimate, NULL, 0, callback, userdata, NULL
+    );
+}
+
+Lardon3DTask *
+lardon3d_task_create_typed(
+    const char *name,
+    const Lardon3DResourceEstimate *estimate,
+    const char *task_kind,
+    uint32_t task_kind_version,
+    Lardon3DTaskCallback callback,
+    void *userdata,
+    Lardon3DTaskUserdataDestroy userdata_destroy
+)
+{
+    bool typed = task_kind != NULL;
+    if (!name || !name[0] || !estimate || !callback
+        || (typed && (!lardon3d_task_kind_is_valid(task_kind)
+            || task_kind_version == 0))
+        || (!typed && (task_kind_version != 0 || userdata_destroy))) {
         return NULL;
     }
     Lardon3DTask *task = calloc(1, sizeof(*task));
@@ -102,6 +147,11 @@ lardon3d_task_create(
     task->state = TASK_PENDING;
     task->callback = callback;
     task->userdata = userdata;
+    task->userdata_destroy = userdata_destroy;
+    if (typed) {
+        (void)snprintf(task->task_kind, sizeof(task->task_kind), "%s", task_kind);
+        task->task_kind_version = task_kind_version;
+    }
     task->estimate = *estimate;
     copy_text(task->message, sizeof(task->message), "En attente.");
     return task;
@@ -117,6 +167,9 @@ lardon3d_task_destroy(Lardon3DTask *task)
     (void)lardon3d_task_join(task);
     (void)pthread_cond_destroy(&task->condition);
     (void)pthread_mutex_destroy(&task->mutex);
+    if (task->userdata_destroy) {
+        task->userdata_destroy(task->userdata);
+    }
     free(task);
 }
 
@@ -606,6 +659,21 @@ lardon3d_task_restore(
     void *userdata
 )
 {
+    return lardon3d_task_restore_typed(
+        snapshot, NULL, 0, callback, userdata, NULL
+    );
+}
+
+Lardon3DTask *
+lardon3d_task_restore_typed(
+    const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind,
+    uint32_t task_kind_version,
+    Lardon3DTaskCallback callback,
+    void *userdata,
+    Lardon3DTaskUserdataDestroy userdata_destroy
+)
+{
     if (!snapshot || snapshot->id == 0 || !snapshot->name[0] || !callback
         || memchr(snapshot->name, '\0', sizeof(snapshot->name)) == NULL
         || memchr(snapshot->message, '\0', sizeof(snapshot->message)) == NULL
@@ -625,11 +693,14 @@ lardon3d_task_restore(
             && snapshot->estimate.desired_gpu_slots == 0)) {
         return NULL;
     }
-    Lardon3DTask *task = lardon3d_task_create(
+    Lardon3DTask *task = lardon3d_task_create_typed(
         snapshot->name,
         &snapshot->estimate,
+        task_kind,
+        task_kind_version,
         callback,
-        userdata
+        userdata,
+        userdata_destroy
     );
     if (!task) {
         return NULL;
@@ -644,6 +715,30 @@ lardon3d_task_restore(
     task->sequence_count = snapshot->sequence_count;
     (void)pthread_mutex_unlock(&task->mutex);
     return task;
+}
+
+bool
+lardon3d_task_kind(
+    const Lardon3DTask *task,
+    char task_kind[LARDON3D_TASK_KIND_CAPACITY],
+    uint32_t *task_kind_version
+)
+{
+    if (!task || !task_kind || !task_kind_version) {
+        return false;
+    }
+    Lardon3DTask *mutable_task = (Lardon3DTask *)task;
+    (void)pthread_mutex_lock(&mutable_task->mutex);
+    bool typed = task->task_kind[0] != '\0';
+    if (typed) {
+        copy_text(task_kind, LARDON3D_TASK_KIND_CAPACITY, task->task_kind);
+        *task_kind_version = task->task_kind_version;
+    } else {
+        task_kind[0] = '\0';
+        *task_kind_version = 0;
+    }
+    (void)pthread_mutex_unlock(&mutable_task->mutex);
+    return typed;
 }
 
 uint64_t

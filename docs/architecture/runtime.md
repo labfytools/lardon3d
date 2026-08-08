@@ -89,7 +89,10 @@ les opérations multi-tables sont transactionnelles et bornées.
 l'identité et ferme la connexion. L'application arrête la task queue avant la
 fermeture finale du projet.
 
-**NOT_YET_WIRED** — aucune reconstruction de callback/userdata ni resoumission
+**IMPLEMENTED** — la registry reconstruit explicitement callback/userdata hors
+mutex DB pour un kind connu ; elle ne soumet aucune tâche.
+
+**NOT_YET_WIRED** — aucun type métier de production ni resoumission
 automatique. Une future resoumission devra aussi permettre à la queue de
 conserver l'identifiant stable restauré au lieu d'en assigner un nouveau.
 

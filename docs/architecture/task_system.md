@@ -39,6 +39,8 @@ une opération de réadmission, pas un état supplémentaire.
 |---|---|
 | `lardon3d_task_durable_snapshot()` | Copie les champs durables sous mutex |
 | `lardon3d_task_restore()` | Reconstruit une tâche sans état d'exécution vivant |
+| `lardon3d_task_create_typed()` | Crée une tâche persistable avec kind/version immuables |
+| `lardon3d_task_restore_typed()` | Restaure une tâche typée et transfère l'ownership du userdata |
 | `lardon3d_task_checkpoint_save()` | Publie atomiquement un snapshot v1 |
 | `lardon3d_task_checkpoint_load()` | Lit et valide un checkpoint borné |
 
@@ -73,9 +75,14 @@ mais sa durabilité après crash n'est pas confirmée.
 **IMPLEMENTED** — cycle de vie, pause/annulation coopératives, séquences
 adaptatives et fondation de checkpoints persistants isolés.
 
-**NOT_YET_WIRED** — sauvegarde automatique et restauration par la file.
+**IMPLEMENTED** — une registry statique peut reconstruire explicitement le
+callback et le userdata d'un kind connu. Le destructeur du userdata est détenu
+par la tâche restaurée et exécuté après arrêt de son exécution.
 
-La Project Database v1 peut enregistrer transactionnellement un résumé
+**NOT_YET_WIRED** — sauvegarde automatique, types métier de production et
+restauration par la file.
+
+La Project Database v2 peut enregistrer transactionnellement un résumé
 `Lardon3DTaskDurableSnapshot` et la référence de son checkpoint. Elle ne stocke
 ni estimation sérialisée complète, ni callback, ni réservation, et ne remplace
 pas la validation du fichier checkpoint avant `task_restore()`.
@@ -83,8 +90,7 @@ pas la validation du fichier checkpoint avant `task_restore()`.
 `lardon3d_project_checkpoint_task()` est la frontière runtime : elle capture le
 snapshot, publie le fichier hors mutex de tâche, puis met à jour la DB. L'API
 d'inventaire retourne des snapshots durables validés, mais ne peut pas appeler
-`task_restore()` tant que le type métier ne sait pas reconstruire callback et
-userdata.
+`task_restore()` que via un descriptor connu ; aucun pointeur n'est persistant.
 
 ## Limites
 

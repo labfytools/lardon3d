@@ -10,6 +10,7 @@
 enum {
     LARDON3D_TASK_NAME_CAPACITY = 128,
     LARDON3D_TASK_MESSAGE_CAPACITY = 256,
+    LARDON3D_TASK_KIND_CAPACITY = 65,
 };
 
 typedef enum {
@@ -23,6 +24,7 @@ typedef enum {
 
 typedef struct Lardon3DTask Lardon3DTask;
 typedef bool (*Lardon3DTaskCallback)(Lardon3DTask *task, void *userdata);
+typedef void (*Lardon3DTaskUserdataDestroy)(void *userdata);
 
 typedef struct {
     uint64_t id;
@@ -62,6 +64,15 @@ Lardon3DTask *lardon3d_task_create(
     Lardon3DTaskCallback callback,
     void *userdata
 );
+Lardon3DTask *lardon3d_task_create_typed(
+    const char *name,
+    const Lardon3DResourceEstimate *estimate,
+    const char *task_kind,
+    uint32_t task_kind_version,
+    Lardon3DTaskCallback callback,
+    void *userdata,
+    Lardon3DTaskUserdataDestroy userdata_destroy
+);
 void lardon3d_task_destroy(Lardon3DTask *task);
 /* Exécute le callback dans le thread appelant. */
 bool lardon3d_task_start(
@@ -92,6 +103,22 @@ Lardon3DTask *lardon3d_task_restore(
     const Lardon3DTaskDurableSnapshot *snapshot,
     Lardon3DTaskCallback callback,
     void *userdata
+);
+Lardon3DTask *lardon3d_task_restore_typed(
+    const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind,
+    uint32_t task_kind_version,
+    Lardon3DTaskCallback callback,
+    void *userdata,
+    Lardon3DTaskUserdataDestroy userdata_destroy
+);
+/* Une restauration typée réussie transfère userdata/userdata_destroy à la
+ * tâche. En cas d'échec, l'appelant en reste propriétaire. */
+bool lardon3d_task_kind_is_valid(const char *task_kind);
+bool lardon3d_task_kind(
+    const Lardon3DTask *task,
+    char task_kind[LARDON3D_TASK_KIND_CAPACITY],
+    uint32_t *task_kind_version
 );
 uint64_t lardon3d_task_id(const Lardon3DTask *task);
 bool lardon3d_task_assign_id(Lardon3DTask *task, uint64_t id);

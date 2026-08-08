@@ -157,7 +157,7 @@ La base de données projet stocke les métadonnées de reconstruction et les rel
 ## Frontière avec les checkpoints de tâche
 
 Le modèle durable v1 et son codec fichier sont implémentés indépendamment du
-stockage. La future base réutilisera les mêmes règles de normalisation et de
+stockage. La base réutilise les mêmes règles de normalisation et de
 validation ; elle ne stockera jamais les objets pthread, callbacks, pointeurs,
 contrats ou réservations. Le fichier par tâche est une fondation, pas une
 Project Database miniature.
@@ -167,12 +167,12 @@ référence vers le fichier checkpoint. Le fichier checkpoint validé reste la
 source complète pour `lardon3d_task_restore()` ; la DB seule ne reconstruit
 jamais une tâche. Un écart ou un fichier invalide interdit la reprise.
 
-## Schéma v1 implémenté
+## Schéma v2 implémenté
 
-- `metadata(key PRIMARY KEY, value)` contient uniquement `schema_version=1`.
+- `metadata(key PRIMARY KEY, value)` contient uniquement `schema_version=2`.
 - `project(singleton=1, stable_id UNIQUE, name, created_at, updated_at)` décrit
   l'unique identité logique de la DB.
-- `tasks(task_id PRIMARY KEY, name, saved_state, recovery_state, progress,
+- `tasks(task_id PRIMARY KEY, name, task_kind, task_kind_version, saved_state, recovery_state, progress,
   sequence_count, started_sec/nsec, finished_sec/nsec, updated_at)` contient le
   résumé durable. Les IDs v1 sont compris entre 1 et `INT64_MAX`.
 - `checkpoints(task_id PRIMARY KEY REFERENCES tasks ON DELETE CASCADE, path,
@@ -187,13 +187,26 @@ Les indexes portent uniquement sur `tasks(recovery_state, task_id)`,
 
 ## Ouverture et migrations
 
-Une DB vide reçoit le schéma v1 dans une transaction `BEGIN IMMEDIATE`. Une DB
-v1 est validée puis ouverte. Une version future est refusée et une DB contenant
+Une DB vide reçoit directement le schéma v2 dans une transaction
+`BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
+`task_kind` et `task_kind_version`, puis passe à v2. Les anciennes lignes restent
+`NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
+artefacts. Une interruption ou erreur provoque un rollback complet. Une DB v2
+est validée puis ouverte. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
-interne de migration ne connaît que `0 → 1`; aucune migration fictive ou
-destructive n'est présente.
+interne de migration ne connaît que `0 → 2` et `1 → 2`.
 
-Configuration v1 : `foreign_keys=ON`, `journal_mode=DELETE`,
+Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
+
+```sql
+ALTER TABLE tasks ADD COLUMN task_kind TEXT;
+ALTER TABLE tasks ADD COLUMN task_kind_version INTEGER
+    CHECK(task_kind_version IS NULL OR task_kind_version > 0);
+UPDATE metadata SET value=2
+    WHERE key='schema_version' AND value=1;
+```
+
+Configuration v2 : `foreign_keys=ON`, `journal_mode=DELETE`,
 `synchronous=FULL`, `busy_timeout=5000`. Le mode DELETE convient au propriétaire
 unique actuel, évite les fichiers WAL/SHM durables et conserve la synchronisation
 forte. Le timeout borne l'attente d'un verrou externe à cinq secondes.
@@ -235,17 +248,25 @@ Les checkpoints sont référencés par chemins relatifs portables :
 résout ce chemin sous la racine, charge le checkpoint et vérifie la cohérence du
 snapshot avec le résumé DB.
 
+Après copie du record hors mutex SQLite, l'inventaire consulte la registry. Il
+distingue `LEGACY_UNTYPED`, `UNKNOWN_TASK_KIND` et
+`UNSUPPORTED_TASK_KIND_VERSION`. Aucun reconstructeur métier n'est appelé sous
+le mutex DB. Un upsert ne peut pas changer le couple kind/version d'un task ID.
+
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma/migration v1, identité projet,
+**IMPLEMENTED** — SQLite système, schéma v2 et migration v1→v2, identité projet,
 transactions tâche+checkpoint, pagination de reprise et artefacts génériques.
 
 **IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,
 publication de checkpoints par le projet et inventaire de reprise validé.
 
-**NOT_YET_WIRED** — reconstruction des callbacks/userdata métier, resoumission
-scheduler, autosave à toutes les transitions et réconciliation des checkpoints
-orphelins, ScanSet et catalogue image persistants, Feature Store et Visual Index.
+**IMPLEMENTED** — kinds persistants, classification par registry et
+reconstruction explicite testée hors scheduler.
 
-**PLANNED** — migrations v2+, dépendances d'artefacts, graphe géométrique et
+**NOT_YET_WIRED** — type métier de production, resoumission scheduler, autosave
+à toutes les transitions et réconciliation des checkpoints orphelins, ScanSet
+et catalogue image persistants, Feature Store et Visual Index.
+
+**PLANNED** — migrations v3+, dépendances d'artefacts, graphe géométrique et
 reconstruction incrémentale.

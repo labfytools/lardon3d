@@ -5,6 +5,7 @@
 
 #include <lardon3d/app_state.h>
 #include <lardon3d/project_db.h>
+#include <lardon3d/task_kind_registry.h>
 
 typedef enum {
     LARDON3D_PROJECT_TASK_CHECKPOINT_OK = 0,
@@ -22,12 +23,17 @@ typedef enum {
     LARDON3D_PROJECT_RECOVERY_MISSING_CHECKPOINT,
     LARDON3D_PROJECT_RECOVERY_INVALID_CHECKPOINT,
     LARDON3D_PROJECT_RECOVERY_UNSUPPORTED_CHECKPOINT,
-    LARDON3D_PROJECT_RECOVERY_CHECKPOINT_IO_ERROR
+    LARDON3D_PROJECT_RECOVERY_CHECKPOINT_IO_ERROR,
+    LARDON3D_PROJECT_RECOVERY_LEGACY_UNTYPED,
+    LARDON3D_PROJECT_RECOVERY_UNKNOWN_TASK_KIND,
+    LARDON3D_PROJECT_RECOVERY_UNSUPPORTED_TASK_KIND_VERSION
 } Lardon3DProjectRecoveryStatus;
 
 typedef struct {
     uint64_t task_id;
     char name[LARDON3D_TASK_NAME_CAPACITY];
+    char task_kind[LARDON3D_TASK_KIND_CAPACITY];
+    uint32_t task_kind_version;
     Lardon3DProjectRecoveryStatus status;
     Lardon3DProjectDbCheckpointDurability durability;
     Lardon3DTaskDurableSnapshot snapshot;
@@ -50,6 +56,7 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_task(
 );
 Lardon3DProjectDbResult lardon3d_project_list_recoverable(
     Lardon3DAppState *state,
+    const Lardon3DTaskKindRegistry *registry,
     uint64_t after_task_id,
     Lardon3DProjectRecoveryEntry *entries,
     size_t capacity,

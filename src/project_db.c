@@ -17,17 +17,19 @@ struct Lardon3DProjectDb {
     char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
 };
 
-static const char schema_v1[] =
+static const char schema_v2[] =
     "CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
-    "INSERT INTO metadata(key,value) VALUES('schema_version',1);"
+    "INSERT INTO metadata(key,value) VALUES('schema_version',2);"
     "CREATE TABLE project(singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
     "stable_id TEXT NOT NULL UNIQUE,name TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);"
     "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY CHECK(task_id>0),name TEXT NOT NULL,"
+    "task_kind TEXT,task_kind_version INTEGER,"
     "saved_state INTEGER NOT NULL CHECK(saved_state BETWEEN 0 AND 5),"
     "recovery_state INTEGER NOT NULL CHECK(recovery_state BETWEEN 0 AND 5),"
     "progress INTEGER NOT NULL CHECK(progress BETWEEN 0 AND 100),sequence_count INTEGER NOT NULL CHECK(sequence_count>=0),"
     "started_sec INTEGER NOT NULL,started_nsec INTEGER NOT NULL CHECK(started_nsec BETWEEN 0 AND 999999999),"
-    "finished_sec INTEGER NOT NULL,finished_nsec INTEGER NOT NULL CHECK(finished_nsec BETWEEN 0 AND 999999999),updated_at INTEGER NOT NULL);"
+    "finished_sec INTEGER NOT NULL,finished_nsec INTEGER NOT NULL CHECK(finished_nsec BETWEEN 0 AND 999999999),updated_at INTEGER NOT NULL,"
+    "CHECK((task_kind IS NULL AND task_kind_version IS NULL) OR (task_kind IS NOT NULL AND task_kind_version>0)));"
     "CREATE INDEX tasks_recovery_state_idx ON tasks(recovery_state,task_id);"
     "CREATE TABLE checkpoints(task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,"
     "path TEXT NOT NULL,format_version INTEGER NOT NULL CHECK(format_version>0),"
@@ -122,10 +124,35 @@ migrate(Lardon3DProjectDb *database, unsigned int from_version)
         copy_error(database->error, "Version de schéma future non supportée.");
         return LARDON3D_PROJECT_DB_UNSUPPORTED_SCHEMA;
     }
-    if (from_version == 1) return LARDON3D_PROJECT_DB_OK;
-    if (from_version != 0) return LARDON3D_PROJECT_DB_CORRUPT;
+    if (from_version == LARDON3D_PROJECT_DB_SCHEMA_VERSION) {
+        return LARDON3D_PROJECT_DB_OK;
+    }
+    if (from_version != 0 && from_version != 1) {
+        return LARDON3D_PROJECT_DB_CORRUPT;
+    }
     Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
-    if (result == LARDON3D_PROJECT_DB_OK) result = execute(database, schema_v1, "create schema v1");
+    if (result == LARDON3D_PROJECT_DB_OK && from_version == 0) {
+        result = execute(database, schema_v2, "create schema v2");
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && from_version == 1) {
+        result = execute(database,
+            "ALTER TABLE tasks ADD COLUMN task_kind TEXT;"
+            "ALTER TABLE tasks ADD COLUMN task_kind_version INTEGER CHECK(task_kind_version IS NULL OR task_kind_version>0)",
+            "migrate schema v1 to v2");
+#ifdef LARDON3D_PROJECT_DB_TESTING
+        const char *forced_failure = getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V2");
+        if (result == LARDON3D_PROJECT_DB_OK && forced_failure
+            && strcmp(forced_failure, "1") == 0) {
+            result = execute(database, "INSERT INTO missing_test_table VALUES(1)",
+                "forced migration failure");
+        }
+#endif
+        if (result == LARDON3D_PROJECT_DB_OK) {
+            result = execute(database,
+                "UPDATE metadata SET value=2 WHERE key='schema_version' AND value=1",
+                "finish schema v2 migration");
+        }
+    }
     if (result == LARDON3D_PROJECT_DB_OK) result = execute(database, "COMMIT", "commit migration");
     if (result != LARDON3D_PROJECT_DB_OK) (void)execute(database, "ROLLBACK", "rollback migration");
     return result;
@@ -187,7 +214,7 @@ lardon3d_project_db_open(const char *path, Lardon3DProjectDb **output, char erro
     unsigned int version = 0;
     if (result == LARDON3D_PROJECT_DB_OK) result = read_schema_version(database, &version);
     if (result == LARDON3D_PROJECT_DB_OK) result = migrate(database, version);
-    if (result == LARDON3D_PROJECT_DB_OK && version == 1) {
+    if (result == LARDON3D_PROJECT_DB_OK) {
         const char *required[] = {"project", "tasks", "checkpoints", "artifacts"};
         for (size_t index = 0; index < 4 && result == LARDON3D_PROJECT_DB_OK; ++index) {
             if (!table_exists(database->connection, required[index])) {
@@ -223,7 +250,7 @@ lardon3d_project_db_last_error(Lardon3DProjectDb *database, char error[LARDON3D_
     (void)pthread_mutex_unlock(&database->mutex);
     return true;
 }
-unsigned int lardon3d_project_db_schema_version(Lardon3DProjectDb *database) { return database ? 1U : 0U; }
+unsigned int lardon3d_project_db_schema_version(Lardon3DProjectDb *database) { return database ? LARDON3D_PROJECT_DB_SCHEMA_VERSION : 0U; }
 
 static Lardon3DProjectDbResult
 step_done(Lardon3DProjectDb *database, sqlite3_stmt *statement, const char *context)
@@ -323,9 +350,15 @@ valid_durable_task(const Lardon3DTaskDurableSnapshot *snapshot, int64_t updated_
 
 Lardon3DProjectDbResult
 lardon3d_project_db_record_task(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
     const Lardon3DProjectDbCheckpoint *checkpoint, int64_t updated_at)
 {
-    if (!database || !valid_durable_task(snapshot, updated_at) || (checkpoint && !valid_checkpoint(checkpoint))) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+    bool typed = task_kind != NULL;
+    if (!database || !valid_durable_task(snapshot, updated_at)
+        || (typed && (!lardon3d_task_kind_is_valid(task_kind)
+            || task_kind_version == 0))
+        || (!typed && task_kind_version != 0)
+        || (checkpoint && !valid_checkpoint(checkpoint))) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
 #ifdef LARDON3D_PROJECT_DB_TESTING
     const char *forced_busy = getenv("LARDON3D_TEST_PROJECT_DB_BUSY_CHECKPOINT");
     if (forced_busy && checkpoint && strcmp(forced_busy, "1") == 0) {
@@ -337,17 +370,29 @@ lardon3d_project_db_record_task(Lardon3DProjectDb *database, const Lardon3DTaskD
     Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin task record");
     sqlite3_stmt *statement = NULL;
     if (result == LARDON3D_PROJECT_DB_OK) result = prepare(database,
-        "INSERT INTO tasks(task_id,name,saved_state,recovery_state,progress,sequence_count,started_sec,started_nsec,finished_sec,finished_nsec,updated_at)"
-        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(task_id) DO UPDATE SET name=excluded.name,saved_state=excluded.saved_state,"
+        "INSERT INTO tasks(task_id,name,task_kind,task_kind_version,saved_state,recovery_state,progress,sequence_count,started_sec,started_nsec,finished_sec,finished_nsec,updated_at)"
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(task_id) DO UPDATE SET name=excluded.name,saved_state=excluded.saved_state,"
         "recovery_state=excluded.recovery_state,progress=excluded.progress,sequence_count=excluded.sequence_count,started_sec=excluded.started_sec,"
-        "started_nsec=excluded.started_nsec,finished_sec=excluded.finished_sec,finished_nsec=excluded.finished_nsec,updated_at=excluded.updated_at", &statement);
+        "started_nsec=excluded.started_nsec,finished_sec=excluded.finished_sec,finished_nsec=excluded.finished_nsec,updated_at=excluded.updated_at "
+        "WHERE (tasks.task_kind IS NULL AND excluded.task_kind IS NULL) OR (tasks.task_kind=excluded.task_kind AND tasks.task_kind_version=excluded.task_kind_version)", &statement);
     if (result == LARDON3D_PROJECT_DB_OK) {
         (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)snapshot->id); (void)sqlite3_bind_text(statement, 2, snapshot->name, -1, SQLITE_TRANSIENT);
-        (void)sqlite3_bind_int(statement, 3, (int)snapshot->saved_state); (void)sqlite3_bind_int(statement, 4, (int)snapshot->recovery_state);
-        (void)sqlite3_bind_int(statement, 5, (int)snapshot->progress); (void)sqlite3_bind_int(statement, 6, (int)snapshot->sequence_count);
-        (void)sqlite3_bind_int64(statement, 7, snapshot->started_at.tv_sec); (void)sqlite3_bind_int64(statement, 8, snapshot->started_at.tv_nsec);
-        (void)sqlite3_bind_int64(statement, 9, snapshot->finished_at.tv_sec); (void)sqlite3_bind_int64(statement, 10, snapshot->finished_at.tv_nsec);
-        (void)sqlite3_bind_int64(statement, 11, updated_at); result = step_done(database, statement, "upsert task");
+        if (typed) {
+            (void)sqlite3_bind_text(statement, 3, task_kind, -1, SQLITE_TRANSIENT);
+            (void)sqlite3_bind_int64(statement, 4, task_kind_version);
+        } else {
+            (void)sqlite3_bind_null(statement, 3); (void)sqlite3_bind_null(statement, 4);
+        }
+        (void)sqlite3_bind_int(statement, 5, (int)snapshot->saved_state); (void)sqlite3_bind_int(statement, 6, (int)snapshot->recovery_state);
+        (void)sqlite3_bind_int(statement, 7, (int)snapshot->progress); (void)sqlite3_bind_int(statement, 8, (int)snapshot->sequence_count);
+        (void)sqlite3_bind_int64(statement, 9, snapshot->started_at.tv_sec); (void)sqlite3_bind_int64(statement, 10, snapshot->started_at.tv_nsec);
+        (void)sqlite3_bind_int64(statement, 11, snapshot->finished_at.tv_sec); (void)sqlite3_bind_int64(statement, 12, snapshot->finished_at.tv_nsec);
+        (void)sqlite3_bind_int64(statement, 13, updated_at); result = step_done(database, statement, "upsert task");
+        if (result == LARDON3D_PROJECT_DB_OK
+            && sqlite3_changes(database->connection) != 1) {
+            copy_error(database->error, "Type métier de tâche immuable.");
+            result = LARDON3D_PROJECT_DB_CONSTRAINT;
+        }
     }
     if (result == LARDON3D_PROJECT_DB_OK && checkpoint) {
 #ifdef LARDON3D_PROJECT_DB_TESTING
@@ -377,34 +422,45 @@ read_task(sqlite3_stmt *statement, Lardon3DProjectDbTask *task)
 {
     memset(task, 0, sizeof(*task));
     sqlite3_int64 id = sqlite3_column_int64(statement, 0);
-    int progress = sqlite3_column_int(statement, 4);
-    sqlite3_int64 sequence_count = sqlite3_column_int64(statement, 5);
-    sqlite3_int64 started_nsec = sqlite3_column_int64(statement, 7);
-    sqlite3_int64 finished_nsec = sqlite3_column_int64(statement, 9);
+    bool has_kind = sqlite3_column_type(statement, 2) != SQLITE_NULL;
+    bool has_kind_version = sqlite3_column_type(statement, 3) != SQLITE_NULL;
+    int progress = sqlite3_column_int(statement, 6);
+    sqlite3_int64 sequence_count = sqlite3_column_int64(statement, 7);
+    sqlite3_int64 started_nsec = sqlite3_column_int64(statement, 9);
+    sqlite3_int64 finished_nsec = sqlite3_column_int64(statement, 11);
     if (id <= 0 || !copy_column(statement, 1, task->name, sizeof(task->name))) return false;
-    task->task_id = (uint64_t)id; task->saved_state = (Lardon3DTaskState)sqlite3_column_int(statement, 2);
-    task->recovery_state = (Lardon3DTaskState)sqlite3_column_int(statement, 3);
+    if (has_kind != has_kind_version) return false;
+    if (has_kind) {
+        sqlite3_int64 version = sqlite3_column_int64(statement, 3);
+        if (!copy_column(statement, 2, task->task_kind, sizeof(task->task_kind))
+            || !lardon3d_task_kind_is_valid(task->task_kind)
+            || version <= 0 || version > UINT32_MAX) return false;
+        task->has_task_kind = true;
+        task->task_kind_version = (uint32_t)version;
+    }
+    task->task_id = (uint64_t)id; task->saved_state = (Lardon3DTaskState)sqlite3_column_int(statement, 4);
+    task->recovery_state = (Lardon3DTaskState)sqlite3_column_int(statement, 5);
     if (progress < 0 || progress > 100 || sequence_count < 0 || sequence_count > UINT_MAX
         || started_nsec < 0 || started_nsec >= 1000000000 || finished_nsec < 0 || finished_nsec >= 1000000000
-        || !database_time(sqlite3_column_int64(statement, 6), &task->started_at.tv_sec)
-        || !database_time(sqlite3_column_int64(statement, 8), &task->finished_at.tv_sec)) return false;
+        || !database_time(sqlite3_column_int64(statement, 8), &task->started_at.tv_sec)
+        || !database_time(sqlite3_column_int64(statement, 10), &task->finished_at.tv_sec)) return false;
     task->progress = (unsigned int)progress; task->sequence_count = (unsigned int)sequence_count;
-    task->started_at.tv_nsec = (long)started_nsec; task->finished_at.tv_nsec = (long)finished_nsec; task->updated_at = sqlite3_column_int64(statement, 10);
-    if (sqlite3_column_type(statement, 11) != SQLITE_NULL) {
+    task->started_at.tv_nsec = (long)started_nsec; task->finished_at.tv_nsec = (long)finished_nsec; task->updated_at = sqlite3_column_int64(statement, 12);
+    if (sqlite3_column_type(statement, 13) != SQLITE_NULL) {
         task->has_checkpoint = true;
-        if (!copy_column(statement, 11, task->checkpoint.path, sizeof(task->checkpoint.path))) return false;
-        sqlite3_int64 format_version = sqlite3_column_int64(statement, 12);
+        if (!copy_column(statement, 13, task->checkpoint.path, sizeof(task->checkpoint.path))) return false;
+        sqlite3_int64 format_version = sqlite3_column_int64(statement, 14);
         if (format_version <= 0 || format_version > UINT32_MAX) return false;
         task->checkpoint.format_version = (uint32_t)format_version;
-        task->checkpoint.durability = (Lardon3DProjectDbCheckpointDurability)sqlite3_column_int(statement, 13);
-        task->checkpoint.updated_at = sqlite3_column_int64(statement, 14);
+        task->checkpoint.durability = (Lardon3DProjectDbCheckpointDurability)sqlite3_column_int(statement, 15);
+        task->checkpoint.updated_at = sqlite3_column_int64(statement, 16);
         if (task->checkpoint.durability < LARDON3D_DB_CHECKPOINT_DURABLE
             || task->checkpoint.durability > LARDON3D_DB_CHECKPOINT_PUBLISHED_NOT_DURABLE) return false;
     }
     return valid_state(task->saved_state) && valid_state(task->recovery_state) && task->progress <= 100;
 }
 
-static const char task_select[] = "SELECT t.task_id,t.name,t.saved_state,t.recovery_state,t.progress,t.sequence_count,t.started_sec,t.started_nsec,"
+static const char task_select[] = "SELECT t.task_id,t.name,t.task_kind,t.task_kind_version,t.saved_state,t.recovery_state,t.progress,t.sequence_count,t.started_sec,t.started_nsec,"
     "t.finished_sec,t.finished_nsec,t.updated_at,c.path,c.format_version,c.durability,c.updated_at FROM tasks t LEFT JOIN checkpoints c ON c.task_id=t.task_id ";
 
 Lardon3DProjectDbResult

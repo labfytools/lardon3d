@@ -9,7 +9,7 @@
 #include <lardon3d/task.h>
 
 enum {
-    LARDON3D_PROJECT_DB_SCHEMA_VERSION = 1,
+    LARDON3D_PROJECT_DB_SCHEMA_VERSION = 2,
     LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
     LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
     LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -57,6 +57,9 @@ typedef struct {
 typedef struct {
     uint64_t task_id;
     char name[LARDON3D_TASK_NAME_CAPACITY];
+    bool has_task_kind;
+    char task_kind[LARDON3D_TASK_KIND_CAPACITY];
+    uint32_t task_kind_version;
     Lardon3DTaskState saved_state;
     Lardon3DTaskState recovery_state;
     unsigned int progress;
@@ -103,6 +106,8 @@ Lardon3DProjectDbResult lardon3d_project_db_get_project(
 Lardon3DProjectDbResult lardon3d_project_db_record_task(
     Lardon3DProjectDb *database,
     const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind,
+    uint32_t task_kind_version,
     const Lardon3DProjectDbCheckpoint *checkpoint,
     int64_t updated_at
 );

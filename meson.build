@@ -38,6 +38,7 @@ executable(
         'src/project_db.c',
         'src/task.c',
         'src/task_checkpoint.c',
+        'src/task_kind_registry.c',
         'src/task_queue.c',
         'src/resource_governor.c',
         'src/resource_snapshot.c',
@@ -133,6 +134,9 @@ project_db_test = executable(
     sources: [
         'tests/test_project_db.c',
         'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
     ],
     c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
     include_directories: include_directories('include'),
@@ -150,6 +154,7 @@ project_test = executable(
         'src/project_db.c',
         'src/task.c',
         'src/task_checkpoint.c',
+        'src/task_kind_registry.c',
         'src/image_catalog.c',
         'src/image_view.c',
         'src/resource_governor.c',
@@ -164,6 +169,21 @@ project_test = executable(
 )
 
 test('project', project_test, timeout: 30)
+
+task_kind_registry_test = executable(
+    'test-task-kind-registry',
+    sources: [
+        'tests/test_task_kind_registry.c',
+        'src/task_kind_registry.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads],
+)
+
+test('task-kind-registry', task_kind_registry_test, timeout: 30)
 
 sequential_task_test = executable(
     'test-sequential-task',

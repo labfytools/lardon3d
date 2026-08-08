@@ -861,6 +861,11 @@ lardon3d_project_checkpoint_task(
     if (!lardon3d_task_durable_snapshot(task, &snapshot) || snapshot.id == 0) {
         return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
     }
+    char task_kind[LARDON3D_TASK_KIND_CAPACITY];
+    uint32_t task_kind_version = 0;
+    if (!lardon3d_task_kind(task, task_kind, &task_kind_version)) {
+        return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
+    }
     char relative[LARDON3D_PROJECT_DB_PATH_CAPACITY];
     char absolute[PATH_MAX];
     if (!checkpoint_paths(state, snapshot.id, relative, absolute)) {
@@ -892,6 +897,8 @@ lardon3d_project_checkpoint_task(
     Lardon3DProjectDbResult recorded = lardon3d_project_db_record_task(
         state->project_db,
         &snapshot,
+        task_kind,
+        task_kind_version,
         &checkpoint,
         now.tv_sec
     );
@@ -923,6 +930,7 @@ coherent_recovery(
 Lardon3DProjectDbResult
 lardon3d_project_list_recoverable(
     Lardon3DAppState *state,
+    const Lardon3DTaskKindRegistry *registry,
     uint64_t after_task_id,
     Lardon3DProjectRecoveryEntry *entries,
     size_t capacity,
@@ -932,7 +940,7 @@ lardon3d_project_list_recoverable(
     if (count) {
         *count = 0;
     }
-    if (!state || !state->project_loaded || !state->project_db || !entries
+    if (!state || !state->project_loaded || !state->project_db || !registry || !entries
         || !count || capacity == 0
         || capacity > LARDON3D_PROJECT_DB_RECOVERY_PAGE_MAX) {
         return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
@@ -962,9 +970,28 @@ lardon3d_project_list_recoverable(
             entry->task_id = tasks[index].task_id;
             entry->durability = tasks[index].checkpoint.durability;
             (void)snprintf(entry->name, sizeof(entry->name), "%s", tasks[index].name);
+            if (tasks[index].has_task_kind) {
+                (void)snprintf(entry->task_kind, sizeof(entry->task_kind), "%s",
+                    tasks[index].task_kind);
+                entry->task_kind_version = tasks[index].task_kind_version;
+            }
             char relative[LARDON3D_PROJECT_DB_PATH_CAPACITY];
             char absolute[PATH_MAX];
-            if (!checkpoint_paths(state, entry->task_id, relative, absolute)
+            const Lardon3DTaskKindDescriptor *descriptor = NULL;
+            Lardon3DTaskKindResult kind_result = tasks[index].has_task_kind
+                ? lardon3d_task_kind_registry_lookup(
+                    registry, tasks[index].task_kind,
+                    tasks[index].task_kind_version, &descriptor)
+                : LARDON3D_TASK_KIND_UNKNOWN;
+            if (!tasks[index].has_task_kind) {
+                entry->status = LARDON3D_PROJECT_RECOVERY_LEGACY_UNTYPED;
+            } else if (kind_result == LARDON3D_TASK_KIND_UNKNOWN) {
+                entry->status = LARDON3D_PROJECT_RECOVERY_UNKNOWN_TASK_KIND;
+            } else if (kind_result == LARDON3D_TASK_KIND_UNSUPPORTED_VERSION) {
+                entry->status = LARDON3D_PROJECT_RECOVERY_UNSUPPORTED_TASK_KIND_VERSION;
+            } else if (kind_result != LARDON3D_TASK_KIND_OK) {
+                entry->status = LARDON3D_PROJECT_RECOVERY_UNKNOWN_TASK_KIND;
+            } else if (!checkpoint_paths(state, entry->task_id, relative, absolute)
                 || strcmp(relative, tasks[index].checkpoint.path) != 0) {
                 entry->status = LARDON3D_PROJECT_RECOVERY_INVALID_CHECKPOINT;
             } else {
