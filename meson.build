@@ -5,6 +5,7 @@ project(
     license: 'MIT',
     default_options: [
         'c_std=c17',
+        'cpp_std=c++17',
         'warning_level=3',
         'buildtype=debugoptimized',
     ],
@@ -17,7 +18,7 @@ add_project_arguments(
     '-Wshadow',
     language: 'c',
 )
-add_project_arguments('-std=c++17', '-Wpedantic', '-Wconversion', '-Wshadow', language: 'cpp')
+add_project_arguments('-Wpedantic', '-Wconversion', '-Wshadow', language: 'cpp')
 
 ncursesw = dependency('ncursesw', required: true)
 threads = dependency('threads')
@@ -29,6 +30,20 @@ opencv = dependency(
     include_type: 'system',
     modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d'],
 )
+opencv_benchmark = dependency(
+    'opencv5',
+    required: true,
+    include_type: 'system',
+    modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d', 'opencv_imgproc'],
+)
+
+opencv_test_environment = environment()
+if get_option('b_sanitize').contains('thread')
+    opencv_test_environment.set(
+        'TSAN_OPTIONS',
+        'suppressions=' + meson.project_source_root() + '/tests/tsan-opencv.supp',
+    )
+endif
 
 executable(
     'lardon3d',
@@ -44,7 +59,7 @@ executable(
         'src/image_catalog_persistent.c',
         'src/feature_extractor_opencv.cpp',
         'src/feature_store.c',
-        'src/feature_task.c',
+        'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/visual_index.c',
         'src/visual_index_task.c',
         'src/image_view.c',
@@ -94,7 +109,7 @@ import_task_test = executable(
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
         'src/task_kinds.c',
-        'src/feature_task.c',
+        'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/feature_store.c',
         'src/visual_index.c',
         'src/visual_index_task.c',
@@ -198,7 +213,8 @@ feature_task_test = executable(
         'src/task_kind_registry.c', 'src/task_kinds.c', 'src/task_queue.c',
         'src/import.c', 'src/import_task.c', 'src/image_catalog.c',
         'src/image_catalog_persistent.c', 'src/image_view.c',
-        'src/feature_task.c', 'src/feature_store.c', 'src/visual_index.c',
+        'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
+        'src/feature_store.c', 'src/visual_index.c',
         'src/visual_index_task.c',
         'src/feature_extractor_opencv.cpp', 'src/resource_governor.c',
         'src/resource_snapshot.c',
@@ -210,7 +226,41 @@ feature_task_test = executable(
     include_directories: include_directories('include'),
     dependencies: [threads, sqlite3, openssl, opencv],
 )
-test('feature-task', feature_task_test, timeout: 60)
+test('feature-task', feature_task_test, timeout: 60, env: opencv_test_environment)
+
+precision_features_test = executable(
+    'test-precision-features',
+    sources: ['tests/test_precision_features.cpp', 'src/feature_extractor_opencv.cpp'],
+    include_directories: include_directories('include'),
+    dependencies: [openssl, opencv_benchmark],
+)
+test('precision-features', precision_features_test, timeout: 60, env: opencv_test_environment)
+
+precision_consolidation_test = executable(
+    'test-precision-consolidation',
+    sources: [
+        'tests/test_precision_consolidation.c', 'src/app_state.c',
+        'src/project.c', 'src/project_db.c', 'src/task.c',
+        'src/task_checkpoint.c', 'src/task_kind_registry.c',
+        'src/task_kinds.c', 'src/task_queue.c', 'src/import.c',
+        'src/import_task.c', 'src/image_catalog.c',
+        'src/image_catalog_persistent.c', 'src/image_view.c',
+        'src/feature_task.c', 'src/sift_task.c',
+        'src/precision_features.c', 'src/feature_store.c',
+        'src/visual_index.c', 'src/visual_index_task.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    c_args: [
+        '-DLARDON3D_PROJECT_DB_TESTING',
+        '-DLARDON3D_FEATURE_TASK_TESTING',
+        '-DLARDON3D_VISUAL_INDEX_TASK_TESTING',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv],
+)
+test('precision-consolidation', precision_consolidation_test,
+     timeout: 120, env: opencv_test_environment)
 
 image_view_test = executable(
     'test-image-view',
@@ -282,7 +332,7 @@ project_test = executable(
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
         'src/task_kinds.c',
-        'src/feature_task.c',
+        'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/feature_store.c',
         'src/visual_index.c',
         'src/visual_index_task.c',
