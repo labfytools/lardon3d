@@ -154,4 +154,17 @@ La base de données projet stocke les métadonnées de reconstruction et les rel
 - Les artefacts partiels ne sont jamais considérés comme valides
 - La reprise commence à la dernière frontière connue
 
-## Statut : PLANNED (direction architecturale)
+## Frontière avec les checkpoints de tâche
+
+Le modèle durable v1 et son codec fichier sont implémentés indépendamment du
+stockage. La future base réutilisera les mêmes règles de normalisation et de
+validation ; elle ne stockera jamais les objets pthread, callbacks, pointeurs,
+contrats ou réservations. Le fichier par tâche est une fondation, pas une
+Project Database miniature.
+
+## Statut
+
+**NOT_YET_WIRED** — le modèle de checkpoint est prêt à être consommé.
+
+**PLANNED** — schéma SQLite, migrations, transactions, inventaire d'artefacts,
+chargement global et coordination avec le scheduler.

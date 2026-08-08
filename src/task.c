@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <lardon3d/task.h>
 
@@ -33,6 +34,18 @@ is_terminal(Lardon3DTaskState state)
 {
     return state == TASK_CANCELLED || state == TASK_FAILED
         || state == TASK_COMPLETED;
+}
+
+static bool
+valid_state(Lardon3DTaskState state)
+{
+    return state >= TASK_PENDING && state <= TASK_COMPLETED;
+}
+
+static Lardon3DTaskState
+recovery_state(Lardon3DTaskState state)
+{
+    return state == TASK_RUNNING || state == TASK_PAUSED ? TASK_PENDING : state;
 }
 
 static void
@@ -140,6 +153,7 @@ lardon3d_task_start(
     };
     task->has_contract = true;
     (void)clock_gettime(CLOCK_REALTIME, &task->started_at);
+    task->finished_at = (struct timespec) {0};
     if (task->cancel_requested) {
         Lardon3DResourceReservation *reservation_copy = task->current_reservation;
         task->current_reservation = NULL;
@@ -556,6 +570,80 @@ lardon3d_task_snapshot(
     copy_text(snapshot->message, sizeof(snapshot->message), task->message);
     (void)pthread_mutex_unlock(&mutable_task->mutex);
     return true;
+}
+
+bool
+lardon3d_task_durable_snapshot(
+    const Lardon3DTask *task,
+    Lardon3DTaskDurableSnapshot *snapshot
+)
+{
+    if (!task || !snapshot) {
+        return false;
+    }
+    Lardon3DTask *mutable_task = (Lardon3DTask *)task;
+    (void)pthread_mutex_lock(&mutable_task->mutex);
+    *snapshot = (Lardon3DTaskDurableSnapshot) {
+        .id = task->id,
+        .estimate = task->estimate,
+        .progress = task->progress,
+        .saved_state = task->state,
+        .recovery_state = recovery_state(task->state),
+        .started_at = task->started_at,
+        .finished_at = task->finished_at,
+        .sequence_count = task->sequence_count,
+    };
+    copy_text(snapshot->name, sizeof(snapshot->name), task->name);
+    copy_text(snapshot->message, sizeof(snapshot->message), task->message);
+    (void)pthread_mutex_unlock(&mutable_task->mutex);
+    return true;
+}
+
+Lardon3DTask *
+lardon3d_task_restore(
+    const Lardon3DTaskDurableSnapshot *snapshot,
+    Lardon3DTaskCallback callback,
+    void *userdata
+)
+{
+    if (!snapshot || snapshot->id == 0 || !snapshot->name[0] || !callback
+        || memchr(snapshot->name, '\0', sizeof(snapshot->name)) == NULL
+        || memchr(snapshot->message, '\0', sizeof(snapshot->message)) == NULL
+        || snapshot->progress > 100 || !valid_state(snapshot->saved_state)
+        || !valid_state(snapshot->recovery_state)
+        || snapshot->recovery_state != recovery_state(snapshot->saved_state)
+        || (snapshot->recovery_state == TASK_COMPLETED
+            && snapshot->progress != 100)
+        || snapshot->estimate.minimum_batch_size == 0
+        || snapshot->estimate.maximum_batch_size
+            < snapshot->estimate.minimum_batch_size
+        || snapshot->estimate.desired_cpu_threads == 0
+        || snapshot->estimate.task_class < LARDON3D_RESOURCE_TASK_GENERAL
+        || snapshot->estimate.task_class > LARDON3D_RESOURCE_TASK_MIXED
+        || ((snapshot->estimate.gpu_memory_fixed_bytes != 0
+                || snapshot->estimate.gpu_memory_bytes_per_item != 0)
+            && snapshot->estimate.desired_gpu_slots == 0)) {
+        return NULL;
+    }
+    Lardon3DTask *task = lardon3d_task_create(
+        snapshot->name,
+        &snapshot->estimate,
+        callback,
+        userdata
+    );
+    if (!task) {
+        return NULL;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    task->id = snapshot->id;
+    task->progress = snapshot->progress;
+    task->state = snapshot->recovery_state;
+    copy_text(task->message, sizeof(task->message), snapshot->message);
+    task->started_at = snapshot->started_at;
+    task->finished_at = snapshot->finished_at;
+    task->sequence_count = snapshot->sequence_count;
+    (void)pthread_mutex_unlock(&task->mutex);
+    return task;
 }
 
 uint64_t

@@ -43,6 +43,19 @@ typedef struct {
     unsigned int io_slots;
 } Lardon3DTaskExecutionContract;
 
+typedef struct {
+    uint64_t id;
+    char name[LARDON3D_TASK_NAME_CAPACITY];
+    Lardon3DResourceEstimate estimate;
+    unsigned int progress;
+    Lardon3DTaskState saved_state;
+    Lardon3DTaskState recovery_state;
+    char message[LARDON3D_TASK_MESSAGE_CAPACITY];
+    struct timespec started_at;
+    struct timespec finished_at;
+    unsigned int sequence_count;
+} Lardon3DTaskDurableSnapshot;
+
 Lardon3DTask *lardon3d_task_create(
     const char *name,
     const Lardon3DResourceEstimate *estimate,
@@ -70,6 +83,15 @@ bool lardon3d_task_fail(Lardon3DTask *task, const char *message);
 bool lardon3d_task_snapshot(
     const Lardon3DTask *task,
     Lardon3DTaskSnapshot *snapshot
+);
+bool lardon3d_task_durable_snapshot(
+    const Lardon3DTask *task,
+    Lardon3DTaskDurableSnapshot *snapshot
+);
+Lardon3DTask *lardon3d_task_restore(
+    const Lardon3DTaskDurableSnapshot *snapshot,
+    Lardon3DTaskCallback callback,
+    void *userdata
 );
 uint64_t lardon3d_task_id(const Lardon3DTask *task);
 bool lardon3d_task_assign_id(Lardon3DTask *task, uint64_t id);

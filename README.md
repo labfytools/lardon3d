@@ -25,7 +25,8 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 - **Import Task** : wrapper asynchrone avec états et progression
 - **Image Catalog** : indexage des métadonnées d'images
 - **Image View** : vues triées et filtrées pour la TUI
-- **Task** : moteur de tâches avec pause/reprise, annulation, checkpoints
+- **Task** : moteur de tâches avec pause/reprise, annulation et séquences
+- **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
 - **Task Queue** : file FIFO avec sélection adaptative et backpressure
 - **Hardware Profile** : détection des capacités matérielles
 - **Resource Snapshot** : capture instantanée des ressources
@@ -38,7 +39,7 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 
 ### Briques prévues (PLANNED)
 
-- Persistance des tâches et checkpoints
+- Branchement des checkpoints aux pipelines et reprise globale
 - DAG de dépendances
 - Pools de workers multiples (CPU/GPU/IO)
 - Publication live validée

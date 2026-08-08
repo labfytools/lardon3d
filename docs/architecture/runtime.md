@@ -57,7 +57,28 @@
 
 - Worker unique (pas de pools multiples)
 - Pas de parallélisme inter-tâches
-- Pas de persistance des états
+- Checkpoints isolés disponibles mais pas encore orchestrés au démarrage
+
+## Reprise durable
+
+Un snapshot ne conserve que l'état logique d'une tâche. `RUNNING` et `PAUSED`
+sont normalisés vers `PENDING`; aucun worker, callback brut, pointeur, contrat
+ou réservation n'est restauré. Le propriétaire fournit un nouveau callback et
+resoumet la tâche. Les états terminaux sont conservés.
+
+`started_at` désigne le début de la tentative d'exécution courante, pas le
+premier démarrage historique. Un checkpoint `RUNNING` restauré en `PENDING`
+conserve temporairement l'horodatage de la tentative interrompue pour
+l'observation ; lors de `lardon3d_task_start()`, `started_at` est remplacé par le
+nouveau démarrage et `finished_at` est remis à zéro. `finished_at` n'est fixé
+qu'à la terminaison de cette tentative.
+
+**IMPLEMENTED** — snapshot, codec v1 et restauration isolée.
+
+**NOT_YET_WIRED** — sauvegarde périodique, chargement de projet et resoumission
+automatique.
+
+**PLANNED** — reprise globale du scheduler via la Project Database.
 
 ## Invariants
 

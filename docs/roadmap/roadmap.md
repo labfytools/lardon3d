@@ -28,7 +28,8 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 ## Prochaines étapes décidées (NEXT)
 
 ### Phase 3 : Persistance
-- 📋 Persistance des tâches et checkpoints
+- ✅ Fondation versionnée des checkpoints de tâches
+- 📋 Branchement des checkpoints aux pipelines et reprise globale
 - 📋 Project Database v1 (SQLite)
 - 📋 ScanSet et Image Catalog persistants
 

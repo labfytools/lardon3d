@@ -16,55 +16,50 @@ coûts, exécution sous réservation et publication d'un résultat validé.
 
 ## Types principaux
 
-```c
-typedef enum {
-    TASK_STATE_IDLE,
-    TASK_STATE_QUEUED,
-    TASK_STATE_RUNNING,
-    TASK_STATE_PAUSED,
-    TASK_STATE_CANCELLED,
-    TASK_STATE_DONE,
-    TASK_STATE_FAILED
-} task_state_t;
-
-typedef struct {
-    uint64_t ram_bytes;
-    uint64_t gpu_bytes;
-    uint32_t cpu_weight;
-    uint32_t io_weight;
-    uint32_t batch_size;
-    uint32_t batch_max;
-} task_estimate_t;
-```
+Les états réels sont `TASK_PENDING`, `TASK_RUNNING`, `TASK_PAUSED`,
+`TASK_CANCELLED`, `TASK_FAILED` et `TASK_COMPLETED`. Une rupture de séquence est
+une opération de réadmission, pas un état supplémentaire.
 
 ## API publique
 
 | Fonction | Description |
 |---|---|
-| `task_create()` | Alloue et initialise une tâche avec son estimate |
-| `task_destroy()` | Libère toutes les ressources de la tâche |
-| `task_get_state()` | Retourne l'état courant (thread-safe en lecture) |
-| `task_set_state()` | Met à jour l'état avec transitions validées |
-| `task_get_estimate()` | Retourne l'estimation immuable des coûts |
-| `task_advance_progress()` | Avance la progression d'un pas validé |
-| `task_request_pause()` | Demande une pause coopérative |
-| `task_request_cancel()` | Demande une annulation coopérative |
-| `task_should_pause()` | Vérifie si la tâche doit se mettre en pause |
-| `task_should_cancel()` | Vérifie si la tâche doit s'annuler |
+| `lardon3d_task_create()` | Alloue une tâche et copie son estimation |
+| `lardon3d_task_destroy()` | Annule, attend puis libère la tâche |
+| `lardon3d_task_start()` | Exécute sous réservation active |
+| `lardon3d_task_pause()` / `resume()` | Contrôle la pause coopérative |
+| `lardon3d_task_request_cancel()` | Demande l'annulation coopérative |
+| `lardon3d_task_checkpoint()` | Frontière coopérative en mémoire |
+| `lardon3d_task_sequence_break()` | Libère puis renouvelle la réservation |
+| `lardon3d_task_snapshot()` | Copie l'état d'observation runtime |
+
+### API durable
+
+| Fonction | Description |
+|---|---|
+| `lardon3d_task_durable_snapshot()` | Copie les champs durables sous mutex |
+| `lardon3d_task_restore()` | Reconstruit une tâche sans état d'exécution vivant |
+| `lardon3d_task_checkpoint_save()` | Publie atomiquement un snapshot v1 |
+| `lardon3d_task_checkpoint_load()` | Lit et valide un checkpoint borné |
+
+Après `rename`, un échec du `fsync` du répertoire retourne
+`LARDON3D_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE` : la publication est visible,
+mais sa durabilité après crash n'est pas confirmée.
 
 ## Invariants
 
 1. **Estimation immuable** : une fois créée, l'estimation d'une tâche ne change
    jamais. Elle est copiée en lecture seule lors de la réservation.
-2. **Transitions d'état validées** : seules certaines transitions sont
-   autorisées (IDLE → QUEUED → RUNNING → DONE/FAILED).
-3. **Pause et annulation coopératives** : le worker vérifie périodiquement
-   `task_should_pause()` et `task_should_cancel()`. Le callback ne force jamais
-   l'arrêt.
+2. **Transitions d'état validées** : le cycle nominal est
+   `PENDING → RUNNING → COMPLETED/FAILED/CANCELLED`, avec pause coopérative.
+3. **Pause et annulation coopératives** : le callback appelle périodiquement
+   `lardon3d_task_checkpoint()`. Aucun autre thread ne force son arrêt.
 4. **Progression bornée** : la progression ne peut jamais dépasser la valeur
    maximale définie par l'estimation.
-5. **Callback unique** : chaque tâche possède un seul callback invoqué une
-   seule fois, quelle que soit l'issue.
+5. **Reprise réadmise** : une tâche restaurée non terminale repasse par la file,
+   le scheduler et le Resource Governor avec une nouvelle réservation.
+6. **Snapshot court** : seuls les champs durables sont copiés sous le mutex ;
+   la sérialisation et les I/O ont lieu après déverrouillage.
 
 ## Interactions
 
@@ -75,11 +70,14 @@ typedef struct {
 
 ## Statut
 
-**IMPLÉMENTÉ** — cycle de vie complet, pause et annulation coopératives.
+**IMPLEMENTED** — cycle de vie, pause/annulation coopératives, séquences
+adaptatives et fondation de checkpoints persistants isolés.
+
+**NOT_YET_WIRED** — sauvegarde automatique et restauration par la file.
 
 ## Limites
 
 - Aucune priorité interne : l'ordre est uniquement FIFO.
-- Aucune persistance : les tâches disparaissent à l'arrêt du programme.
+- Pas encore de reprise globale au démarrage du projet.
 - Aucune dépendance inter-tâches (pas de DAG).
-- La progression est linéaire : pas de séquençage adaptatif interne.
+- Pas encore de références d'artefacts métier validés.

@@ -35,6 +35,7 @@ executable(
         'src/image_view.c',
         'src/project.c',
         'src/task.c',
+        'src/task_checkpoint.c',
         'src/task_queue.c',
         'src/resource_governor.c',
         'src/resource_snapshot.c',
@@ -108,6 +109,22 @@ task_test = executable(
 )
 
 test('task', task_test, timeout: 30)
+
+task_checkpoint_test = executable(
+    'test-task-checkpoint',
+    sources: [
+        'tests/test_task_checkpoint.c',
+        'src/task.c',
+        'src/task_checkpoint.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_CHECKPOINT_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads],
+)
+
+test('task-checkpoint', task_checkpoint_test, timeout: 30)
 
 sequential_task_test = executable(
     'test-sequential-task',
