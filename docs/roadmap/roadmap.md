@@ -29,7 +29,7 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 
 ### Phase 3 : Persistance
 - ✅ Fondation versionnée des checkpoints de tâches
-- ✅ Project Database v5 (tâches, ScanSets, images, Feature Sets/assets et migrations)
+- ✅ Project Database v6 (tâches, catalogue, Feature Store et Visual Index)
 - ✅ Branchement Project Database au cycle de vie projet et inventaire de reprise
 - ✅ Registry durable des types métier de tâches
 - ✅ Premier type métier reconstructible (`import.images`)
@@ -38,7 +38,7 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 
 ### Phase 4 : Pipeline avancé
 - ✅ Feature Store v1 et extraction ORB persistante
-- 📋 Visual Index
+- ✅ Visual Index v1 segmenté et persistant
 - 📋 Candidate Pair Generator
 - 📋 Matching et vérification géométrique
 - 📋 Tracks et SfM

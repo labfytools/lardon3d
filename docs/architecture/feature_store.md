@@ -88,7 +88,7 @@ publication laisse un fichier orphelin et aucune ligne logique partielle.
 Un nouvel essai qui revalide l'asset et réussit le `fsync` promeut explicitement
 sa durabilité vers `DURABLE` dans la transaction DB.
 
-Le schéma v5 sépare `feature_assets`, `feature_sets` et
+Le sous-schéma introduit en v5 sépare `feature_assets`, `feature_sets` et
 `feature_extract_tasks`. L'unicité logique porte sur image, kind, version et
 fingerprint. Une tâche est persistée avant enqueue, passe par la queue et le
 Governor (CPU, IO, 576 Mio conservateurs, lot 1), puis checkpointée initialement
@@ -106,12 +106,13 @@ ou les octets exige d'auditer et, si nécessaire, d'incrémenter cette version.
 
 ## Statut
 
-**IMPLEMENTED** — ORB réel, format v1, assets content-addressed, DB v5,
+**IMPLEMENTED** — ORB réel, format v1, assets content-addressed, DB v6,
 publication atomique, reader borné, task kind production et reprise automatique.
 
 **NOT_YET_WIRED** — commande de réconciliation/scrub des orphelins, contrôle fin
 du backend parallèle OpenCV, orientation EXIF, lancement automatique de
 l'extraction après import et planification multi-image/DAG.
 
-**PLANNED** — Visual Index, paires candidates, matching, vérification
-géométrique, tracks et SfM.
+**IMPLEMENTED** — Visual Index v1 consomme ce reader sans changer le format.
+
+**PLANNED** — paires candidates, matching, vérification géométrique, tracks et SfM.

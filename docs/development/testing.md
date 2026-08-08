@@ -74,6 +74,11 @@ int main(int argc, char **argv) {
 
 ## Tests unitaires vs tests d'intégration
 
+`test-visual-index` couvre les descriptors synthétiques, le retrieval ORB réel,
+les filtres inter-ScanSets, quatre queries concurrentes, la corruption/absence/
+troncature d'un segment et 4 000 Feature Sets synthétiques. Le scénario de
+reprise `visual_index.update` est exercé dans `test-feature-task`.
+
 | Type | Portée | Fichier |
 |---|---|---|
 | Unitaire | Un module isolé | `tests/test_<module>.c` |

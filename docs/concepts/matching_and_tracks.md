@@ -8,7 +8,8 @@ Le matching transforme les features individuelles en relations inter-images. Les
 
 ## Statut
 
-**PLANNED** — Étape critique du pipeline, pas encore implémentée. Nécessite le Visual Index comme prérequis.
+**PLANNED** — Étape critique du pipeline, pas encore implémentée. Visual Index
+v1 fournit désormais les candidats, leur score et leurs preuves distinctes.
 
 ## Place dans le pipeline
 
@@ -27,6 +28,10 @@ Reconstruction Layers (triangulation)
 ```
 
 Le matching est le pont entre les caractéristiques 2D des images et la structure 3D de la scène.
+
+Le score Visual Index est un signal de retrieval. Il ne constitue ni un match
+descriptor-descriptor final, ni une preuve épipolaire. La chaîne reste :
+candidate Visual Index → futur matching → vérification géométrique → tracks.
 
 La génération future de paires candidates combinera `image_id`, appartenance
 au ScanSet, résultats du Visual Index et provenance. Une proximité temporelle

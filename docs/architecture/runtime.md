@@ -115,6 +115,10 @@ conserve le task ID et laisse le worker obtenir une nouvelle réservation.
 Kinds inconnus, tâches legacy, checkpoints invalides et sources absentes ne
 bloquent pas l'ouverture.
 
+**IMPLEMENTED** — `visual_index.update` reprend à la dernière membership
+commitée. Un segment temporaire n'est jamais visible et un rejeu exclut les
+Feature Sets déjà membres.
+
 ## Invariants
 
 - ncurses appartient exclusivement au thread principal

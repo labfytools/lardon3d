@@ -78,6 +78,9 @@ Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU, IO).
   chemin actuel sans prétendre mesurer les allocations internes d'OpenCV.
   `record_batch` couvre la validation source, le décodage, ORB, la publication
   et la finalisation DB ; `peak_memory_bytes == 0` signifie « mesure inconnue ».
+- `visual_index.update` réserve un thread CPU, un slot I/O, 8 Mio fixes et
+  2 Mio par Feature Set, par lots de 1 à 16. Le GPU vaut zéro. `record_batch`
+  compte uniquement les memberships commités et conserve la mémoire inconnue à zéro.
 
 ## Limites actuelles
 

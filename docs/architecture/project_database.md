@@ -168,9 +168,9 @@ référence vers le fichier checkpoint. Le fichier checkpoint validé reste la
 source complète pour `lardon3d_task_restore()` ; la DB seule ne reconstruit
 jamais une tâche. Un écart ou un fichier invalide interdit la reprise.
 
-## Schéma v5 implémenté
+## Schéma v6 implémenté
 
-- `metadata(key PRIMARY KEY, value)` contient `schema_version=5` et
+- `metadata(key PRIMARY KEY, value)` contient `schema_version=6` et
   `next_task_id`, prochain ID durable allouable.
 - `project(singleton=1, stable_id UNIQUE, name, created_at, updated_at)` décrit
   l'unique identité logique de la DB.
@@ -195,8 +195,22 @@ jamais une tâche. Un écart ou un fichier invalide interdit la reprise.
 - `image_import_tasks(task_id PRIMARY KEY REFERENCES tasks ON DELETE CASCADE,
   source_path, scanset_id REFERENCES scansets)` conserve les paramètres
   métier immuables de `import.images`.
+- `visual_indexes` conserve l'identité `AUTOINCREMENT`, la configuration
+  Feature homogène, les paramètres LSH et leurs fingerprints.
+- `visual_index_segments` conserve identité `AUTOINCREMENT`, génération,
+  SHA-256, chemin, taille, compteurs, durabilité et tâche productrice.
+- `visual_index_memberships` a pour clé primaire
+  `(visual_index_id,feature_set_id)` et référence le segment immutable.
+- `visual_index_update_tasks` conserve `visual_index_id` et le curseur durable.
 
-`AUTOINCREMENT` est volontairement limité à ces trois identités publiées. Il
+Les indexes v6 sont
+`visual_index_segments(visual_index_id,generation)` et
+`visual_index_memberships(visual_index_segment_id,feature_set_id)`. Les FKs
+ciblent `visual_indexes`, `feature_sets`, `visual_index_segments` et `tasks`.
+Les postings ne sont jamais stockés dans SQLite.
+
+`AUTOINCREMENT` couvre les identités publiées catalogue, Feature Store et
+Visual Index. Il
 empêche la réutilisation d'un ID issu d'une transaction validée même si sa ligne
 maximale est supprimée plus tard. Le coût de `sqlite_sequence` est accepté pour
 garantir qu'un futur Feature Store, match ou track ne voie jamais son identifiant
@@ -209,15 +223,15 @@ SHA-256 et le chemin asset sont déjà indexés par leurs contraintes `UNIQUE`.
 
 ## Ouverture et migrations
 
-Une DB vide reçoit directement le schéma v5 dans une transaction
+Une DB vide reçoit directement le schéma v6 dans une transaction
 `BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
 `task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
 `NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
 artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1,
-v2, v3 et v4 sont migrées séquentiellement vers v5. Une version future est refusée et une DB contenant
+v2, v3, v4 et v5 sont migrées séquentiellement vers v6. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
-interne de migration ne connaît que `0 → 4`, `1 → 2 → 3 → 4`,
-`2 → 3 → 4` et `3 → 4`.
+interne de migration applique uniquement la chaîne séquentielle connue jusqu'à
+v6 ; une valeur hors de 1..6 est refusée.
 
 Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
 
@@ -293,7 +307,7 @@ UPDATE metadata SET value=4
     WHERE key='schema_version' AND value=3;
 ```
 
-Configuration v5 : `foreign_keys=ON`, `journal_mode=DELETE`,
+Configuration v6 : `foreign_keys=ON`, `journal_mode=DELETE`,
 `synchronous=FULL`, `busy_timeout=5000`. Le mode DELETE convient au propriétaire
 unique actuel, évite les fichiers WAL/SHM durables et conserve la synchronisation
 forte. Le timeout borne l'attente d'un verrou externe à cinq secondes.
@@ -354,7 +368,7 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v5 et migrations v1→v2→v3→v4→v5, identité
+**IMPLEMENTED** — SQLite système, schéma v6 et migrations v1→v2→v3→v4→v5→v6, identité
 projet, transactions tâche+checkpoint, pagination de reprise et artefacts
 génériques.
 
@@ -382,7 +396,9 @@ cataloguées », pas « images migrées ».
 
 **NOT_YET_WIRED** — autosave à toutes les transitions, retry UI des sources
 indisponibles, migration de la TUI legacy et réconciliation des fichiers
-orphelins et Visual Index. Le Feature Store v1 est implémenté.
+orphelins et compaction Visual Index. Feature Store et Visual Index v1 sont implémentés.
+Visual Index v1 borne un index à 256 segments de 16 memberships, soit 4096 Feature Sets;
+la couverture de 50 000 Feature Sets nécessitera la compaction ou une évolution v2.
 
-**PLANNED** — migrations v5+, dépendances d'artefacts, graphe géométrique et
+**PLANNED** — migrations v7+, dépendances d'artefacts, graphe géométrique et
 reconstruction incrémentale.

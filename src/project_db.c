@@ -102,6 +102,43 @@ static const char schema_feature_v5[] =
     "CHECK(fast_threshold BETWEEN 1 AND 255),parameter_fingerprint BLOB NOT NULL "
     "CHECK(length(parameter_fingerprint)=32));";
 
+static const char schema_visual_v6[] =
+    "CREATE TABLE visual_indexes(visual_index_id INTEGER PRIMARY KEY AUTOINCREMENT "
+    "CHECK(visual_index_id>0),index_kind TEXT NOT NULL CHECK(length(index_kind)>0 AND "
+    "length(index_kind)<65),index_version INTEGER NOT NULL CHECK(index_version>0),"
+    "descriptor_type INTEGER NOT NULL CHECK(descriptor_type IN(1,2)),descriptor_dimension "
+    "INTEGER NOT NULL CHECK(descriptor_dimension BETWEEN 1 AND 4096),extractor_kind TEXT NOT "
+    "NULL CHECK(length(extractor_kind)>0 AND length(extractor_kind)<65),extractor_version "
+    "INTEGER NOT NULL CHECK(extractor_version>0),feature_parameter_fingerprint BLOB NOT NULL "
+    "CHECK(length(feature_parameter_fingerprint)=32),index_parameter_fingerprint BLOB NOT NULL "
+    "CHECK(length(index_parameter_fingerprint)=32),table_count INTEGER NOT NULL CHECK(table_count "
+    "BETWEEN 1 AND 32),key_bits INTEGER NOT NULL CHECK(key_bits BETWEEN 8 AND 32),"
+    "max_features_per_set INTEGER NOT NULL CHECK(max_features_per_set BETWEEN 1 AND 1024),"
+    "max_bucket_postings INTEGER NOT NULL CHECK(max_bucket_postings BETWEEN 1 AND 4096),"
+    "created_at INTEGER NOT NULL CHECK(created_at>=0),UNIQUE(index_kind,index_version,"
+    "descriptor_type,descriptor_dimension,extractor_kind,extractor_version,"
+    "feature_parameter_fingerprint,index_parameter_fingerprint));"
+    "CREATE TABLE visual_index_segments(visual_index_segment_id INTEGER PRIMARY KEY "
+    "AUTOINCREMENT CHECK(visual_index_segment_id>0),visual_index_id INTEGER NOT NULL REFERENCES "
+    "visual_indexes(visual_index_id),generation INTEGER NOT NULL CHECK(generation>0),sha256 BLOB "
+    "NOT NULL CHECK(length(sha256)=32),path TEXT NOT NULL UNIQUE CHECK(length(path)>0 AND "
+    "length(path)<4096),size_bytes INTEGER NOT NULL CHECK(size_bytes>=128),posting_count INTEGER "
+    "NOT NULL CHECK(posting_count>=0),feature_set_count INTEGER NOT NULL CHECK(feature_set_count "
+    "BETWEEN 1 AND 16),durability INTEGER NOT NULL CHECK(durability BETWEEN 0 AND 1),"
+    "producer_task_id INTEGER REFERENCES tasks(task_id),created_at INTEGER NOT NULL "
+    "CHECK(created_at>=0),UNIQUE(visual_index_id,generation),UNIQUE(visual_index_id,sha256));"
+    "CREATE INDEX visual_index_segments_index_idx ON visual_index_segments(visual_index_id,"
+    "generation);"
+    "CREATE TABLE visual_index_memberships(visual_index_id INTEGER NOT NULL REFERENCES "
+    "visual_indexes(visual_index_id),feature_set_id INTEGER NOT NULL REFERENCES "
+    "feature_sets(feature_set_id),visual_index_segment_id INTEGER NOT NULL REFERENCES "
+    "visual_index_segments(visual_index_segment_id),PRIMARY KEY(visual_index_id,feature_set_id));"
+    "CREATE INDEX visual_index_memberships_segment_idx ON visual_index_memberships("
+    "visual_index_segment_id,feature_set_id);"
+    "CREATE TABLE visual_index_update_tasks(task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) "
+    "ON DELETE CASCADE,visual_index_id INTEGER NOT NULL REFERENCES visual_indexes(visual_index_id),"
+    "after_feature_set_id INTEGER NOT NULL CHECK(after_feature_set_id>=0));";
+
 static void copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text) {
   if (destination) {
     (void)snprintf(destination, LARDON3D_PROJECT_DB_ERROR_CAPACITY, "%s", text ? text : "");
@@ -190,7 +227,7 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
     return LARDON3D_PROJECT_DB_OK;
   }
   if (from_version != 0 && from_version != 1 && from_version != 2 && from_version != 3 &&
-      from_version != 4) {
+      from_version != 4 && from_version != 5) {
     return LARDON3D_PROJECT_DB_CORRUPT;
   }
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
@@ -198,6 +235,14 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
     result = execute(database, schema_v5, "create schema v5");
     if (result == LARDON3D_PROJECT_DB_OK) {
       result = execute(database, schema_feature_v5, "create feature schema v5");
+    }
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database, schema_visual_v6, "create visual index schema v6");
+    }
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database,
+                       "UPDATE metadata SET value=6 WHERE key='schema_version' AND value=5",
+                       "finish new schema v6");
     }
   }
   if (result == LARDON3D_PROJECT_DB_OK && from_version == 1) {
@@ -285,7 +330,7 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
                   "finish schema v4 migration");
     }
   }
-  if (result == LARDON3D_PROJECT_DB_OK && from_version != 0) {
+  if (result == LARDON3D_PROJECT_DB_OK && from_version != 0 && from_version < 5) {
     result = execute(
         database,
         "CREATE TABLE feature_assets(feature_asset_id INTEGER PRIMARY KEY AUTOINCREMENT "
@@ -331,6 +376,21 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
       result =
           execute(database, "UPDATE metadata SET value=5 WHERE key='schema_version' AND value=4",
                   "finish schema v5 migration");
+    }
+  }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version != 0 && from_version < 6) {
+    result = execute(database, schema_visual_v6, "migrate schema v5 to v6");
+#ifdef LARDON3D_PROJECT_DB_TESTING
+    const char *forced_failure = getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V6");
+    if (result == LARDON3D_PROJECT_DB_OK && forced_failure && strcmp(forced_failure, "1") == 0) {
+      result = execute(database, "INSERT INTO missing_test_table VALUES(1)",
+                       "forced migration v6 failure");
+    }
+#endif
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database,
+                       "UPDATE metadata SET value=6 WHERE key='schema_version' AND value=5",
+                       "finish schema v6 migration");
     }
   }
   if (result == LARDON3D_PROJECT_DB_OK) {
@@ -626,6 +686,7 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
                      const char *task_kind, uint32_t task_kind_version,
                      const Lardon3DProjectDbCheckpoint *checkpoint, const char *source_path,
                      uint64_t scanset_id, const Lardon3DProjectDbFeatureExtractTask *feature,
+                     const Lardon3DProjectDbVisualIndexUpdateTask *visual,
                      int64_t updated_at) {
   bool typed = task_kind != NULL;
   if (!database || !valid_durable_task(snapshot, updated_at) ||
@@ -640,6 +701,9 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
         feature->max_features == 0 || feature->max_features > 8192 ||
         feature->pyramid_levels == 0 || feature->pyramid_levels > 16 ||
         feature->fast_threshold == 0 || feature->fast_threshold > 255)) ||
+      (visual &&
+       (!valid_task_id(visual->task_id) || visual->task_id != snapshot->id ||
+        !valid_task_id(visual->visual_index_id) || visual->after_feature_set_id > INT64_MAX)) ||
       (checkpoint && !valid_checkpoint(checkpoint))) {
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
@@ -766,6 +830,24 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
       }
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && visual) {
+    result = prepare(database,
+                     "INSERT INTO visual_index_update_tasks(task_id,visual_index_id,"
+                     "after_feature_set_id) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET "
+                     "after_feature_set_id=excluded.after_feature_set_id WHERE "
+                     "visual_index_update_tasks.visual_index_id=excluded.visual_index_id",
+                     &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      sqlite3_bind_int64(statement, 1, (sqlite3_int64)visual->task_id);
+      sqlite3_bind_int64(statement, 2, (sqlite3_int64)visual->visual_index_id);
+      sqlite3_bind_int64(statement, 3, (sqlite3_int64)visual->after_feature_set_id);
+      result = step_done(database, statement, "upsert visual index update");
+      if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1) {
+        copy_error(database->error, "Index cible de tâche immuable.");
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+      }
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK && checkpoint) {
     result =
         prepare(database,
@@ -798,7 +880,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_task(
     Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot, const char *task_kind,
     uint32_t task_kind_version, const Lardon3DProjectDbCheckpoint *checkpoint, int64_t updated_at) {
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              NULL, updated_at);
+                              NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_image_import_task(
@@ -809,7 +891,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_image_import_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint,
-                              source_path, scanset_id, NULL, updated_at);
+                              source_path, scanset_id, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_task(
@@ -820,7 +902,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              parameters, updated_at);
+                              parameters, NULL, updated_at);
 }
 
 static bool read_task(sqlite3_stmt *statement, Lardon3DProjectDbTask *task) {
@@ -1934,6 +2016,397 @@ lardon3d_project_db_load_feature_extract_task(Lardon3DProjectDb *db, uint64_t ta
       memcpy(p->parameter_fingerprint, fp, 32);
     }
     sqlite3_finalize(s);
+  }
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+static bool valid_visual_index(const Lardon3DProjectDbVisualIndex *index) {
+  return index && lardon3d_task_kind_is_valid(index->index_kind) && index->index_version > 0 &&
+         index->descriptor_type >= 1 && index->descriptor_type <= 2 &&
+         index->descriptor_dimension > 0 && index->descriptor_dimension <= 4096 &&
+         lardon3d_task_kind_is_valid(index->extractor_kind) && index->extractor_version > 0 &&
+         index->table_count > 0 && index->table_count <= 32 && index->key_bits >= 8 &&
+         index->key_bits <= 32 && index->max_features_per_set > 0 &&
+         index->max_features_per_set <= 1024 && index->max_bucket_postings > 0 &&
+         index->max_bucket_postings <= 4096 && index->created_at >= 0;
+}
+
+static bool read_visual_index(sqlite3_stmt *statement, Lardon3DProjectDbVisualIndex *index) {
+  memset(index, 0, sizeof(*index));
+  sqlite3_int64 id = sqlite3_column_int64(statement, 0);
+  const void *feature_fp = sqlite3_column_blob(statement, 7);
+  const void *index_fp = sqlite3_column_blob(statement, 8);
+  if (id <= 0 || !copy_column(statement, 1, index->index_kind, sizeof(index->index_kind)) ||
+      !copy_column(statement, 5, index->extractor_kind, sizeof(index->extractor_kind)) ||
+      sqlite3_column_bytes(statement, 7) != 32 || sqlite3_column_bytes(statement, 8) != 32 ||
+      !feature_fp || !index_fp) {
+    return false;
+  }
+  index->visual_index_id = (uint64_t)id;
+  index->index_version = (uint32_t)sqlite3_column_int64(statement, 2);
+  index->descriptor_type = (uint32_t)sqlite3_column_int64(statement, 3);
+  index->descriptor_dimension = (uint32_t)sqlite3_column_int64(statement, 4);
+  index->extractor_version = (uint32_t)sqlite3_column_int64(statement, 6);
+  memcpy(index->feature_parameter_fingerprint, feature_fp, 32);
+  memcpy(index->index_parameter_fingerprint, index_fp, 32);
+  index->table_count = (uint32_t)sqlite3_column_int64(statement, 9);
+  index->key_bits = (uint32_t)sqlite3_column_int64(statement, 10);
+  index->max_features_per_set = (uint32_t)sqlite3_column_int64(statement, 11);
+  index->max_bucket_postings = (uint32_t)sqlite3_column_int64(statement, 12);
+  index->created_at = sqlite3_column_int64(statement, 13);
+  return valid_visual_index(index);
+}
+
+static const char visual_index_select[] =
+    "SELECT visual_index_id,index_kind,index_version,descriptor_type,descriptor_dimension,"
+    "extractor_kind,extractor_version,feature_parameter_fingerprint,"
+    "index_parameter_fingerprint,table_count,key_bits,max_features_per_set,"
+    "max_bucket_postings,created_at FROM visual_indexes";
+
+Lardon3DProjectDbResult lardon3d_project_db_create_visual_index(
+    Lardon3DProjectDb *db, const Lardon3DProjectDbVisualIndex *configuration,
+    Lardon3DProjectDbVisualIndex *out) {
+  if (!db || !valid_visual_index(configuration) || !out) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  (void)pthread_mutex_lock(&db->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      db,
+      "INSERT INTO visual_indexes(index_kind,index_version,descriptor_type,descriptor_dimension,"
+      "extractor_kind,extractor_version,feature_parameter_fingerprint,"
+      "index_parameter_fingerprint,table_count,key_bits,max_features_per_set,"
+      "max_bucket_postings,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) "
+      "ON CONFLICT(index_kind,index_version,descriptor_type,descriptor_dimension,extractor_kind,"
+      "extractor_version,feature_parameter_fingerprint,index_parameter_fingerprint) DO NOTHING",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_text(statement, 1, configuration->index_kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 2, configuration->index_version);
+    sqlite3_bind_int64(statement, 3, configuration->descriptor_type);
+    sqlite3_bind_int64(statement, 4, configuration->descriptor_dimension);
+    sqlite3_bind_text(statement, 5, configuration->extractor_kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 6, configuration->extractor_version);
+    sqlite3_bind_blob(statement, 7, configuration->feature_parameter_fingerprint, 32,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_blob(statement, 8, configuration->index_parameter_fingerprint, 32,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 9, configuration->table_count);
+    sqlite3_bind_int64(statement, 10, configuration->key_bits);
+    sqlite3_bind_int64(statement, 11, configuration->max_features_per_set);
+    sqlite3_bind_int64(statement, 12, configuration->max_bucket_postings);
+    sqlite3_bind_int64(statement, 13, configuration->created_at);
+    result = step_done(db, statement, "create visual index");
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    char sql[1024];
+    snprintf(sql, sizeof(sql),
+             "%s WHERE index_kind=?1 AND index_version=?2 AND descriptor_type=?3 AND "
+             "descriptor_dimension=?4 AND extractor_kind=?5 AND extractor_version=?6 AND "
+             "feature_parameter_fingerprint=?7 AND index_parameter_fingerprint=?8",
+             visual_index_select);
+    result = prepare(db, sql, &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      sqlite3_bind_text(statement, 1, configuration->index_kind, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(statement, 2, configuration->index_version);
+      sqlite3_bind_int64(statement, 3, configuration->descriptor_type);
+      sqlite3_bind_int64(statement, 4, configuration->descriptor_dimension);
+      sqlite3_bind_text(statement, 5, configuration->extractor_kind, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(statement, 6, configuration->extractor_version);
+      sqlite3_bind_blob(statement, 7, configuration->feature_parameter_fingerprint, 32,
+                        SQLITE_TRANSIENT);
+      sqlite3_bind_blob(statement, 8, configuration->index_parameter_fingerprint, 32,
+                        SQLITE_TRANSIENT);
+      int code = sqlite3_step(statement);
+      if (code != SQLITE_ROW || !read_visual_index(statement, out)) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+      sqlite3_finalize(statement);
+    }
+  }
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_visual_index(
+    Lardon3DProjectDb *db, uint64_t id, Lardon3DProjectDbVisualIndex *out) {
+  if (!db || !valid_catalog_id(id) || !out) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  (void)pthread_mutex_lock(&db->mutex);
+  char sql[768];
+  snprintf(sql, sizeof(sql), "%s WHERE visual_index_id=?1", visual_index_select);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(db, sql, &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)id);
+    int code = sqlite3_step(statement);
+    result = code == SQLITE_DONE ? LARDON3D_PROJECT_DB_NOT_FOUND
+                                 : code == SQLITE_ROW && read_visual_index(statement, out)
+                                       ? LARDON3D_PROJECT_DB_OK
+                                       : LARDON3D_PROJECT_DB_CORRUPT;
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+static bool canonical_visual_path(const unsigned char hash[32], const char *path) {
+  static const char digits[] = "0123456789abcdef";
+  char hex[65];
+  for (size_t i = 0; i < 32; ++i) {
+    hex[i * 2] = digits[hash[i] >> 4];
+    hex[i * 2 + 1] = digits[hash[i] & 15];
+  }
+  hex[64] = '\0';
+  char expected[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+  int written = snprintf(expected, sizeof(expected), "assets/visual-index/%c%c/%s", hex[0],
+                         hex[1], hex);
+  return written > 0 && (size_t)written < sizeof(expected) && strcmp(expected, path) == 0;
+}
+
+static bool read_visual_segment(sqlite3_stmt *statement,
+                                Lardon3DProjectDbVisualIndexSegment *segment) {
+  memset(segment, 0, sizeof(*segment));
+  sqlite3_int64 id = sqlite3_column_int64(statement, 0);
+  sqlite3_int64 index_id = sqlite3_column_int64(statement, 1);
+  sqlite3_int64 generation = sqlite3_column_int64(statement, 2);
+  const void *hash = sqlite3_column_blob(statement, 3);
+  sqlite3_int64 size = sqlite3_column_int64(statement, 5);
+  sqlite3_int64 postings = sqlite3_column_int64(statement, 6);
+  sqlite3_int64 members = sqlite3_column_int64(statement, 7);
+  sqlite3_int64 durability = sqlite3_column_int64(statement, 8);
+  if (id <= 0 || index_id <= 0 || generation <= 0 || !hash ||
+      sqlite3_column_bytes(statement, 3) != 32 || size < 128 || postings < 0 || members < 1 ||
+      members > 16 || durability < 0 || durability > 1 ||
+      !copy_column(statement, 4, segment->path, sizeof(segment->path))) {
+    return false;
+  }
+  segment->visual_index_segment_id = (uint64_t)id;
+  segment->visual_index_id = (uint64_t)index_id;
+  segment->generation = (uint64_t)generation;
+  memcpy(segment->sha256, hash, 32);
+  segment->size_bytes = (uint64_t)size;
+  segment->posting_count = (uint64_t)postings;
+  segment->feature_set_count = (uint32_t)members;
+  segment->durability = (Lardon3DProjectDbVisualIndexDurability)durability;
+  segment->has_producer_task = sqlite3_column_type(statement, 9) != SQLITE_NULL;
+  segment->producer_task_id = segment->has_producer_task
+                                  ? (uint64_t)sqlite3_column_int64(statement, 9)
+                                  : 0;
+  segment->created_at = sqlite3_column_int64(statement, 10);
+  return segment->created_at >= 0 && canonical_visual_path(segment->sha256, segment->path);
+}
+
+static const char visual_segment_select[] =
+    "SELECT visual_index_segment_id,visual_index_id,generation,sha256,path,size_bytes,"
+    "posting_count,feature_set_count,durability,producer_task_id,created_at "
+    "FROM visual_index_segments";
+
+Lardon3DProjectDbResult lardon3d_project_db_list_visual_index_segments(
+    Lardon3DProjectDb *db, uint64_t index_id, uint64_t after,
+    Lardon3DProjectDbVisualIndexSegment *segments, size_t capacity, size_t *count) {
+  if (count) {
+    *count = 0;
+  }
+  if (!db || !valid_catalog_id(index_id) || after > INT64_MAX || !segments || !count ||
+      capacity == 0 || capacity > 256) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  (void)pthread_mutex_lock(&db->mutex);
+  char sql[768];
+  snprintf(sql, sizeof(sql), "%s WHERE visual_index_id=?1 AND generation>?2 ORDER BY generation "
+                             "LIMIT ?3", visual_segment_select);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(db, sql, &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)index_id);
+    sqlite3_bind_int64(statement, 2, (sqlite3_int64)after);
+    sqlite3_bind_int64(statement, 3, (sqlite3_int64)capacity);
+    int code = SQLITE_DONE;
+    while (*count < capacity && (code = sqlite3_step(statement)) == SQLITE_ROW) {
+      if (!read_visual_segment(statement, &segments[*count])) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      ++*count;
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && code != SQLITE_DONE && *count < capacity) {
+      result = sqlite_result(db, code, "list visual index segments");
+    }
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_list_visual_index_pending(
+    Lardon3DProjectDb *db, uint64_t index_id, uint64_t after,
+    Lardon3DProjectDbFeatureSet *sets, size_t capacity, size_t *count) {
+  if (count) {
+    *count = 0;
+  }
+  if (!db || !valid_catalog_id(index_id) || after > INT64_MAX || !sets || !count ||
+      capacity == 0 || capacity > 16) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  (void)pthread_mutex_lock(&db->mutex);
+  char sql[2048];
+  snprintf(sql, sizeof(sql),
+           "%s JOIN visual_indexes v ON v.visual_index_id=?1 LEFT JOIN "
+           "visual_index_memberships m ON m.visual_index_id=v.visual_index_id AND "
+           "m.feature_set_id=f.feature_set_id WHERE f.feature_set_id>?2 AND m.feature_set_id IS "
+           "NULL AND f.descriptor_type=v.descriptor_type AND f.descriptor_dimension="
+           "v.descriptor_dimension AND f.extractor_kind=v.extractor_kind AND "
+           "f.extractor_version=v.extractor_version AND f.parameter_fingerprint="
+           "v.feature_parameter_fingerprint ORDER BY f.feature_set_id LIMIT ?3",
+           feature_select);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(db, sql, &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)index_id);
+    sqlite3_bind_int64(statement, 2, (sqlite3_int64)after);
+    sqlite3_bind_int64(statement, 3, (sqlite3_int64)capacity);
+    int code = SQLITE_DONE;
+    while (*count < capacity && (code = sqlite3_step(statement)) == SQLITE_ROW) {
+      if (!read_feature_set(statement, &sets[*count])) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      ++*count;
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && code != SQLITE_DONE && *count < capacity) {
+      result = sqlite_result(db, code, "list pending visual index features");
+    }
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_publish_visual_index_segment(
+    Lardon3DProjectDb *db, const Lardon3DProjectDbVisualIndexSegment *segment,
+    const uint64_t *ids, size_t count, Lardon3DProjectDbVisualIndexSegment *published) {
+  if (!db || !segment || !valid_catalog_id(segment->visual_index_id) || segment->generation == 0 ||
+      !canonical_visual_path(segment->sha256, segment->path) || segment->size_bytes < 128 ||
+      segment->size_bytes > INT64_MAX || segment->posting_count > INT64_MAX || !ids || count == 0 ||
+      count > 16 || segment->feature_set_count != count || segment->durability < 0 ||
+      segment->durability > 1 || (segment->producer_task_id &&
+                                  !valid_task_id(segment->producer_task_id)) ||
+      segment->created_at < 0 || !published) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+#ifdef LARDON3D_PROJECT_DB_TESTING
+  const char *fail_publish = getenv("LARDON3D_TEST_PROJECT_DB_FAIL_VISUAL_SEGMENT");
+  if (fail_publish && strcmp(fail_publish, "1") == 0) {
+    return LARDON3D_PROJECT_DB_BUSY;
+  }
+#endif
+  (void)pthread_mutex_lock(&db->mutex);
+  Lardon3DProjectDbResult result = execute(db, "BEGIN IMMEDIATE", "begin visual segment publish");
+  sqlite3_stmt *statement = NULL;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(db, "INSERT INTO visual_index_segments(visual_index_id,generation,sha256,"
+                         "path,size_bytes,posting_count,feature_set_count,durability,"
+                         "producer_task_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                     &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)segment->visual_index_id);
+    sqlite3_bind_int64(statement, 2, (sqlite3_int64)segment->generation);
+    sqlite3_bind_blob(statement, 3, segment->sha256, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 4, segment->path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 5, (sqlite3_int64)segment->size_bytes);
+    sqlite3_bind_int64(statement, 6, (sqlite3_int64)segment->posting_count);
+    sqlite3_bind_int64(statement, 7, (sqlite3_int64)count);
+    sqlite3_bind_int(statement, 8, (int)segment->durability);
+    if (segment->producer_task_id) {
+      sqlite3_bind_int64(statement, 9, (sqlite3_int64)segment->producer_task_id);
+    } else {
+      sqlite3_bind_null(statement, 9);
+    }
+    sqlite3_bind_int64(statement, 10, segment->created_at);
+    result = step_done(db, statement, "insert visual segment");
+  }
+  sqlite3_int64 segment_id = sqlite3_last_insert_rowid(db->connection);
+  for (size_t i = 0; i < count && result == LARDON3D_PROJECT_DB_OK; ++i) {
+    if (!valid_catalog_id(ids[i])) {
+      result = LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+      break;
+    }
+    result = prepare(db, "INSERT INTO visual_index_memberships(visual_index_id,feature_set_id,"
+                         "visual_index_segment_id) VALUES(?1,?2,?3)", &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      sqlite3_bind_int64(statement, 1, (sqlite3_int64)segment->visual_index_id);
+      sqlite3_bind_int64(statement, 2, (sqlite3_int64)ids[i]);
+      sqlite3_bind_int64(statement, 3, segment_id);
+      result = step_done(db, statement, "insert visual membership");
+    }
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = execute(db, "COMMIT", "commit visual segment publish");
+  }
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    (void)execute(db, "ROLLBACK", "rollback visual segment publish");
+  }
+  (void)pthread_mutex_unlock(&db->mutex);
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    return result;
+  }
+  Lardon3DProjectDbVisualIndexSegment page[1];
+  size_t page_count = 0;
+  result = lardon3d_project_db_list_visual_index_segments(db, segment->visual_index_id,
+                                                          segment->generation - 1, page, 1,
+                                                          &page_count);
+  if (result == LARDON3D_PROJECT_DB_OK && page_count == 1 &&
+      page[0].generation == segment->generation) {
+    *published = page[0];
+    return LARDON3D_PROJECT_DB_OK;
+  }
+  return result == LARDON3D_PROJECT_DB_OK ? LARDON3D_PROJECT_DB_CORRUPT : result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_record_visual_index_update_task(
+    Lardon3DProjectDb *db, const Lardon3DTaskDurableSnapshot *snapshot, const char *kind,
+    uint32_t version, const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbVisualIndexUpdateTask *parameters, int64_t updated_at) {
+  if (!snapshot || !parameters || parameters->task_id != snapshot->id ||
+      !valid_catalog_id(parameters->visual_index_id) ||
+      parameters->after_feature_set_id > INT64_MAX) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
+                              parameters, updated_at);
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_visual_index_update_task(
+    Lardon3DProjectDb *db, uint64_t task_id,
+    Lardon3DProjectDbVisualIndexUpdateTask *parameters) {
+  if (!db || !valid_task_id(task_id) || !parameters) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(parameters, 0, sizeof(*parameters));
+  (void)pthread_mutex_lock(&db->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      db, "SELECT visual_index_id,after_feature_set_id FROM visual_index_update_tasks WHERE "
+          "task_id=?1", &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    int code = sqlite3_step(statement);
+    sqlite3_int64 index_id = sqlite3_column_int64(statement, 0);
+    sqlite3_int64 after = sqlite3_column_int64(statement, 1);
+    if (code == SQLITE_DONE) {
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    } else if (code != SQLITE_ROW || index_id <= 0 || after < 0) {
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    } else {
+      parameters->task_id = task_id;
+      parameters->visual_index_id = (uint64_t)index_id;
+      parameters->after_feature_set_id = (uint64_t)after;
+    }
+    sqlite3_finalize(statement);
   }
   (void)pthread_mutex_unlock(&db->mutex);
   return result;

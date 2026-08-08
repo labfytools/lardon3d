@@ -63,7 +63,8 @@ content-addressed. Les états Feature/Matching/Reconstruction restent planifiés
 | **Pipeline conceptuel** | Extraction de features globales → construction de l'index → requête par similarité → retour des K plus proches voisins. |
 | **Proximité temporelle comme signal secondaire** | Lorsque les images portent un horodatage EXIF, la proximité temporelle sert de signal complémentaire au contenu visuel, mais ne remplace jamais l'analyse visuelle. |
 
-**Statut :** PLANNED — aucun index visuel ni générateur de paires n'existe.
+**Statut :** IMPLEMENTED v1 — LSH binaire déterministe, segments immuables,
+updates incrémentales et query top-K bornée. Le générateur de paires reste planifié.
 
 ---
 
@@ -215,9 +216,9 @@ Image Catalog (B) ──► Feature Store (C)
 
 ## Statut du pipeline
 
-Import, Image Catalog, Feature Extraction et Feature Store sont
-**IMPLEMENTED**. Visual Index, Candidate Pair, Matching, Tracks et SfM sont
-**PLANNED**.
+Import, Image Catalog, Feature Extraction et Feature Store sont **IMPLEMENTED**.
+Visual Index est implémenté mais reste en validation partielle. Candidate Pair,
+Matching, Tracks et SfM sont **PLANNED**.
 
 Ce document décrit la vision architecturale cible du pipeline de
 reconstruction. Les modules listés ici ne sont pas tous implémentés.

@@ -27,7 +27,7 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v5** : tâches, ScanSets, images, Feature Sets/assets et migrations SQLite
+- **Project Database v6** : tâches, catalogue, Feature Store et Visual Index segmenté
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
 - **Recovery projet** : reprise automatique sélective et bornée des imports récupérables
 - **Task Queue** : file FIFO avec sélection adaptative et backpressure
@@ -39,6 +39,7 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 
 - Intégration scheduler ↔ governor avec séquences adaptatives
 - Documentation architecture
+- **Visual Index v1** : LSH ORB persistant, incrémental et validé, avec recherche top-K bornée
 
 ### Briques prévues (PLANNED)
 
@@ -104,6 +105,7 @@ Acquisitions
 - [Persistance](docs/architecture/persistence.md)
 - [Base de données projet](docs/architecture/project_database.md)
 - [Feature Store](docs/architecture/feature_store.md)
+- [Visual Index](docs/architecture/visual_index.md)
 - [Viewer](docs/architecture/viewer.md)
 - [Revue des fondations](docs/architecture/foundation_review.md)
 

@@ -156,6 +156,11 @@ task_destroy(task);
 
 ## Validation
 
+Les readers Visual Index sont sans état partagé mutable. Une query copie la
+liste bornée des segments sous le mutex DB, puis effectue hash, lectures et
+accumulation après déverrouillage. Un update ne rend le nouveau segment visible
+qu'au commit memberships+segment ; une query en cours garde son snapshot.
+
 Pour tout ticket touchant la concurrence, exécuter :
 
 ```sh

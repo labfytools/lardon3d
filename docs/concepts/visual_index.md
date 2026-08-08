@@ -8,7 +8,17 @@ L'index visuel transforme chaque image en un vecteur de descripteurs (features) 
 
 ## Statut
 
-**IDEA** — Concept fondamental pour l'étape de matching. Pas encore implémenté. Actuellement, le pipeline de photogrammétrie classique utilise une approche exhaustive ou semi-exhaustive qui ne passe pas à l'échelle.
+**IMPLEMENTED v1** — Lardon3D utilise un LSH binaire déterministe en segments
+persistants. Une image ajoutée lors d'une campagne ultérieure peut retrouver
+une ancienne image par contenu, même dans un autre ScanSet et loin d'elle dans
+le dossier. Le score indique une priorité de comparaison, jamais une validité
+géométrique.
+
+Les tests de retrieval passent par l'import, l'extraction ORB et l'index réel :
+crop significatif, rotation modérée et recherche inter-ScanSets. Un asset image
+partagé est signalé par `same_image_asset` et peut être explicitement exclu.
+Les buckets trop communs sont ignorés afin qu'un motif répétitif banal ne domine
+pas des détails distincts.
 
 ## Place dans le pipeline
 
@@ -82,7 +92,7 @@ Image → [Feature 1, Feature 2, ..., Feature N]
 
 - L'index doit tenir en mémoire pour un scan set complet typique (100-1000 images).
 - La construction de l'index ne doit pas bloquer la TUI : tâche asynchrone avec progression.
-- L'index est reconstruction-only : il n'est pas persisté entre les sessions (reconstruit à la demande).
+- L'index et ses memberships sont persistants ; seuls les buffers de requête sont transitoires.
 - La taille maximale de l'index est bornée par le budget RAM du Resource Governor.
 - Les descripteurs doivent être calculés de manière déterministe (même image → même index).
 

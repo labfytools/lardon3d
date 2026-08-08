@@ -9,7 +9,7 @@
 #include <lardon3d/task.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 5,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 6,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -169,6 +169,49 @@ typedef struct {
   unsigned char parameter_fingerprint[32];
 } Lardon3DProjectDbFeatureExtractTask;
 
+typedef enum {
+  LARDON3D_DB_VISUAL_INDEX_DURABLE = 0,
+  LARDON3D_DB_VISUAL_INDEX_PUBLISHED_NOT_DURABLE = 1
+} Lardon3DProjectDbVisualIndexDurability;
+
+typedef struct {
+  uint64_t visual_index_id;
+  char index_kind[LARDON3D_PROJECT_DB_KIND_CAPACITY];
+  uint32_t index_version;
+  uint32_t descriptor_type;
+  uint32_t descriptor_dimension;
+  char extractor_kind[LARDON3D_PROJECT_DB_KIND_CAPACITY];
+  uint32_t extractor_version;
+  unsigned char feature_parameter_fingerprint[32];
+  unsigned char index_parameter_fingerprint[32];
+  uint32_t table_count;
+  uint32_t key_bits;
+  uint32_t max_features_per_set;
+  uint32_t max_bucket_postings;
+  int64_t created_at;
+} Lardon3DProjectDbVisualIndex;
+
+typedef struct {
+  uint64_t visual_index_segment_id;
+  uint64_t visual_index_id;
+  uint64_t generation;
+  unsigned char sha256[32];
+  char path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+  uint64_t size_bytes;
+  uint64_t posting_count;
+  uint32_t feature_set_count;
+  Lardon3DProjectDbVisualIndexDurability durability;
+  bool has_producer_task;
+  uint64_t producer_task_id;
+  int64_t created_at;
+} Lardon3DProjectDbVisualIndexSegment;
+
+typedef struct {
+  uint64_t task_id;
+  uint64_t visual_index_id;
+  uint64_t after_feature_set_id;
+} Lardon3DProjectDbVisualIndexUpdateTask;
+
 Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProjectDb **database,
                                                  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY]);
 void lardon3d_project_db_close(Lardon3DProjectDb *database);
@@ -263,5 +306,29 @@ Lardon3DProjectDbResult
 lardon3d_project_db_list_feature_sets(Lardon3DProjectDb *database, uint64_t after_feature_set_id,
                                       Lardon3DProjectDbFeatureSet *feature_sets, size_t capacity,
                                       size_t *count);
+Lardon3DProjectDbResult lardon3d_project_db_create_visual_index(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbVisualIndex *configuration,
+    Lardon3DProjectDbVisualIndex *visual_index);
+Lardon3DProjectDbResult lardon3d_project_db_load_visual_index(
+    Lardon3DProjectDb *database, uint64_t visual_index_id,
+    Lardon3DProjectDbVisualIndex *visual_index);
+Lardon3DProjectDbResult lardon3d_project_db_list_visual_index_segments(
+    Lardon3DProjectDb *database, uint64_t visual_index_id, uint64_t after_generation,
+    Lardon3DProjectDbVisualIndexSegment *segments, size_t capacity, size_t *count);
+Lardon3DProjectDbResult lardon3d_project_db_list_visual_index_pending(
+    Lardon3DProjectDb *database, uint64_t visual_index_id, uint64_t after_feature_set_id,
+    Lardon3DProjectDbFeatureSet *feature_sets, size_t capacity, size_t *count);
+Lardon3DProjectDbResult lardon3d_project_db_publish_visual_index_segment(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbVisualIndexSegment *segment,
+    const uint64_t *feature_set_ids, size_t feature_set_count,
+    Lardon3DProjectDbVisualIndexSegment *published);
+Lardon3DProjectDbResult lardon3d_project_db_record_visual_index_update_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbVisualIndexUpdateTask *parameters, int64_t updated_at);
+Lardon3DProjectDbResult lardon3d_project_db_load_visual_index_update_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbVisualIndexUpdateTask *parameters);
 
 #endif

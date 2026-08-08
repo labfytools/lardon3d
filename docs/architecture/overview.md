@@ -68,6 +68,13 @@ binaires content-addressed lisibles par plages bornées.
 
 **Statut :** IMPLEMENTED
 
+### Visual Index
+Index de retrieval ORB LSH persistant en segments immuables. Il indexe les
+Feature Sets par lots bornés et retourne des candidats inter-ScanSets sans
+matching géométrique.
+
+**Statut :** IMPLEMENTED
+
 ### Task
 Moteur de tâches avec états, progression, pause/reprise coopérative,
 annulation, checkpoints et estimations de ressources.
@@ -128,4 +135,5 @@ frontière de séquence connue.
 - Absence de pools de workers multiples (CPU/GPU/IO).
 - La TUI legacy ne sélectionne pas encore explicitement ses ScanSets.
 - La réconciliation globale des assets/checkpoints orphelins n'est pas implémentée.
+- La compaction des segments Visual Index n'est pas implémentée.
 - Viewer et publication live non implémentés.

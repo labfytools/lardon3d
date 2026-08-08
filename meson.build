@@ -23,7 +23,12 @@ ncursesw = dependency('ncursesw', required: true)
 threads = dependency('threads')
 sqlite3 = dependency('sqlite3', required: true)
 openssl = dependency('openssl', required: true)
-opencv = dependency('opencv5', required: true, include_type: 'system', modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d'])
+opencv = dependency(
+    'opencv5',
+    required: true,
+    include_type: 'system',
+    modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d'],
+)
 
 executable(
     'lardon3d',
@@ -40,6 +45,8 @@ executable(
         'src/feature_extractor_opencv.cpp',
         'src/feature_store.c',
         'src/feature_task.c',
+        'src/visual_index.c',
+        'src/visual_index_task.c',
         'src/image_view.c',
         'src/project.c',
         'src/project_db.c',
@@ -89,6 +96,8 @@ import_task_test = executable(
         'src/task_kinds.c',
         'src/feature_task.c',
         'src/feature_store.c',
+        'src/visual_index.c',
+        'src/visual_index_task.c',
         'src/feature_extractor_opencv.cpp',
         'src/task_queue.c',
         'src/resource_governor.c',
@@ -164,6 +173,23 @@ feature_store_test = executable(
 
 test('feature-store', feature_store_test, timeout: 60)
 
+visual_index_test = executable(
+    'test-visual-index',
+    sources: [
+        'tests/test_visual_index.c', 'src/app_state.c',
+        'src/image_catalog_persistent.c', 'src/feature_store.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/visual_index.c', 'src/project_db.c', 'src/task.c',
+        'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    c_args: [
+        '-DLARDON3D_PROJECT_DB_TESTING', '-DLARDON3D_VISUAL_INDEX_TESTING',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv],
+)
+test('visual-index', visual_index_test, timeout: 60)
+
 feature_task_test = executable(
     'test-feature-task',
     sources: [
@@ -172,11 +198,15 @@ feature_task_test = executable(
         'src/task_kind_registry.c', 'src/task_kinds.c', 'src/task_queue.c',
         'src/import.c', 'src/import_task.c', 'src/image_catalog.c',
         'src/image_catalog_persistent.c', 'src/image_view.c',
-        'src/feature_task.c', 'src/feature_store.c',
+        'src/feature_task.c', 'src/feature_store.c', 'src/visual_index.c',
+        'src/visual_index_task.c',
         'src/feature_extractor_opencv.cpp', 'src/resource_governor.c',
         'src/resource_snapshot.c',
     ],
-    c_args: ['-DLARDON3D_PROJECT_DB_TESTING', '-DLARDON3D_FEATURE_TASK_TESTING'],
+    c_args: [
+        '-DLARDON3D_PROJECT_DB_TESTING', '-DLARDON3D_FEATURE_TASK_TESTING',
+        '-DLARDON3D_VISUAL_INDEX_TASK_TESTING',
+    ],
     include_directories: include_directories('include'),
     dependencies: [threads, sqlite3, openssl, opencv],
 )
@@ -254,6 +284,8 @@ project_test = executable(
         'src/task_kinds.c',
         'src/feature_task.c',
         'src/feature_store.c',
+        'src/visual_index.c',
+        'src/visual_index_task.c',
         'src/feature_extractor_opencv.cpp',
         'src/task_queue.c',
         'src/import.c',

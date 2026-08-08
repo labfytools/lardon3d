@@ -11,6 +11,8 @@
 
 #include <lardon3d/feature_store.h>
 #include <lardon3d/feature_task.h>
+#include <lardon3d/visual_index.h>
+#include <lardon3d/visual_index_task.h>
 #include <lardon3d/image_catalog.h>
 #include <lardon3d/project.h>
 #include <lardon3d/task_queue.h>
@@ -148,6 +150,33 @@ static bool run_test(void) {
   CHECK(lardon3d_feature_reader_open(state.project_path, &set, &reader, &metadata) ==
         LARDON3D_FEATURE_STORE_OK);
   lardon3d_feature_reader_close(reader);
+
+  Lardon3DVisualIndexConfiguration index_configuration = {1, 256, 128};
+  uint64_t visual_index_id = 0;
+  CHECK(lardon3d_visual_index_create(state.project_db, &set, &index_configuration,
+                                     &visual_index_id) == LARDON3D_VISUAL_INDEX_OK);
+  CHECK(setenv("LARDON3D_TEST_VISUAL_INDEX_PAUSE_AFTER_SEGMENT", "1", 1) == 0 &&
+        setenv("LARDON3D_TEST_VISUAL_INDEX_SKIP_FINISHED_CHECKPOINT", "1", 1) == 0);
+  uint64_t visual_task_id = 0;
+  CHECK(lardon3d_project_enqueue_visual_index_update(&state, visual_index_id, &visual_task_id));
+  CHECK(wait_state(state.task_queue, visual_task_id, TASK_PAUSED, &snapshot));
+  lardon3d_task_queue_destroy(state.task_queue);
+  state.task_queue = NULL;
+  lardon3d_project_close(&state);
+  lardon3d_resource_governor_destroy(state.resource_governor);
+  state.resource_governor = NULL;
+  CHECK(unsetenv("LARDON3D_TEST_VISUAL_INDEX_PAUSE_AFTER_SEGMENT") == 0 &&
+        unsetenv("LARDON3D_TEST_VISUAL_INDEX_SKIP_FINISHED_CHECKPOINT") == 0);
+  lardon3d_app_state_init(&state);
+  CHECK(runtime(&state) && lardon3d_project_open(&state, "Features"));
+  CHECK(lardon3d_project_last_recovery_summary(&state, &summary) && summary.resumed == 1);
+  CHECK(wait_state(state.task_queue, visual_task_id, TASK_COMPLETED, &snapshot));
+  Lardon3DProjectDbVisualIndexSegment visual_segments[2];
+  size_t visual_segment_count = 0;
+  CHECK(lardon3d_project_db_list_visual_index_segments(
+            state.project_db, visual_index_id, 0, visual_segments, 2, &visual_segment_count) ==
+            LARDON3D_PROJECT_DB_OK &&
+        visual_segment_count == 1);
 
   CHECK(write_pgm(source));
   Lardon3DProjectDbImage missing_image;

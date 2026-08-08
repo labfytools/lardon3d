@@ -116,5 +116,8 @@ legacy. La migration de la TUI vers les pages SQLite reste donc nécessaire.
 vue mémoire, vérification/scrub des assets et réconciliation globale des
 orphelins.
 
-**PLANNED** — Feature Store, Visual Index, paires candidates, matching, tracks,
-SfM, MVS et relations géométriques entre ScanSets.
+**IMPLEMENTED** — Feature Store et Visual Index peuvent relier visuellement
+des images de ScanSets différents sans dépendre de leur nom ou ordre.
+
+**PLANNED** — paires candidates, matching, tracks, SfM, MVS et relations
+géométriques entre ScanSets.
