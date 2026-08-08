@@ -33,6 +33,11 @@ au ScanSet, résultats du Visual Index et provenance. Une proximité temporelle
 pourra servir de signal secondaire ; la proximité dans un dossier et le nom de
 fichier ne constituent jamais l'identité principale.
 
+Une observation de feature utilisera la référence durable
+`feature_set_id + feature_index`. Une fois le Feature Set READY,
+`feature_index` désigne immuablement la paire keypoint/descripteur de même
+indice ; aucun chemin source n'entre dans cette identité.
+
 ## Concepts clés
 
 ### Étapes du matching

@@ -1,6 +1,6 @@
 project(
     'lardon3d',
-    'c',
+    'c', 'cpp',
     version: '0.1.0',
     license: 'MIT',
     default_options: [
@@ -17,11 +17,13 @@ add_project_arguments(
     '-Wshadow',
     language: 'c',
 )
+add_project_arguments('-std=c++17', '-Wpedantic', '-Wconversion', '-Wshadow', language: 'cpp')
 
 ncursesw = dependency('ncursesw', required: true)
 threads = dependency('threads')
 sqlite3 = dependency('sqlite3', required: true)
 openssl = dependency('openssl', required: true)
+opencv = dependency('opencv5', required: true, include_type: 'system', modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d'])
 
 executable(
     'lardon3d',
@@ -35,6 +37,9 @@ executable(
         'src/import_task.c',
         'src/image_catalog.c',
         'src/image_catalog_persistent.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/feature_store.c',
+        'src/feature_task.c',
         'src/image_view.c',
         'src/project.c',
         'src/project_db.c',
@@ -48,7 +53,7 @@ executable(
         'src/hardware_profile.c',
     ],
     include_directories: include_directories('include'),
-    dependencies: [ncursesw, threads, sqlite3, openssl],
+    dependencies: [ncursesw, threads, sqlite3, openssl, opencv],
 )
 
 import_test = executable(
@@ -82,6 +87,9 @@ import_task_test = executable(
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
         'src/task_kinds.c',
+        'src/feature_task.c',
+        'src/feature_store.c',
+        'src/feature_extractor_opencv.cpp',
         'src/task_queue.c',
         'src/resource_governor.c',
         'src/resource_snapshot.c',
@@ -95,7 +103,7 @@ import_task_test = executable(
         '-DLARDON3D_CHECKPOINT_TESTING',
     ],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3, openssl],
+    dependencies: [threads, sqlite3, openssl, opencv],
 )
 
 test('import-task', import_task_test, timeout: 30)
@@ -135,6 +143,44 @@ persistent_image_catalog_test = executable(
 )
 
 test('persistent-image-catalog', persistent_image_catalog_test, timeout: 60)
+
+feature_store_test = executable(
+    'test-feature-store',
+    sources: [
+        'tests/test_feature_store.c',
+        'src/app_state.c',
+        'src/image_catalog_persistent.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/feature_store.c',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING', '-DLARDON3D_FEATURE_STORE_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv],
+)
+
+test('feature-store', feature_store_test, timeout: 60)
+
+feature_task_test = executable(
+    'test-feature-task',
+    sources: [
+        'tests/test_feature_task.c', 'src/app_state.c', 'src/project.c',
+        'src/project_db.c', 'src/task.c', 'src/task_checkpoint.c',
+        'src/task_kind_registry.c', 'src/task_kinds.c', 'src/task_queue.c',
+        'src/import.c', 'src/import_task.c', 'src/image_catalog.c',
+        'src/image_catalog_persistent.c', 'src/image_view.c',
+        'src/feature_task.c', 'src/feature_store.c',
+        'src/feature_extractor_opencv.cpp', 'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING', '-DLARDON3D_FEATURE_TASK_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv],
+)
+test('feature-task', feature_task_test, timeout: 60)
 
 image_view_test = executable(
     'test-image-view',
@@ -206,6 +252,9 @@ project_test = executable(
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
         'src/task_kinds.c',
+        'src/feature_task.c',
+        'src/feature_store.c',
+        'src/feature_extractor_opencv.cpp',
         'src/task_queue.c',
         'src/import.c',
         'src/import_task.c',
@@ -220,7 +269,7 @@ project_test = executable(
         '-DLARDON3D_CHECKPOINT_TESTING',
     ],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3, openssl],
+    dependencies: [threads, sqlite3, openssl, opencv],
 )
 
 test('project', project_test, timeout: 30)

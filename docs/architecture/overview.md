@@ -62,6 +62,12 @@ catalogue, le manifeste ou les images.
 
 **Statut :** IMPLEMENTED
 
+### Feature Store
+Extraction ORB réelle par tâche persistante, Feature Sets logiques et assets
+binaires content-addressed lisibles par plages bornées.
+
+**Statut :** IMPLEMENTED
+
 ### Task
 Moteur de tâches avec états, progression, pause/reprise coopérative,
 annulation, checkpoints et estimations de ressources.

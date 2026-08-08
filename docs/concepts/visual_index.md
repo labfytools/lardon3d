@@ -26,10 +26,10 @@ Matching & Tracks (appariement détaillé)
 
 L'index visuel se situe entre l'extraction de features et la sélection de paires candidates. Il réduit drastiquement l'espace de recherche pour l'appariement.
 
-Le futur index référencera exclusivement les `image_id` stables du catalogue
-persistant. Un chemin d'asset ou un nom source n'est ni une identité d'image ni
-une clé d'index durable. Le partage d'un asset entre deux ScanSets n'empêche pas
-leurs deux images logiques d'être des observations distinctes.
+Le futur index consommera exclusivement un `feature_set_id` et les descripteurs
+obtenus par plages bornées du Feature Reader. Il ne dépendra ni des chemins
+source, ni d'OpenCV, ni du runtime de la tâche productrice. Un chemin d'asset ou
+un nom source n'est pas une clé d'index durable.
 
 ## Concepts clés
 

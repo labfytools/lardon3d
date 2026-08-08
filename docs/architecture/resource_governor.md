@@ -73,6 +73,11 @@ Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU, IO).
   l'échantillon peut conserver taille/durée mais n'alimente jamais l'adaptation
   mémoire.
 - Pas de communication inter-classes de tâches
+- `features.extract` réserve un lot de 1, un thread CPU et un slot I/O, avec
+  64 Mio fixes et 512 Mio par image. Cette estimation conservatrice couvre le
+  chemin actuel sans prétendre mesurer les allocations internes d'OpenCV.
+  `record_batch` couvre la validation source, le décodage, ORB, la publication
+  et la finalisation DB ; `peak_memory_bytes == 0` signifie « mesure inconnue ».
 
 ## Limites actuelles
 

@@ -108,7 +108,7 @@ par le `time_t` local avant conversion. Le format reste donc lisible entre
 plateformes uniquement pour les valeurs communes à leurs domaines `size_t` et
 `time_t`.
 
-## Project Database v4
+## Project Database v5
 
 SQLite contient l'état logique interrogable et les références aux fichiers ;
 les checkpoints et artefacts volumineux restent externes. L'enregistrement du
@@ -147,8 +147,8 @@ code.
 **IMPLEMENTED** — modèle durable, codec v1, lecture validée, publication
 atomique et restauration sûre d'une tâche isolée.
 
-**IMPLEMENTED** — Project Database v4 pour identité, tâches typées, ScanSets,
-images logiques, assets SHA-256, références checkpoint et artefacts génériques.
+**IMPLEMENTED** — Project Database v5 pour identité, tâches typées, ScanSets,
+images logiques, Feature Sets/assets SHA-256, checkpoints et artefacts génériques.
 
 **IMPLEMENTED** — registry statique bornée et reconstruction explicite avec
 ownership du userdata.
@@ -205,5 +205,8 @@ retry piloté par l'utilisateur pour les sources indisponibles.
 **NOT_YET_WIRED** — migration de la vue TUI en mémoire vers la pagination
 SQLite, scrub des assets et réconciliation globale des orphelins.
 
-**PLANNED** — Feature Store, Visual Index, migrations v5+ et reprise avec
+**IMPLEMENTED** — Feature Store externe versionné, immutable, borné et relié
+transactionnellement à ses métadonnées SQLite après publication.
+
+**PLANNED** — Visual Index, migrations v6+ et reprise avec
 dépendances.

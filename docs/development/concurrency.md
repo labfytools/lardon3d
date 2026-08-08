@@ -160,7 +160,7 @@ Pour tout ticket touchant la concurrence, exécuter :
 
 ```sh
 # Build TSan
-meson setup build-tsan --wipe -Db_sanitize=thread -Db_static=false
+CC=clang meson setup build-tsan --wipe -Db_sanitize=thread -Db_lundef=false
 meson compile -C build-tsan -j8
 meson test -C build-tsan --print-errorlogs
 ```

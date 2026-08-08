@@ -168,9 +168,9 @@ référence vers le fichier checkpoint. Le fichier checkpoint validé reste la
 source complète pour `lardon3d_task_restore()` ; la DB seule ne reconstruit
 jamais une tâche. Un écart ou un fichier invalide interdit la reprise.
 
-## Schéma v4 implémenté
+## Schéma v5 implémenté
 
-- `metadata(key PRIMARY KEY, value)` contient `schema_version=4` et
+- `metadata(key PRIMARY KEY, value)` contient `schema_version=5` et
   `next_task_id`, prochain ID durable allouable.
 - `project(singleton=1, stable_id UNIQUE, name, created_at, updated_at)` décrit
   l'unique identité logique de la DB.
@@ -209,12 +209,12 @@ SHA-256 et le chemin asset sont déjà indexés par leurs contraintes `UNIQUE`.
 
 ## Ouverture et migrations
 
-Une DB vide reçoit directement le schéma v4 dans une transaction
+Une DB vide reçoit directement le schéma v5 dans une transaction
 `BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
 `task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
 `NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
 artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1,
-v2 et v3 sont migrées séquentiellement vers v4. Une version future est refusée et une DB contenant
+v2, v3 et v4 sont migrées séquentiellement vers v5. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
 interne de migration ne connaît que `0 → 4`, `1 → 2 → 3 → 4`,
 `2 → 3 → 4` et `3 → 4`.
@@ -293,7 +293,7 @@ UPDATE metadata SET value=4
     WHERE key='schema_version' AND value=3;
 ```
 
-Configuration v4 : `foreign_keys=ON`, `journal_mode=DELETE`,
+Configuration v5 : `foreign_keys=ON`, `journal_mode=DELETE`,
 `synchronous=FULL`, `busy_timeout=5000`. Le mode DELETE convient au propriétaire
 unique actuel, évite les fichiers WAL/SHM durables et conserve la synchronisation
 forte. Le timeout borne l'attente d'un verrou externe à cinq secondes.
@@ -354,7 +354,7 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v4 et migrations v1→v2→v3→v4, identité
+**IMPLEMENTED** — SQLite système, schéma v5 et migrations v1→v2→v3→v4→v5, identité
 projet, transactions tâche+checkpoint, pagination de reprise et artefacts
 génériques.
 
@@ -382,7 +382,7 @@ cataloguées », pas « images migrées ».
 
 **NOT_YET_WIRED** — autosave à toutes les transitions, retry UI des sources
 indisponibles, migration de la TUI legacy et réconciliation des fichiers
-orphelins, Feature Store et Visual Index.
+orphelins et Visual Index. Le Feature Store v1 est implémenté.
 
 **PLANNED** — migrations v5+, dépendances d'artefacts, graphe géométrique et
 reconstruction incrémentale.

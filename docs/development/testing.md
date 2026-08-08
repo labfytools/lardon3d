@@ -95,12 +95,12 @@ meson test -C build --print-errorlogs
 git diff --check
 
 # 4. Si mémoire/concurrence touchés
-meson setup build-asan --wipe -Db_sanitize=address,undefined -Db_static=false
+CC=clang meson setup build-asan --wipe -Db_sanitize=address,undefined
 meson compile -C build-asan -j8
 meson test -C build-asan --print-errorlogs
 
 # 5. Si concurrence touchée
-meson setup build-tsan --wipe -Db_sanitize=thread -Db_static=false
+CC=clang meson setup build-tsan --wipe -Db_sanitize=thread -Db_lundef=false
 meson compile -C build-tsan -j8
 meson test -C build-tsan --print-errorlogs
 ```

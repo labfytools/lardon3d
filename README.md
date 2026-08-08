@@ -23,10 +23,11 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 - **Project** : cycle de vie persistant, identité stable et Project Database ouverte
 - **Import** : premier task kind de production, exécuté par la file générique en lots bornés et reprenables
 - **ScanSet / Image Catalog v1** : acquisitions, images logiques, provenance et assets SHA-256 persistants et paginés
+- **Feature Store v1** : extraction ORB réelle, assets binaires versionnés et lecture bornée
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v4** : tâches, ScanSets, catalogue image, assets et migrations SQLite
+- **Project Database v5** : tâches, ScanSets, images, Feature Sets/assets et migrations SQLite
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
 - **Recovery projet** : reprise automatique sélective et bornée des imports récupérables
 - **Task Queue** : file FIFO avec sélection adaptative et backpressure
@@ -102,6 +103,7 @@ Acquisitions
 - [Pipeline de reconstruction](docs/architecture/reconstruction_pipeline.md)
 - [Persistance](docs/architecture/persistence.md)
 - [Base de données projet](docs/architecture/project_database.md)
+- [Feature Store](docs/architecture/feature_store.md)
 - [Viewer](docs/architecture/viewer.md)
 - [Revue des fondations](docs/architecture/foundation_review.md)
 

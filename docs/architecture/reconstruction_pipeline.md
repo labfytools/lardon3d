@@ -42,15 +42,16 @@ content-addressed. Les états Feature/Matching/Reconstruction restent planifiés
 
 ---
 
-### C. Feature Store
+### C. Feature Extraction et Feature Store
 
 | Aspect | Description |
 |--------|-------------|
-| **Index / métadonnées persistants** | Les descripteurs de features (points clés, descripteurs, orientations) sont persistés sur disque dans un format binaire compact. Le rechargement évite la re-extraction. |
-| **Données numériques massives** | Descripteurs floats, coordonnées de keypoints : volumes potentiellement importants. Doivent être stockés de manière séquentielle et indexée. |
-| **Formats adaptés et bornés** | Format binaire avec en-tête (version, nombre de features, dimensions). Borné par le budget RAM du governor : si le store dépasse la capacité, seuls les N plus récents sont en mémoire. |
+| **Extraction** | ORB OpenCV réel, une image par tâche `features.extract`. |
+| **Métadonnées persistantes** | `FeatureSet` logique et `FeatureAsset` physique content-addressed dans ProjectDb v5. |
+| **Données numériques massives** | Keypoints et descripteurs U8×32 restent hors SQLite dans Feature File v1. |
+| **Lecture bornée** | Le reader lit au plus 256 features par plage et ne charge pas tout le fichier. |
 
-**Statut :** PLANNED — aucune implémentation existante.
+**Statut :** IMPLEMENTED v1 — extraction, publication atomique, reprise et reader borné.
 
 ---
 
@@ -212,7 +213,11 @@ Image Catalog (B) ──► Feature Store (C)
 
 ---
 
-## Statut : PLANNED (vision architecturale)
+## Statut du pipeline
+
+Import, Image Catalog, Feature Extraction et Feature Store sont
+**IMPLEMENTED**. Visual Index, Candidate Pair, Matching, Tracks et SfM sont
+**PLANNED**.
 
 Ce document décrit la vision architecturale cible du pipeline de
 reconstruction. Les modules listés ici ne sont pas tous implémentés.
