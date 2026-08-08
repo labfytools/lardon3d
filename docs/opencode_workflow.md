@@ -1,4 +1,14 @@
-# Workflow OpenCode et Codex
+# Workflow OpenCode et Codex (DÉPRÉCIÉ)
+
+> **Ce document est déprécié.** Il a été remplacé par la documentation structurée dans :
+> - [.opencode/context.md](../.opencode/context.md) (contexte permanent)
+> - [.opencode/work/current_ticket.md](../.opencode/work/current_ticket.md) (handoff)
+> - [docs/development/build.md](development/build.md) (instructions de build)
+> - [docs/development/testing.md](development/testing.md) (procédures de test)
+>
+> Ce document est conservé uniquement pour la traçabilité historique.
+
+---
 
 Ce workflow minimise le contexte tout en conservant un handoff fiable. Le
 fichier `.opencode/work/current_ticket.md` est local et ignoré par Git. Il ne

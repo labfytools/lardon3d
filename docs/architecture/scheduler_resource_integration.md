@@ -1,90 +1,83 @@
-# Intégration du scheduler et du gouverneur
+# Intégration Scheduler ↔ Resource Governor
 
-## Responsabilités
+## Responsabilité
 
-Le scheduler conserve l'ordre FIFO et exécute les callbacks. Il ne calcule
-jamais les budgets : la RAM, le GPU, les CPU, les slots IO et la taille de lot
-sont exclusivement arbitrés par le Resource Governor.
+Documenter l'intégration architecturale entre le scheduler de tâches et le Resource Governor, incluant les frontières de responsabilités, le cycle de vie des réservations et le comportement en cas de pause.
 
-Le cycle d'exécution est strict :
+## Frontières de responsabilités
+
+### Scheduler
+- Ordonnancement FIFO
+- Exécution des callbacks
+- Gestion des états de tâche
+- Sélection de la première tâche admissible
+
+### Resource Governor
+- Arbitrage des budgets (RAM, GPU, CPU, IO)
+- Calcul des lots adaptatifs
+- Réservations opaques
+- Historique de métriques
+
+## Cycle d'exécution
 
 ```text
-Task
-  → Resource Estimate
-  → Governor
-  → Reservation
-  → Task Queue
-  → Worker
-  → Release Reservation
+1. Task → Estimate (estimation des ressources)
+2. Scheduler → Governor → decide() (décision d'admission)
+3. Governor → Reservation (réservation opaque)
+4. Scheduler → Worker (exécution)
+5. Worker → Governor → record_batch() (métriques)
+6. Governor → release() (libération)
 ```
-
-Chaque tâche reçoit une estimation immuable à sa création. Son passage de
-`PENDING` à `RUNNING` est interdit tant que le gouverneur n'a pas créé une
-réservation active. Le callback ne reçoit pas l'objet opaque : il consulte une
-copie du contrat contenant le lot, la RAM, la mémoire GPU, les CPU et les slots
-accordés.
 
 ## Admission
 
-Le worker examine la première tâche FIFO. `WAIT` la laisse en attente et le
-worker dort sur la condition de la file. Une libération de ressources suivie de
-`lardon3d_task_queue_resources_changed()` le réveille sans polling.
-`REDUCE_BATCH` crée un contrat avec le lot réduit, qui est transmis à la tâche.
-`REJECT` place la tâche en échec sans appeler son callback et conserve la raison
-explicite du gouverneur.
+### Réponses du gouverneur
+- `ADMIT` : la tâche peut démarrer
+- `WAIT` : la tâche doit attendre (pas de ressources)
+- `REDUCE_BATCH` : réduire la taille du lot
+- `REJECT` : rejeter la tâche
 
-Après succès, échec ou annulation, le worker libère exactement une fois la
-réservation puis réveille la file. La destruction annule les tâches, rejoint le
-worker et libère toute réservation détenue avant de détruire les tâches.
+### Comportement en cas de WAIT
+- Le scheduler saute la tâche en tête de file
+- Il évalue la tâche suivante
+- Pas de blocage de la file
 
-## Pause
+## Gestion des pauses
 
-Dans cette première version, une tâche déjà démarrée conserve sa réservation
-pendant `PAUSED`. Ses ressources restent donc indisponibles pour les autres
-tâches. Ce choix évite de reprendre un callback avec un contrat qui aurait été
-attribué entre-temps à un autre travail.
+### Comportement actuel
+- Une tâche en pause conserve sa réservation
+- Évite de perdre son contrat au profit d'un autre travail
+- Permet la reprise avec le même lot
 
-## Exécution séquencée adaptative
+### Règle
+- La réservation est conservée pendant la pause
+- La libération n'a lieu qu'à la fin de l'exécution
 
-Une tâche peut s'exécuter en plusieurs séquences (lots) successives. Le
-callback appelle `lardon3d_task_sequence_break()` pour libérer sa réservation
-courante, capturer un nouvel instantané système, obtenir une nouvelle
-réservation auprès du gouverneur et reprendre avec un contrat actualisé.
+## Séquences adaptatives
 
-Le cycle d'une séquence est strict :
+### Mécanisme
+- `lardon3d_task_sequence_break()` permet de libérer la réservation courante
+- Capturer un nouvel instantané de ressources
+- Obtenir un contrat actualisé
+- Reprendre le callback en conservant la progression
 
-```text
-Callback
-  → sequence_break
-  → Release Reservation courante
-  → Snapshot système
-  → Governor → Reservation
-  → Contrat actualisé
-  → Reprise du callback
-```
+### Avantages
+- Adaptation dynamique des lots en cours d'exécution
+- Réponse aux changements de ressources
+- Optimisation de l'utilisation mémoire
 
-Le task conserve une référence au gouverneur et à sa réservation courante.
-`lardon3d_task_start` stocke la réservation initiale ; à la fin de l'exécution,
-il libère la réservation courante si elle est encore détenue. Le worker de la
-file libère ensuite la réservation d'origine, qui est déjà libérée si une
-séquence a eu lieu : cet appel est alors sans effet.
+## Invariants
 
-Invariants préservés :
+1. Aucune tâche ne passe de PENDING à RUNNING sans réservation active
+2. Le scheduler ne prend jamais de décision sur les ressources
+3. La libération des réservations s'effectue exactement une fois par cycle/séquence
+4. Les atomicités sont garanties sous mutex
 
-- Aucun callback ne démarre sans réservation active.
-- Une seule réservation active par tâche à tout instant.
-- La réservation est toujours valide avant et après un `sequence_break`.
-- Le contrat est mis à jour atomiquement sous le mutex de la tâche.
-- Si pause ou annulation est demandée pendant le `sequence_break`, la fonction
-  retourne `false` et la tâche est annulée.
-- Si le gouverneur répond `WAIT` ou `REJECT`, la fonction retourne `false` et
-  la tâche passe en échec sans bloquer le callback.
-- La progression est conservée entre les séquences.
+## Limites actuelles
 
-## Limites et extensions
+- Worker unique (pas de pools multiples)
+- Pas de DAG de dépendances
+- Pas de priorités
+- Pas de notification automatique de libération externe
 
-La file possède un seul worker, reste strictement FIFO et ne gère ni priorité
-ni dépendance. Une notification explicite est nécessaire lorsqu'un composant
-extérieur libère une réservation. Les prochaines étapes pourront ajouter un
-DAG, des priorités, des pools distincts CPU, IO et GPU sans déplacer les
-décisions de ressources hors du gouverneur.
+## Statut : DOCUMENTATION DE L'IMPLÉMENTATION ACTUELLE

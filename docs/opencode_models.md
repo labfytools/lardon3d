@@ -1,4 +1,12 @@
-# Inventaire des modèles OpenCode
+# Modèles OpenCode (DÉPRÉCIÉ)
+
+> **Ce document est déprécié.** Il a été remplacé par la documentation structurée dans :
+> - [.opencode/context.md](../.opencode/context.md) (contexte permanent)
+> - [.opencode/agents/](../.opencode/agents/) (définitions des agents)
+>
+> Ce document est conservé uniquement pour la traçabilité historique.
+
+---
 
 Inventaire effectué le 6 août 2026 avec
 `opencode models --refresh --verbose`. Le seul fournisseur connecté exposé est

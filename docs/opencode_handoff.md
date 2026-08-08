@@ -1,4 +1,14 @@
-# Transmission du développement à OpenCode
+# Transmission du développement à OpenCode (DÉPRÉCIÉ)
+
+> **Ce document est déprécié.** Il a été remplacé par la documentation structurée dans :
+> - [.opencode/context.md](../.opencode/context.md) (contexte permanent)
+> - [.opencode/work/current_ticket.md](../.opencode/work/current_ticket.md) (handoff)
+> - [docs/architecture/overview.md](architecture/overview.md) (vue d'ensemble)
+> - [docs/roadmap/roadmap.md](roadmap/roadmap.md) (feuille de route)
+>
+> Ce document est conservé uniquement pour la traçabilité historique.
+
+---
 
 ## 1. Vision du projet
 

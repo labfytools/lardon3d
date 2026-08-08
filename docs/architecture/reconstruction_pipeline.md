@@ -1,0 +1,222 @@
+# Pipeline de reconstruction Lardon3D
+
+## Vision
+
+Lardon3D ne doit plus être décrit simplement comme « dossier de photos → objet 3D ». La vision cible est :
+
+> « ensemble progressif d'observations et de contraintes
+> → reconstruction géométrique persistante, enrichissable et versionnable »
+
+Chaque ajout d'images, de mesures ou de documents enrichit la reconstruction
+existante sans détruire les résultats antérieurs. L'utilisateur peut
+interrompre le pipeline à tout instant, consulter l'état courant via le
+viewer, puis reprendre ultérieurement exactement où il s'était arrêté.
+
+---
+
+## Étapes du pipeline
+
+### A. Scan Sets / acquisitions
+
+| Aspect | Description |
+|--------|-------------|
+| **Définition** | Un *scan set* (ou acquisition) regroupe un ensemble d'images capturées dans un contexte donné : même lieu, même session, même objectif de reconstruction. |
+| **Enrichissement progressif** | Un scan set peut être alimenté par vagues successives : images initiales, images de relèvement, images de contrôle. Chaque vague est horodatée et traçable. |
+| **Identification stable** | Chaque scan set reçoit un identifiant UUID qui ne change jamais, même si le nom lisible est renommé. Les références internes utilisent cet UUID. |
+
+**Statut :** PLANNED — le concept existe dans le manifeste projet mais n'est
+pas encore structuré avec UUID et vague d'import.
+
+---
+
+### B. Image Catalog
+
+| Aspect | Description |
+|--------|-------------|
+| **Identité stable** | Chaque image possède un identifiant interne stable (UUID), distinct du nom de fichier sur disque. Le fichier peut être renommé ou déplacé sans casser les références. |
+| **Provenance** | Le catalogue enregistre le scan set d'origine, la date d'import, le chemin original et le chemin local. |
+| **État de traitement** | Pour chaque image, le catalogue maintient un état : RAW, FEATURES_EXTRACTED, MATCHED, REGISTERED. Cet état est lu par le pipeline pour décider de l'étape suivante. |
+
+**Statut :** PARTIELLEMENT IMPLEMENTÉ — le `image_catalog` gère les
+métadonnées de base mais pas encore l'état de traitement ni l'UUID.
+
+---
+
+### C. Feature Store
+
+| Aspect | Description |
+|--------|-------------|
+| **Index / métadonnées persistants** | Les descripteurs de features (points clés, descripteurs, orientations) sont persistés sur disque dans un format binaire compact. Le rechargement évite la re-extraction. |
+| **Données numériques massives** | Descripteurs floats, coordonnées de keypoints : volumes potentiellement importants. Doivent être stockés de manière séquentielle et indexée. |
+| **Formats adaptés et bornés** | Format binaire avec en-tête (version, nombre de features, dimensions). Borné par le budget RAM du governor : si le store dépasse la capacité, seuls les N plus récents sont en mémoire. |
+
+**Statut :** PLANNED — aucune implémentation existante.
+
+---
+
+### D. Visual Index
+
+| Aspect | Description |
+|--------|-------------|
+| **Choix basé sur le contenu visuel** | Le *visual index* permet de retrouver rapidement les images visuellement proches d'une image donnée, sans comparaison exhaustive. Structure type : vocabulaire visuel inversé ou similarité locality-sensitive hashing. |
+| **Pipeline conceptuel** | Extraction de features globales → construction de l'index → requête par similarité → retour des K plus proches voisins. |
+| **Proximité temporelle comme signal secondaire** | Lorsque les images portent un horodatage EXIF, la proximité temporelle sert de signal complémentaire au contenu visuel, mais ne remplace jamais l'analyse visuelle. |
+
+**Statut :** PLANNED — le pipeline d'import利用 déjà la proximité temporelle
+pour les paires candidats, mais aucun index visuel n'existe.
+
+---
+
+### E. Candidate Pair Generator
+
+| Aspect | Description |
+|--------|-------------|
+| **Sources de paires candidates** | (1) Visual index : paires visuellement proches. (2) Proximité temporelle. (3) Scan set commun. (4) Géométrie approximative (si GPS/IMU disponible). |
+| **Matching coûteux limité** | Le nombre de paires soumises au matching géométrique (étape F) doit être borné. Le candidate generator filtre et classe pour ne garder que les paires les plus prometteuses. |
+
+**Statut :** PLANNED — le scheduler supporte le tri FIFO mais le
+candidate generator n'existe pas encore.
+
+---
+
+### F. Matching et vérification géométrique
+
+| Aspect | Description |
+|--------|-------------|
+| **Distinction des étapes** | (1) *Feature matching* : appariement brut des descripteurs entre deux images. (2) *Geometric verification* : estimation de la transformation rigide (RANSAC ou équivalent) et validation de la compatibilité épipolaire. |
+| **Validation ou rejet** | Une paire validée produit une *edge* dans le graphe de visibilité. Une paire rejetée est marquée comme telle pour éviter les retraitements inutiles. |
+
+**Statut :** PLANNED — aucune implémentation existante.
+
+---
+
+### G. Tracks
+
+| Aspect | Description |
+|--------|-------------|
+| **Observation 2D → track → point3D** | Un *track* est une chaîne d'observations 2D cohérentes d'un même point 3D à travers plusieurs images. Chaque observation est un keypoint indexé par image. |
+| **Lien avec le catalog** | Les tracks référencent les images par leur UUID interne, pas par nom de fichier. |
+| **Persistance** | Les tracks sont persistés entre les sessions de traitement. Un track ne peut être détruit que par une action explicite de l'utilisateur. |
+
+**Statut :** PLANNED — aucune implémentation existante.
+
+---
+
+### H. Reconstruction incrémentale
+
+| Aspect | Description |
+|--------|-------------|
+| **Indexation** | À chaque vague d'images, la reconstruction existante est indexée (positions approximatives des points 3D, orientations des caméras). |
+| **Comparaison aux acquisitions précédentes** | Les nouvelles images sont comparées à la reconstruction existante : localisation des caméras, triangulation de nouveaux points, mise à jour des tracks existants. |
+| **Enrichissement local** | Seules les régions couvertes par les nouvelles images sont recalculées. Le reste de la reconstruction reste inchangé et valide. |
+
+**Statut :** PLANNED — aucune implémentation existante.
+
+---
+
+### I. Reconstruction Layers
+
+| Aspect | Description |
+|--------|-------------|
+| **Conservation de la provenance** | Chaque point 3D, chaque caméra, chaque track conserve la trace de son origine : quel scan set, quelle vague, quelle session. |
+| **Consolidation distincte** | La fusion de layers (consolidation) est un processus séparé de l'ajout de données. L'utilisateur décide quand consolider. La consolidation ne détruit pas les layers d'origine. |
+
+**Statut :** PLANNED — aucune implémentation existante.
+
+---
+
+### J. Sources géométriques externes
+
+| Aspect | Description |
+|--------|-------------|
+| **PHOTO** | Images du scan set (source principale). |
+| **MEASUREMENT** | Mesures directes : distances, orientations, coordonnées GPS, nuages de points LiDAR. Intègrent le graphe de contraintes comme edges géométriques supplémentaires. |
+| **DOCUMENT** | Plans, relevés, fiches techniques. Métadonnées contextuelles qui enrichissent le projet sans contribuer directement au calcul géométrique. |
+
+**Statut :** PLANNED — aucune implémentation existante.
+
+---
+
+### K. Viewer intégré
+
+| Aspect | Description |
+|--------|-------------|
+| **Consommateur passif** | Le viewer ne calcule jamais. Il lit les snapshots validés publiés par le pipeline et les affiche. |
+| **Isolation fonctionnelle** | Le viewer s'exécute dans un thread dédié ou un processus séparé. Il ne partage aucun buffer mutable avec les workers de calcul. |
+| **Reactive** | L'utilisateur voit la reconstruction apparaître progressivement pendant les calculs, sans attendre la fin de l'étape courante. |
+
+**Statut :** PLANNED — le viewer Vulkan séparé n'est pas encore commencé.
+
+---
+
+## Invariants
+
+Ces invariants s'appliquent à toutes les étapes du pipeline :
+
+1. **Chaque étape est indépendante et reprenable.**
+   L'exécution peut être interrompue à n'importe quelle frontière de lot
+   et reprise sans perte de données.
+
+2. **Résultats atomiques et validés uniquement.**
+   Un résultat n'est publié (rendu visible aux étapes suivantes et au
+   viewer) que lorsqu'il est entièrement calculé, vérifié et persisté.
+
+3. **Pas de destruction silencieuse des données sources.**
+   Les images originales, les features extraites, les tracks et les
+   points 3D existants ne jamais supprimés implicitement. Toute
+   suppression est une action explicite et traçable.
+
+4. **Le scheduler ne décide jamais des ressources.**
+   Seul le Resource Governor arbitre les budgets, les lots et les
+   réservations.
+
+5. **Les réservations sont obligatoires.**
+   Aucune tâche ne s'exécute sans réservation active préalablement
+   accordée par le governor.
+
+6. **ncurses appartient exclusivement au thread principal.**
+   Aucun worker ne touche à l'interface TUI.
+
+---
+
+## Diagramme conceptuel
+
+```
+Scan Sets (A)
+    │
+    ▼
+Image Catalog (B) ──► Feature Store (C)
+                          │
+                          ▼
+                    Visual Index (D)
+                          │
+                          ▼
+              Candidate Pair Generator (E)
+                          │
+                          ▼
+              Matching / Geometric Verification (F)
+                          │
+                          ▼
+                      Tracks (G)
+                          │
+                          ▼
+              Reconstruction Incrémentale (H)
+                     │          │
+                     ▼          ▼
+           Reconstruction     Sources
+             Layers (I)     Externes (J)
+                     │          │
+                     └────┬─────┘
+                          ▼
+                  Viewer Intégré (K)
+```
+
+---
+
+## Statut : PLANNED (vision architecturale)
+
+Ce document décrit la vision architecturale cible du pipeline de
+reconstruction. Les modules listés ici ne sont pas tous implémentés.
+L'implémentation suit la feuille de route définie dans `.opencode/context.md`
+et progresse par tickets successifs en respectant les invariants
+d'indépendance et de reprise.

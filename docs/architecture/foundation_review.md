@@ -1,121 +1,90 @@
-# Revue technique des fondations
+# Revue des fondations Lardon3D
 
-## Périmètre et conclusion
+## Objectif
 
-Cette revue couvre `task`, `task_queue`, le profil matériel, les snapshots de
-ressources, le gouverneur, les réservations et leur intégration au scheduler.
-Aucune fuite, course, interblocage ou violation reproductible de l'invariant
-d'admission n'a été détecté par l'inspection et les tests actuels. Aucun code de
-production n'a donc été modifié.
+Documenter la revue technique de la phase de fondation : task, task_queue, hardware_profile, resource_snapshot, resource_governor, réservations et intégration au scheduler.
 
-## Invariants actuellement garantis
+## Composants évalués
 
-- Une tâche possède une estimation copiée à sa création et exposée seulement
-  par copie.
-- Le scheduler reçoit explicitement son gouverneur et refuse un gouverneur nul.
-- Le worker obtient une réservation active avant d'appeler
-  `lardon3d_task_start`; celui-ci revalide la réservation avant le callback.
-- Un callback lancé par la file dispose d'une copie cohérente de son contrat :
-  lot, RAM, GPU, CPU et slots IO/GPU.
-- `WAIT` conserve la tâche en tête et endort le worker sur une condition
-  variable. Le mutex de file empêche une notification concurrente de se perdre
-  entre la décision et l'attente.
-- `REJECT` termine la tâche sans appeler son callback. `REDUCE_BATCH` transmet
-  le contrat réduit.
-- La réservation détenue par le worker est libérée après succès, échec ou
-  annulation. Une pause en cours conserve volontairement la réservation.
-- La destruction de la file annule les tâches, réveille et rejoint le worker,
-  puis détruit les tâches dont elle est propriétaire.
-- Les compteurs du gouverneur et la création des réservations sont protégés par
-  un mutex unique. Une double libération est refusée sans débiter les budgets.
-- Les calculs de taille contrôlent multiplication et addition ; les compteurs
-  CPU et slots ne peuvent croître au-delà des budgets calculés.
-- Le profil représente les capacités stables. Les snapshots sont des valeurs
-  datées et indépendantes ; le scheduler ne prend aucune décision de ressources
-  lui-même.
+### Task
+- Cycle de vie complet
+- États et transitions
+- Pause/reprise coopérative
+- Annulation coopérative
+- Checkpoints
+- Estimations de ressources
+
+### Task Queue
+- File FIFO
+- Sélection de la première tâche admissible
+- Backpressure
+- Bornage du pending_count
+- Comportement WAIT
+
+### Hardware Profile
+- Détection des capacités matérielles
+- CPU, RAM, GPU/VRAM
+
+### Resource Snapshot
+- Capture instantanée des ressources
+- RAM libre, charge CPU, VRAM
+
+### Resource Governor
+- Arbitrage centralisé
+- Calcul de lots adaptatifs
+- Réservations opaques
+- Historique borné
+
+### Intégration Scheduler ↔ Governor
+- Cycle d'exécution
+- Admission
+- Gestion des pauses
+- Séquences adaptatives
+
+## Invariants garantis
+
+1. Intégrité des estimations (immuables)
+2. Obligation de réservation active avant démarrage
+3. Cohérence du contrat de lot transmis au callback
+4. Gestion sécurisée de WAIT et des variables de condition
+5. Libération unique des réservations
+6. Protection mutex unique du gouverneur
+7. Séparation stricte des rôles (scheduler ne décide pas des ressources)
 
 ## Limites connues
 
-- La file possède un seul worker et applique un FIFO strict. Une tâche en tête
-  qui reçoit `WAIT` bloque les tâches suivantes, même si certaines seraient
-  admissibles.
-- Une libération extérieure au scheduler exige ensuite un appel à
-  `lardon3d_task_queue_resources_changed`. Le gouverneur ne publie pas encore
-  automatiquement cet événement.
-- Les réservations libérées restent comme tombstones jusqu'à la destruction du
-  gouverneur. Cela sécurise la double libération mais fait croître la mémoire
-  avec le nombre historique de contrats.
-- Une erreur de capture du snapshot fait échouer la tâche ; il n'existe pas
-  encore de distinction entre erreur transitoire de mesure et rejet durable.
-- Le gouverneur et la file doivent être détruits après arrêt de leurs appelants.
-  Leur destruction concurrente avec une API active n'est pas prise en charge.
-- Les tâches, checkpoints, files et réservations ne sont pas persistés.
-- Il n'existe ni DAG, ni priorité, ni pool de workers, ni orchestration de
-  séquences adaptatives successives.
+- File à worker unique avec FIFO strict
+- Absence de notification automatique de libération externe
+- Accumulation de tombstones de réservations
+- Absence de persistance
+- Absence de DAG
+- Absence de priorités
+- Absence de pools de workers multiples
 
 ## Risques à surveiller
 
-- Formaliser l'ordre de durée de vie : la file doit être détruite avant son
-  gouverneur ; une tâche cédée à la file ne doit plus être détruite directement.
-- Ne jamais permettre à un composant extérieur de libérer la réservation privée
-  du worker. L'appel `get_active` et le démarrage sont sûrs dans le modèle de
-  propriété actuel, pas face à une libération concurrente volontaire.
-- Éviter qu'un callback détruise ou joigne sa propre tâche, ce qui pourrait
-  attendre sa propre fin.
-- Conserver les prédicats autour de chaque attente de condition et maintenir le
-  même mutex pour décision `WAIT` et mise en sommeil.
-- Surveiller les identifiants et compteurs historiques sur les très longues
-  sessions, même si leur débordement est irréaliste avec les allocations
-  actuelles.
-- Ne pas transformer `MemAvailable`, le swap ou la zram en promesse de mémoire
-  supplémentaire. Les snapshots peuvent déjà refléter une consommation réelle
-  en plus des réservations comptables ; une politique future doit rester
-  conservatrice.
-- Garder la publication de résultats indépendante du contrat d'exécution : seul
-  un résultat validé atomiquement peut devenir visible.
+- Ordre de destruction des objets
+- Concurrence sur la libération des réservations
+- Récursivité/blocage par un callback détruisant sa propre tâche
+- Bornage de la mémoire
+- Indépendance de la publication atomique
 
-## Cohérence documentaire
+## Feuille de route
 
-Les documents actuels correspondent au code : responsabilités séparées,
-réservation préalable, pause conservant les ressources, worker unique et
-notification explicite. La vue d'ensemble décrit comme futurs — et non comme
-existants — les séquences complètes, la reprise persistante, les snapshots live
-et le viewer Vulkan.
+### Prochains tickets recommandés
+1. Sélectionner une tâche admissible sans blocage par la tête de file ✓
+2. Introduire le DAG et les dépendances
+3. Persister les tâches et checkpoints de reprise
+4. Orchestrer et mesurer les séquences adaptatives
+5. Ajouter les pools bornés CPU, IO et GPU
+6. Migrer l'import vers le scheduler générique
+7. Ajouter la publication live validée, puis le viewer Vulkan séparé
 
-## Ordre recommandé des prochains tickets
+## Validation
 
-1. Formaliser les contrats de propriété, les événements de libération et les
-   erreurs transitoires de snapshot.
-2. Définir un format de résultat atomique avec identifiant, validation et point
-   de reprise.
-3. Ajouter l'enchaînement borné de lots adaptatifs sous réservations successives.
-4. Borner les files et introduire la contre-pression.
-5. Persister tâches et checkpoints nécessaires à la reprise après crash.
-6. Ajouter ensuite un DAG minimal, puis les priorités.
-7. Généraliser vers des pools CPU, IO et GPU en conservant le gouverneur comme
-   unique arbitre.
-8. Publier des snapshots validés avant d'introduire le viewer séparé.
+- Tests unitaires passés
+- ASan/UBSan passés
+- TSan passé
+- git diff --check propre
 
-## Éléments à ne pas réécrire lors du passage à OpenCode
-
-- Les structures opaques `Task`, `TaskQueue`, `ResourceGovernor` et
-  `ResourceReservation`.
-- La séparation profil matériel / snapshot dynamique / politique / réservation.
-- Le calcul centralisé et protégé des budgets et lots.
-- L'invariant « réservation active avant callback » et la copie du contrat vers
-  la tâche.
-- L'annulation coopérative, les checkpoints de pause et la propriété ncurses du
-  thread principal.
-- Le FIFO à condition variable comme implémentation V1 fiable ; il doit évoluer
-  par extension, pas être remplacé avant que les besoins DAG soient spécifiés.
-- Les écritures atomiques, rollbacks ciblés et validations déjà utilisés par les
-  projets et imports.
-- Les tests de concurrence, de double libération, d'annulation et de destruction
-  sûre, qui constituent la base de non-régression.
-
-## Validation exécutée
-
-- Suite normale : 10 tests réussis sur 10.
-- ASan/UBSan : 10 tests réussis sur 10, aucun diagnostic.
-- TSan : 10 tests réussis sur 10, aucune course signalée.
-- `git diff --check` : réussi avant la rédaction du présent rapport.
+## Statut : DOCUMENTATION DE L'IMPLÉMENTATION ACTUELLE

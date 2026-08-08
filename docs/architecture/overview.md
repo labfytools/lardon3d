@@ -2,11 +2,11 @@
 
 ## Finalité et flux global
 
-Lardon3D est une application Linux de reconstruction 3D pilotée par une TUI
-ncursesw. Le terminal reste le centre de contrôle : il gère les projets, lance
-les opérations, présente leur progression et permet leur annulation. Le futur
-viewer Vulkan sera un processus ou composant graphique séparé, affiché sur le
-workspace 8 ; il ne remplacera pas la TUI et ne devra jamais la bloquer.
+Lardon3D est un moteur de reconstruction géométrique persistante et incrémentale,
+piloté par une TUI ncursesw. Le terminal reste le centre de contrôle : il gère
+les projets, lance les opérations, présente leur progression et permet leur
+annulation. Le viewer sera un composant graphique séparé mais intégré à
+l'interface pour un usage confortable sur un seul écran.
 
 ```text
 TUI / Projet
@@ -30,83 +30,96 @@ Viewer live
 
 ## Composants actuels
 
-Les projets persistants regroupent leur configuration, les images originales,
-le manifeste, les résultats de reconstruction, les exports et les journaux.
-Leur création est protégée contre l'écrasement et les écritures structurantes
-utilisent des remplacements atomiques.
+### Project
+Gestion persistante des projets : création, ouverture, fermeture, structure
+de répertoires. Chaque projet regroupe configuration, images originales,
+manifeste, résultats, exports et journaux.
 
-L'import d'images s'exécute de manière asynchrone et annulable, sans appel
-ncurses depuis son worker. Il copie individuellement les fichiers admissibles
-et maintient un manifeste cohérent. Le catalogue charge et valide ce manifeste
-en mémoire. La vue d'images en dérive des indices triés et filtrés sans modifier
-le catalogue, le manifeste ou les images.
+**Statut :** IMPLEMENTED
 
-Le moteur de tâches fournit les états, la progression, la pause, l'annulation
-coopérative et les callbacks. La file actuelle possède un worker unique et
-respecte l'ordre FIFO. Chaque tâche porte une estimation immuable de ses coûts
-RAM, GPU, CPU et IO ainsi que des bornes de lot.
+### Import
+Import asynchrone et annulable d'images dans un projet. Copie individuelle
+des fichiers admissibles et maintenance d'un manifeste cohérent.
 
-Le profil matériel décrit les capacités stables détectées sur la machine. Les
-snapshots décrivent les ressources disponibles à un instant donné. Le Resource
-Governor combine profil, snapshot, marges de sécurité et réservations actives.
-Il décide si une demande doit démarrer, attendre, réduire son lot ou être
-refusée, puis matérialise toute admission par une réservation opaque.
+**Statut :** IMPLEMENTED
 
-Le scheduler ne décide jamais des ressources. Il demande une réservation au
-gouverneur juste avant l'exécution et transmet au callback une copie du contrat
-accordé. L'invariant est strict : aucun callback de tâche n'est lancé sans
-réservation active validée. Après succès, échec ou annulation, cette réservation
-est libérée exactement une fois. Une tâche déjà en pause conserve son contrat
-dans cette première version.
+### Import Task
+Wrapper asynchrone de l'import avec états, progression et annulation
+coopérative. Exécute l'import dans un worker dédié (non encore migré vers
+le scheduler générique).
+
+**Statut :** IMPLEMENTED
+
+### Image Catalog
+Chargement et indexage en mémoire des métadonnées d'images depuis le
+manifeste du projet. Fournit un accès structuré aux images.
+
+**Statut :** IMPLEMENTED
+
+### Image View
+Vues triées et filtrées du catalogue pour la TUI. Ne modifie pas le
+catalogue, le manifeste ou les images.
+
+**Statut :** IMPLEMENTED
+
+### Task
+Moteur de tâches avec états, progression, pause/reprise coopérative,
+annulation, checkpoints et estimations de ressources.
+
+**Statut :** IMPLEMENTED
+
+### Task Queue
+File FIFO avec worker unique, sélection de la première tâche admissible,
+backpressure et bornage du nombre de tâches en attente.
+
+**Statut :** IMPLEMENTED
+
+### Hardware Profile
+Détection des capacités matérielles statiques : cœurs CPU, RAM, GPU/VRAM.
+
+**Statut :** IMPLEMENTED
+
+### Resource Snapshot
+Capture instantanée des ressources disponibles : RAM libre, charge CPU,
+VRAM disponible.
+
+**Statut :** IMPLEMENTED
+
+### Resource Governor
+Arbitrage centralisé des budgets (RAM, GPU, CPU, IO), calcul de lots
+adaptatifs, réservations opaques et historique borné de métriques.
+
+**Statut :** IMPLEMENTED
 
 ## Résultats et publication live
 
-Les traitements futurs fonctionneront par séquences adaptatives : lire un lot
-borné, calculer, écrire un résultat atomique, libérer la mémoire, puis traiter
-le lot suivant. La stabilité du système hôte et la réactivité de la TUI ont
+Les traitements fonctionnent par séquences adaptatives : lire un lot borné,
+calculer, écrire un résultat atomique, libérer la mémoire, puis traiter le
+lot suivant. La stabilité du système hôte et la réactivité de la TUI ont
 priorité sur le débit maximal.
 
-Le viewer live ne devra observer que des snapshots de résultats complètement
-validés et publiés atomiquement. Il ne lira jamais un fichier intermédiaire et
-ne partagera pas directement les buffers de travail d'un worker. Une
-interruption doit laisser le dernier snapshot validé exploitable et permettre
-la reprise à une frontière de séquence connue.
+Le viewer consomme des snapshots de résultats validés et publiés
+atomiquement. Il ne lit jamais un fichier intermédiaire et ne partage pas
+directement les buffers de travail d'un worker. Une interruption doit laisser
+le dernier snapshot validé exploitable et permettre la reprise à une
+frontière de séquence connue.
 
-## Principes non négociables
+## Invariants fondamentaux
 
-- Aucune tâche lourde monolithique ni chargement complet d'un projet en RAM.
-- Traitement par séquences adaptatives et libération entre les lots.
-- Budgets RAM, GPU, CPU et IO explicitement bornés et réservés.
-- Files de travail et buffers intermédiaires bornés.
-- La zram est un filet de sécurité, jamais une extension du budget normal.
-- La RAM partagée des iGPU est comptabilisée dans le budget système.
-- Écritures atomiques, rollback ciblé et absence de résultat partiellement
-  publié.
-- Reprise après interruption depuis le dernier état validé.
-- Viewer live séparé, non bloquant et lecteur de snapshots validés seulement.
-- Le système hôte, la TUI et les données utilisateur restent prioritaires sur
-  le débit de reconstruction.
+- Aucun callback de tâche n'est lancé sans réservation active validée.
+- Le scheduler ne décide jamais des ressources.
+- Le Resource Governor est l'unique propriétaire des budgets.
+- Les réservations sont libérées exactement une fois.
+- ncurses appartient exclusivement au thread principal.
+- Les estimations de ressources sont immuables.
+- Les buffers et files sont strictement bornés.
 
 ## Limites actuelles
 
-La file ne possède encore ni DAG, ni priorités, ni pool de workers CPU/IO/GPU.
-Les tâches et leur progression ne sont pas persistées après un arrêt. Les
-séquences adaptatives sont préparées par les contrats de lot mais leur
-enchaînement complet n'est pas encore orchestré. Le viewer Vulkan et la
-publication live restent à implémenter.
-
-## Ordre recommandé des prochains tickets
-
-1. Définir les résultats atomiques, leurs métadonnées de validation et leurs
-   points de reprise.
-2. Introduire l'exécution d'une tâche en séquences de lots adaptatifs, toujours
-   sous réservations successives.
-3. Borner explicitement les files et définir la contre-pression entre étapes.
-4. Persister les tâches, checkpoints et états nécessaires à la reprise après
-   crash.
-5. Ajouter un DAG minimal et seulement ensuite les priorités.
-6. Introduire des pools CPU, IO et GPU sans déplacer l'arbitrage hors du
-   gouverneur.
-7. Publier des snapshots live validés et versionnés.
-8. Ajouter le viewer Vulkan séparé sur le workspace 8 comme consommateur en
-   lecture seule de ces snapshots.
+- File à worker unique avec FIFO strict.
+- Absence de DAG de dépendances.
+- Absence de priorités.
+- Absence de pools de workers multiples (CPU/GPU/IO).
+- Import non migré vers le scheduler générique.
+- Persistance des tâches et checkpoints non implémentée.
+- Viewer et publication live non implémentés.

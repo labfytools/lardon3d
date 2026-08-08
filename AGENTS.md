@@ -71,10 +71,48 @@ disponible. Ne jamais annoncer une vérification non exécutée.
 
 ## Prochains tickets recommandés
 
-1. Sélectionner une tâche admissible sans blocage par la tête de file.
+1. Sélectionner une tâche admissible sans blocage par la tête de file ✓
 2. Introduire le DAG et les dépendances.
 3. Persister les tâches et checkpoints de reprise.
 4. Orchestrer et mesurer les séquences adaptatives.
 5. Ajouter les pools bornés CPU, IO et GPU.
 6. Migrer l'import vers le scheduler générique.
 7. Ajouter la publication live validée, puis le viewer Vulkan séparé.
+
+## Règles documentaires
+
+### README.md racine
+Le README.md à la racine est le sommaire canonique de la documentation.
+
+### Vérification avant ticket architectural
+Avant un ticket architectural important :
+1. Identifier le document canonique correspondant dans docs/
+2. Le lire
+3. Vérifier que le ticket respecte ses invariants
+
+### Mise à jour après ticket
+Après un ticket modifiant :
+- API
+- Architecture
+- Ownership
+- Concurrence
+- Persistance
+- Pipeline
+- Limites
+
+Appeler lardon-docs avant de considérer le ticket terminé.
+
+### Contradictions code/documentation
+Si code et documentation architecturale se contredisent :
+1. Ne pas choisir silencieusement
+2. Signaler la contradiction
+3. Décider quelle spécification doit devenir canonique
+4. Mettre la documentation à jour
+5. Seulement ensuite poursuivre
+
+### Nouveaux documents
+Tout nouveau document docs/** doit être référencé depuis README.md si c'est
+un document canonique destiné aux lecteurs du projet.
+
+### Unicité des documents
+Ne jamais créer plusieurs documents canoniques décrivant le même contrat.
