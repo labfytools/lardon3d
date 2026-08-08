@@ -4,7 +4,7 @@ mode: subagent
 model: opencode/deepseek-v4-flash-free
 temperature: 0.1
 permission:
-  read: deny
+  read: allow
   glob: deny
   grep: deny
   edit: deny
@@ -64,3 +64,14 @@ Dans ce cas :
   `lardon-explore`.
 
 Si un chemin précis est déjà connu, utilise-le directement.
+
+Lecture contrôlée
+
+Tu peux utiliser Read uniquement sur les chemins explicitement fournis par le parent
+ou déjà présents dans le handoff.
+
+N utilise jamais Glob.
+N utilise jamais Grep pour découvrir des fichiers.
+Ne cherche jamais toi-même de nouveaux chemins.
+
+Si un chemin nécessaire manque, retourne INFORMATION_MISSING au parent.

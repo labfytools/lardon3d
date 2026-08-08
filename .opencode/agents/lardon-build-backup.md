@@ -4,7 +4,7 @@ mode: subagent
 model: opencode/deepseek-v4-flash-free
 temperature: 0.1
 permission:
-  read: deny
+  read: allow
   glob: deny
   grep: deny
   edit:
@@ -59,3 +59,14 @@ Lis d'abord `.opencode/work/current_ticket.md`, le diff et les seuls fichiers
 concernés. Reprends le working tree existant à la prochaine action sûre sans
 refaire l'analyse si le handoff suffit. Implémente minimalement, sans sous-agent,
 commit, push ni modèle payant. Mets à jour le handoff avec un résumé concis.
+
+Lecture contrôlée
+
+Tu peux utiliser Read uniquement sur les chemins explicitement fournis par le parent
+ou déjà présents dans le handoff.
+
+N utilise jamais Glob.
+N utilise jamais Grep pour découvrir des fichiers.
+Ne cherche jamais toi-même de nouveaux chemins.
+
+Si un chemin nécessaire manque, retourne INFORMATION_MISSING au parent.

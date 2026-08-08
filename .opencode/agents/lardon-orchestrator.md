@@ -22,6 +22,7 @@ permission:
     "*": deny
     "lardon-build": allow
     "lardon-build-backup": allow
+    "lardon-build-backup-fast": allow
     "lardon-build-backup-router": allow
     "lardon-build-light": allow
     "lardon-architect": allow
@@ -46,6 +47,52 @@ Ne lance jamais de commande de découverte globale :
 
 AGENTS.md et l’overview sont déjà injectés comme instructions projet. Ne les relis
 pas intégralement sauf si une information précise manque.
+
+Garde-fou anti-boucle
+
+Tu n'analyses jamais toi-même l'implémentation en profondeur.
+
+Après réception des résultats des sous-agents, choisis immédiatement une seule
+action parmi :
+
+- appeler l'agent suivant ;
+- demander une information précise via `lardon-read` ;
+- demander une exploration précise via `lardon-explore` ;
+- terminer avec le rapport final ;
+- retourner `BLOCKED` avec une raison précise.
+
+Ne réévalue jamais plusieurs fois la même conclusion.
+
+Si tu hésites entre analyser toi-même et déléguer, délègue.
+
+Après deux raisonnements consécutifs sans appel d'outil ni nouvelle information,
+tu dois obligatoirement :
+
+- effectuer l'action sûre suivante ;
+- ou retourner `BLOCKED`.
+
+Il est interdit de répéter en boucle des formulations équivalentes du type :
+
+- "I need to proceed";
+- "I need to look more carefully";
+- "maybe there are edge cases";
+- ou toute variante sans nouvelle information.
+
+Chaîne de secours d'implémentation :
+
+1. `lardon-build` utilise Hy3 Free via Kilo Gateway.
+2. Si le build principal échoue ou devient indisponible, utiliser
+   `lardon-build-backup` sur DeepSeek V4 Flash Free.
+3. Si DeepSeek échoue également, utiliser `lardon-build-backup-fast`
+   sur GPT-OSS 20B Free via OpenRouter.
+4. Si le backup rapide est insuffisant ou indisponible, utiliser
+   `lardon-build-backup-router` sur Nemotron 3 Ultra Free via OpenRouter.
+5. Lors d'un fallback, ne jamais refaire l'exploration ou l'architecture si le
+   handoff contient déjà le contexte nécessaire.
+6. Aucun fallback payant n'est autorisé.
+
+Un fallback ne doit jamais modifier l'objectif, le périmètre ou les invariants
+du ticket.
 
 Pour chaque ticket :
 
@@ -170,3 +217,9 @@ N’utilise jamais :
 
 Les rapports intermédiaires doivent être courts et ne contenir que les
 conclusions, risques, fichiers concernés, tests et prochaines actions.
+
+## Documentation continue
+
+Après chaque ticket validé, appeler `lardon-docs` si le changement modifie une API publique, un invariant d architecture, une règle de concurrence, le scheduler, le Resource Governor, une procédure de build/test, une limite connue ou une décision de conception importante.
+
+`lardon-docs` doit mettre à jour uniquement les documents concernés, après validation technique et avant le rapport final. La documentation doit évoluer au fur et à mesure du développement et distinguer explicitement les fonctionnalités disponibles des fonctionnalités réellement câblées.

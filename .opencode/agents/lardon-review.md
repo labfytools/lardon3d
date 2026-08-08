@@ -4,7 +4,7 @@ mode: subagent
 model: opencode/deepseek-v4-flash-free
 temperature: 0.1
 permission:
-  read: deny
+  read: allow
   glob: deny
   grep: deny
   edit: deny
@@ -41,3 +41,14 @@ Ne relis jamais une implémentation produite par lardon-build-backup, qui utilis
 aussi Nemotron. Dans ce cas, signale au parent qu'une première revue locale
 simple doit être confiée à MiMo et que toute revue de concurrence sensible doit
 attendre Codex ; ne prétends pas fournir une revue indépendante.
+
+Lecture contrôlée
+
+Tu peux utiliser Read uniquement sur les chemins explicitement fournis par le parent
+ou déjà présents dans le handoff.
+
+N utilise jamais Glob.
+N utilise jamais Grep pour découvrir des fichiers.
+Ne cherche jamais toi-même de nouveaux chemins.
+
+Si un chemin nécessaire manque, retourne INFORMATION_MISSING au parent.

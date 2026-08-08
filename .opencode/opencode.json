@@ -41,5 +41,39 @@
       ".opencode/work/**",
       "scan3d/**"
     ]
+  },
+  "provider": {
+    "kilo": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Kilo Gateway",
+      "options": {
+        "baseURL": "https://api.kilo.ai/api/gateway"
+      },
+      "models": {
+        "tencent/hy3:free": {
+          "name": "Hy3 Free",
+          "limit": {
+            "context": 262144,
+            "output": 128000
+          }
+        }
+      }
+    }
+  },
+  "lsp": {
+    "clangd": {
+      "command": [
+        "clangd",
+        "--background-index",
+        "--compile-commands-dir=build"
+      ],
+      "extensions": [
+        ".c",
+        ".h",
+        ".cc",
+        ".cpp",
+        ".hpp"
+      ]
+    }
   }
 }
