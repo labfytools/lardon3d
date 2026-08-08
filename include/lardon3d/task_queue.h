@@ -17,11 +17,20 @@ typedef struct {
 } Lardon3DTaskQueueSummary;
 
 Lardon3DTaskQueue *lardon3d_task_queue_create(
-    Lardon3DResourceGovernor *governor
+    Lardon3DResourceGovernor *governor,
+    size_t capacity
 );
 void lardon3d_task_queue_destroy(Lardon3DTaskQueue *queue);
-/* La file devient propriétaire de task uniquement en cas de succès. */
+/* La file devient propriétaire de task uniquement en cas de succès.
+   Bloquante : attend une place libre si la file est pleine. */
 bool lardon3d_task_queue_add(
+    Lardon3DTaskQueue *queue,
+    Lardon3DTask *task,
+    uint64_t *task_id
+);
+/* Non-bloquante : retourne false si la file est pleine ou en arrêt.
+   La file devient propriétaire de task uniquement en cas de succès. */
+bool lardon3d_task_queue_try_add(
     Lardon3DTaskQueue *queue,
     Lardon3DTask *task,
     uint64_t *task_id

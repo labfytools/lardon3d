@@ -80,6 +80,67 @@ wait_terminal(Lardon3DTaskQueue *queue, uint64_t id, Lardon3DTaskSnapshot *resul
     return false;
 }
 
+typedef struct {
+    Lardon3DTaskQueue *queue;
+    Lardon3DResourceEstimate estimate;
+    QueueWork *work;
+    uint64_t id;
+    bool added;
+} ProducerThread;
+
+static void *
+producer_thread(void *context)
+{
+    ProducerThread *producer = context;
+    Lardon3DTask *task = lardon3d_task_create(
+        "Producteur",
+        &producer->estimate,
+        queue_callback,
+        producer->work
+    );
+    if (!task) {
+        producer->added = false;
+        return NULL;
+    }
+    producer->added = lardon3d_task_queue_add(
+        producer->queue,
+        task,
+        &producer->id
+    );
+    if (!producer->added) {
+        lardon3d_task_destroy(task);
+    }
+    return NULL;
+}
+
+/* Réserve toutes les ressources CPU pour que le worker ne puisse plus
+   consommer de tâche : la file d'attente reste pleine et les producteurs
+   bloquent de façon déterministe. */
+static bool
+hold_resources(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourceReservation **reservation
+)
+{
+    const Lardon3DResourceSnapshot blocking_snapshot = {
+        .memory_available_bytes = UINT64_MAX,
+        .cpu_load_1m = 0.0,
+    };
+    const Lardon3DResourceEstimate blocking_estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1024,
+    };
+    Lardon3DResourceDecision decision;
+    return lardon3d_resource_governor_reserve(
+        governor,
+        &blocking_snapshot,
+        &blocking_estimate,
+        &decision,
+        reservation
+    );
+}
+
 static bool
 run_test(void)
 {
@@ -108,8 +169,8 @@ run_test(void)
     CHECK(governor);
     lardon3d_task_queue_destroy(NULL);
     CHECK(lardon3d_task_queue_count(NULL) == 0);
-    CHECK(!lardon3d_task_queue_create(NULL));
-    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor);
+    CHECK(!lardon3d_task_queue_create(NULL, 0));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 1024);
     CHECK(queue);
     short_pause();
 
@@ -134,7 +195,7 @@ run_test(void)
         CHECK(lardon3d_task_queue_add(queue, tasks[index], &ids[index]));
         CHECK(ids[index] == index + 1);
     }
-    CHECK(lardon3d_task_queue_count(queue) == TASK_COUNT);
+    CHECK(lardon3d_task_queue_count(queue) <= TASK_COUNT);
     Lardon3DTaskSnapshot snapshot;
     CHECK(wait_terminal(queue, ids[TASK_COUNT - 1], &snapshot));
     CHECK(snapshot.state == TASK_COMPLETED);
@@ -156,11 +217,11 @@ run_test(void)
     CHECK(!lardon3d_task_queue_get_at(queue, TASK_COUNT, &snapshot));
     CHECK(lardon3d_task_queue_remove(queue, ids[0]));
     CHECK(!lardon3d_task_queue_get(queue, ids[0], &snapshot));
-    CHECK(lardon3d_task_queue_count(queue) == TASK_COUNT - 1);
+    CHECK(lardon3d_task_queue_count(queue) == 0);
     lardon3d_task_queue_destroy(queue);
     CHECK(pthread_mutex_destroy(&log.mutex) == 0);
 
-    queue = lardon3d_task_queue_create(governor);
+    queue = lardon3d_task_queue_create(governor, 1024);
     CHECK(queue);
     OrderLog control_log = {0};
     CHECK(pthread_mutex_init(&control_log.mutex, NULL) == 0);
@@ -212,7 +273,7 @@ run_test(void)
     lardon3d_task_queue_destroy(queue);
     CHECK(pthread_mutex_destroy(&control_log.mutex) == 0);
 
-    queue = lardon3d_task_queue_create(governor);
+    queue = lardon3d_task_queue_create(governor, 1024);
     CHECK(queue);
     OrderLog destruction_log = {0};
     CHECK(pthread_mutex_init(&destruction_log.mutex, NULL) == 0);
@@ -253,7 +314,7 @@ run_test(void)
         &blocking_reservation
     ));
     CHECK(blocking_reservation);
-    queue = lardon3d_task_queue_create(governor);
+    queue = lardon3d_task_queue_create(governor, 1024);
     CHECK(queue);
     OrderLog wait_log = {0};
     CHECK(pthread_mutex_init(&wait_log.mutex, NULL) == 0);
@@ -318,7 +379,7 @@ run_test(void)
         &io_blocking_reservation
     ));
     CHECK(io_blocking_reservation);
-    queue = lardon3d_task_queue_create(governor);
+    queue = lardon3d_task_queue_create(governor, 1024);
     CHECK(queue);
     OrderLog bypass_log = {0};
     CHECK(pthread_mutex_init(&bypass_log.mutex, NULL) == 0);
@@ -368,7 +429,7 @@ run_test(void)
     lardon3d_task_queue_destroy(queue);
     CHECK(pthread_mutex_destroy(&bypass_log.mutex) == 0);
 
-    queue = lardon3d_task_queue_create(governor);
+    queue = lardon3d_task_queue_create(governor, 1024);
     CHECK(queue);
     OrderLog contract_log = {0};
     CHECK(pthread_mutex_init(&contract_log.mutex, NULL) == 0);
@@ -432,8 +493,433 @@ run_test(void)
     return true;
 }
 
+static bool
+test_enqueue_under_capacity(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 4);
+    CHECK(queue);
+    OrderLog log = {0};
+    CHECK(pthread_mutex_init(&log.mutex, NULL) == 0);
+    QueueWork work[3];
+    Lardon3DTask *tasks[3];
+    uint64_t ids[3];
+    for (size_t index = 0; index < 3; ++index) {
+        work[index] = (QueueWork) {
+            .log = &log,
+            .value = index,
+            .steps = 1,
+        };
+        tasks[index] = lardon3d_task_create(
+            "Sous capacité",
+            &estimate,
+            queue_callback,
+            &work[index]
+        );
+        CHECK(tasks[index]);
+        CHECK(lardon3d_task_queue_add(queue, tasks[index], &ids[index]));
+    }
+    CHECK(lardon3d_task_queue_count(queue) <= 3);
+    Lardon3DTaskSnapshot snapshot;
+    for (size_t index = 0; index < 3; ++index) {
+        CHECK(wait_terminal(queue, ids[index], &snapshot));
+        CHECK(snapshot.state == TASK_COMPLETED);
+    }
+    lardon3d_task_queue_destroy(queue);
+    CHECK(pthread_mutex_destroy(&log.mutex) == 0);
+    return true;
+}
+
+static bool
+test_capacity_reached_blocks(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DResourceReservation *reservation;
+    CHECK(hold_resources(governor, &reservation));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 2);
+    CHECK(queue);
+    OrderLog log = {0};
+    CHECK(pthread_mutex_init(&log.mutex, NULL) == 0);
+    QueueWork work[3];
+    Lardon3DTask *tasks[2];
+    uint64_t ids[2];
+    for (size_t index = 0; index < 2; ++index) {
+        work[index] = (QueueWork) {
+            .log = &log,
+            .value = index,
+            .steps = 1,
+        };
+        tasks[index] = lardon3d_task_create(
+            "File pleine",
+            &estimate,
+            queue_callback,
+            &work[index]
+        );
+        CHECK(tasks[index]);
+        CHECK(lardon3d_task_queue_add(queue, tasks[index], &ids[index]));
+    }
+    CHECK(lardon3d_task_queue_count(queue) == 2);
+    work[2] = (QueueWork) {.log = &log, .value = 2, .steps = 1};
+    ProducerThread producer = {
+        .queue = queue,
+        .estimate = estimate,
+        .work = &work[2],
+    };
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, producer_thread, &producer) == 0);
+    short_pause();
+    CHECK(!producer.added);
+    CHECK(lardon3d_resource_governor_release(governor, reservation));
+    lardon3d_task_queue_resources_changed(queue);
+    CHECK(pthread_join(thread, NULL) == 0);
+    CHECK(producer.added);
+    Lardon3DTaskSnapshot snapshot;
+    for (size_t index = 0; index < 2; ++index) {
+        CHECK(wait_terminal(queue, ids[index], &snapshot));
+        CHECK(snapshot.state == TASK_COMPLETED);
+    }
+    CHECK(wait_terminal(queue, producer.id, &snapshot));
+    CHECK(snapshot.state == TASK_COMPLETED);
+    lardon3d_task_queue_destroy(queue);
+    CHECK(pthread_mutex_destroy(&log.mutex) == 0);
+    return true;
+}
+
+static bool
+test_release_unblocks_producer(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DResourceReservation *reservation;
+    CHECK(hold_resources(governor, &reservation));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 1);
+    CHECK(queue);
+    OrderLog log = {0};
+    CHECK(pthread_mutex_init(&log.mutex, NULL) == 0);
+    QueueWork work[2];
+    work[0] = (QueueWork) {.log = &log, .value = 0, .steps = 1};
+    Lardon3DTask *first = lardon3d_task_create(
+        "Première",
+        &estimate,
+        queue_callback,
+        &work[0]
+    );
+    CHECK(first);
+    uint64_t first_id;
+    CHECK(lardon3d_task_queue_add(queue, first, &first_id));
+    CHECK(lardon3d_task_queue_count(queue) == 1);
+    work[1] = (QueueWork) {.log = &log, .value = 1, .steps = 1};
+    ProducerThread producer = {
+        .queue = queue,
+        .estimate = estimate,
+        .work = &work[1],
+    };
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, producer_thread, &producer) == 0);
+    short_pause();
+    CHECK(!producer.added);
+    CHECK(lardon3d_resource_governor_release(governor, reservation));
+    lardon3d_task_queue_resources_changed(queue);
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(wait_terminal(queue, first_id, &snapshot));
+    CHECK(snapshot.state == TASK_COMPLETED);
+    CHECK(lardon3d_task_queue_remove(queue, first_id));
+    CHECK(pthread_join(thread, NULL) == 0);
+    CHECK(producer.added);
+    CHECK(wait_terminal(queue, producer.id, &snapshot));
+    CHECK(snapshot.state == TASK_COMPLETED);
+    lardon3d_task_queue_destroy(queue);
+    CHECK(pthread_mutex_destroy(&log.mutex) == 0);
+    return true;
+}
+
+static bool
+test_multiple_producers(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 4);
+    CHECK(queue);
+    OrderLog log = {0};
+    CHECK(pthread_mutex_init(&log.mutex, NULL) == 0);
+    QueueWork work[4];
+    ProducerThread producers[4];
+    pthread_t threads[4];
+    for (size_t index = 0; index < 4; ++index) {
+        work[index] = (QueueWork) {
+            .log = &log,
+            .value = index,
+            .steps = 1,
+        };
+        producers[index] = (ProducerThread) {
+            .queue = queue,
+            .estimate = estimate,
+            .work = &work[index],
+        };
+        CHECK(pthread_create(
+            &threads[index],
+            NULL,
+            producer_thread,
+            &producers[index]
+        ) == 0);
+    }
+    for (size_t index = 0; index < 4; ++index) {
+        CHECK(pthread_join(threads[index], NULL) == 0);
+        CHECK(producers[index].added);
+    }
+    CHECK(lardon3d_task_queue_count(queue) <= 4);
+    Lardon3DTaskSnapshot snapshot;
+    for (size_t index = 0; index < 4; ++index) {
+        CHECK(wait_terminal(queue, producers[index].id, &snapshot));
+        CHECK(snapshot.state == TASK_COMPLETED);
+    }
+    lardon3d_task_queue_destroy(queue);
+    CHECK(pthread_mutex_destroy(&log.mutex) == 0);
+    return true;
+}
+
+static bool
+test_shutdown_unblocks_producer(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DResourceReservation *reservation;
+    CHECK(hold_resources(governor, &reservation));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 1);
+    CHECK(queue);
+    OrderLog log = {0};
+    CHECK(pthread_mutex_init(&log.mutex, NULL) == 0);
+    QueueWork work[2];
+    work[0] = (QueueWork) {.log = &log, .value = 0, .steps = 1};
+    Lardon3DTask *first = lardon3d_task_create(
+        "Première",
+        &estimate,
+        queue_callback,
+        &work[0]
+    );
+    CHECK(first);
+    uint64_t first_id;
+    CHECK(lardon3d_task_queue_add(queue, first, &first_id));
+    CHECK(lardon3d_task_queue_count(queue) == 1);
+    work[1] = (QueueWork) {.log = &log, .value = 1, .steps = 1};
+    ProducerThread producer = {
+        .queue = queue,
+        .estimate = estimate,
+        .work = &work[1],
+    };
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, producer_thread, &producer) == 0);
+    short_pause();
+    CHECK(!producer.added);
+    // destroy réveille le producteur via broadcast(&not_full)
+    lardon3d_task_queue_destroy(queue);
+    // Le producteur peut maintenant sortir de add et terminer
+    CHECK(pthread_join(thread, NULL) == 0);
+    CHECK(!producer.added);
+    CHECK(lardon3d_resource_governor_release(governor, reservation));
+    CHECK(pthread_mutex_destroy(&log.mutex) == 0);
+    return true;
+}
+
+static bool
+test_shutdown_empty_queue(Lardon3DResourceGovernor *governor)
+{
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 1);
+    CHECK(queue);
+    lardon3d_task_queue_destroy(queue);
+    return true;
+}
+
+static bool
+test_pending_count_correct(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DResourceReservation *reservation;
+    CHECK(hold_resources(governor, &reservation));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 4);
+    CHECK(queue);
+    OrderLog log = {0};
+    CHECK(pthread_mutex_init(&log.mutex, NULL) == 0);
+    QueueWork work[2];
+    Lardon3DTask *tasks[2];
+    uint64_t ids[2];
+    for (size_t index = 0; index < 2; ++index) {
+        work[index] = (QueueWork) {
+            .log = &log,
+            .value = index,
+            .steps = 1,
+        };
+        tasks[index] = lardon3d_task_create(
+            "Comptage",
+            &estimate,
+            queue_callback,
+            &work[index]
+        );
+        CHECK(tasks[index]);
+        CHECK(lardon3d_task_queue_add(queue, tasks[index], &ids[index]));
+    }
+    CHECK(lardon3d_task_queue_count(queue) == 2);
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(lardon3d_task_queue_cancel(queue, ids[0]));
+    CHECK(wait_terminal(queue, ids[0], &snapshot));
+    CHECK(snapshot.state == TASK_CANCELLED);
+    CHECK(lardon3d_task_queue_remove(queue, ids[0]));
+    CHECK(lardon3d_task_queue_count(queue) == 1);
+    CHECK(lardon3d_task_queue_cancel(queue, ids[1]));
+    CHECK(wait_terminal(queue, ids[1], &snapshot));
+    CHECK(snapshot.state == TASK_CANCELLED);
+    CHECK(lardon3d_task_queue_remove(queue, ids[1]));
+    CHECK(lardon3d_task_queue_count(queue) == 0);
+    CHECK(lardon3d_resource_governor_release(governor, reservation));
+    lardon3d_task_queue_destroy(queue);
+    CHECK(pthread_mutex_destroy(&log.mutex) == 0);
+    return true;
+}
+
+static bool
+test_capacity_one(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DResourceReservation *reservation;
+    CHECK(hold_resources(governor, &reservation));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 1);
+    CHECK(queue);
+    OrderLog log = {0};
+    CHECK(pthread_mutex_init(&log.mutex, NULL) == 0);
+    QueueWork work = {.log = &log, .value = 0, .steps = 1};
+    Lardon3DTask *task = lardon3d_task_create(
+        "Capacité un",
+        &estimate,
+        queue_callback,
+        &work
+    );
+    CHECK(task);
+    uint64_t id;
+    CHECK(lardon3d_task_queue_add(queue, task, &id));
+    CHECK(lardon3d_task_queue_count(queue) == 1);
+    CHECK(lardon3d_resource_governor_release(governor, reservation));
+    lardon3d_task_queue_resources_changed(queue);
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(wait_terminal(queue, id, &snapshot));
+    CHECK(snapshot.state == TASK_COMPLETED);
+    lardon3d_task_queue_destroy(queue);
+    CHECK(pthread_mutex_destroy(&log.mutex) == 0);
+    return true;
+}
+
+static bool
+test_stress_concurrent(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 8);
+    CHECK(queue);
+    OrderLog log = {0};
+    CHECK(pthread_mutex_init(&log.mutex, NULL) == 0);
+    enum { PRODUCERS = 4, PER_PRODUCER = 4 };
+    QueueWork work[PRODUCERS * PER_PRODUCER];
+    ProducerThread producers[PRODUCERS * PER_PRODUCER];
+    pthread_t threads[PRODUCERS * PER_PRODUCER];
+    size_t index = 0;
+    for (size_t producer = 0; producer < PRODUCERS; ++producer) {
+        for (size_t item = 0; item < PER_PRODUCER; ++item) {
+            work[index] = (QueueWork) {
+                .log = &log,
+                .value = index,
+                .steps = 1,
+            };
+            producers[index] = (ProducerThread) {
+                .queue = queue,
+                .estimate = estimate,
+                .work = &work[index],
+            };
+            CHECK(pthread_create(
+                &threads[index],
+                NULL,
+                producer_thread,
+                &producers[index]
+            ) == 0);
+            ++index;
+        }
+    }
+    for (size_t i = 0; i < index; ++i) {
+        CHECK(pthread_join(threads[i], NULL) == 0);
+        CHECK(producers[i].added);
+    }
+    Lardon3DTaskSnapshot snapshot;
+    for (size_t i = 0; i < index; ++i) {
+        CHECK(wait_terminal(queue, producers[i].id, &snapshot));
+        CHECK(snapshot.state == TASK_COMPLETED);
+    }
+    CHECK(log.count == index);
+    lardon3d_task_queue_destroy(queue);
+    CHECK(pthread_mutex_destroy(&log.mutex) == 0);
+    return true;
+}
+
 int
 main(void)
 {
-    return run_test() ? EXIT_SUCCESS : EXIT_FAILURE;
+    if (!run_test()) {
+        return EXIT_FAILURE;
+    }
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = 1024,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = UINT64_MAX,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .system_memory_reserve_bytes = 0,
+        .system_cpu_reserve = 0,
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 100.0,
+        .io_slot_capacity = 1,
+    };
+    Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(
+        &profile,
+        &policy
+    );
+    if (!governor) {
+        return EXIT_FAILURE;
+    }
+    bool ok = test_enqueue_under_capacity(governor)
+        && test_capacity_reached_blocks(governor)
+        && test_release_unblocks_producer(governor)
+        && test_multiple_producers(governor)
+        && test_shutdown_unblocks_producer(governor)
+        && test_shutdown_empty_queue(governor)
+        && test_pending_count_correct(governor)
+        && test_capacity_one(governor)
+        && test_stress_concurrent(governor);
+    lardon3d_resource_governor_destroy(governor);
+    return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

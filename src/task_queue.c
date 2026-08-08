@@ -13,7 +13,8 @@ typedef struct TaskNode {
 
 struct Lardon3DTaskQueue {
     pthread_mutex_t mutex;
-    pthread_cond_t condition;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
     pthread_t worker;
     bool worker_started;
     bool stopping;
@@ -24,7 +25,9 @@ struct Lardon3DTaskQueue {
     TaskNode *pending_head;
     TaskNode *pending_tail;
     Lardon3DTask *active;
-    size_t count;
+    size_t capacity;
+    size_t pending_count;
+    size_t active_producers;
 };
 
 static bool
@@ -37,6 +40,7 @@ terminal_state(Lardon3DTaskState state)
 static void
 unlink_pending(Lardon3DTaskQueue *queue, TaskNode *previous, TaskNode *node)
 {
+    bool was_full = queue->pending_count >= queue->capacity;
     if (previous) {
         previous->next_pending = node->next_pending;
     } else {
@@ -46,6 +50,10 @@ unlink_pending(Lardon3DTaskQueue *queue, TaskNode *previous, TaskNode *node)
         queue->pending_tail = previous;
     }
     node->next_pending = NULL;
+    --queue->pending_count;
+    if (was_full) {
+        (void)pthread_cond_signal(&queue->not_full);
+    }
 }
 
 /* Parcourt la file d'attente et sélectionne la première tâche admissible.
@@ -117,7 +125,7 @@ queue_worker(void *context)
     for (;;) {
         (void)pthread_mutex_lock(&queue->mutex);
         while (!queue->stopping && !queue->pending_head) {
-            (void)pthread_cond_wait(&queue->condition, &queue->mutex);
+            (void)pthread_cond_wait(&queue->not_empty, &queue->mutex);
         }
         if (queue->stopping) {
             (void)pthread_mutex_unlock(&queue->mutex);
@@ -126,7 +134,7 @@ queue_worker(void *context)
         Lardon3DResourceReservation *reservation = NULL;
         Lardon3DTask *selected = select_admissible(queue, &reservation);
         if (!selected) {
-            (void)pthread_cond_wait(&queue->condition, &queue->mutex);
+            (void)pthread_cond_wait(&queue->not_empty, &queue->mutex);
             (void)pthread_mutex_unlock(&queue->mutex);
             continue;
         }
@@ -150,15 +158,15 @@ queue_worker(void *context)
 
         (void)pthread_mutex_lock(&queue->mutex);
         queue->active = NULL;
-        (void)pthread_cond_broadcast(&queue->condition);
+        (void)pthread_cond_broadcast(&queue->not_empty);
         (void)pthread_mutex_unlock(&queue->mutex);
     }
 }
 
 Lardon3DTaskQueue *
-lardon3d_task_queue_create(Lardon3DResourceGovernor *governor)
+lardon3d_task_queue_create(Lardon3DResourceGovernor *governor, size_t capacity)
 {
-    if (!governor) {
+    if (!governor || capacity < 1) {
         return NULL;
     }
     Lardon3DTaskQueue *queue = calloc(1, sizeof(*queue));
@@ -169,15 +177,23 @@ lardon3d_task_queue_create(Lardon3DResourceGovernor *governor)
         free(queue);
         return NULL;
     }
-    if (pthread_cond_init(&queue->condition, NULL) != 0) {
+    if (pthread_cond_init(&queue->not_empty, NULL) != 0) {
+        (void)pthread_mutex_destroy(&queue->mutex);
+        free(queue);
+        return NULL;
+    }
+    if (pthread_cond_init(&queue->not_full, NULL) != 0) {
+        (void)pthread_cond_destroy(&queue->not_empty);
         (void)pthread_mutex_destroy(&queue->mutex);
         free(queue);
         return NULL;
     }
     queue->next_id = 1;
     queue->governor = governor;
+    queue->capacity = capacity;
     if (pthread_create(&queue->worker, NULL, queue_worker, queue) != 0) {
-        (void)pthread_cond_destroy(&queue->condition);
+        (void)pthread_cond_destroy(&queue->not_full);
+        (void)pthread_cond_destroy(&queue->not_empty);
         (void)pthread_mutex_destroy(&queue->mutex);
         free(queue);
         return NULL;
@@ -198,8 +214,15 @@ lardon3d_task_queue_cancel(Lardon3DTaskQueue *queue, uint64_t task_id)
         node = node->next_all;
     }
     if (node) {
+        Lardon3DTaskSnapshot task_snapshot;
+        bool was_pending = lardon3d_task_snapshot(node->task, &task_snapshot)
+            && task_snapshot.state != TASK_RUNNING
+            && task_snapshot.state != TASK_PAUSED;
         lardon3d_task_request_cancel(node->task);
-        (void)pthread_cond_broadcast(&queue->condition);
+        if (was_pending && queue->pending_count == queue->capacity) {
+            (void)pthread_cond_signal(&queue->not_full);
+        }
+        (void)pthread_cond_broadcast(&queue->not_empty);
     }
     (void)pthread_mutex_unlock(&queue->mutex);
     return node != NULL;
@@ -212,7 +235,7 @@ lardon3d_task_queue_resources_changed(Lardon3DTaskQueue *queue)
         return;
     }
     (void)pthread_mutex_lock(&queue->mutex);
-    (void)pthread_cond_broadcast(&queue->condition);
+    (void)pthread_cond_broadcast(&queue->not_empty);
     (void)pthread_mutex_unlock(&queue->mutex);
 }
 
@@ -227,7 +250,11 @@ lardon3d_task_queue_destroy(Lardon3DTaskQueue *queue)
     for (TaskNode *node = queue->all_head; node; node = node->next_all) {
         lardon3d_task_request_cancel(node->task);
     }
-    (void)pthread_cond_broadcast(&queue->condition);
+    (void)pthread_cond_broadcast(&queue->not_empty);
+    (void)pthread_cond_broadcast(&queue->not_full);
+    while (queue->active_producers > 0) {
+        (void)pthread_cond_wait(&queue->not_empty, &queue->mutex);
+    }
     (void)pthread_mutex_unlock(&queue->mutex);
     if (queue->worker_started) {
         (void)pthread_join(queue->worker, NULL);
@@ -239,9 +266,45 @@ lardon3d_task_queue_destroy(Lardon3DTaskQueue *queue)
         free(node);
         node = next;
     }
-    (void)pthread_cond_destroy(&queue->condition);
+    (void)pthread_cond_destroy(&queue->not_full);
+    (void)pthread_cond_destroy(&queue->not_empty);
     (void)pthread_mutex_destroy(&queue->mutex);
     free(queue);
+}
+
+/* Appelée sous le mutex queue. Ne signale pas not_empty sur échec. */
+static bool
+enqueue_locked(
+    Lardon3DTaskQueue *queue,
+    TaskNode *node,
+    Lardon3DTask *task,
+    uint64_t *task_id
+)
+{
+    if (queue->stopping || queue->next_id == 0
+        || !lardon3d_task_assign_id(task, queue->next_id)) {
+        return false;
+    }
+    uint64_t id = queue->next_id++;
+    node->task = task;
+    if (queue->all_tail) {
+        queue->all_tail->next_all = node;
+    } else {
+        queue->all_head = node;
+    }
+    queue->all_tail = node;
+    if (queue->pending_tail) {
+        queue->pending_tail->next_pending = node;
+    } else {
+        queue->pending_head = node;
+    }
+    queue->pending_tail = node;
+    ++queue->pending_count;
+    if (task_id) {
+        *task_id = id;
+    }
+    (void)pthread_cond_signal(&queue->not_empty);
+    return true;
 }
 
 bool
@@ -259,33 +322,42 @@ lardon3d_task_queue_add(
         return false;
     }
     (void)pthread_mutex_lock(&queue->mutex);
-    if (queue->stopping || queue->next_id == 0
-        || !lardon3d_task_assign_id(task, queue->next_id)) {
-        (void)pthread_mutex_unlock(&queue->mutex);
+    ++queue->active_producers;
+    while (!queue->stopping && queue->pending_count >= queue->capacity) {
+        (void)pthread_cond_wait(&queue->not_full, &queue->mutex);
+    }
+    --queue->active_producers;
+    (void)pthread_cond_broadcast(&queue->not_empty);
+    bool accepted = enqueue_locked(queue, node, task, task_id);
+    (void)pthread_mutex_unlock(&queue->mutex);
+    if (!accepted) {
         free(node);
+    }
+    return accepted;
+}
+
+bool
+lardon3d_task_queue_try_add(
+    Lardon3DTaskQueue *queue,
+    Lardon3DTask *task,
+    uint64_t *task_id
+)
+{
+    if (!queue || !task) {
         return false;
     }
-    uint64_t id = queue->next_id++;
-    node->task = task;
-    if (queue->all_tail) {
-        queue->all_tail->next_all = node;
-    } else {
-        queue->all_head = node;
+    TaskNode *node = calloc(1, sizeof(*node));
+    if (!node) {
+        return false;
     }
-    queue->all_tail = node;
-    if (queue->pending_tail) {
-        queue->pending_tail->next_pending = node;
-    } else {
-        queue->pending_head = node;
-    }
-    queue->pending_tail = node;
-    ++queue->count;
-    if (task_id) {
-        *task_id = id;
-    }
-    (void)pthread_cond_signal(&queue->condition);
+    (void)pthread_mutex_lock(&queue->mutex);
+    bool accepted = queue->pending_count < queue->capacity
+        && enqueue_locked(queue, node, task, task_id);
     (void)pthread_mutex_unlock(&queue->mutex);
-    return true;
+    if (!accepted) {
+        free(node);
+    }
+    return accepted;
 }
 
 bool
@@ -308,7 +380,7 @@ lardon3d_task_queue_remove(Lardon3DTaskQueue *queue, uint64_t task_id)
         return false;
     }
     while (node->task == queue->active) {
-        (void)pthread_cond_wait(&queue->condition, &queue->mutex);
+        (void)pthread_cond_wait(&queue->not_empty, &queue->mutex);
     }
     if (previous) {
         previous->next_all = node->next_all;
@@ -327,7 +399,6 @@ lardon3d_task_queue_remove(Lardon3DTaskQueue *queue, uint64_t task_id)
     if (pending) {
         unlink_pending(queue, pending_previous, pending);
     }
-    --queue->count;
     (void)pthread_mutex_unlock(&queue->mutex);
     lardon3d_task_destroy(node->task);
     free(node);
@@ -341,7 +412,7 @@ lardon3d_task_queue_count(Lardon3DTaskQueue *queue)
         return 0;
     }
     (void)pthread_mutex_lock(&queue->mutex);
-    size_t count = queue->count;
+    size_t count = queue->pending_count;
     (void)pthread_mutex_unlock(&queue->mutex);
     return count;
 }

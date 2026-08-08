@@ -38,7 +38,7 @@ lardon3d_app_run(void)
     if (!state.resource_governor) {
         return EXIT_FAILURE;
     }
-    state.task_queue = lardon3d_task_queue_create(state.resource_governor);
+    state.task_queue = lardon3d_task_queue_create(state.resource_governor, 64);
     if (!state.task_queue) {
         lardon3d_resource_governor_destroy(state.resource_governor);
         return EXIT_FAILURE;
