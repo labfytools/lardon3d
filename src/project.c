@@ -1,17 +1,21 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <lardon3d/project.h>
 #include <lardon3d/image_catalog.h>
 #include <lardon3d/image_view.h>
+#include <lardon3d/project_db.h>
+#include <lardon3d/task_checkpoint.h>
 
 enum {
     MAX_CREATED_DIRECTORIES = 16,
@@ -23,6 +27,12 @@ typedef struct {
     size_t count;
 } CreatedDirectories;
 
+typedef struct {
+    char name[128];
+    char stable_id[LARDON3D_PROJECT_DB_ID_CAPACITY];
+    unsigned int version;
+} ProjectMetadata;
+
 static void
 set_status(Lardon3DAppState *state, const char *message)
 {
@@ -31,6 +41,28 @@ set_status(Lardon3DAppState *state, const char *message)
         sizeof(state->status_message),
         "%s",
         message
+    );
+}
+
+static void
+set_database_status(
+    Lardon3DAppState *state,
+    Lardon3DProjectDb *database,
+    const char *open_error,
+    const char *fallback
+)
+{
+    char detail[LARDON3D_PROJECT_DB_ERROR_CAPACITY] = "";
+    if (database) {
+        (void)lardon3d_project_db_last_error(database, detail);
+    } else if (open_error) {
+        (void)snprintf(detail, sizeof(detail), "%s", open_error);
+    }
+    (void)snprintf(
+        state->status_message,
+        sizeof(state->status_message),
+        "Erreur project.db : %.220s",
+        detail[0] ? detail : fallback
     );
 }
 
@@ -111,6 +143,35 @@ join_path(
 {
     int written = snprintf(destination, size, "%s/%s", parent, child);
     return written >= 0 && (size_t)written < size;
+}
+
+static bool
+generate_stable_id(char output[LARDON3D_PROJECT_DB_ID_CAPACITY])
+{
+    unsigned char bytes[16];
+    int descriptor = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (descriptor < 0) {
+        return false;
+    }
+    size_t used = 0;
+    while (used < sizeof(bytes)) {
+        ssize_t amount = read(descriptor, bytes + used, sizeof(bytes) - used);
+        if (amount < 0 && errno == EINTR) {
+            continue;
+        }
+        if (amount <= 0) {
+            (void)close(descriptor);
+            return false;
+        }
+        used += (size_t)amount;
+    }
+    if (close(descriptor) != 0) {
+        return false;
+    }
+    for (size_t index = 0; index < sizeof(bytes); ++index) {
+        (void)snprintf(output + index * 2, 3, "%02x", bytes[index]);
+    }
+    return true;
 }
 
 static bool
@@ -224,7 +285,8 @@ static bool
 write_project_ini(
     Lardon3DAppState *state,
     const char *project_path,
-    const char *project_name
+    const char *project_name,
+    const char *stable_id
 )
 {
     char temporary_path[PATH_MAX];
@@ -256,8 +318,9 @@ write_project_ini(
 
     bool success = fprintf(
         file,
-        "[project]\nname=%s\nversion=1\n",
-        project_name
+        "[project]\nname=%s\nstable_id=%s\nversion=2\n",
+        project_name,
+        stable_id
     ) >= 0;
     if (success) {
         success = fflush(file) == 0;
@@ -284,10 +347,15 @@ lardon3d_project_create(Lardon3DAppState *state, const char *name)
     if (!state) {
         return false;
     }
+    if (state->project_loaded || state->project_db) {
+        set_status(state, "Erreur : un projet est déjà ouvert.");
+        return false;
+    }
 
     char normalized_name[sizeof(state->project_name)];
     char root[PATH_MAX];
     char project_path[PATH_MAX];
+    char stable_id[LARDON3D_PROJECT_DB_ID_CAPACITY];
     if (!normalize_name(
             state,
             name,
@@ -297,6 +365,10 @@ lardon3d_project_create(Lardon3DAppState *state, const char *name)
         return false;
     }
     if (!resolve_projects_root(state, root)) {
+        return false;
+    }
+    if (!generate_stable_id(stable_id)) {
+        set_status(state, "Erreur : impossible de créer l'identité du projet.");
         return false;
     }
     if (!join_path(
@@ -331,6 +403,8 @@ lardon3d_project_create(Lardon3DAppState *state, const char *name)
         "reconstruction",
         "exports",
         "logs",
+        ".lardon3d",
+        ".lardon3d/checkpoints",
     };
     for (size_t index = 0;
          index < sizeof(subdirectories) / sizeof(subdirectories[0]);
@@ -352,13 +426,56 @@ lardon3d_project_create(Lardon3DAppState *state, const char *name)
         }
     }
 
-    if (!write_project_ini(state, project_path, normalized_name)) {
+    if (!write_project_ini(state, project_path, normalized_name, stable_id)) {
+        cleanup_directories(&created);
+        return false;
+    }
+
+    char database_path[PATH_MAX];
+    char ini_path[PATH_MAX];
+    if (!join_path(database_path, sizeof(database_path), project_path, "project.db")
+        || !join_path(ini_path, sizeof(ini_path), project_path, "project.ini")) {
+        cleanup_directories(&created);
+        set_status(state, "Erreur : chemin de base projet trop long.");
+        return false;
+    }
+    Lardon3DProjectDb *database = NULL;
+    char database_error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
+    Lardon3DProjectDbResult database_result = lardon3d_project_db_open(
+        database_path,
+        &database,
+        database_error
+    );
+    struct timespec now;
+    if (database_result == LARDON3D_PROJECT_DB_OK
+        && clock_gettime(CLOCK_REALTIME, &now) == 0) {
+        Lardon3DProjectDbProject project = {
+            .created_at = now.tv_sec,
+            .updated_at = now.tv_sec,
+        };
+        (void)snprintf(project.stable_id, sizeof(project.stable_id), "%s", stable_id);
+        (void)snprintf(project.name, sizeof(project.name), "%s", normalized_name);
+        database_result = lardon3d_project_db_set_project(database, &project);
+    } else if (database_result == LARDON3D_PROJECT_DB_OK) {
+        database_result = LARDON3D_PROJECT_DB_IO_ERROR;
+    }
+    if (database_result != LARDON3D_PROJECT_DB_OK) {
+        set_database_status(
+            state,
+            database,
+            database_error,
+            "initialisation impossible"
+        );
+        lardon3d_project_db_close(database);
+        (void)unlink(database_path);
+        (void)unlink(ini_path);
         cleanup_directories(&created);
         return false;
     }
 
     clear_catalog(state);
     state->project_loaded = true;
+    state->project_db = database;
     (void)copy_path(
         state->project_name,
         sizeof(state->project_name),
@@ -368,6 +485,12 @@ lardon3d_project_create(Lardon3DAppState *state, const char *name)
         state->project_path,
         sizeof(state->project_path),
         project_path
+    );
+    (void)snprintf(
+        state->project_stable_id,
+        sizeof(state->project_stable_id),
+        "%s",
+        stable_id
     );
     (void)snprintf(
         state->status_message,
@@ -382,7 +505,7 @@ static bool
 read_project_ini(
     Lardon3DAppState *state,
     const char *path,
-    char project_name[128]
+    ProjectMetadata *metadata
 )
 {
     int descriptor = open(path, O_RDONLY | O_NOFOLLOW);
@@ -408,6 +531,7 @@ read_project_ini(
     bool in_project_section = false;
     bool section_found = false;
     bool name_found = false;
+    bool stable_id_found = false;
     bool version_found = false;
     bool valid = true;
     char line[INI_LINE_CAPACITY];
@@ -433,14 +557,45 @@ read_project_ini(
             if (name_found || !normalize_name(
                     state,
                     line + 5,
-                    project_name,
+                    metadata->name,
                     sizeof(state->project_name)
                 )) {
                 valid = false;
             }
             name_found = true;
+        } else if (in_project_section && strncmp(line, "stable_id=", 10) == 0) {
+            size_t id_length = strnlen(
+                line + 10,
+                sizeof(metadata->stable_id)
+            );
+            if (stable_id_found || id_length != 32) {
+                valid = false;
+            } else {
+                for (size_t index = 0; index < id_length; ++index) {
+                    char character = line[10 + index];
+                    if (!((character >= '0' && character <= '9')
+                            || (character >= 'a' && character <= 'f'))) {
+                        valid = false;
+                    }
+                }
+                if (valid) {
+                    (void)snprintf(
+                        metadata->stable_id,
+                        sizeof(metadata->stable_id),
+                        "%s",
+                        line + 10
+                    );
+                }
+            }
+            stable_id_found = true;
         } else if (in_project_section && strncmp(line, "version=", 8) == 0) {
-            if (version_found || strcmp(line, "version=1") != 0) {
+            if (version_found) {
+                valid = false;
+            } else if (strcmp(line, "version=1") == 0) {
+                metadata->version = 1;
+            } else if (strcmp(line, "version=2") == 0) {
+                metadata->version = 2;
+            } else {
                 valid = false;
             }
             version_found = true;
@@ -453,7 +608,9 @@ read_project_ini(
     if (fclose(file) != 0) {
         valid = false;
     }
-    if (!valid || !section_found || !name_found || !version_found) {
+    if (!valid || !section_found || !name_found || !version_found
+        || (metadata->version == 2 && !stable_id_found)
+        || (metadata->version == 1 && stable_id_found)) {
         set_status(state, "Erreur : project.ini invalide.");
         return false;
     }
@@ -469,11 +626,16 @@ lardon3d_project_open(
     if (!state) {
         return false;
     }
+    if (state->project_loaded || state->project_db) {
+        set_status(state, "Erreur : un projet est déjà ouvert.");
+        return false;
+    }
 
     char normalized_directory[sizeof(state->project_name)];
     char root[PATH_MAX];
     char project_path[PATH_MAX];
     char ini_path[PATH_MAX];
+    char database_path[PATH_MAX];
     if (!normalize_name(
             state,
             directory_name,
@@ -491,7 +653,8 @@ lardon3d_project_open(
             root,
             normalized_directory
         )
-        || !join_path(ini_path, sizeof(ini_path), project_path, "project.ini")) {
+        || !join_path(ini_path, sizeof(ini_path), project_path, "project.ini")
+        || !join_path(database_path, sizeof(database_path), project_path, "project.db")) {
         set_status(state, "Erreur : chemin du projet trop long.");
         return false;
     }
@@ -502,17 +665,133 @@ lardon3d_project_open(
         return false;
     }
 
-    char project_name[sizeof(state->project_name)];
-    if (!read_project_ini(state, ini_path, project_name)) {
+    ProjectMetadata metadata = {0};
+    if (!read_project_ini(state, ini_path, &metadata)) {
+        return false;
+    }
+
+    bool database_existed = false;
+    if (lstat(database_path, &info) == 0) {
+        if (!S_ISREG(info.st_mode)) {
+            set_status(state, "Erreur : project.db n'est pas un fichier régulier.");
+            return false;
+        }
+        database_existed = true;
+    } else if (errno != ENOENT) {
+        set_status(state, "Erreur : project.db est inaccessible.");
+        return false;
+    }
+
+    CreatedDirectories created = {0};
+    char internal_path[PATH_MAX];
+    char checkpoint_path[PATH_MAX];
+    if (!join_path(internal_path, sizeof(internal_path), project_path, ".lardon3d")
+        || !join_path(checkpoint_path, sizeof(checkpoint_path), internal_path, "checkpoints")
+        || !ensure_directory(state, internal_path, &created)
+        || !ensure_directory(state, checkpoint_path, &created)) {
+        cleanup_directories(&created);
+        return false;
+    }
+
+    Lardon3DProjectDb *database = NULL;
+    char database_error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
+    Lardon3DProjectDbResult database_result = lardon3d_project_db_open(
+        database_path,
+        &database,
+        database_error
+    );
+    if (database_result != LARDON3D_PROJECT_DB_OK) {
+        cleanup_directories(&created);
+        set_database_status(
+            state,
+            NULL,
+            database_error,
+            "ouverture impossible"
+        );
+        return false;
+    }
+
+    Lardon3DProjectDbProject db_project;
+    database_result = lardon3d_project_db_get_project(database, &db_project);
+    bool rewrite_metadata = metadata.version == 1;
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
+        database_result = LARDON3D_PROJECT_DB_IO_ERROR;
+    } else if (database_result == LARDON3D_PROJECT_DB_OK) {
+        if (metadata.stable_id[0]
+            && strcmp(metadata.stable_id, db_project.stable_id) != 0) {
+            database_result = LARDON3D_PROJECT_DB_CONSTRAINT;
+        } else if (!metadata.stable_id[0]) {
+            (void)snprintf(
+                metadata.stable_id,
+                sizeof(metadata.stable_id),
+                "%s",
+                db_project.stable_id
+            );
+            rewrite_metadata = true;
+        }
+        if (database_result == LARDON3D_PROJECT_DB_OK) {
+            db_project.updated_at = now.tv_sec;
+            (void)snprintf(db_project.name, sizeof(db_project.name), "%s", metadata.name);
+            database_result = lardon3d_project_db_set_project(database, &db_project);
+        }
+    } else if (database_result == LARDON3D_PROJECT_DB_NOT_FOUND) {
+        if (database_existed && !metadata.stable_id[0]) {
+            database_result = LARDON3D_PROJECT_DB_CONSTRAINT;
+        } else {
+            if (!metadata.stable_id[0]) {
+                if (!generate_stable_id(metadata.stable_id)) {
+                    database_result = LARDON3D_PROJECT_DB_IO_ERROR;
+                }
+                rewrite_metadata = true;
+            }
+            if (database_result != LARDON3D_PROJECT_DB_IO_ERROR) {
+                Lardon3DProjectDbProject new_project = {
+                    .created_at = now.tv_sec,
+                    .updated_at = now.tv_sec,
+                };
+                (void)snprintf(new_project.stable_id, sizeof(new_project.stable_id), "%s", metadata.stable_id);
+                (void)snprintf(new_project.name, sizeof(new_project.name), "%s", metadata.name);
+                database_result = lardon3d_project_db_set_project(database, &new_project);
+            }
+        }
+    }
+    if (database_result == LARDON3D_PROJECT_DB_OK && rewrite_metadata
+        && !write_project_ini(state, project_path, metadata.name, metadata.stable_id)) {
+        database_result = LARDON3D_PROJECT_DB_IO_ERROR;
+    }
+    if (database_result != LARDON3D_PROJECT_DB_OK) {
+        if (database_result == LARDON3D_PROJECT_DB_CONSTRAINT) {
+            set_status(state, "Erreur : identité project.ini/project.db incohérente.");
+        } else {
+            set_database_status(
+                state,
+                database,
+                database_error,
+                "initialisation impossible"
+            );
+        }
+        lardon3d_project_db_close(database);
+        if (!database_existed) {
+            (void)unlink(database_path);
+        }
+        cleanup_directories(&created);
         return false;
     }
 
     clear_catalog(state);
     state->project_loaded = true;
+    state->project_db = database;
     (void)copy_path(
         state->project_name,
         sizeof(state->project_name),
-        project_name
+        metadata.name
+    );
+    (void)snprintf(
+        state->project_stable_id,
+        sizeof(state->project_stable_id),
+        "%s",
+        metadata.stable_id
     );
     (void)copy_path(
         state->project_path,
@@ -541,8 +820,185 @@ lardon3d_project_close(Lardon3DAppState *state)
     }
 
     clear_catalog(state);
+    lardon3d_project_db_close(state->project_db);
+    state->project_db = NULL;
     state->project_loaded = false;
     state->project_name[0] = '\0';
     state->project_path[0] = '\0';
+    state->project_stable_id[0] = '\0';
     set_status(state, "Projet fermé.");
+}
+
+static bool
+checkpoint_paths(
+    const Lardon3DAppState *state,
+    uint64_t task_id,
+    char relative[LARDON3D_PROJECT_DB_PATH_CAPACITY],
+    char absolute[PATH_MAX]
+)
+{
+    int written = snprintf(
+        relative,
+        LARDON3D_PROJECT_DB_PATH_CAPACITY,
+        ".lardon3d/checkpoints/%" PRIu64 ".chk",
+        task_id
+    );
+    return written > 0
+        && (size_t)written < LARDON3D_PROJECT_DB_PATH_CAPACITY
+        && join_path(absolute, PATH_MAX, state->project_path, relative);
+}
+
+Lardon3DProjectTaskCheckpointResult
+lardon3d_project_checkpoint_task(
+    Lardon3DAppState *state,
+    const Lardon3DTask *task
+)
+{
+    if (!state || !state->project_loaded || !state->project_db) {
+        return LARDON3D_PROJECT_TASK_CHECKPOINT_NO_PROJECT;
+    }
+    Lardon3DTaskDurableSnapshot snapshot;
+    if (!lardon3d_task_durable_snapshot(task, &snapshot) || snapshot.id == 0) {
+        return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
+    }
+    char relative[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+    char absolute[PATH_MAX];
+    if (!checkpoint_paths(state, snapshot.id, relative, absolute)) {
+        return LARDON3D_PROJECT_TASK_CHECKPOINT_IO_ERROR;
+    }
+    Lardon3DTaskCheckpointResult saved = lardon3d_task_checkpoint_save(
+        absolute,
+        &snapshot
+    );
+    if (saved == LARDON3D_TASK_CHECKPOINT_INVALID) {
+        return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
+    }
+    if (saved != LARDON3D_TASK_CHECKPOINT_OK
+        && saved != LARDON3D_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE) {
+        return LARDON3D_PROJECT_TASK_CHECKPOINT_IO_ERROR;
+    }
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
+        return LARDON3D_PROJECT_TASK_CHECKPOINT_DB_ERROR;
+    }
+    Lardon3DProjectDbCheckpoint checkpoint = {
+        .format_version = LARDON3D_TASK_CHECKPOINT_VERSION,
+        .durability = saved == LARDON3D_TASK_CHECKPOINT_OK
+            ? LARDON3D_DB_CHECKPOINT_DURABLE
+            : LARDON3D_DB_CHECKPOINT_PUBLISHED_NOT_DURABLE,
+        .updated_at = now.tv_sec,
+    };
+    (void)snprintf(checkpoint.path, sizeof(checkpoint.path), "%s", relative);
+    Lardon3DProjectDbResult recorded = lardon3d_project_db_record_task(
+        state->project_db,
+        &snapshot,
+        &checkpoint,
+        now.tv_sec
+    );
+    if (recorded == LARDON3D_PROJECT_DB_BUSY) {
+        return LARDON3D_PROJECT_TASK_CHECKPOINT_DB_BUSY;
+    }
+    if (recorded != LARDON3D_PROJECT_DB_OK) {
+        return LARDON3D_PROJECT_TASK_CHECKPOINT_DB_ERROR;
+    }
+    return saved == LARDON3D_TASK_CHECKPOINT_OK
+        ? LARDON3D_PROJECT_TASK_CHECKPOINT_OK
+        : LARDON3D_PROJECT_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE;
+}
+
+static bool
+coherent_recovery(
+    const Lardon3DProjectDbTask *database_task,
+    const Lardon3DTaskDurableSnapshot *snapshot
+)
+{
+    return snapshot->id == database_task->task_id
+        && strcmp(snapshot->name, database_task->name) == 0
+        && snapshot->saved_state == database_task->saved_state
+        && snapshot->recovery_state == database_task->recovery_state
+        && snapshot->progress == database_task->progress
+        && snapshot->sequence_count == database_task->sequence_count;
+}
+
+Lardon3DProjectDbResult
+lardon3d_project_list_recoverable(
+    Lardon3DAppState *state,
+    uint64_t after_task_id,
+    Lardon3DProjectRecoveryEntry *entries,
+    size_t capacity,
+    size_t *count
+)
+{
+    if (count) {
+        *count = 0;
+    }
+    if (!state || !state->project_loaded || !state->project_db || !entries
+        || !count || capacity == 0
+        || capacity > LARDON3D_PROJECT_DB_RECOVERY_PAGE_MAX) {
+        return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+    }
+    enum { RECOVERY_CHUNK = 8 };
+    Lardon3DProjectDbTask tasks[RECOVERY_CHUNK];
+    uint64_t cursor = after_task_id;
+    while (*count < capacity) {
+        size_t requested = capacity - *count;
+        if (requested > RECOVERY_CHUNK) {
+            requested = RECOVERY_CHUNK;
+        }
+        size_t task_count = 0;
+        Lardon3DProjectDbResult result = lardon3d_project_db_list_recoverable(
+            state->project_db,
+            cursor,
+            tasks,
+            requested,
+            &task_count
+        );
+        if (result != LARDON3D_PROJECT_DB_OK) {
+            return result;
+        }
+        for (size_t index = 0; index < task_count; ++index) {
+            Lardon3DProjectRecoveryEntry *entry = &entries[*count];
+            memset(entry, 0, sizeof(*entry));
+            entry->task_id = tasks[index].task_id;
+            entry->durability = tasks[index].checkpoint.durability;
+            (void)snprintf(entry->name, sizeof(entry->name), "%s", tasks[index].name);
+            char relative[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+            char absolute[PATH_MAX];
+            if (!checkpoint_paths(state, entry->task_id, relative, absolute)
+                || strcmp(relative, tasks[index].checkpoint.path) != 0) {
+                entry->status = LARDON3D_PROJECT_RECOVERY_INVALID_CHECKPOINT;
+            } else {
+                uint32_t version = 0;
+                Lardon3DTaskCheckpointResult loaded = lardon3d_task_checkpoint_load(
+                    absolute,
+                    &entry->snapshot,
+                    &version
+                );
+                if (loaded == LARDON3D_TASK_CHECKPOINT_NOT_FOUND) {
+                    entry->status = LARDON3D_PROJECT_RECOVERY_MISSING_CHECKPOINT;
+                } else if (loaded == LARDON3D_TASK_CHECKPOINT_UNSUPPORTED_VERSION) {
+                    entry->status = LARDON3D_PROJECT_RECOVERY_UNSUPPORTED_CHECKPOINT;
+                } else if (loaded == LARDON3D_TASK_CHECKPOINT_INVALID) {
+                    entry->status = LARDON3D_PROJECT_RECOVERY_INVALID_CHECKPOINT;
+                } else if (loaded != LARDON3D_TASK_CHECKPOINT_OK
+                    || version != tasks[index].checkpoint.format_version
+                    || !coherent_recovery(&tasks[index], &entry->snapshot)) {
+                    entry->status = loaded == LARDON3D_TASK_CHECKPOINT_IO_ERROR
+                        ? LARDON3D_PROJECT_RECOVERY_CHECKPOINT_IO_ERROR
+                        : LARDON3D_PROJECT_RECOVERY_INVALID_CHECKPOINT;
+                } else {
+                    entry->status = entry->durability
+                            == LARDON3D_DB_CHECKPOINT_PUBLISHED_NOT_DURABLE
+                        ? LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE
+                        : LARDON3D_PROJECT_RECOVERABLE;
+                }
+            }
+            cursor = entry->task_id;
+            ++*count;
+        }
+        if (task_count < requested) {
+            break;
+        }
+    }
+    return LARDON3D_PROJECT_DB_OK;
 }

@@ -8,6 +8,7 @@ typedef struct Lardon3DImageCatalog Lardon3DImageCatalog;
 typedef struct Lardon3DImageView Lardon3DImageView;
 typedef struct Lardon3DTaskQueue Lardon3DTaskQueue;
 typedef struct Lardon3DResourceGovernor Lardon3DResourceGovernor;
+typedef struct Lardon3DProjectDb Lardon3DProjectDb;
 
 typedef enum {
     LARDON3D_SCREEN_HOME = 0,
@@ -25,12 +26,14 @@ typedef struct {
     bool project_loaded;
     char project_name[128];
     char project_path[PATH_MAX];
+    char project_stable_id[65];
     char status_message[256];
     Lardon3DImageCatalog *image_catalog;
     Lardon3DImageView *image_view;
     Lardon3DTaskQueue *task_queue;
     Lardon3DHardwareProfile hardware_profile;
     Lardon3DResourceGovernor *resource_governor;
+    Lardon3DProjectDb *project_db;
 } Lardon3DAppState;
 
 void lardon3d_app_state_init(Lardon3DAppState *state);

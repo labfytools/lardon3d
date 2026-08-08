@@ -108,13 +108,46 @@ par le `time_t` local avant conversion. Le format reste donc lisible entre
 plateformes uniquement pour les valeurs communes à leurs domaines `size_t` et
 `time_t`.
 
+## Project Database v1
+
+SQLite contient l'état logique interrogable et les références aux fichiers ;
+les checkpoints et artefacts volumineux restent externes. L'enregistrement du
+résumé de tâche et de sa référence checkpoint est une transaction unique. Un
+artefact est d'abord publié et vérifié comme fichier régulier, puis seulement
+marqué `READY` en DB. Le chemin inverse est interdit.
+
+### Protocole checkpoint projet
+
+Le protocole réel n'est pas une transaction distribuée :
+
+1. capture locale du snapshot sous le mutex de tâche puis déverrouillage ;
+2. publication atomique du fichier sous
+   `.lardon3d/checkpoints/<task_id>.chk` ;
+3. transaction SQLite sur `tasks` et `checkpoints` avec chemin relatif.
+
+Une erreur avant publication ne modifie pas la DB. `PUBLISHED_NOT_DURABLE` est
+conservé comme tel en DB. Si la publication réussit puis que SQLite retourne
+`BUSY` ou une erreur, le fichier valide reste sur disque, la DB conserve son
+ancienne vérité et le nouveau fichier est un orphelin à réconcilier plus tard.
+Il n'est pas supprimé et aucune atomicité FS+SQLite n'est revendiquée.
+
+L'inventaire distingue checkpoint récupérable durable, récupérable mais publié
+non durable, absent, invalide, version inconnue et erreur d'I/O. Aucune réparation
+ou suppression silencieuse n'est effectuée.
+
 ## Statut
 
 **IMPLEMENTED** — modèle durable, codec v1, lecture validée, publication
 atomique et restauration sûre d'une tâche isolée.
 
-**NOT_YET_WIRED** — les pipelines et le scheduler ne déclenchent pas encore les
-sauvegardes et ne rechargent pas globalement les tâches au démarrage.
+**IMPLEMENTED** — Project Database v1 pour identité, résumés de tâches,
+références checkpoint et artefacts génériques.
 
-**PLANNED** — Project Database SQLite, catalogue d'artefacts réels, transactions
-entre métadonnées et artefacts, migration de formats et reprise globale.
+**IMPLEMENTED** — API projet de sauvegarde fichier+DB et inventaire validé au
+redémarrage.
+
+**NOT_YET_WIRED** — autosave complet, reconstruction des callbacks métier,
+resoumission scheduler et réconciliation des fichiers orphelins.
+
+**PLANNED** — catalogue d'artefacts photogrammétriques réels, migrations v2+ et
+reprise globale.

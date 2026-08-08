@@ -291,6 +291,16 @@ lardon3d_task_checkpoint_save(
     if (!path || !path[0] || !valid_snapshot(snapshot)) {
         return LARDON3D_TASK_CHECKPOINT_INVALID;
     }
+#ifdef LARDON3D_CHECKPOINT_TESTING
+    const char *forced_prepublication_failure = getenv(
+        "LARDON3D_TEST_CHECKPOINT_PREPUBLICATION_FAILURE"
+    );
+    if (forced_prepublication_failure
+        && strcmp(forced_prepublication_failure, "1") == 0) {
+        errno = EIO;
+        return LARDON3D_TASK_CHECKPOINT_IO_ERROR;
+    }
+#endif
     char temporary[4096];
     int length = snprintf(temporary, sizeof(temporary), "%s.tmp.XXXXXX", path);
     if (length < 0 || (size_t)length >= sizeof(temporary)) {

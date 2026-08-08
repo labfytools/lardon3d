@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -326,7 +327,7 @@ run_test(void)
     CHECK(check_restored_state(TASK_PAUSED, TASK_PENDING));
 
     Lardon3DHardwareProfile profile = {
-        .logical_cpu_count = 2,
+        .logical_cpu_count = UINT_MAX,
         .page_size_bytes = 4096,
         .memory_total_bytes = UINT64_MAX,
         .cpu_architecture = "test",

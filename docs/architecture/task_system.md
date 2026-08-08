@@ -75,6 +75,17 @@ adaptatives et fondation de checkpoints persistants isolés.
 
 **NOT_YET_WIRED** — sauvegarde automatique et restauration par la file.
 
+La Project Database v1 peut enregistrer transactionnellement un résumé
+`Lardon3DTaskDurableSnapshot` et la référence de son checkpoint. Elle ne stocke
+ni estimation sérialisée complète, ni callback, ni réservation, et ne remplace
+pas la validation du fichier checkpoint avant `task_restore()`.
+
+`lardon3d_project_checkpoint_task()` est la frontière runtime : elle capture le
+snapshot, publie le fichier hors mutex de tâche, puis met à jour la DB. L'API
+d'inventaire retourne des snapshots durables validés, mais ne peut pas appeler
+`task_restore()` tant que le type métier ne sait pas reconstruire callback et
+userdata.
+
 ## Limites
 
 - Aucune priorité interne : l'ordre est uniquement FIFO.

@@ -13,6 +13,7 @@ lardon3d_app_state_init(Lardon3DAppState *state)
         .project_loaded = false,
         .project_name = "",
         .project_path = "",
+        .project_stable_id = "",
         .status_message = "Bienvenue dans Lardon3D",
     };
 }

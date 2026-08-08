@@ -1,0 +1,211 @@
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <lardon3d/project.h>
+#include <lardon3d/task_checkpoint.h>
+
+#define CHECK(condition) do { if (!(condition)) { \
+    (void)fprintf(stderr, "Échec ligne %d : %s\n", __LINE__, #condition); return false; \
+} } while (0)
+
+static bool
+unused_callback(Lardon3DTask *task, void *userdata)
+{
+    (void)task;
+    (void)userdata;
+    return true;
+}
+
+static bool
+write_ini(const char *path, const char *name, const char *stable_id, unsigned int version)
+{
+    FILE *file = fopen(path, "w");
+    if (!file) return false;
+    bool written = version == 1
+        ? fprintf(file, "[project]\nname=%s\nversion=1\n", name) > 0
+        : fprintf(file, "[project]\nname=%s\nstable_id=%s\nversion=2\n", name, stable_id) > 0;
+    return fclose(file) == 0 && written;
+}
+
+typedef struct {
+    Lardon3DAppState *state;
+    Lardon3DTask *task;
+    Lardon3DProjectTaskCheckpointResult result;
+} CheckpointThread;
+
+static void *
+checkpoint_thread(void *userdata)
+{
+    CheckpointThread *context = userdata;
+    context->result = lardon3d_project_checkpoint_task(context->state, context->task);
+    return NULL;
+}
+
+static bool
+run_test(void)
+{
+    char root[] = "/tmp/lardon3d-project-life-XXXXXX";
+    CHECK(mkdtemp(root));
+    CHECK(setenv("LARDON3D_PROJECTS_ROOT", root, 1) == 0);
+    Lardon3DAppState state;
+    lardon3d_app_state_init(&state);
+    CHECK(lardon3d_project_create(&state, "Projet Cycle"));
+    CHECK(state.project_loaded && state.project_db && strlen(state.project_stable_id) == 32);
+
+    char project_path[512], database_path[512], ini_path[512], checkpoint_path[512];
+    CHECK(snprintf(project_path, sizeof(project_path), "%s/Projet Cycle", root) > 0);
+    CHECK(snprintf(database_path, sizeof(database_path), "%s/project.db", project_path) > 0);
+    CHECK(snprintf(ini_path, sizeof(ini_path), "%s/project.ini", project_path) > 0);
+    CHECK(snprintf(checkpoint_path, sizeof(checkpoint_path), "%s/.lardon3d/checkpoints/1.chk", project_path) > 0);
+    struct stat information;
+    CHECK(stat(database_path, &information) == 0 && S_ISREG(information.st_mode));
+    char stable_id[65]; (void)snprintf(stable_id, sizeof(stable_id), "%s", state.project_stable_id);
+    for (size_t index = 0; index < 32; ++index) {
+        CHECK((stable_id[index] >= '0' && stable_id[index] <= '9')
+            || (stable_id[index] >= 'a' && stable_id[index] <= 'f'));
+    }
+    Lardon3DProjectDbProject db_project;
+    CHECK(lardon3d_project_db_get_project(state.project_db, &db_project) == LARDON3D_PROJECT_DB_OK);
+    CHECK(strcmp(db_project.stable_id, stable_id) == 0);
+
+    lardon3d_project_close(&state);
+    CHECK(!state.project_loaded && !state.project_db && !state.project_stable_id[0]);
+    CHECK(lardon3d_project_open(&state, "Projet Cycle"));
+    CHECK(strcmp(state.project_stable_id, stable_id) == 0);
+    lardon3d_project_close(&state);
+    CHECK(write_ini(ini_path, "Projet Cycle", "A0000000000000000000000000000000", 2));
+    CHECK(!lardon3d_project_open(&state, "Projet Cycle"));
+    CHECK(!state.project_loaded && !state.project_db);
+    CHECK(strstr(state.status_message, "project.ini invalide") != NULL);
+    CHECK(write_ini(ini_path, "Projet Cycle", "", 1));
+    CHECK(lardon3d_project_open(&state, "Projet Cycle"));
+    CHECK(strcmp(state.project_stable_id, stable_id) == 0);
+    lardon3d_project_close(&state);
+    CHECK(unlink(database_path) == 0);
+    CHECK(lardon3d_project_open(&state, "Projet Cycle"));
+    CHECK(strcmp(state.project_stable_id, stable_id) == 0);
+
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DTask *task = lardon3d_task_create("Persistée", &estimate, unused_callback, NULL);
+    CHECK(task && lardon3d_task_assign_id(task, 1));
+    CHECK(lardon3d_task_set_progress(task, 10, "frontière 10"));
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_OK);
+    CHECK(stat(checkpoint_path, &information) == 0 && S_ISREG(information.st_mode));
+    Lardon3DProjectDbTask db_task;
+    Lardon3DProjectRecoveryEntry entries[2]; size_t count = 0;
+    Lardon3DTaskDurableSnapshot disk_snapshot; uint32_t version = 0;
+    CHECK(lardon3d_project_db_load_task(state.project_db, 1, &db_task) == LARDON3D_PROJECT_DB_OK);
+    CHECK(db_task.progress == 10 && strcmp(db_task.checkpoint.path, ".lardon3d/checkpoints/1.chk") == 0);
+
+    CHECK(setenv("LARDON3D_TEST_CHECKPOINT_SYNC_DIRECTORY_FAILURE", "1", 1) == 0);
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE);
+    CHECK(unsetenv("LARDON3D_TEST_CHECKPOINT_SYNC_DIRECTORY_FAILURE") == 0);
+    CHECK(lardon3d_project_db_load_task(state.project_db, 1, &db_task) == LARDON3D_PROJECT_DB_OK);
+    CHECK(db_task.checkpoint.durability == LARDON3D_DB_CHECKPOINT_PUBLISHED_NOT_DURABLE);
+    CHECK(lardon3d_project_list_recoverable(&state, 0, entries, 2, &count) == LARDON3D_PROJECT_DB_OK);
+    CHECK(count == 1 && entries[0].status == LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE);
+
+    CHECK(lardon3d_task_set_progress(task, 20, "frontière 20"));
+    CHECK(setenv("LARDON3D_TEST_CHECKPOINT_PREPUBLICATION_FAILURE", "1", 1) == 0);
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_IO_ERROR);
+    CHECK(unsetenv("LARDON3D_TEST_CHECKPOINT_PREPUBLICATION_FAILURE") == 0);
+    CHECK(lardon3d_project_db_load_task(state.project_db, 1, &db_task) == LARDON3D_PROJECT_DB_OK && db_task.progress == 10);
+    Lardon3DTask *unpublished = lardon3d_task_create("Non publiée", &estimate, unused_callback, NULL);
+    CHECK(unpublished && lardon3d_task_assign_id(unpublished, 3));
+    CHECK(setenv("LARDON3D_TEST_CHECKPOINT_PREPUBLICATION_FAILURE", "1", 1) == 0);
+    CHECK(lardon3d_project_checkpoint_task(&state, unpublished) == LARDON3D_PROJECT_TASK_CHECKPOINT_IO_ERROR);
+    CHECK(unsetenv("LARDON3D_TEST_CHECKPOINT_PREPUBLICATION_FAILURE") == 0);
+    CHECK(lardon3d_project_db_load_task(state.project_db, 3, &db_task) == LARDON3D_PROJECT_DB_NOT_FOUND);
+    lardon3d_task_destroy(unpublished);
+
+    CHECK(lardon3d_task_set_progress(task, 25, "frontière 25"));
+    CHECK(setenv("LARDON3D_TEST_PROJECT_DB_BUSY_CHECKPOINT", "1", 1) == 0);
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_DB_BUSY);
+    CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_BUSY_CHECKPOINT") == 0);
+    CHECK(lardon3d_task_checkpoint_load(checkpoint_path, &disk_snapshot, &version) == LARDON3D_TASK_CHECKPOINT_OK);
+    CHECK(disk_snapshot.progress == 25);
+    CHECK(lardon3d_project_db_load_task(state.project_db, 1, &db_task) == LARDON3D_PROJECT_DB_OK && db_task.progress == 10);
+    CHECK(lardon3d_task_set_progress(task, 20, "frontière 20"));
+
+    CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_CHECKPOINT", "1", 1) == 0);
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_DB_ERROR);
+    CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_FAIL_CHECKPOINT") == 0);
+    CHECK(lardon3d_task_checkpoint_load(checkpoint_path, &disk_snapshot, &version) == LARDON3D_TASK_CHECKPOINT_OK);
+    CHECK(disk_snapshot.progress == 20);
+    CHECK(lardon3d_project_db_load_task(state.project_db, 1, &db_task) == LARDON3D_PROJECT_DB_OK && db_task.progress == 10);
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_OK);
+
+    CHECK(lardon3d_project_list_recoverable(&state, 0, entries, 2, &count) == LARDON3D_PROJECT_DB_OK);
+    CHECK(count == 1 && entries[0].status == LARDON3D_PROJECT_RECOVERABLE && entries[0].snapshot.progress == 20);
+    CHECK(lardon3d_project_list_recoverable(&state, 0, entries, 257, &count) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
+
+    CHECK(unlink(checkpoint_path) == 0);
+    CHECK(lardon3d_project_list_recoverable(&state, 0, entries, 2, &count) == LARDON3D_PROJECT_DB_OK);
+    CHECK(count == 1 && entries[0].status == LARDON3D_PROJECT_RECOVERY_MISSING_CHECKPOINT);
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_OK);
+    int descriptor = open(checkpoint_path, O_WRONLY | O_TRUNC); CHECK(descriptor >= 0);
+    CHECK(write(descriptor, "corrupt", 7) == 7 && close(descriptor) == 0);
+    CHECK(lardon3d_project_list_recoverable(&state, 0, entries, 2, &count) == LARDON3D_PROJECT_DB_OK);
+    CHECK(entries[0].status == LARDON3D_PROJECT_RECOVERY_INVALID_CHECKPOINT);
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_OK);
+    descriptor = open(checkpoint_path, O_RDWR); CHECK(descriptor >= 0);
+    unsigned char future_version[4] = {2, 0, 0, 0};
+    CHECK(pwrite(descriptor, future_version, sizeof(future_version), 8) == 4 && close(descriptor) == 0);
+    CHECK(lardon3d_project_list_recoverable(&state, 0, entries, 2, &count) == LARDON3D_PROJECT_DB_OK);
+    CHECK(entries[0].status == LARDON3D_PROJECT_RECOVERY_UNSUPPORTED_CHECKPOINT);
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_OK);
+
+    CheckpointThread contexts[2] = {{.state = &state, .task = task}, {.state = &state, .task = task}};
+    pthread_t threads[2]; CHECK(pthread_create(&threads[0], NULL, checkpoint_thread, &contexts[0]) == 0);
+    CHECK(pthread_create(&threads[1], NULL, checkpoint_thread, &contexts[1]) == 0);
+    CHECK(pthread_join(threads[0], NULL) == 0 && pthread_join(threads[1], NULL) == 0);
+    CHECK(contexts[0].result == LARDON3D_PROJECT_TASK_CHECKPOINT_OK && contexts[1].result == LARDON3D_PROJECT_TASK_CHECKPOINT_OK);
+
+    Lardon3DTask *terminal = lardon3d_task_create("Terminale", &estimate, unused_callback, NULL);
+    CHECK(terminal && lardon3d_task_assign_id(terminal, 2)); lardon3d_task_request_cancel(terminal);
+    CHECK(lardon3d_project_checkpoint_task(&state, terminal) == LARDON3D_PROJECT_TASK_CHECKPOINT_OK);
+    CHECK(lardon3d_project_list_recoverable(&state, 0, entries, 2, &count) == LARDON3D_PROJECT_DB_OK && count == 1);
+    lardon3d_task_destroy(terminal);
+
+    lardon3d_project_close(&state);
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_NO_PROJECT);
+    CHECK(lardon3d_project_open(&state, "Projet Cycle"));
+    CHECK(lardon3d_project_list_recoverable(&state, 0, entries, 2, &count) == LARDON3D_PROJECT_DB_OK);
+    CHECK(count == 1 && entries[0].status == LARDON3D_PROJECT_RECOVERABLE);
+    lardon3d_project_close(&state);
+
+    CHECK(write_ini(ini_path, "Projet Cycle", "00000000000000000000000000000000", 2));
+    CHECK(!lardon3d_project_open(&state, "Projet Cycle"));
+    CHECK(!state.project_loaded && !state.project_db);
+    CHECK(write_ini(ini_path, "Projet Cycle", stable_id, 2));
+    descriptor = open(database_path, O_WRONLY | O_TRUNC); CHECK(descriptor >= 0);
+    CHECK(write(descriptor, "not sqlite", 10) == 10 && close(descriptor) == 0);
+    CHECK(!lardon3d_project_open(&state, "Projet Cycle"));
+    CHECK(!state.project_loaded && !state.project_db);
+    lardon3d_task_destroy(task);
+
+    char terminal_checkpoint[512]; CHECK(snprintf(terminal_checkpoint, sizeof(terminal_checkpoint), "%s/.lardon3d/checkpoints/2.chk", project_path) > 0);
+    CHECK(unlink(checkpoint_path) == 0); CHECK(unlink(terminal_checkpoint) == 0);
+    CHECK(unlink(database_path) == 0); CHECK(unlink(ini_path) == 0);
+    char path[512];
+    CHECK(snprintf(path, sizeof(path), "%s/.lardon3d/checkpoints", project_path) > 0 && rmdir(path) == 0);
+    CHECK(snprintf(path, sizeof(path), "%s/.lardon3d", project_path) > 0 && rmdir(path) == 0);
+    const char *directories[] = {"images", "reconstruction", "exports", "logs"};
+    for (size_t index = 0; index < 4; ++index) { CHECK(snprintf(path, sizeof(path), "%s/%s", project_path, directories[index]) > 0); CHECK(rmdir(path) == 0); }
+    CHECK(rmdir(project_path) == 0); CHECK(rmdir(root) == 0);
+    CHECK(unsetenv("LARDON3D_PROJECTS_ROOT") == 0);
+    return true;
+}
+
+int main(void) { return run_test() ? EXIT_SUCCESS : EXIT_FAILURE; }

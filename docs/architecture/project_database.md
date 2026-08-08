@@ -162,9 +162,90 @@ validation ; elle ne stockera jamais les objets pthread, callbacks, pointeurs,
 contrats ou réservations. Le fichier par tâche est une fondation, pas une
 Project Database miniature.
 
+La stratégie v1 retient un résumé logique interrogable dans SQLite et une
+référence vers le fichier checkpoint. Le fichier checkpoint validé reste la
+source complète pour `lardon3d_task_restore()` ; la DB seule ne reconstruit
+jamais une tâche. Un écart ou un fichier invalide interdit la reprise.
+
+## Schéma v1 implémenté
+
+- `metadata(key PRIMARY KEY, value)` contient uniquement `schema_version=1`.
+- `project(singleton=1, stable_id UNIQUE, name, created_at, updated_at)` décrit
+  l'unique identité logique de la DB.
+- `tasks(task_id PRIMARY KEY, name, saved_state, recovery_state, progress,
+  sequence_count, started_sec/nsec, finished_sec/nsec, updated_at)` contient le
+  résumé durable. Les IDs v1 sont compris entre 1 et `INT64_MAX`.
+- `checkpoints(task_id PRIMARY KEY REFERENCES tasks ON DELETE CASCADE, path,
+  format_version, durability, updated_at)` représente `DURABLE` ou
+  `PUBLISHED_NOT_DURABLE`.
+- `artifacts(artifact_id PRIMARY KEY, kind, path, state, size_bytes,
+  producer_task_id REFERENCES tasks, created_at, updated_at)` inventorie des
+  fichiers externes. Les états v1 sont `STAGED` et `READY`.
+
+Les indexes portent uniquement sur `tasks(recovery_state, task_id)`,
+`artifacts(state, artifact_id)` et `artifacts(producer_task_id)`.
+
+## Ouverture et migrations
+
+Une DB vide reçoit le schéma v1 dans une transaction `BEGIN IMMEDIATE`. Une DB
+v1 est validée puis ouverte. Une version future est refusée et une DB contenant
+des tables sans métadonnée de version est considérée corrompue. La fonction
+interne de migration ne connaît que `0 → 1`; aucune migration fictive ou
+destructive n'est présente.
+
+Configuration v1 : `foreign_keys=ON`, `journal_mode=DELETE`,
+`synchronous=FULL`, `busy_timeout=5000`. Le mode DELETE convient au propriétaire
+unique actuel, évite les fichiers WAL/SHM durables et conserve la synchronisation
+forte. Le timeout borne l'attente d'un verrou externe à cinq secondes.
+
+## Concurrence et ownership
+
+Une connexion opaque est sérialisée par un mutex interne. Chaque opération
+composée possède sa transaction entière ; aucune transaction publique ne peut
+rester ouverte entre deux appels. Aucune I/O d'artefact n'a lieu sous le mutex :
+le module confirme que le fichier publié et validé par l'appelant est régulier
+avant la mise à jour `READY`. Fermer la DB pendant un
+appel concurrent est interdit au propriétaire.
+
+Les records et chaînes sont copiés dans des buffers fournis par l'appelant ;
+aucun pointeur SQLite n'en sort. Tous les statements sont finalisés dans
+l'appel. La liste de reprise utilise des pages fournies par l'appelant, limitées
+à 256 entrées. Elle ne retourne que les tâches normalisées `PENDING` possédant
+une référence checkpoint ; le fichier doit encore être chargé et validé.
+
+## Branchement au projet
+
+`Lardon3DAppState` est l'instance projet runtime actuelle et possède exactement
+une `Lardon3DProjectDb *` pendant que `project_loaded` est vrai. La DB canonique
+est `<project_root>/project.db`. Elle est ouverte à la création/ouverture du
+projet et fermée une seule fois par `lardon3d_project_close()`. À l'arrêt de
+l'application, la task queue est arrêtée avant la fermeture du projet et de sa
+DB. Une fermeture concurrente à un appel projet/DB est interdite au propriétaire.
+
+`project.ini` v2 contient `name`, `stable_id` hexadécimal sur 128 bits et
+`version=2`. La même identité est enregistrée dans la table `project`. Toute
+divergence est une erreur. Un INI v1 sans identité adopte l'identité d'une DB
+existante ; sans DB, une identité est générée une seule fois puis l'INI est
+migré atomiquement avant de devenir la référence des ouvertures suivantes. Une
+DB existante sans ligne projet ne peut être initialisée que si l'INI possède
+déjà son identité.
+
+Les checkpoints sont référencés par chemins relatifs portables :
+`.lardon3d/checkpoints/<task_id>.chk`. L'inventaire projet pagine les tâches DB,
+résout ce chemin sous la racine, charge le checkpoint et vérifie la cohérence du
+snapshot avec le résumé DB.
+
 ## Statut
 
-**NOT_YET_WIRED** — le modèle de checkpoint est prêt à être consommé.
+**IMPLEMENTED** — SQLite système, schéma/migration v1, identité projet,
+transactions tâche+checkpoint, pagination de reprise et artefacts génériques.
 
-**PLANNED** — schéma SQLite, migrations, transactions, inventaire d'artefacts,
-chargement global et coordination avec le scheduler.
+**IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,
+publication de checkpoints par le projet et inventaire de reprise validé.
+
+**NOT_YET_WIRED** — reconstruction des callbacks/userdata métier, resoumission
+scheduler, autosave à toutes les transitions et réconciliation des checkpoints
+orphelins, ScanSet et catalogue image persistants, Feature Store et Visual Index.
+
+**PLANNED** — migrations v2+, dépendances d'artefacts, graphe géométrique et
+reconstruction incrémentale.

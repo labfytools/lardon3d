@@ -19,40 +19,33 @@ l'ordre FIFO et consulte le gouverneur via le scheduler.
 
 ## Types principaux
 
-```c
-typedef struct task_queue task_queue_t;
-
-typedef void (*task_callback_fn)(task_t *task, task_result_t *result, void *userdata);
-```
+Le type public réel est l'opaque `Lardon3DTaskQueue`.
 
 ## API publique
 
 | Fonction | Description |
 |---|---|
-| `task_queue_create()` | Alloue et initialise une file vide |
-| `task_queue_destroy()` | Libère la file et toutes les tâches restantes |
-| `task_queue_submit()` | Soumet une tâche à la file (FIFO) |
-| `task_queue_next()` | Sélectionne la prochaine tâche admissible |
-| `task_queue_pop()` | Retire et retourne la tâche sélectionnée |
-| `task_queue_cancel()` | Annule une tâche spécifique dans la file |
-| `task_queue_cancel_all()` | Annule toutes les tâches en attente |
-| `task_queue_size()` | Retourne le nombre de tâches en attente |
-| `task_queue_is_empty()` | Vérifie si la file est vide |
-| `task_queue_set_callback()` | Définit le callback pour les résultats |
+| `lardon3d_task_queue_create()` | Crée une file bornée et son worker |
+| `lardon3d_task_queue_destroy()` | Arrête, annule, attend puis libère la file |
+| `lardon3d_task_queue_add()` | Ajoute avec backpressure bloquante |
+| `lardon3d_task_queue_try_add()` | Ajoute sans bloquer si une place existe |
+| `lardon3d_task_queue_cancel()` | Demande l'annulation par ID |
+| `lardon3d_task_queue_remove()` | Retire une tâche terminale |
+| `lardon3d_task_queue_snapshot()` | Copie une vue bornée de la file |
 
 ## Comportement FIFO
 
-1. `task_queue_submit()` ajoute la tâche en fin de file.
-2. `task_queue_next()` parcourt la file du début vers la fin.
-3. La première tâche en état `QUEUED` (non en pause, non annulée) est
+1. `lardon3d_task_queue_add()` ajoute la tâche en fin de file.
+2. Le sélecteur interne parcourt la file du début vers la fin.
+3. La première tâche `PENDING` admissible (non terminale) est
    retournée.
-4. Si aucune tâche n'est admissible, `task_queue_next()` retourne `NULL`.
+4. Si aucune tâche n'est admissible, le worker attend un changement.
 5. L'ordre de soumission est toujours respecté entre tâches de même priorité.
 
 ## Sélection adaptative
 
-`task_queue_next()` saute les tâches en état `WAIT` (en attente de
-ressources) et retourne la première tâche réellement admissible. Cela évite
+Le sélecteur saute les tâches pour lesquelles le governor répond `WAIT` et
+retourne la première tâche réellement admissible. Cela évite
 le blocage par la tête de file lorsqu'une tâche ne peut pas démarrer.
 
 ## Invariants
@@ -71,9 +64,9 @@ le blocage par la tête de file lorsqu'une tâche ne peut pas démarrer.
 
 ## Interactions
 
-- **task** : chaque entrée de la file est un `task_t` avec son état et sa
+- **task** : chaque entrée de la file est un `Lardon3DTask` avec son état et sa
   progression.
-- **scheduler** : le scheduler appelle `task_queue_submit()` et orchestre
+- **scheduler** : la file applique la soumission FIFO et orchestre
   l'exécution via le worker.
 - **resource_governor** : la file consulte le gouverneur (via le scheduler)
   avant d'exécuter chaque tâche.
@@ -90,6 +83,6 @@ annulation coopératives.
 - Worker unique : pas de parallélisme interne.
 - Pas de DAG ni de dépendances inter-tâches.
 - Pas de priorités (FIFO strict).
-- Pas de persistance des tâches après arrêt.
+- La reprise depuis Project Database n'est pas encore branchée.
 - Pas de pool de workers CPU/IO/GPU.
-- Pas de contre-pression (backpressure) entre étapes.
+- La backpressure borne les producteurs à la capacité configurée.

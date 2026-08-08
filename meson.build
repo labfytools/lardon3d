@@ -20,6 +20,7 @@ add_project_arguments(
 
 ncursesw = dependency('ncursesw', required: true)
 threads = dependency('threads')
+sqlite3 = dependency('sqlite3', required: true)
 
 executable(
     'lardon3d',
@@ -34,6 +35,7 @@ executable(
         'src/image_catalog.c',
         'src/image_view.c',
         'src/project.c',
+        'src/project_db.c',
         'src/task.c',
         'src/task_checkpoint.c',
         'src/task_queue.c',
@@ -42,7 +44,7 @@ executable(
         'src/hardware_profile.c',
     ],
     include_directories: include_directories('include'),
-    dependencies: [ncursesw, threads],
+    dependencies: [ncursesw, threads, sqlite3],
 )
 
 import_test = executable(
@@ -125,6 +127,43 @@ task_checkpoint_test = executable(
 )
 
 test('task-checkpoint', task_checkpoint_test, timeout: 30)
+
+project_db_test = executable(
+    'test-project-db',
+    sources: [
+        'tests/test_project_db.c',
+        'src/project_db.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3],
+)
+
+test('project-db', project_db_test, timeout: 30)
+
+project_test = executable(
+    'test-project',
+    sources: [
+        'tests/test_project.c',
+        'src/app_state.c',
+        'src/project.c',
+        'src/project_db.c',
+        'src/task.c',
+        'src/task_checkpoint.c',
+        'src/image_catalog.c',
+        'src/image_view.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    c_args: [
+        '-DLARDON3D_PROJECT_DB_TESTING',
+        '-DLARDON3D_CHECKPOINT_TESTING',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3],
+)
+
+test('project', project_test, timeout: 30)
 
 sequential_task_test = executable(
     'test-sequential-task',

@@ -5,6 +5,7 @@
 #include <lardon3d/app_state.h>
 #include <lardon3d/image_catalog.h>
 #include <lardon3d/image_view.h>
+#include <lardon3d/project.h>
 #include <lardon3d/resource_governor.h>
 #include <lardon3d/task_queue.h>
 #include <lardon3d/tui.h>
@@ -51,10 +52,12 @@ lardon3d_app_run(void)
     }
 
     bool success = lardon3d_tui_run(&state);
-    lardon3d_image_view_destroy(state.image_view);
-    lardon3d_image_catalog_destroy(state.image_catalog);
     lardon3d_tui_shutdown();
     lardon3d_task_queue_destroy(state.task_queue);
+    state.task_queue = NULL;
+    if (state.project_loaded) {
+        lardon3d_project_close(&state);
+    }
     lardon3d_resource_governor_destroy(state.resource_governor);
 
     return success ? EXIT_SUCCESS : EXIT_FAILURE;

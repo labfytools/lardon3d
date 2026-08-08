@@ -75,10 +75,23 @@ qu'à la terminaison de cette tentative.
 
 **IMPLEMENTED** — snapshot, codec v1 et restauration isolée.
 
-**NOT_YET_WIRED** — sauvegarde périodique, chargement de projet et resoumission
-automatique.
+**NOT_YET_WIRED** — sauvegarde périodique, reconstruction métier des tâches et
+resoumission automatique.
 
 **PLANNED** — reprise globale du scheduler via la Project Database.
+
+## Accès Project Database
+
+**IMPLEMENTED** — une connexion SQLite opaque sérialisée par mutex interne ;
+les opérations multi-tables sont transactionnelles et bornées.
+
+**IMPLEMENTED** — le cycle de vie projet ouvre/crée `project.db`, vérifie
+l'identité et ferme la connexion. L'application arrête la task queue avant la
+fermeture finale du projet.
+
+**NOT_YET_WIRED** — aucune reconstruction de callback/userdata ni resoumission
+automatique. Une future resoumission devra aussi permettre à la queue de
+conserver l'identifiant stable restauré au lieu d'en assigner un nouveau.
 
 ## Invariants
 

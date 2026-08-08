@@ -29,8 +29,9 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 
 ### Phase 3 : Persistance
 - ✅ Fondation versionnée des checkpoints de tâches
-- 📋 Branchement des checkpoints aux pipelines et reprise globale
-- 📋 Project Database v1 (SQLite)
+- ✅ Project Database v1 (SQLite)
+- ✅ Branchement Project Database au cycle de vie projet et inventaire de reprise
+- 📋 Reconstruction métier et resoumission des tâches récupérables
 - 📋 ScanSet et Image Catalog persistants
 
 ### Phase 4 : Pipeline avancé
