@@ -1,5 +1,8 @@
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <math.h>
+#include <pthread.h>
 #include <sched.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -15,6 +18,8 @@
 #include <lardon3d/visual_index_task.h>
 #include <lardon3d/image_catalog.h>
 #include <lardon3d/project.h>
+#include <lardon3d/precision_features.h>
+#include <lardon3d/sift_task.h>
 #include <lardon3d/task_queue.h>
 
 #define CHECK(x)                                                                                   \
@@ -63,7 +68,14 @@ static bool write_pgm(const char *p) {
   fprintf(f, "P5\n192 192\n255\n");
   for (unsigned y = 0; y < 192; y++) {
     for (unsigned x = 0; x < 192; x++) {
-      unsigned char v = (unsigned char)((((x / 6) ^ (y / 6)) & 1) ? 245 : 10);
+      unsigned base = ((((x / 12) ^ (y / 12)) & 1U) != 0U) ? 205U : 35U;
+      unsigned texture = (x * 17U + y * 29U + (x * y) % 37U) % 43U;
+      int dx = (int)x - 96;
+      int dy = (int)y - 96;
+      unsigned ring = (dx * dx + dy * dy > 32 * 32 && dx * dx + dy * dy < 42 * 42) ? 45U : 0U;
+      unsigned char v = (unsigned char)(base + texture + ring > 255U
+                                            ? 255U
+                                            : base + texture + ring);
       if (fwrite(&v, 1, 1, f) != 1) {
         fclose(f);
         return false;
@@ -71,6 +83,15 @@ static bool write_pgm(const char *p) {
     }
   }
   return fclose(f) == 0;
+}
+static bool write_uniform_pgm(const char *path) {
+  FILE *file = fopen(path, "wb");
+  if (!file) return false;
+  bool ok = fprintf(file, "P5\n192 192\n255\n") > 0;
+  unsigned char row[192];
+  memset(row, 127, sizeof(row));
+  for (size_t y = 0; ok && y < 192; ++y) ok = fwrite(row, 1, sizeof(row), file) == sizeof(row);
+  return fclose(file) == 0 && ok;
 }
 static bool runtime(Lardon3DAppState *s) {
   s->hardware_profile = (Lardon3DHardwareProfile){.logical_cpu_count = 64,
@@ -92,6 +113,23 @@ static bool wait_state(Lardon3DTaskQueue *q, uint64_t id, Lardon3DTaskState want
     sched_yield();
   }
   return false;
+}
+
+typedef struct {
+  Lardon3DAppState *state;
+  uint64_t orb_feature_set_id;
+  uint64_t sift_feature_set_id;
+  Lardon3DFeatureConsolidationParameters parameters;
+  Lardon3DProjectDbFeatureSupportSet support;
+  Lardon3DProjectDbResult result;
+} ConsolidationThreadContext;
+
+static void *consolidate_thread(void *userdata) {
+  ConsolidationThreadContext *context = userdata;
+  context->result = lardon3d_consolidate_orb_sift(
+      context->state, context->orb_feature_set_id, context->sift_feature_set_id,
+      &context->parameters, &context->support);
+  return NULL;
 }
 
 static bool run_test(void) {
@@ -151,6 +189,244 @@ static bool run_test(void) {
         LARDON3D_FEATURE_STORE_OK);
   lardon3d_feature_reader_close(reader);
 
+  Lardon3DSiftExtractorParameters sift_parameters = lardon3d_sift_precision_classic_v1(false);
+  sift_parameters.max_features = 512;
+  uint64_t sift_task_id = 0, concurrent_identical_sift_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(&state, image.image_id, &sift_parameters,
+                                              &sift_task_id) &&
+        lardon3d_project_enqueue_sift_extract(&state, image.image_id, &sift_parameters,
+                                              &concurrent_identical_sift_task));
+  CHECK(sift_task_id != concurrent_identical_sift_task &&
+        wait_state(state.task_queue, sift_task_id, TASK_COMPLETED, &snapshot) &&
+        wait_state(state.task_queue, concurrent_identical_sift_task, TASK_COMPLETED, &snapshot));
+  unsigned char sift_fingerprint[32];
+  lardon3d_sift_extractor_parameter_fingerprint(&sift_parameters, sift_fingerprint);
+  unsigned char same_sift_fingerprint[32], changed_sift_fingerprint[32];
+  Lardon3DSiftExtractorParameters changed_sift_parameters = sift_parameters;
+  changed_sift_parameters.sigma = 1.7;
+  lardon3d_sift_extractor_parameter_fingerprint(&sift_parameters, same_sift_fingerprint);
+  lardon3d_sift_extractor_parameter_fingerprint(&changed_sift_parameters,
+                                                changed_sift_fingerprint);
+  CHECK(memcmp(sift_fingerprint, same_sift_fingerprint, 32) == 0 &&
+        memcmp(sift_fingerprint, changed_sift_fingerprint, 32) != 0);
+  Lardon3DSiftExtractorParameters fingerprint_variants[8];
+  for (size_t variant = 0; variant < 8; ++variant)
+    fingerprint_variants[variant] = sift_parameters;
+  fingerprint_variants[0].max_features--;
+  fingerprint_variants[1].octave_layers++;
+  fingerprint_variants[2].contrast_threshold += 0.001;
+  fingerprint_variants[3].edge_threshold += 1.0;
+  fingerprint_variants[4].grid_rows--;
+  fingerprint_variants[5].grid_cols--;
+  fingerprint_variants[6].max_features_per_cell--;
+  fingerprint_variants[7].rootsift = true;
+  for (size_t variant = 0; variant < 8; ++variant) {
+    lardon3d_sift_extractor_parameter_fingerprint(&fingerprint_variants[variant],
+                                                  changed_sift_fingerprint);
+    CHECK(memcmp(sift_fingerprint, changed_sift_fingerprint, 32) != 0);
+  }
+  Lardon3DProjectDbFeatureSet sift_set;
+  CHECK(lardon3d_project_db_find_feature_set(state.project_db, image.image_id, "sift", 1,
+                                             sift_fingerprint, &sift_set) ==
+            LARDON3D_PROJECT_DB_OK &&
+        sift_set.total_cells == 64 && sift_set.occupied_cells > 0 &&
+        sift_set.coverage_ratio > 0.0 && sift_set.coverage_ratio <= 1.0 &&
+        sift_set.feature_density_per_megapixel > 0.0);
+  Lardon3DVisualIndexConfiguration incompatible_index_configuration = {1, 256, 128};
+  uint64_t incompatible_visual_index = 0;
+  CHECK(lardon3d_visual_index_create(state.project_db, &sift_set,
+                                     &incompatible_index_configuration,
+                                     &incompatible_visual_index) ==
+            LARDON3D_VISUAL_INDEX_INVALID_ARGUMENT &&
+        incompatible_visual_index == 0);
+  CHECK(lardon3d_feature_reader_open(state.project_path, &sift_set, &reader, &metadata) ==
+            LARDON3D_FEATURE_STORE_OK &&
+        metadata.format_version == 2 && metadata.descriptor_dimension == 128 &&
+        metadata.descriptor_type == LARDON3D_FEATURE_DESCRIPTOR_F32);
+  float sift_descriptors[128];
+  if (metadata.feature_count > 0) {
+    CHECK(lardon3d_feature_reader_descriptors_f32(reader, 0, sift_descriptors, 1,
+                                                  sizeof(sift_descriptors)) ==
+          LARDON3D_FEATURE_STORE_OK);
+  }
+  lardon3d_feature_reader_close(reader);
+  uint64_t duplicate_sift_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(&state, image.image_id, &sift_parameters,
+                                              &duplicate_sift_task));
+  CHECK(wait_state(state.task_queue, duplicate_sift_task, TASK_COMPLETED, &snapshot));
+  Lardon3DProjectDbFeatureSet duplicate_sift_set;
+  CHECK(lardon3d_project_db_find_feature_set(state.project_db, image.image_id, "sift", 1,
+                                             sift_fingerprint, &duplicate_sift_set) ==
+            LARDON3D_PROJECT_DB_OK &&
+        duplicate_sift_set.feature_set_id == sift_set.feature_set_id);
+  Lardon3DSiftExtractorParameters rootsift_parameters = sift_parameters;
+  rootsift_parameters.rootsift = true;
+  uint64_t rootsift_task_id = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(&state, image.image_id, &rootsift_parameters,
+                                              &rootsift_task_id));
+  CHECK(wait_state(state.task_queue, rootsift_task_id, TASK_COMPLETED, &snapshot));
+  unsigned char rootsift_fingerprint[32];
+  lardon3d_sift_extractor_parameter_fingerprint(&rootsift_parameters, rootsift_fingerprint);
+  Lardon3DProjectDbFeatureSet rootsift_set;
+  CHECK(lardon3d_project_db_find_feature_set(state.project_db, image.image_id, "rootsift", 1,
+                                             rootsift_fingerprint, &rootsift_set) ==
+            LARDON3D_PROJECT_DB_OK &&
+        rootsift_set.feature_set_id != sift_set.feature_set_id);
+  CHECK(lardon3d_feature_reader_open(state.project_path, &rootsift_set, &reader, &metadata) ==
+        LARDON3D_FEATURE_STORE_OK);
+  if (metadata.feature_count > 0) {
+    float root_descriptor[128];
+    CHECK(lardon3d_feature_reader_descriptors_f32(reader, 0, root_descriptor, 1,
+                                                  sizeof(root_descriptor)) ==
+          LARDON3D_FEATURE_STORE_OK);
+    double squared_norm = 0.0;
+    for (size_t dimension = 0; dimension < 128; ++dimension) {
+      CHECK(isfinite(root_descriptor[dimension]) && root_descriptor[dimension] >= 0.0F);
+      squared_norm += (double)root_descriptor[dimension] * root_descriptor[dimension];
+    }
+    CHECK(squared_norm == 0.0 || (squared_norm > 0.999 && squared_norm < 1.001));
+  }
+  lardon3d_feature_reader_close(reader);
+  Lardon3DFeatureConsolidationParameters support_parameters =
+      lardon3d_feature_consolidation_v1();
+  ConsolidationThreadContext support_contexts[2] = {
+      {.state = &state,
+       .orb_feature_set_id = set.feature_set_id,
+       .sift_feature_set_id = sift_set.feature_set_id,
+       .parameters = support_parameters},
+      {.state = &state,
+       .orb_feature_set_id = set.feature_set_id,
+       .sift_feature_set_id = sift_set.feature_set_id,
+       .parameters = support_parameters}};
+  pthread_t support_threads[2];
+  CHECK(pthread_create(&support_threads[0], NULL, consolidate_thread, &support_contexts[0]) == 0 &&
+        pthread_create(&support_threads[1], NULL, consolidate_thread, &support_contexts[1]) == 0 &&
+        pthread_join(support_threads[0], NULL) == 0 && pthread_join(support_threads[1], NULL) == 0);
+  Lardon3DProjectDbFeatureSupportSet support = support_contexts[0].support;
+  CHECK(support_contexts[0].result == LARDON3D_PROJECT_DB_OK &&
+        support_contexts[1].result == LARDON3D_PROJECT_DB_OK && support.group_count > 0 &&
+        support.group_count <= set.feature_count + sift_set.feature_count &&
+        support_contexts[1].support.feature_support_set_id == support.feature_support_set_id &&
+        support_contexts[1].support.group_count == support.group_count);
+  Lardon3DProjectDbFeatureSupportGroup support_page[256];
+  uint64_t after_support_group = 0;
+  uint32_t listed_support_groups = 0;
+  bool has_confirmed_support = false;
+  do {
+    size_t support_page_count = 0;
+    CHECK(lardon3d_project_db_list_feature_support_groups(
+              state.project_db, support.feature_support_set_id, after_support_group,
+              support_page, 256, &support_page_count) == LARDON3D_PROJECT_DB_OK);
+    if (support_page_count == 0) break;
+    for (size_t group = 0; group < support_page_count; ++group) {
+      CHECK(support_page[group].feature_support_set_id == support.feature_support_set_id &&
+            support_page[group].feature_support_group_id > after_support_group &&
+            support_page[group].support_count >= 1 && support_page[group].support_count <= 2 &&
+            support_page[group].distance_pixels >= 0.0 &&
+            support_page[group].distance_pixels <= support_parameters.association_radius_pixels);
+      has_confirmed_support |= support_page[group].support_count == 2;
+      after_support_group = support_page[group].feature_support_group_id;
+    }
+    listed_support_groups += (uint32_t)support_page_count;
+  } while (listed_support_groups < support.group_count);
+  CHECK(listed_support_groups == support.group_count && has_confirmed_support);
+  Lardon3DProjectDbFeatureSupportGroup isolated_rank = {.feature_support_group_id = 1,
+                                                        .support_count = 1};
+  Lardon3DProjectDbFeatureSupportGroup confirmed_rank = {.feature_support_group_id = 2,
+                                                         .support_count = 2};
+  CHECK(lardon3d_feature_support_higher_quality(&confirmed_rank, &isolated_rank) &&
+        !lardon3d_feature_support_higher_quality(&isolated_rank, &confirmed_rank));
+  Lardon3DSiftExtractorParameters cancelled_parameters = sift_parameters;
+  cancelled_parameters.max_features = 499;
+  unsigned char cancelled_fingerprint[32];
+  lardon3d_sift_extractor_parameter_fingerprint(&cancelled_parameters, cancelled_fingerprint);
+  CHECK(setenv("LARDON3D_TEST_SIFT_PAUSE_BEFORE_PUBLISH", "1", 1) == 0);
+  uint64_t cancelled_sift_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(&state, image.image_id, &cancelled_parameters,
+                                              &cancelled_sift_task) &&
+        wait_state(state.task_queue, cancelled_sift_task, TASK_PAUSED, &snapshot) &&
+        lardon3d_task_queue_cancel(state.task_queue, cancelled_sift_task) &&
+        wait_state(state.task_queue, cancelled_sift_task, TASK_CANCELLED, &snapshot) &&
+        unsetenv("LARDON3D_TEST_SIFT_PAUSE_BEFORE_PUBLISH") == 0);
+  Lardon3DProjectDbFeatureSet cancelled_set;
+  CHECK(lardon3d_project_db_find_feature_set(state.project_db, image.image_id, "sift", 1,
+                                             cancelled_fingerprint, &cancelled_set) ==
+        LARDON3D_PROJECT_DB_NOT_FOUND);
+  char uniform_source[PATH_MAX];
+  CHECK(join_path(uniform_source, root, "uniform.pgm") && write_uniform_pgm(uniform_source));
+  Lardon3DProjectDbImage uniform_image;
+  Lardon3DProjectDbImageAsset uniform_asset;
+  CHECK(lardon3d_image_catalog_import_file(&state, scanset.scanset_id, uniform_source, 0,
+                                           &uniform_image, &uniform_asset) ==
+        LARDON3D_IMAGE_CATALOG_IMPORTED);
+  uint64_t uniform_sift_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(&state, uniform_image.image_id, &sift_parameters,
+                                              &uniform_sift_task) &&
+        wait_state(state.task_queue, uniform_sift_task, TASK_COMPLETED, &snapshot));
+  Lardon3DProjectDbFeatureSet uniform_sift_set;
+  CHECK(lardon3d_project_db_find_feature_set(state.project_db, uniform_image.image_id, "sift", 1,
+                                             sift_fingerprint, &uniform_sift_set) ==
+            LARDON3D_PROJECT_DB_OK &&
+        uniform_sift_set.feature_count == 0 && unlink(uniform_source) == 0);
+  Lardon3DSiftExtractorParameters recovery_parameters = sift_parameters;
+  recovery_parameters.max_features = 500;
+  CHECK(setenv("LARDON3D_TEST_SIFT_PAUSE_BEFORE_PUBLISH", "1", 1) == 0 &&
+        setenv("LARDON3D_TEST_SIFT_SKIP_FINISHED_CHECKPOINT", "1", 1) == 0);
+  uint64_t recovery_sift_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(&state, image.image_id, &recovery_parameters,
+                                              &recovery_sift_task));
+  CHECK(wait_state(state.task_queue, recovery_sift_task, TASK_PAUSED, &snapshot));
+  lardon3d_task_queue_destroy(state.task_queue);
+  state.task_queue = NULL;
+  lardon3d_project_close(&state);
+  lardon3d_resource_governor_destroy(state.resource_governor);
+  state.resource_governor = NULL;
+  CHECK(unsetenv("LARDON3D_TEST_SIFT_PAUSE_BEFORE_PUBLISH") == 0 &&
+        unsetenv("LARDON3D_TEST_SIFT_SKIP_FINISHED_CHECKPOINT") == 0);
+  lardon3d_app_state_init(&state);
+  CHECK(runtime(&state) && lardon3d_project_open(&state, "Features"));
+  CHECK(lardon3d_project_last_recovery_summary(&state, &summary) && summary.resumed == 1);
+  CHECK(wait_state(state.task_queue, recovery_sift_task, TASK_COMPLETED, &snapshot));
+  unsigned char recovery_fingerprint[32];
+  lardon3d_sift_extractor_parameter_fingerprint(&recovery_parameters, recovery_fingerprint);
+  Lardon3DProjectDbFeatureSet recovered_sift;
+  CHECK(lardon3d_project_db_find_feature_set(state.project_db, image.image_id, "sift", 1,
+                                             recovery_fingerprint, &recovered_sift) ==
+        LARDON3D_PROJECT_DB_OK);
+
+  char second_source[PATH_MAX];
+  CHECK(join_path(second_source, root, "second-source.pgm") && write_pgm(second_source));
+  FILE *second_file = fopen(second_source, "ab");
+  CHECK(second_file && fwrite("x", 1, 1, second_file) == 1 && fclose(second_file) == 0);
+  Lardon3DProjectDbImage second_image;
+  Lardon3DProjectDbImageAsset second_asset;
+  CHECK(lardon3d_image_catalog_import_file(&state, scanset.scanset_id, second_source, 0,
+                                           &second_image, &second_asset) ==
+            LARDON3D_IMAGE_CATALOG_IMPORTED &&
+        second_image.image_id != image.image_id);
+  Lardon3DSiftExtractorParameters first_parallel = sift_parameters;
+  Lardon3DSiftExtractorParameters second_parallel = sift_parameters;
+  first_parallel.max_features = 496;
+  second_parallel.max_features = 497;
+  uint64_t first_parallel_task = 0, second_parallel_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(&state, image.image_id, &first_parallel,
+                                              &first_parallel_task) &&
+        lardon3d_project_enqueue_sift_extract(&state, second_image.image_id, &second_parallel,
+                                              &second_parallel_task) &&
+        wait_state(state.task_queue, first_parallel_task, TASK_COMPLETED, &snapshot) &&
+        wait_state(state.task_queue, second_parallel_task, TASK_COMPLETED, &snapshot));
+  unsigned char second_parallel_fingerprint[32];
+  lardon3d_sift_extractor_parameter_fingerprint(&second_parallel,
+                                                second_parallel_fingerprint);
+  Lardon3DProjectDbFeatureSet second_sift;
+  CHECK(lardon3d_project_db_find_feature_set(state.project_db, second_image.image_id, "sift", 1,
+                                             second_parallel_fingerprint, &second_sift) ==
+            LARDON3D_PROJECT_DB_OK &&
+        unlink(second_source) == 0 &&
+        lardon3d_feature_reader_open(state.project_path, &second_sift, &reader, &metadata) ==
+            LARDON3D_FEATURE_STORE_OK);
+  lardon3d_feature_reader_close(reader);
+
   Lardon3DVisualIndexConfiguration index_configuration = {1, 256, 128};
   uint64_t visual_index_id = 0;
   CHECK(lardon3d_visual_index_create(state.project_db, &set, &index_configuration,
@@ -177,6 +453,28 @@ static bool run_test(void) {
             state.project_db, visual_index_id, 0, visual_segments, 2, &visual_segment_count) ==
             LARDON3D_PROJECT_DB_OK &&
         visual_segment_count == 1);
+  CHECK(lardon3d_project_db_load_feature_set(state.project_db, second_sift.feature_set_id,
+                                             &second_sift) == LARDON3D_PROJECT_DB_OK &&
+        lardon3d_feature_reader_open(state.project_path, &second_sift, &reader, &metadata) ==
+            LARDON3D_FEATURE_STORE_OK);
+  lardon3d_feature_reader_close(reader);
+
+  char second_managed_path[PATH_MAX];
+  CHECK(join_path(second_managed_path, state.project_path, second_asset.path));
+  int second_managed_fd = open(second_managed_path, O_WRONLY | O_CLOEXEC);
+  unsigned char corrupt_byte = 0;
+  CHECK(second_managed_fd >= 0 && pwrite(second_managed_fd, &corrupt_byte, 1, 32) == 1 &&
+        close(second_managed_fd) == 0);
+  Lardon3DSiftExtractorParameters corrupt_source_parameters = sift_parameters;
+  corrupt_source_parameters.max_features = 498;
+  uint64_t corrupt_source_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(&state, second_image.image_id,
+                                              &corrupt_source_parameters,
+                                              &corrupt_source_task) &&
+        wait_state(state.task_queue, corrupt_source_task, TASK_FAILED, &snapshot) &&
+        lardon3d_feature_reader_open(state.project_path, &second_sift, &reader, &metadata) ==
+            LARDON3D_FEATURE_STORE_OK);
+  lardon3d_feature_reader_close(reader);
 
   CHECK(write_pgm(source));
   Lardon3DProjectDbImage missing_image;
@@ -207,6 +505,10 @@ static bool run_test(void) {
   CHECK(lardon3d_project_enqueue_feature_extract(&state, invalid_image.image_id,
                                                  &invalid_parameters, &invalid_task_id));
   CHECK(wait_state(state.task_queue, invalid_task_id, TASK_FAILED, &snapshot));
+  uint64_t invalid_sift_task_id = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(&state, invalid_image.image_id, &sift_parameters,
+                                              &invalid_sift_task_id) &&
+        wait_state(state.task_queue, invalid_sift_task_id, TASK_FAILED, &snapshot));
   lardon3d_task_queue_destroy(state.task_queue);
   state.task_queue = NULL;
   lardon3d_project_close(&state);

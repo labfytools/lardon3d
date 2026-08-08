@@ -108,7 +108,7 @@ par le `time_t` local avant conversion. Le format reste donc lisible entre
 plateformes uniquement pour les valeurs communes à leurs domaines `size_t` et
 `time_t`.
 
-## Project Database v6
+## Project Database v7
 
 SQLite contient l'état logique interrogable et les références aux fichiers ;
 les checkpoints et artefacts volumineux restent externes. L'enregistrement du
@@ -147,7 +147,7 @@ code.
 **IMPLEMENTED** — modèle durable, codec v1, lecture validée, publication
 atomique et restauration sûre d'une tâche isolée.
 
-**IMPLEMENTED** — Project Database v6 pour identité, tâches typées, ScanSets,
+**IMPLEMENTED** — Project Database v7 pour identité, tâches typées, ScanSets,
 images logiques, Feature Sets/assets SHA-256, Visual Index segmenté,
 checkpoints et artefacts génériques.
 

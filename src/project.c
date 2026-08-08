@@ -670,7 +670,9 @@ static Lardon3DProjectTaskCheckpointResult
 checkpoint_task_internal(Lardon3DAppState *state, const Lardon3DTask *task,
                          const char *image_import_source, uint64_t image_import_scanset_id,
                          const Lardon3DProjectDbFeatureExtractTask *feature_parameters,
-                         const Lardon3DProjectDbVisualIndexUpdateTask *visual_parameters) {
+                         const Lardon3DProjectDbSiftExtractTask *sift_parameters,
+                         const Lardon3DProjectDbVisualIndexUpdateTask *visual_parameters,
+                         const Lardon3DProjectDbCandidatePairGenerateTask *candidate_parameters) {
   if (!state || !state->project_loaded || !state->project_db) {
     return LARDON3D_PROJECT_TASK_CHECKPOINT_NO_PROJECT;
   }
@@ -717,10 +719,18 @@ checkpoint_task_internal(Lardon3DAppState *state, const Lardon3DTask *task,
           ? lardon3d_project_db_record_feature_extract_task(state->project_db, &snapshot, task_kind,
                                                             task_kind_version, &checkpoint,
                                                             feature_parameters, now.tv_sec)
+      : sift_parameters
+          ? lardon3d_project_db_record_sift_extract_task(
+                state->project_db, &snapshot, task_kind, task_kind_version, &checkpoint,
+                sift_parameters, now.tv_sec)
       : visual_parameters
           ? lardon3d_project_db_record_visual_index_update_task(
                 state->project_db, &snapshot, task_kind, task_kind_version, &checkpoint,
                 visual_parameters, now.tv_sec)
+      : candidate_parameters
+          ? lardon3d_project_db_record_candidate_pair_generate_task(
+                state->project_db, &snapshot, task_kind, task_kind_version, &checkpoint,
+                candidate_parameters, now.tv_sec)
           : lardon3d_project_db_record_task(state->project_db, &snapshot, task_kind,
                                             task_kind_version, &checkpoint, now.tv_sec);
   if (recorded == LARDON3D_PROJECT_DB_BUSY) {
@@ -736,7 +746,7 @@ checkpoint_task_internal(Lardon3DAppState *state, const Lardon3DTask *task,
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_task(Lardon3DAppState *state,
                                                                      const Lardon3DTask *task) {
-  return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL);
+  return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult
@@ -745,7 +755,7 @@ lardon3d_project_checkpoint_image_import_task(Lardon3DAppState *state, const Lar
   if (!source_path || !source_path[0] || scanset_id == 0) {
     return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   }
-  return checkpoint_task_internal(state, task, source_path, scanset_id, NULL, NULL);
+  return checkpoint_task_internal(state, task, source_path, scanset_id, NULL, NULL, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_task(
@@ -754,7 +764,14 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_
   if (!parameters) {
     return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   }
-  return checkpoint_task_internal(state, task, NULL, 0, parameters, NULL);
+  return checkpoint_task_internal(state, task, NULL, 0, parameters, NULL, NULL, NULL);
+}
+
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_sift_extract_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbSiftExtractTask *parameters) {
+  if (!parameters) return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
+  return checkpoint_task_internal(state, task, NULL, 0, NULL, parameters, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_visual_index_update_task(
@@ -763,7 +780,16 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_visual_index_upd
   if (!parameters) {
     return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   }
-  return checkpoint_task_internal(state, task, NULL, 0, NULL, parameters);
+  return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, parameters, NULL);
+}
+
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_candidate_pair_generate_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbCandidatePairGenerateTask *parameters) {
+  if (!parameters) {
+    return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
+  }
+  return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, parameters);
 }
 
 static bool coherent_recovery(const Lardon3DProjectDbTask *database_task,

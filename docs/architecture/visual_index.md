@@ -60,7 +60,7 @@ original. Un Feature Set vide est
 membre valide sans posting. Le build ne garde qu'un Feature Set et une tranche
 Feature Reader de 256 descripteurs en mémoire.
 
-## Segments et Project Database v6
+## Segments introduits en Project Database v6, conservés en v7
 
 Un index logique possède des segments immuables READY. Chaque update publie un
 segment de un à seize nouveaux Feature Sets, puis ajoute atomiquement segments

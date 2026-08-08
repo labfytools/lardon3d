@@ -23,11 +23,11 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 - **Project** : cycle de vie persistant, identité stable et Project Database ouverte
 - **Import** : premier task kind de production, exécuté par la file générique en lots bornés et reprenables
 - **ScanSet / Image Catalog v1** : acquisitions, images logiques, provenance et assets SHA-256 persistants et paginés
-- **Feature Store v1** : extraction ORB réelle, assets binaires versionnés et lecture bornée
+- **Feature Store v1/v2** : ORB U8×32, SIFT/RootSIFT F32×128 et lecture typée bornée
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v6** : tâches, catalogue, Feature Store et Visual Index segmenté
+- **Project Database v7** : tâches, catalogue, Feature Store multi-type et support intra-image
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
 - **Recovery projet** : reprise automatique sélective et bornée des imports récupérables
 - **Task Queue** : file FIFO avec sélection adaptative et backpressure
@@ -105,6 +105,7 @@ Acquisitions
 - [Persistance](docs/architecture/persistence.md)
 - [Base de données projet](docs/architecture/project_database.md)
 - [Feature Store](docs/architecture/feature_store.md)
+- [Precision Feature Pipeline v1A](docs/architecture/precision_feature_pipeline.md)
 - [Visual Index](docs/architecture/visual_index.md)
 - [Viewer](docs/architecture/viewer.md)
 - [Revue des fondations](docs/architecture/foundation_review.md)
@@ -120,6 +121,7 @@ Acquisitions
 - [Build](docs/development/build.md)
 - [Tests](docs/development/testing.md)
 - [Concurrence](docs/development/concurrency.md)
+- [OpenCode long run](docs/development/opencode_long_run.md)
 
 ### Roadmap
 - [Roadmap](docs/roadmap/roadmap.md)
@@ -142,7 +144,10 @@ Pour les changements sensibles à la mémoire ou à la concurrence, ajouter ASan
 
 ## Statut
 
-Lardon3D est en développement actif. La phase de fondation est terminée. Les prochains tickets porteront sur la persistance, le DAG, les pools de workers et la publication live.
+Lardon3D est en développement actif. La persistance des tâches, le catalogue,
+le Feature Store multipasse et le Visual Index ORB sont implémentés. Candidate
+Pair Generator, matching, DAG générique, SfM et viewer restent des tickets
+séparés planifiés.
 
 ## Licence
 

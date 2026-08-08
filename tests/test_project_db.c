@@ -89,8 +89,59 @@ static bool create_future_database(const char *path) {
   }
   bool ok = sqlite3_exec(connection,
                          "CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
-                         "INSERT INTO metadata VALUES('schema_version',7);",
+                         "INSERT INTO metadata VALUES('schema_version',10);",
                          NULL, NULL, NULL) == SQLITE_OK;
+  return sqlite3_close(connection) == SQLITE_OK && ok;
+}
+
+static bool create_v7_database(const char *path) {
+  Lardon3DProjectDb *database = NULL;
+  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
+  if (lardon3d_project_db_open(path, &database, error) != LARDON3D_PROJECT_DB_OK) return false;
+  lardon3d_project_db_close(database);
+  sqlite3 *connection = NULL;
+  if (sqlite3_open(path, &connection) != SQLITE_OK) return false;
+  static const char sql[] =
+      "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE candidate_pair_generate_tasks;"
+      "DROP TABLE candidate_pairs;"
+      "UPDATE metadata SET value=7 WHERE key='schema_version';COMMIT;PRAGMA foreign_keys=ON;";
+  bool ok = sqlite3_exec(connection, sql, NULL, NULL, NULL) == SQLITE_OK;
+  return sqlite3_close(connection) == SQLITE_OK && ok;
+}
+
+static bool create_v6_database(const char *path) {
+  Lardon3DProjectDb *database = NULL;
+  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
+  if (lardon3d_project_db_open(path, &database, error) != LARDON3D_PROJECT_DB_OK) return false;
+  lardon3d_project_db_close(database);
+  sqlite3 *connection = NULL;
+  if (sqlite3_open(path, &connection) != SQLITE_OK) return false;
+  static const char sql[] =
+      "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE candidate_pair_generate_tasks;"
+      "DROP TABLE candidate_pairs;"
+      "DROP TABLE feature_support_members;DROP TABLE feature_support_groups;"
+      "DROP TABLE feature_support_sets;DROP TABLE sift_extract_tasks;"
+      "ALTER TABLE feature_sets DROP COLUMN feature_density_per_megapixel;"
+      "ALTER TABLE feature_sets DROP COLUMN coverage_ratio;"
+      "ALTER TABLE feature_sets DROP COLUMN total_cells;"
+      "ALTER TABLE feature_sets DROP COLUMN occupied_cells;"
+      "UPDATE metadata SET value=6 WHERE key='schema_version';COMMIT;PRAGMA foreign_keys=ON;";
+  bool ok = sqlite3_exec(connection, sql, NULL, NULL, NULL) == SQLITE_OK;
+  return sqlite3_close(connection) == SQLITE_OK && ok;
+}
+
+static bool create_v5_database(const char *path) {
+  if (!create_v6_database(path)) return false;
+  sqlite3 *connection = NULL;
+  if (sqlite3_open(path, &connection) != SQLITE_OK) return false;
+  static const char sql[] =
+      "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE visual_index_update_tasks;DROP TABLE visual_index_memberships;"
+      "DROP TABLE visual_index_segments;DROP TABLE visual_indexes;"
+      "UPDATE metadata SET value=5 WHERE key='schema_version';COMMIT;PRAGMA foreign_keys=ON;";
+  bool ok = sqlite3_exec(connection, sql, NULL, NULL, NULL) == SQLITE_OK;
   return sqlite3_close(connection) == SQLITE_OK && ok;
 }
 
@@ -227,7 +278,8 @@ static bool run_test(void) {
   char database_path[512], artifact_path[512], future_path[512], corrupt_path[512];
   char legacy_path[512], failed_migration_path[512], v2_path[512];
   char failed_v3_migration_path[512], v3_path[512], failed_v4_path[512];
-  char v4_path[512], failed_v5_path[512], failed_v6_path[512];
+  char v4_path[512], failed_v5_path[512], failed_v6_path[512], failed_v7_path[512];
+  char direct_v5_path[512], v8_path[512], failed_v8_path[512];
   CHECK(snprintf(database_path, sizeof(database_path), "%s/project.db", directory) > 0);
   CHECK(snprintf(artifact_path, sizeof(artifact_path), "%s/artifact.bin", directory) > 0);
   CHECK(snprintf(future_path, sizeof(future_path), "%s/future.db", directory) > 0);
@@ -246,11 +298,17 @@ static bool run_test(void) {
         0);
   CHECK(snprintf(failed_v6_path, sizeof(failed_v6_path), "%s/failed-v6-migration.db", directory) >
         0);
+  CHECK(snprintf(failed_v7_path, sizeof(failed_v7_path), "%s/failed-v7-migration.db", directory) >
+        0);
+  CHECK(snprintf(direct_v5_path, sizeof(direct_v5_path), "%s/direct-v5.db", directory) > 0);
+  CHECK(snprintf(v8_path, sizeof(v8_path), "%s/v8.db", directory) > 0);
+  CHECK(snprintf(failed_v8_path, sizeof(failed_v8_path), "%s/failed-v8-migration.db", directory) >
+        0);
 
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
   Lardon3DProjectDb *database = NULL;
   CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(database && lardon3d_project_db_schema_version(database) == 6);
+  CHECK(database && lardon3d_project_db_schema_version(database) == 9);
   bool legacy_pending = true;
   CHECK(lardon3d_project_db_legacy_catalog_pending(database, &legacy_pending) ==
             LARDON3D_PROJECT_DB_OK &&
@@ -285,6 +343,85 @@ static bool run_test(void) {
                                            &replacement_image) == LARDON3D_PROJECT_DB_OK &&
         replacement_image.image_id > deleted_image.image_id &&
         replacement_image.asset_id > deleted_image.asset_id);
+
+  unsigned char third_hash[LARDON3D_PROJECT_DB_SHA256_SIZE] = {3};
+  char third_asset_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+  asset_path_for_hash(third_hash, third_asset_path);
+  Lardon3DProjectDbImage pair_image;
+  CHECK(lardon3d_project_db_register_image(database, replacement_scanset.scanset_id, third_hash,
+                                           third_asset_path, 1, "pair-a.jpg", "/source/pair-a.jpg",
+                                           0, 3, &identity_status, &pair_image) ==
+        LARDON3D_PROJECT_DB_OK);
+  unsigned char fourth_hash[LARDON3D_PROJECT_DB_SHA256_SIZE] = {4};
+  char fourth_asset_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+  asset_path_for_hash(fourth_hash, fourth_asset_path);
+  Lardon3DProjectDbImage pair_image_b;
+  CHECK(lardon3d_project_db_register_image(database, replacement_scanset.scanset_id, fourth_hash,
+                                           fourth_asset_path, 1, "pair-b.jpg", "/source/pair-b.jpg",
+                                           0, 4, &identity_status, &pair_image_b) ==
+        LARDON3D_PROJECT_DB_OK);
+
+  Lardon3DProjectDbCandidatePair pair;
+  CHECK(lardon3d_project_db_create_candidate_pair(database, replacement_image.image_id,
+                                                  pair_image.image_id, 10, &pair) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(pair.candidate_pair_id > 0 && pair.image_id_a == replacement_image.image_id &&
+        pair.image_id_b == pair_image.image_id && pair.created_at == 10);
+  Lardon3DProjectDbCandidatePair first_pair = pair;
+  Lardon3DProjectDbCandidatePair second_pair;
+  CHECK(lardon3d_project_db_create_candidate_pair(database, replacement_image.image_id,
+                                                  pair_image_b.image_id, 11, &second_pair) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(second_pair.candidate_pair_id > first_pair.candidate_pair_id);
+  CHECK(lardon3d_project_db_create_candidate_pair(database, pair_image.image_id,
+                                                  replacement_image.image_id, 12, &pair) ==
+        LARDON3D_PROJECT_DB_CONSTRAINT);
+  CHECK(lardon3d_project_db_create_candidate_pair(database, replacement_image.image_id,
+                                                  replacement_image.image_id, 13, &pair) ==
+        LARDON3D_PROJECT_DB_CONSTRAINT);
+  CHECK(lardon3d_project_db_create_candidate_pair(database, replacement_image.image_id,
+                                                  pair_image.image_id, -1, &pair) ==
+        LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
+  CHECK(lardon3d_project_db_create_candidate_pair(database, 0, pair_image.image_id, 14, &pair) ==
+        LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
+  Lardon3DProjectDbCandidatePair found;
+  CHECK(lardon3d_project_db_find_candidate_pair(database, pair_image.image_id,
+                                                replacement_image.image_id, &found) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(found.candidate_pair_id == first_pair.candidate_pair_id &&
+        found.image_id_a == replacement_image.image_id && found.image_id_b == pair_image.image_id &&
+        found.created_at == 10);
+  CHECK(lardon3d_project_db_find_candidate_pair(database, replacement_image.image_id,
+                                                pair_image.image_id, &found) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(found.candidate_pair_id == first_pair.candidate_pair_id);
+  CHECK(lardon3d_project_db_find_candidate_pair(database, pair_image.image_id,
+                                                pair_image_b.image_id, &found) ==
+        LARDON3D_PROJECT_DB_NOT_FOUND);
+  Lardon3DProjectDbCandidatePair loaded;
+  CHECK(lardon3d_project_db_load_candidate_pair(database, first_pair.candidate_pair_id, &loaded) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(loaded.image_id_a == first_pair.image_id_a && loaded.image_id_b == first_pair.image_id_b &&
+        loaded.created_at == 10);
+  CHECK(lardon3d_project_db_load_candidate_pair(database, 999999, &loaded) ==
+        LARDON3D_PROJECT_DB_NOT_FOUND);
+  Lardon3DProjectDbCandidatePair pair_page[LARDON3D_PROJECT_DB_CANDIDATE_PAIR_PAGE_MAX];
+  size_t pair_count = 0;
+  CHECK(lardon3d_project_db_list_candidate_pairs(database, 0, pair_page, 2, &pair_count) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(pair_count == 2 && pair_page[0].candidate_pair_id == first_pair.candidate_pair_id &&
+        pair_page[1].candidate_pair_id == second_pair.candidate_pair_id);
+  CHECK(lardon3d_project_db_list_candidate_pairs(database, first_pair.candidate_pair_id,
+                                                 pair_page, 2, &pair_count) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(pair_count == 1 && pair_page[0].candidate_pair_id == second_pair.candidate_pair_id);
+  CHECK(lardon3d_project_db_list_candidate_pairs(database, second_pair.candidate_pair_id,
+                                                 pair_page, 1, &pair_count) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(pair_count == 0);
+  CHECK(lardon3d_project_db_list_candidate_pairs(
+            database, 0, pair_page, LARDON3D_PROJECT_DB_CANDIDATE_PAIR_PAGE_MAX + 1,
+            &pair_count) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
 
   Lardon3DProjectDbProject project = {.created_at = 100, .updated_at = 100};
   (void)snprintf(project.stable_id, sizeof(project.stable_id), "project-0001");
@@ -438,12 +575,16 @@ static bool run_test(void) {
         LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
   lardon3d_project_db_close(contexts[0].database);
   database = NULL;
-  CHECK(query_integer(database_path, "SELECT value FROM metadata WHERE key='schema_version'", 6));
+  CHECK(query_integer(database_path, "SELECT value FROM metadata WHERE key='schema_version'", 9));
   CHECK(query_integer(database_path, "SELECT count(*) FROM tasks WHERE task_id=1", 1));
   CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_load_task(database, 1, &task) == LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_load_artifact(database, "artifact-1", &loaded_artifact) ==
         LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_find_candidate_pair(database, replacement_image.image_id,
+                                                pair_image.image_id, &found) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(found.candidate_pair_id == first_pair.candidate_pair_id);
   lardon3d_project_db_close(database);
 
   CHECK(create_future_database(future_path));
@@ -456,7 +597,7 @@ static bool run_test(void) {
 
   CHECK(create_v1_database(legacy_path));
   CHECK(lardon3d_project_db_open(legacy_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 6);
+  CHECK(lardon3d_project_db_schema_version(database) == 9);
   CHECK(lardon3d_project_db_get_project(database, &loaded_project) == LARDON3D_PROJECT_DB_OK &&
         strcmp(loaded_project.stable_id, "legacy-project") == 0);
   CHECK(lardon3d_project_db_load_task(database, 9, &task) == LARDON3D_PROJECT_DB_OK);
@@ -466,7 +607,7 @@ static bool run_test(void) {
         LARDON3D_PROJECT_DB_OK);
   lardon3d_project_db_close(database);
   database = NULL;
-  CHECK(query_integer(legacy_path, "SELECT value FROM metadata WHERE key='schema_version'", 6));
+  CHECK(query_integer(legacy_path, "SELECT value FROM metadata WHERE key='schema_version'", 9));
 
   CHECK(create_v1_database(failed_migration_path));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V2", "1", 1) == 0);
@@ -491,7 +632,7 @@ static bool run_test(void) {
         LARDON3D_PROJECT_DB_OK);
   lardon3d_project_db_close(database);
   database = NULL;
-  CHECK(query_integer(v2_path, "SELECT value FROM metadata WHERE key='schema_version'", 6));
+  CHECK(query_integer(v2_path, "SELECT value FROM metadata WHERE key='schema_version'", 9));
 
   CHECK(create_v2_database(failed_v3_migration_path));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V3", "1", 1) == 0);
@@ -519,7 +660,7 @@ static bool run_test(void) {
         LARDON3D_PROJECT_DB_OK);
   lardon3d_project_db_close(database);
   database = NULL;
-  CHECK(query_integer(v3_path, "SELECT value FROM metadata WHERE key='schema_version'", 6));
+  CHECK(query_integer(v3_path, "SELECT value FROM metadata WHERE key='schema_version'", 9));
 
   CHECK(create_v3_database(failed_v4_path));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V4", "1", 1) == 0);
@@ -536,7 +677,7 @@ static bool run_test(void) {
     fprintf(stderr, "Migration v4 (%d): %s\n", (int)v4_result, error);
   }
   CHECK(v4_result == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 6);
+  CHECK(lardon3d_project_db_schema_version(database) == 9);
   CHECK(lardon3d_project_db_load_task(database, 9, &task) == LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_load_artifact(database, "legacy-artifact", &loaded_artifact) ==
         LARDON3D_PROJECT_DB_OK);
@@ -561,6 +702,47 @@ static bool run_test(void) {
       failed_v6_path,
       "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='visual_indexes'", 0));
 
+  CHECK(create_v6_database(failed_v7_path));
+  CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V7", "1", 1) == 0);
+  CHECK(lardon3d_project_db_open(failed_v7_path, &database, error) == LARDON3D_PROJECT_DB_IO_ERROR);
+  CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V7") == 0);
+  CHECK(query_integer(failed_v7_path, "SELECT value FROM metadata WHERE key='schema_version'", 6));
+  CHECK(query_integer(failed_v7_path,
+                      "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+                      "name='sift_extract_tasks'", 0));
+  CHECK(lardon3d_project_db_open(failed_v7_path, &database, error) == LARDON3D_PROJECT_DB_OK &&
+        lardon3d_project_db_schema_version(database) == 9);
+  lardon3d_project_db_close(database);
+  database = NULL;
+
+  CHECK(create_v5_database(direct_v5_path));
+  CHECK(query_integer(direct_v5_path, "SELECT value FROM metadata WHERE key='schema_version'", 5));
+  CHECK(lardon3d_project_db_open(direct_v5_path, &database, error) == LARDON3D_PROJECT_DB_OK &&
+        lardon3d_project_db_schema_version(database) == 9);
+  lardon3d_project_db_close(database);
+  database = NULL;
+
+  CHECK(create_v7_database(v8_path));
+  CHECK(query_integer(v8_path, "SELECT value FROM metadata WHERE key='schema_version'", 7));
+  CHECK(lardon3d_project_db_open(v8_path, &database, error) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_schema_version(database) == 9);
+  lardon3d_project_db_close(database);
+  database = NULL;
+  CHECK(query_integer(v8_path, "SELECT value FROM metadata WHERE key='schema_version'", 9));
+
+  CHECK(create_v7_database(failed_v8_path));
+  CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V8", "1", 1) == 0);
+  CHECK(lardon3d_project_db_open(failed_v8_path, &database, error) == LARDON3D_PROJECT_DB_IO_ERROR);
+  CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V8") == 0);
+  CHECK(query_integer(failed_v8_path, "SELECT value FROM metadata WHERE key='schema_version'", 7));
+  CHECK(query_integer(failed_v8_path,
+                      "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+                      "name='candidate_pairs'", 0));
+  CHECK(lardon3d_project_db_open(failed_v8_path, &database, error) == LARDON3D_PROJECT_DB_OK &&
+        lardon3d_project_db_schema_version(database) == 9);
+  lardon3d_project_db_close(database);
+  database = NULL;
+
   CHECK(unlink(artifact_path) == 0);
   CHECK(unlink(database_path) == 0);
   CHECK(unlink(future_path) == 0);
@@ -574,6 +756,10 @@ static bool run_test(void) {
   CHECK(unlink(v4_path) == 0);
   CHECK(unlink(failed_v5_path) == 0);
   CHECK(unlink(failed_v6_path) == 0);
+  CHECK(unlink(failed_v7_path) == 0);
+  CHECK(unlink(direct_v5_path) == 0);
+  CHECK(unlink(v8_path) == 0);
+  CHECK(unlink(failed_v8_path) == 0);
   CHECK(rmdir(directory) == 0);
   return true;
 }

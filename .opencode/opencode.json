@@ -1,7 +1,20 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "lardon-orchestrator",
-  "model": "opencode/mimo-v2.5-free",
+  "model": "opencode-go/mimo-v2.5-pro",
+  "small_model": "opencode-go/mimo-v2.5",
+  "provider": {
+    "groq": {
+      "models": {
+        "openai/gpt-oss-120b": {
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        }
+      }
+    }
+  },
   "subagent_depth": 1,
   "instructions": [
     "AGENTS.md",
@@ -9,30 +22,102 @@
     "docs/architecture/overview.md"
   ],
   "permission": {
-    "*": "ask",
+    "*": "deny",
     "read": "allow",
     "glob": "allow",
     "grep": "allow",
+    "list": "allow",
     "lsp": "allow",
+    "question": "deny",
+    "todowrite": "allow",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "skill": "allow",
+    "doom_loop": "deny",
     "external_directory": "deny",
     "edit": {
       "*": "allow",
-      "scan3d/**": "deny",
-      "scan3d/tri_photos.py": "deny"
+      ".git/**": "deny",
+      "scan3d/**": "deny"
     },
     "bash": {
-      "*": "ask",
+      "*": "deny",
       "git status*": "allow",
       "git diff*": "allow",
       "git log*": "allow",
-      "git commit*": "deny",
-      "git push*": "deny",
+      "git show*": "allow",
+      "git grep*": "allow",
+      "git rev-parse*": "allow",
+      "git branch --show-current*": "allow",
+      "rg *": "allow",
+      "sed -n *": "allow",
+      "meson setup *": "allow",
+      "meson compile *": "allow",
+      "meson test *": "allow",
+      "CC=clang meson setup *": "allow",
+      "CCACHE_DISABLE=1 CC=clang meson setup *": "allow",
+      "CCACHE_DISABLE=1 meson compile *": "allow",
+      "CCACHE_DISABLE=1 meson test *": "allow",
+      "ninja *": "allow",
+      "mkdir build*": "allow",
+      "mkdir -p build*": "allow",
+      "mkdir -p .opencode/work*": "allow",
+      "./build*/test-*": "allow",
+      "./scripts/*": "allow",
+      "sudo *": "deny",
+      "* sudo *": "deny",
+      "su *": "deny",
+      "* su *": "deny",
+      "doas *": "deny",
+      "* doas *": "deny",
+      "pacman *": "deny",
+      "* pacman *": "deny",
       "git add -A*": "deny",
-      "git clean*": "deny",
+      "* git add -A*": "deny",
+      "git commit*": "deny",
+      "* git commit*": "deny",
+      "git push*": "deny",
+      "* git push*": "deny",
       "git reset*": "deny",
+      "* git reset*": "deny",
+      "git clean*": "deny",
+      "* git clean*": "deny",
+      "git checkout*": "deny",
+      "* git checkout*": "deny",
+      "git restore*": "deny",
+      "* git restore*": "deny",
+      "git rebase*": "deny",
+      "* git rebase*": "deny",
+      "git merge*": "deny",
+      "* git merge*": "deny",
       "rm *": "deny",
-      "sudo *": "deny"
+      "* rm *": "deny",
+      "chmod *": "deny",
+      "* chmod *": "deny",
+      "chown *": "deny",
+      "* chown *": "deny",
+      "kill *": "deny",
+      "* kill *": "deny",
+      "pkill *": "deny",
+      "* pkill *": "deny",
+      "shutdown*": "deny",
+      "* shutdown*": "deny",
+      "reboot*": "deny",
+      "* reboot*": "deny",
+      "poweroff*": "deny",
+      "* poweroff*": "deny"
     }
+  },
+  "tool_output": {
+    "max_lines": 400,
+    "max_bytes": 50000
+  },
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "tail_turns": 8,
+    "preserve_recent_tokens": 12000,
+    "reserved": 16000
   },
   "watcher": {
     "ignore": [
@@ -41,24 +126,6 @@
       ".opencode/work/**",
       "scan3d/**"
     ]
-  },
-  "provider": {
-    "kilo": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Kilo Gateway",
-      "options": {
-        "baseURL": "https://api.kilo.ai/api/gateway"
-      },
-      "models": {
-        "tencent/hy3:free": {
-          "name": "Hy3 Free",
-          "limit": {
-            "context": 262144,
-            "output": 128000
-          }
-        }
-      }
-    }
   },
   "lsp": {
     "clangd": {

@@ -1,5 +1,12 @@
 # Registry des types métier de tâches
 
+## Feature kinds v1A
+
+La registry statique conserve `features.extract` v1 pour ORB et ajoute
+`features.extract.sift` v1 et `features.extract.rootsift` v1. Les reconstructeurs
+chargent la table dédiée, revalident le fingerprint et ne capturent aucun
+`AppState`.
+
 ## Contrat
 
 Une instance possède un **task ID** stable. Son **task kind** décrit son
@@ -26,7 +33,7 @@ fin de l'exécution. Le constructeur métier n'est jamais appelé sous mutex DB.
 
 ## Persistance et legacy
 
-Le checkpoint générique reste en version 1. Project Database v6 conserve le
+Le checkpoint générique reste en version 1. Project Database v7 conserve le
 kind/version ; les lignes migrées depuis v1 restent `NULL/NULL` et sont classées
 `LEGACY_UNTYPED`. Un kind inconnu ou une version non supportée reste inspectable
 mais inexécutable. Aucun type n'est inventé et aucun code n'est sélectionné par
@@ -51,5 +58,10 @@ depuis `image_id` et ses paramètres bornés.
 
 **IMPLEMENTED** — `visual_index.update`, version 1, recharge
 `visual_index_id + after_feature_set_id` et reconstruit un contexte neuf.
+
+**IMPLEMENTED** — `candidate_pair.generate`, version 1, recharge
+`visual_index_id + after_feature_set_id + top_k + minimum_evidence_count
++ scanset_filter + exclude_same_asset` depuis `candidate_pair_generate_tasks`
+et reconstruit un contexte boundé.
 
 **PLANNED** — kinds de matching et reconstruction.

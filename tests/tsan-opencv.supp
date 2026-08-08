@@ -1,0 +1,6 @@
+# OpenCV 5/TBB from the system is not TSan-instrumented. Its asynchronous
+# features backend reports TLS and Mat teardown accesses after detectAndCompute.
+# Keep this suppression scoped to external shared objects: Lardon3D frames and
+# all other libraries remain fully checked.
+race:libopencv_features.so
+race:libopencv_core.so

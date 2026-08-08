@@ -62,6 +62,8 @@ executable(
         'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/visual_index.c',
         'src/visual_index_task.c',
+        'src/candidate_pair_gen.c',
+        'src/candidate_pair_task.c',
         'src/image_view.c',
         'src/project.c',
         'src/project_db.c',
@@ -113,6 +115,7 @@ import_task_test = executable(
         'src/feature_store.c',
         'src/visual_index.c',
         'src/visual_index_task.c',
+        'src/candidate_pair_gen.c', 'src/candidate_pair_task.c',
         'src/feature_extractor_opencv.cpp',
         'src/task_queue.c',
         'src/resource_governor.c',
@@ -188,6 +191,26 @@ feature_store_test = executable(
 
 test('feature-store', feature_store_test, timeout: 60)
 
+feature_file_robustness_test = executable(
+    'test-feature-file-robustness',
+    sources: [
+        'tests/test_feature_file_robustness.c',
+        'src/app_state.c',
+        'src/image_catalog_persistent.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/feature_store.c',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING', '-DLARDON3D_FEATURE_STORE_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv],
+)
+
+test('feature-file-robustness', feature_file_robustness_test, timeout: 60)
+
 visual_index_test = executable(
     'test-visual-index',
     sources: [
@@ -205,6 +228,49 @@ visual_index_test = executable(
 )
 test('visual-index', visual_index_test, timeout: 60)
 
+candidate_pair_gen_test = executable(
+    'test-candidate-pair-gen',
+    sources: [
+        'tests/test_candidate_pair_gen.c', 'src/app_state.c',
+        'src/image_catalog_persistent.c', 'src/feature_store.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/visual_index.c', 'src/candidate_pair_gen.c',
+        'src/project_db.c', 'src/task.c',
+        'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv],
+)
+test('candidate-pair-gen', candidate_pair_gen_test, timeout: 60)
+
+candidate_pair_task_test = executable(
+    'test-candidate-pair-task',
+    sources: [
+        'tests/test_candidate_pair_task.c', 'src/app_state.c',
+        'src/project.c', 'src/project_db.c', 'src/task.c',
+        'src/task_checkpoint.c', 'src/task_kind_registry.c',
+        'src/task_kinds.c', 'src/task_queue.c', 'src/import.c',
+        'src/import_task.c', 'src/image_catalog.c',
+        'src/image_catalog_persistent.c', 'src/image_view.c',
+        'src/feature_task.c', 'src/sift_task.c',
+        'src/precision_features.c', 'src/feature_store.c',
+        'src/visual_index.c', 'src/visual_index_task.c',
+        'src/candidate_pair_gen.c', 'src/candidate_pair_task.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    c_args: [
+        '-DLARDON3D_PROJECT_DB_TESTING',
+        '-DLARDON3D_CANDIDATE_PAIR_TASK_TESTING',
+        '-DLARDON3D_VISUAL_INDEX_TASK_TESTING',
+        '-DLARDON3D_FEATURE_TASK_TESTING',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv],
+)
+test('candidate-pair-task', candidate_pair_task_test, timeout: 60,
+     env: opencv_test_environment)
+
 feature_task_test = executable(
     'test-feature-task',
     sources: [
@@ -216,6 +282,7 @@ feature_task_test = executable(
         'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/feature_store.c', 'src/visual_index.c',
         'src/visual_index_task.c',
+        'src/candidate_pair_gen.c', 'src/candidate_pair_task.c',
         'src/feature_extractor_opencv.cpp', 'src/resource_governor.c',
         'src/resource_snapshot.c',
     ],
@@ -248,6 +315,7 @@ precision_consolidation_test = executable(
         'src/feature_task.c', 'src/sift_task.c',
         'src/precision_features.c', 'src/feature_store.c',
         'src/visual_index.c', 'src/visual_index_task.c',
+        'src/candidate_pair_gen.c', 'src/candidate_pair_task.c',
         'src/feature_extractor_opencv.cpp',
         'src/resource_governor.c', 'src/resource_snapshot.c',
     ],
@@ -336,6 +404,7 @@ project_test = executable(
         'src/feature_store.c',
         'src/visual_index.c',
         'src/visual_index_task.c',
+        'src/candidate_pair_gen.c', 'src/candidate_pair_task.c',
         'src/feature_extractor_opencv.cpp',
         'src/task_queue.c',
         'src/import.c',

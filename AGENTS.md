@@ -58,6 +58,21 @@ disponible. Ne jamais annoncer une vérification non exécutée.
 - Ne pas utiliser `system()` ni `popen()` dans le code de production.
 - Ne laisser aucun `TODO`, code mort ou dépendance inutile dans un ticket fini.
 - Préférer l'évolution minimale aux réécritures de modules validés.
+- Viser 100 colonnes et ne jamais dépasser 120 sans justification locale.
+- Mettre les appels complexes et le SQL sur plusieurs lignes lisibles.
+- Éviter le code-golf et garder des fonctions confortables à relire dans Neovim.
+- Commenter les invariants non évidents plutôt que paraphraser le code.
+
+## Long run OpenCode
+
+- `.opencode/work/current_ticket.md` est la mémoire durable du ticket et doit
+  être actualisé après chaque phase majeure.
+- Avant une compaction ou une fin de session incomplète, écrire
+  `.opencode/work/handoff.md` avec la prochaine action exacte.
+- Une seule validation lourde à la fois : normal, ASan/UBSan, TSan puis stress.
+- Un timeout doit être isolé et expliqué ; le répéter jusqu'au vert est interdit.
+- Après les tests verts, imposer revue, audit de concurrence si pertinent,
+  documentation, corrections et revalidation ciblée.
 
 ## État actuel
 

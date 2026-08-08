@@ -208,6 +208,7 @@ static bool publish_features(Lardon3DAppState *state, uint64_t image_id, unsigne
       .feature_count = COUNT,
       .keypoints = keypoints,
       .descriptors = descriptors,
+      .descriptor_bytes = sizeof(descriptors),
   };
   Lardon3DFeatureExtractorParameters parameters = {64, 4, 20};
   Lardon3DFeatureStoreResult result =
@@ -244,7 +245,8 @@ static bool publish_burst_features(Lardon3DAppState *state, uint64_t image_id, u
       memset(descriptors + i * 32, (int)(i + 31U), 32);
     }
   }
-  Lardon3DExtractedFeatures features = {64, 64, COUNT, keypoints, descriptors};
+  Lardon3DExtractedFeatures features = {
+      64, 64, COUNT, keypoints, descriptors, {0}, sizeof(descriptors)};
   Lardon3DFeatureExtractorParameters parameters = {63, 4, 20};
   Lardon3DFeatureStoreResult result =
       lardon3d_feature_store_publish(state, image_id, 0, &parameters, &features, set);

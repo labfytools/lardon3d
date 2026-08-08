@@ -1,4 +1,4 @@
-# Feature Store v1
+# Feature Store v1/v2
 
 ## Rôle et modèle
 
@@ -106,7 +106,7 @@ ou les octets exige d'auditer et, si nécessaire, d'incrémenter cette version.
 
 ## Statut
 
-**IMPLEMENTED** — ORB réel, format v1, assets content-addressed, DB v6,
+**IMPLEMENTED** — ORB réel, formats v1/v2, assets content-addressed, DB v7,
 publication atomique, reader borné, task kind production et reprise automatique.
 
 **NOT_YET_WIRED** — commande de réconciliation/scrub des orphelins, contrôle fin
@@ -116,3 +116,26 @@ l'extraction après import et planification multi-image/DAG.
 **IMPLEMENTED** — Visual Index v1 consomme ce reader sans changer le format.
 
 **PLANNED** — paires candidates, matching, vérification géométrique, tracks et SfM.
+
+## Extension v2 multi-descriptor
+
+**IMPLEMENTED v1A.** ORB continue d'écrire exactement le v1 U8×32 historique.
+SIFT et RootSIFT écrivent le v2 F32×128. Le header v2 de 176 octets contient,
+aux offsets 0..64, magic, version, taille header, count, dimension, type, taille
+scalaire, taille record, dimensions image, capabilities, offsets des blocs et
+taille totale ; puis SHA source à 72, fingerprint à 104, kind sur 16 octets à
+136, version extracteur à 152 et vingt octets réservés nuls.
+
+Les valeurs durables sont `U8=1` et `F32=2`, de tailles 1 et 4. Chaque binary32
+est encodé little-endian sans dump de struct. Writer et reader rejettent NaN et
+Inf. Les lectures `descriptors_u8` et `descriptors_f32` refusent un type
+incompatible, utilisent `pread` et restent limitées à 256 features. La limite
+v1 reste 16 Mio ; la limite v2 est 64 Mio.
+
+La façade d'extraction transporte aussi `descriptor_bytes`. La publication
+exige exactement `count × dimension × scalar_size`; elle refuse donc un buffer
+tronqué ou surdimensionné avant toute lecture ou création de fichier.
+
+ProjectDb v7 ajoute les métriques légères de couverture. Le détail multipasse,
+la grille et RootSIFT sont canoniques dans
+`precision_feature_pipeline.md`.

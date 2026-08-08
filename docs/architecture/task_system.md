@@ -1,5 +1,13 @@
 # Système de tâches (Task System)
 
+## Extraction précise v1A
+
+`features.extract.sift` et `features.extract.rootsift`, version 1, possèdent
+chacun leur lifecycle durable. Une tâche correspond à une image, est persistée
+avant enqueue et reprend avec le même `task_id`. `detectAndCompute` n'est pas
+interruptible : pause/cancel sont coopératifs à ses frontières et un crash
+recommence uniquement cette image. ORB READY n'est jamais recalculé par SIFT.
+
 ## Objectif et responsabilités
 
 Le module `task` gère le cycle de vie complet des tâches de traitement dans
@@ -91,6 +99,12 @@ l'ouverture du projet.
 **IMPLEMENTED** — `visual_index.update` traite jusqu'à seize Feature Sets par
 séquence, checkpoint après commit de segment et repasse par le Governor.
 
+**IMPLEMENTED** — `candidate_pair.generate` traite jusqu'à soixante-quatre
+Feature Sets par séquence, interroge le Visual Index, persiste les paires
+candidates avec idempotence, checkpoint après chaque lot et repasse par le
+Governor via `sequence_break`. La reprise est idempotente avec le curseur
+`after_feature_set_id` rechargé depuis la DB.
+
 Le chemin de production de l'import ne possède plus de thread ni de drapeau
 d'annulation privés. Son wrapper TUI ne fait qu'enqueue/cancel/observer la
 tâche générique. Chaque callback traite un lot borné, checkpoint hors mutex de
@@ -109,7 +123,7 @@ localement : son userdata est détruit, sans callback terminal ni écriture
 durable d'une fausse annulation. Une annulation explicitement demandée conserve
 le contrat de notification terminale.
 
-La Project Database v6 peut enregistrer transactionnellement un résumé
+La Project Database v7 peut enregistrer transactionnellement un résumé
 `Lardon3DTaskDurableSnapshot` et la référence de son checkpoint. Elle ne stocke
 ni estimation sérialisée complète, ni callback, ni réservation, et ne remplace
 pas la validation du fichier checkpoint avant `task_restore()`.

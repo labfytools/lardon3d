@@ -1,5 +1,12 @@
 # Base de données projet Lardon3D
 
+> Version courante : **v9**. La migration transactionnelle v8→v9 ajoute
+> la table `candidate_pair_generate_tasks` pour la tâche durable Candidate
+> Pair. La migration v7→v8 ajoute la table `candidate_pairs` pour le
+> sous-système Candidate Pair.
+> Les migrations historiques restent ordonnées et les faults d'injection
+> vérifient le rollback.
+
 ## Vision
 
 La base de données projet stocke les métadonnées de reconstruction et les relations entre les entités. Elle est conçue pour être légère, persistante et permettre la reprise après interruption.
@@ -42,11 +49,13 @@ La base de données projet stocke les métadonnées de reconstruction et les rel
 - Chemin des données
 
 #### Candidate Pair
-- Identifiant unique
-- Image source
-- Image cible
-- Score de similarité
-- Source (visuelle, temporelle, etc.)
+- Identifiant unique (`candidate_pair_id`)
+- Image source (`image_id_a`)
+- Image cible (`image_id_b`)
+- Ordre canonique : `image_id_a < image_id_b`
+- Self-pairs interdits
+- Unicité persistante
+- Date de création (`created_at`)
 
 #### Verified Pair
 - Identifiant unique
@@ -168,9 +177,9 @@ référence vers le fichier checkpoint. Le fichier checkpoint validé reste la
 source complète pour `lardon3d_task_restore()` ; la DB seule ne reconstruit
 jamais une tâche. Un écart ou un fichier invalide interdit la reprise.
 
-## Schéma v6 implémenté
+## Schéma v7 implémenté
 
-- `metadata(key PRIMARY KEY, value)` contient `schema_version=6` et
+- `metadata(key PRIMARY KEY, value)` contient `schema_version=7` et
   `next_task_id`, prochain ID durable allouable.
 - `project(singleton=1, stable_id UNIQUE, name, created_at, updated_at)` décrit
   l'unique identité logique de la DB.
@@ -195,6 +204,19 @@ jamais une tâche. Un écart ou un fichier invalide interdit la reprise.
 - `image_import_tasks(task_id PRIMARY KEY REFERENCES tasks ON DELETE CASCADE,
   source_path, scanset_id REFERENCES scansets)` conserve les paramètres
   métier immuables de `import.images`.
+- `feature_assets` conserve SHA-256, chemin content-addressed, taille,
+  durabilité et date de publication des Feature Files hors SQLite.
+- `feature_sets` relie image, extracteur/version/fingerprint, hash source,
+  type/dimension descriptor, compte, producteur et métriques légères
+  `occupied_cells`, `total_cells`, `coverage_ratio` et densité/Mpx.
+- `feature_extract_tasks` conserve les paramètres immuables ORB historiques.
+- `sift_extract_tasks` conserve kind `sift`/`rootsift`, version 1, limites,
+  paramètres OpenCV binary64, grille et fingerprint exacts.
+- `feature_support_sets` identifie une consolidation immutable, son image, ses
+  deux Feature Sets sources, son rayon et son fingerprint.
+- `feature_support_groups` conserve position représentative, distance locale
+  et `support_count`; `feature_support_members` normalise chaque référence
+  `feature_set_id + feature_index`, sans descriptor SQLite.
 - `visual_indexes` conserve l'identité `AUTOINCREMENT`, la configuration
   Feature homogène, les paramètres LSH et leurs fingerprints.
 - `visual_index_segments` conserve identité `AUTOINCREMENT`, génération,
@@ -221,17 +243,79 @@ Les indexes ajoutés en v4 sont `images(scanset_id,image_id)`, pagination réell
 et `images(producer_task_id,image_id)`, recherche par tâche productrice. Le
 SHA-256 et le chemin asset sont déjà indexés par leurs contraintes `UNIQUE`.
 
+## Schéma v8 implémenté
+
+La migration v7→v8 ajoute la table `candidate_pairs` :
+
+```sql
+CREATE TABLE candidate_pairs(
+    candidate_pair_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(candidate_pair_id>0),
+    image_id_a INTEGER NOT NULL REFERENCES images(image_id),
+    image_id_b INTEGER NOT NULL REFERENCES images(image_id),
+    created_at INTEGER NOT NULL CHECK(created_at>=0),
+    CHECK(image_id_a < image_id_b),
+    UNIQUE(image_id_a, image_id_b)
+);
+CREATE INDEX candidate_pairs_image_a_idx ON candidate_pairs(image_id_a);
+CREATE INDEX candidate_pairs_image_b_idx ON candidate_pairs(image_id_b);
+```
+
+**Invariants** :
+- `image_id_a < image_id_b` : ordre canonique garanti par CHECK SQL
+- Self-pairs interdits (impliqué par `image_id_a < image_id_b`)
+- `UNIQUE(image_id_a, image_id_b)` : unicité persistante
+- `created_at` : timestamp Unix secondes, non-négatif
+
+**API** :
+- `lardon3d_project_db_create_candidate_pair()` — INSERT avec canonicalisation
+- `lardon3d_project_db_load_candidate_pair()` — SELECT par ID
+- `lardon3d_project_db_find_candidate_pair()` — SELECT par (image_a, image_b)
+- `lardon3d_project_db_list_candidate_pairs()` — SELECT paginé ORDER BY id
+
+**Notes** :
+- Le score et la source ne sont pas persistés dans cette version
+- La génération est déterministe pour mêmes entrées/configuration
+- L'idempotence est garantie par find avant create
+
+## Schéma v9 implémenté
+
+La migration v8→v9 ajoute la table `candidate_pair_generate_tasks` :
+
+```sql
+CREATE TABLE candidate_pair_generate_tasks(
+    task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+    visual_index_id INTEGER NOT NULL CHECK(visual_index_id>0),
+    after_feature_set_id INTEGER NOT NULL CHECK(after_feature_set_id>=0),
+    top_k INTEGER NOT NULL CHECK(top_k>0 AND top_k<=256),
+    minimum_evidence_count INTEGER NOT NULL CHECK(minimum_evidence_count>=0
+        AND minimum_evidence_count<=1024),
+    scanset_filter INTEGER NOT NULL CHECK(scanset_filter>=0 AND scanset_filter<=2),
+    exclude_same_asset INTEGER NOT NULL CHECK(exclude_same_asset IN (0,1))
+);
+```
+
+**Invariants** :
+- `task_id` référence `tasks(task_id)` avec ON DELETE CASCADE
+- `after_feature_set_id` : curseur de reprise, non-négatif
+- `top_k` : borné entre 1 et 256 (LARDON3D_VISUAL_INDEX_TOP_K_MAX)
+- `minimum_evidence_count` : borné entre 0 et 1024
+- `scanset_filter` : 0=ANY, 1=CURRENT, 2=OTHER
+
+**API** :
+- `lardon3d_project_db_record_candidate_pair_generate_task()` — UPSERT checkpoint
+- `lardon3d_project_db_load_candidate_pair_generate_task()` — SELECT par task_id
+
 ## Ouverture et migrations
 
-Une DB vide reçoit directement le schéma v6 dans une transaction
+Une DB vide reçoit directement le schéma v7 dans une transaction
 `BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
 `task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
 `NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
 artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1,
-v2, v3, v4 et v5 sont migrées séquentiellement vers v6. Une version future est refusée et une DB contenant
+v2, v3, v4, v5 et v6 sont migrées séquentiellement vers v7. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
 interne de migration applique uniquement la chaîne séquentielle connue jusqu'à
-v6 ; une valeur hors de 1..6 est refusée.
+v7 ; une valeur hors de 1..7 est refusée.
 
 Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
 
@@ -307,7 +391,7 @@ UPDATE metadata SET value=4
     WHERE key='schema_version' AND value=3;
 ```
 
-Configuration v6 : `foreign_keys=ON`, `journal_mode=DELETE`,
+Configuration v7 : `foreign_keys=ON`, `journal_mode=DELETE`,
 `synchronous=FULL`, `busy_timeout=5000`. Le mode DELETE convient au propriétaire
 unique actuel, évite les fichiers WAL/SHM durables et conserve la synchronisation
 forte. Le timeout borne l'attente d'un verrou externe à cinq secondes.
@@ -368,7 +452,7 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v6 et migrations v1→v2→v3→v4→v5→v6, identité
+**IMPLEMENTED** — SQLite système, schéma v9 et migrations v1→v2→v3→v4→v5→v6→v7→v8→v9, identité
 projet, transactions tâche+checkpoint, pagination de reprise et artefacts
 génériques.
 
@@ -400,5 +484,5 @@ orphelins et compaction Visual Index. Feature Store et Visual Index v1 sont impl
 Visual Index v1 borne un index à 256 segments de 16 memberships, soit 4096 Feature Sets;
 la couverture de 50 000 Feature Sets nécessitera la compaction ou une évolution v2.
 
-**PLANNED** — migrations v7+, dépendances d'artefacts, graphe géométrique et
+**PLANNED** — dépendances d'artefacts, graphe géométrique et
 reconstruction incrémentale.

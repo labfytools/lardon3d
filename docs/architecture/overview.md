@@ -104,6 +104,13 @@ adaptatifs, réservations opaques et historique borné de métriques.
 
 **Statut :** IMPLEMENTED
 
+### Candidate Pair
+Sous-système de génération et persistance de paires d'images candidates pour
+le matching géométrique. Répond uniquement à « quelles paires valent la
+peine d'être试探ées ? » sans validation géométrique.
+
+**Statut :** IMPLEMENTED
+
 ## Résultats et publication live
 
 Les traitements fonctionnent par séquences adaptatives : lire un lot borné,

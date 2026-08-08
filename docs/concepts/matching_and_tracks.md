@@ -1,5 +1,10 @@
 # Matching & Tracks
 
+> Frontière v1A : les groupes de support ORB/SIFT sont uniquement des preuves
+> locales intra-image. Ils ne comparent pas les espaces Hamming et L2, ne sont
+> pas des matches multivues et ne créent aucun track. Le futur matcher choisira
+> explicitement SIFT ou RootSIFT après génération des paires.
+
 ## Définition
 
 Le **matching** est le processus d'appariement de descripteurs visuels entre paires d'images pour identifier les correspondances géométriques. Un **track** (ou piste) est la séquence de correspondances cohérentes d'un même point 3D à travers plusieurs images.

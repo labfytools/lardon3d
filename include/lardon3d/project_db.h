@@ -9,13 +9,14 @@
 #include <lardon3d/task.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 6,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 9,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
   LARDON3D_PROJECT_DB_ERROR_CAPACITY = 256,
   LARDON3D_PROJECT_DB_RECOVERY_PAGE_MAX = 256,
   LARDON3D_PROJECT_DB_CATALOG_PAGE_MAX = 256,
+  LARDON3D_PROJECT_DB_CANDIDATE_PAIR_PAGE_MAX = 256,
   LARDON3D_PROJECT_DB_SCANSET_NAME_CAPACITY = 256,
   LARDON3D_PROJECT_DB_IMAGE_NAME_CAPACITY = 256,
   LARDON3D_PROJECT_DB_SHA256_SIZE = 32,
@@ -122,6 +123,13 @@ typedef struct {
   int64_t imported_at;
 } Lardon3DProjectDbImage;
 
+typedef struct {
+  uint64_t candidate_pair_id;
+  uint64_t image_id_a;
+  uint64_t image_id_b;
+  int64_t created_at;
+} Lardon3DProjectDbCandidatePair;
+
 typedef enum {
   LARDON3D_PROJECT_DB_IMAGE_REGISTERED = 0,
   LARDON3D_PROJECT_DB_IMAGE_ALREADY_PRESENT
@@ -152,6 +160,10 @@ typedef struct {
   uint32_t feature_count;
   uint32_t descriptor_type;
   uint32_t descriptor_dimension;
+  uint32_t occupied_cells;
+  uint32_t total_cells;
+  double coverage_ratio;
+  double feature_density_per_megapixel;
   bool has_producer_task;
   uint64_t producer_task_id;
   int64_t created_at;
@@ -168,6 +180,46 @@ typedef struct {
   uint32_t fast_threshold;
   unsigned char parameter_fingerprint[32];
 } Lardon3DProjectDbFeatureExtractTask;
+
+typedef struct {
+  uint64_t task_id;
+  uint64_t image_id;
+  char extractor_kind[LARDON3D_PROJECT_DB_KIND_CAPACITY];
+  uint32_t extractor_version;
+  uint32_t max_features;
+  uint32_t octave_layers;
+  double contrast_threshold;
+  double edge_threshold;
+  double sigma;
+  uint32_t grid_rows;
+  uint32_t grid_cols;
+  uint32_t max_features_per_cell;
+  unsigned char parameter_fingerprint[32];
+} Lardon3DProjectDbSiftExtractTask;
+
+typedef struct {
+  uint64_t feature_support_set_id;
+  uint64_t image_id;
+  uint64_t first_feature_set_id;
+  uint64_t second_feature_set_id;
+  double radius_pixels;
+  unsigned char parameter_fingerprint[32];
+  uint32_t group_count;
+  int64_t created_at;
+} Lardon3DProjectDbFeatureSupportSet;
+
+typedef struct {
+  uint64_t feature_support_group_id;
+  uint64_t feature_support_set_id;
+  double x;
+  double y;
+  double distance_pixels;
+  uint32_t support_count;
+  bool first_member_from_second_set;
+  uint32_t first_feature_index;
+  bool has_second_feature;
+  uint32_t second_feature_index;
+} Lardon3DProjectDbFeatureSupportGroup;
 
 typedef enum {
   LARDON3D_DB_VISUAL_INDEX_DURABLE = 0,
@@ -211,6 +263,16 @@ typedef struct {
   uint64_t visual_index_id;
   uint64_t after_feature_set_id;
 } Lardon3DProjectDbVisualIndexUpdateTask;
+
+typedef struct {
+  uint64_t task_id;
+  uint64_t visual_index_id;
+  uint64_t after_feature_set_id;
+  uint32_t top_k;
+  uint32_t minimum_evidence_count;
+  int scanset_filter;
+  bool exclude_same_asset;
+} Lardon3DProjectDbCandidatePairGenerateTask;
 
 Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProjectDb **database,
                                                  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY]);
@@ -260,6 +322,17 @@ Lardon3DProjectDbResult lardon3d_project_db_list_images(Lardon3DProjectDb *datab
                                                         size_t capacity, size_t *count);
 Lardon3DProjectDbResult lardon3d_project_db_count_images(Lardon3DProjectDb *database,
                                                          uint64_t scanset_id, uint64_t *count);
+Lardon3DProjectDbResult lardon3d_project_db_create_candidate_pair(
+    Lardon3DProjectDb *database, uint64_t image_id_a, uint64_t image_id_b, int64_t created_at,
+    Lardon3DProjectDbCandidatePair *pair);
+Lardon3DProjectDbResult lardon3d_project_db_load_candidate_pair(
+    Lardon3DProjectDb *database, uint64_t candidate_pair_id, Lardon3DProjectDbCandidatePair *pair);
+Lardon3DProjectDbResult lardon3d_project_db_find_candidate_pair(
+    Lardon3DProjectDb *database, uint64_t image_id_a, uint64_t image_id_b,
+    Lardon3DProjectDbCandidatePair *pair);
+Lardon3DProjectDbResult lardon3d_project_db_list_candidate_pairs(
+    Lardon3DProjectDb *database, uint64_t after_candidate_pair_id,
+    Lardon3DProjectDbCandidatePair *pairs, size_t capacity, size_t *count);
 Lardon3DProjectDbResult
 lardon3d_project_db_load_image_import(Lardon3DProjectDb *database, uint64_t task_id,
                                       Lardon3DProjectDbImageImport *parameters);
@@ -287,6 +360,13 @@ Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_task(
 Lardon3DProjectDbResult
 lardon3d_project_db_load_feature_extract_task(Lardon3DProjectDb *database, uint64_t task_id,
                                               Lardon3DProjectDbFeatureExtractTask *parameters);
+Lardon3DProjectDbResult lardon3d_project_db_record_sift_extract_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbSiftExtractTask *parameters, int64_t updated_at);
+Lardon3DProjectDbResult lardon3d_project_db_load_sift_extract_task(
+    Lardon3DProjectDb *database, uint64_t task_id, Lardon3DProjectDbSiftExtractTask *parameters);
 Lardon3DProjectDbResult lardon3d_project_db_register_feature_set(
     Lardon3DProjectDb *database, uint64_t image_id, const char *extractor_kind,
     uint32_t extractor_version, const unsigned char parameter_fingerprint[32],
@@ -294,6 +374,15 @@ Lardon3DProjectDbResult lardon3d_project_db_register_feature_set(
     uint32_t descriptor_dimension, const unsigned char asset_sha256[32], const char *asset_path,
     uint64_t asset_size_bytes, Lardon3DProjectDbFeatureDurability durability,
     uint64_t producer_task_id, int64_t created_at, Lardon3DProjectDbFeatureSet *feature_set);
+Lardon3DProjectDbResult lardon3d_project_db_register_feature_set_quality(
+    Lardon3DProjectDb *database, uint64_t image_id, const char *extractor_kind,
+    uint32_t extractor_version, const unsigned char parameter_fingerprint[32],
+    const unsigned char source_image_sha256[32], uint32_t feature_count, uint32_t descriptor_type,
+    uint32_t descriptor_dimension, uint32_t occupied_cells, uint32_t total_cells,
+    double coverage_ratio, double feature_density_per_megapixel,
+    const unsigned char asset_sha256[32], const char *asset_path, uint64_t asset_size_bytes,
+    Lardon3DProjectDbFeatureDurability durability, uint64_t producer_task_id, int64_t created_at,
+    Lardon3DProjectDbFeatureSet *feature_set);
 Lardon3DProjectDbResult
 lardon3d_project_db_find_feature_set(Lardon3DProjectDb *database, uint64_t image_id,
                                      const char *extractor_kind, uint32_t extractor_version,
@@ -306,6 +395,18 @@ Lardon3DProjectDbResult
 lardon3d_project_db_list_feature_sets(Lardon3DProjectDb *database, uint64_t after_feature_set_id,
                                       Lardon3DProjectDbFeatureSet *feature_sets, size_t capacity,
                                       size_t *count);
+Lardon3DProjectDbResult lardon3d_project_db_publish_feature_support(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbFeatureSupportSet *configuration,
+    const Lardon3DProjectDbFeatureSupportGroup *groups, size_t group_count,
+    Lardon3DProjectDbFeatureSupportSet *published);
+Lardon3DProjectDbResult lardon3d_project_db_load_feature_support(
+    Lardon3DProjectDb *database, uint64_t image_id, uint64_t first_feature_set_id,
+    uint64_t second_feature_set_id, const unsigned char parameter_fingerprint[32],
+    Lardon3DProjectDbFeatureSupportSet *support_set);
+Lardon3DProjectDbResult lardon3d_project_db_list_feature_support_groups(
+    Lardon3DProjectDb *database, uint64_t feature_support_set_id,
+    uint64_t after_feature_support_group_id, Lardon3DProjectDbFeatureSupportGroup *groups,
+    size_t capacity, size_t *count);
 Lardon3DProjectDbResult lardon3d_project_db_create_visual_index(
     Lardon3DProjectDb *database, const Lardon3DProjectDbVisualIndex *configuration,
     Lardon3DProjectDbVisualIndex *visual_index);
@@ -330,5 +431,14 @@ Lardon3DProjectDbResult lardon3d_project_db_record_visual_index_update_task(
 Lardon3DProjectDbResult lardon3d_project_db_load_visual_index_update_task(
     Lardon3DProjectDb *database, uint64_t task_id,
     Lardon3DProjectDbVisualIndexUpdateTask *parameters);
+
+Lardon3DProjectDbResult lardon3d_project_db_record_candidate_pair_generate_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbCandidatePairGenerateTask *parameters, int64_t updated_at);
+Lardon3DProjectDbResult lardon3d_project_db_load_candidate_pair_generate_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbCandidatePairGenerateTask *parameters);
 
 #endif

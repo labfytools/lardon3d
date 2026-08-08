@@ -61,9 +61,15 @@ lardon3d_project_checkpoint_image_import_task(Lardon3DAppState *state, const Lar
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbFeatureExtractTask *parameters);
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_sift_extract_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbSiftExtractTask *parameters);
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_visual_index_update_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbVisualIndexUpdateTask *parameters);
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_candidate_pair_generate_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbCandidatePairGenerateTask *parameters);
 Lardon3DProjectDbResult lardon3d_project_list_recoverable(Lardon3DAppState *state,
                                                           const Lardon3DTaskKindRegistry *registry,
                                                           uint64_t after_task_id,

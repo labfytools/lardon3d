@@ -46,12 +46,17 @@ content-addressed. Les états Feature/Matching/Reconstruction restent planifiés
 
 | Aspect | Description |
 |--------|-------------|
-| **Extraction** | ORB OpenCV réel, une image par tâche `features.extract`. |
-| **Métadonnées persistantes** | `FeatureSet` logique et `FeatureAsset` physique content-addressed dans ProjectDb v5. |
-| **Données numériques massives** | Keypoints et descripteurs U8×32 restent hors SQLite dans Feature File v1. |
+| **Extraction** | ORB coarse, SIFT précis et RootSIFT, chacun avec sa tâche durable. |
+| **Métadonnées persistantes** | `FeatureSet` logique et `FeatureAsset` physique content-addressed dans ProjectDb v7. |
+| **Données numériques massives** | ORB U8×32 v1 et SIFT/RootSIFT F32×128 v2 restent hors SQLite. |
 | **Lecture bornée** | Le reader lit au plus 256 features par plage et ne charge pas tout le fichier. |
 
 **Statut :** IMPLEMENTED v1 — extraction, publication atomique, reprise et reader borné.
+
+**Extension v1A :** ORB reste la passe coarse et l'unique entrée du Visual
+Index ORB-LSH. SIFT/RootSIFT F32×128 sont des passes précises indépendantes,
+suivies d'une consolidation spatiale intra-image qui ne mélange jamais les
+descriptors. Candidate Pair Generator et matching restent planifiés.
 
 ---
 
@@ -74,9 +79,13 @@ updates incrémentales et query top-K bornée. Le générateur de paires reste p
 |--------|-------------|
 | **Sources de paires candidates** | (1) Visual index : paires visuellement proches. (2) Proximité temporelle. (3) Scan set commun. (4) Géométrie approximative (si GPS/IMU disponible). |
 | **Matching coûteux limité** | Le nombre de paires soumises au matching géométrique (étape F) doit être borné. Le candidate generator filtre et classe pour ne garder que les paires les plus prometteuses. |
+| **Persistance** | Les paires candidates sont persistées dans la table `candidate_pairs` (Project DB v9). Ordre canonique : `image_id_a < image_id_b`. Self-pairs interdits. Unicité garantie. |
+| **Déterminisme** | Pour mêmes entrées et configuration, le générateur produit les mêmes paires dans le même ordre. |
+| **Idempotence** | L'exécution répétée ne crée pas de doublons. |
 
-**Statut :** PLANNED — le scheduler supporte le tri FIFO mais le
-candidate generator n'existe pas encore.
+**Statut :** IMPLEMENTED v1 — génération single-source depuis Visual Index,
+persistance, canonicalisation et idempotence. La génération batch projet
+et l'intégration tâche durable restent planifiées.
 
 ---
 
@@ -216,9 +225,8 @@ Image Catalog (B) ──► Feature Store (C)
 
 ## Statut du pipeline
 
-Import, Image Catalog, Feature Extraction et Feature Store sont **IMPLEMENTED**.
-Visual Index est implémenté mais reste en validation partielle. Candidate Pair,
-Matching, Tracks et SfM sont **PLANNED**.
+Import, Image Catalog, Feature Extraction, Feature Store, Visual Index et
+Candidate Pair sont **IMPLEMENTED**. Matching, Tracks et SfM sont **PLANNED**.
 
 Ce document décrit la vision architecturale cible du pipeline de
 reconstruction. Les modules listés ici ne sont pas tous implémentés.

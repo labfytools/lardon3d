@@ -237,7 +237,90 @@ static bool run_test(void) {
         LARDON3D_FEATURE_STORE_INVALID_ARGUMENT);
   CHECK(lardon3d_feature_reader_descriptors(reader, 0, descriptors, 257, sizeof(descriptors)) ==
         LARDON3D_FEATURE_STORE_INVALID_ARGUMENT);
+  float wrong_type_descriptor[128];
+  CHECK(lardon3d_feature_reader_descriptors_f32(reader, 0, wrong_type_descriptor, 1,
+                                                sizeof(wrong_type_descriptor)) ==
+        LARDON3D_FEATURE_STORE_INVALID_ARGUMENT);
   lardon3d_feature_reader_close(reader);
+
+  uint32_t sift_count = f.feature_count < 300 ? f.feature_count : 300;
+  Lardon3DExtractedFeatures sift = {.image_width = f.image_width,
+                                    .image_height = f.image_height,
+                                    .feature_count = sift_count};
+  sift.keypoints = calloc(sift_count, sizeof(*sift.keypoints));
+  sift.descriptors = calloc((size_t)sift_count * 128, sizeof(float));
+  sift.descriptor_bytes = (size_t)sift_count * 128 * sizeof(float);
+  CHECK(sift_count > 0 && sift.keypoints && sift.descriptors);
+  memcpy(sift.keypoints, f.keypoints, (size_t)sift_count * sizeof(*sift.keypoints));
+  float *sift_values = (float *)sift.descriptors;
+  for (size_t i = 0; i < (size_t)sift_count * 128; ++i) {
+    sift_values[i] = (float)(i % 129) / 128.0F;
+  }
+  unsigned char sift_fp[32] = {0x53, 0x49, 0x46, 0x54};
+  uint32_t capabilities = LARDON3D_FEATURE_HAS_SCALE |
+                          LARDON3D_FEATURE_HAS_ORIENTATION |
+                          LARDON3D_FEATURE_HAS_RESPONSE | LARDON3D_FEATURE_HAS_OCTAVE;
+  Lardon3DProjectDbFeatureSet sift_set;
+  CHECK(lardon3d_feature_store_publish_v2(
+            &state, ia.image_id, 0, "sift", 1, sift_fp, LARDON3D_FEATURE_DESCRIPTOR_F32, 128,
+            capabilities, &sift, &sift_set) == LARDON3D_FEATURE_STORE_OK);
+  Lardon3DProjectDbFeatureSet future_extractor_set;
+  CHECK(lardon3d_feature_store_publish_v2(
+            &state, ia.image_id, 0, "sift", 2, sift_fp, LARDON3D_FEATURE_DESCRIPTOR_F32, 128,
+            capabilities, &sift, &future_extractor_set) ==
+        LARDON3D_FEATURE_STORE_INVALID_ARGUMENT);
+  CHECK(lardon3d_feature_reader_open(root, &sift_set, &reader, &metadata) ==
+            LARDON3D_FEATURE_STORE_OK &&
+        metadata.format_version == 2 &&
+        metadata.descriptor_type == LARDON3D_FEATURE_DESCRIPTOR_F32 &&
+        metadata.descriptor_dimension == 128 && metadata.descriptor_scalar_size_bytes == 4 &&
+        metadata.capabilities == capabilities);
+  float sift_range[256 * 128];
+  CHECK(lardon3d_feature_reader_descriptors_f32(reader, 0, sift_range, 1,
+                                                128 * sizeof(float)) ==
+            LARDON3D_FEATURE_STORE_OK &&
+        memcmp(sift_range, sift_values, 128 * sizeof(float)) == 0);
+  CHECK(lardon3d_feature_reader_descriptors_u8(reader, 0, descriptors, 1,
+                                               sizeof(descriptors)) ==
+        LARDON3D_FEATURE_STORE_INVALID_ARGUMENT);
+  uint32_t sift_chunk = sift_count < 256 ? sift_count : 256;
+  CHECK(lardon3d_feature_reader_descriptors_f32(reader, sift_count - sift_chunk, sift_range,
+                                                sift_chunk, sizeof(sift_range)) ==
+        LARDON3D_FEATURE_STORE_OK);
+  CHECK(lardon3d_feature_reader_descriptors_f32(reader, sift_count / 2, sift_range, 1,
+                                                128 * sizeof(float)) ==
+        LARDON3D_FEATURE_STORE_OK);
+  CHECK(lardon3d_feature_reader_descriptors_f32(reader, 0, sift_range, 257,
+                                                sizeof(sift_range)) ==
+        LARDON3D_FEATURE_STORE_INVALID_ARGUMENT);
+  lardon3d_feature_reader_close(reader);
+  ((float *)sift.descriptors)[0] = NAN;
+  unsigned char invalid_sift_fp[32] = {0x54};
+  CHECK(lardon3d_feature_store_publish_v2(
+            &state, ia.image_id, 0, "sift", 1, invalid_sift_fp,
+            LARDON3D_FEATURE_DESCRIPTOR_F32, 128, capabilities, &sift, &same) ==
+        LARDON3D_FEATURE_STORE_INVALID_ARGUMENT);
+  ((float *)sift.descriptors)[0] = sift_values[1];
+  Lardon3DExtractedFeatures wrong_sized_sift = sift;
+  wrong_sized_sift.descriptor_bytes -= sizeof(float);
+  invalid_sift_fp[0]++;
+  CHECK(lardon3d_feature_store_publish_v2(
+            &state, ia.image_id, 0, "sift", 1, invalid_sift_fp,
+            LARDON3D_FEATURE_DESCRIPTOR_F32, 128, capabilities, &wrong_sized_sift, &same) ==
+        LARDON3D_FEATURE_STORE_INVALID_ARGUMENT);
+  wrong_sized_sift.descriptor_bytes = sift.descriptor_bytes + sizeof(float);
+  invalid_sift_fp[0]++;
+  CHECK(lardon3d_feature_store_publish_v2(
+            &state, ia.image_id, 0, "sift", 1, invalid_sift_fp,
+            LARDON3D_FEATURE_DESCRIPTOR_F32, 128, capabilities, &wrong_sized_sift, &same) ==
+        LARDON3D_FEATURE_STORE_INVALID_ARGUMENT);
+  ((float *)sift.descriptors)[0] = INFINITY;
+  invalid_sift_fp[0]++;
+  CHECK(lardon3d_feature_store_publish_v2(
+            &state, ia.image_id, 0, "sift", 1, invalid_sift_fp,
+            LARDON3D_FEATURE_DESCRIPTOR_F32, 128, capabilities, &sift, &same) ==
+        LARDON3D_FEATURE_STORE_INVALID_ARGUMENT);
+  ((float *)sift.descriptors)[0] = sift_values[1];
 
   const char *invalid_paths[] = {
       "/assets/features/00/hash",
@@ -297,6 +380,7 @@ static bool run_test(void) {
       .image_width = 128, .image_height = 128, .feature_count = 8192};
   large.keypoints = calloc(large.feature_count, sizeof(*large.keypoints));
   large.descriptors = calloc(large.feature_count, 32);
+  large.descriptor_bytes = (size_t)large.feature_count * 32;
   CHECK(large.keypoints && large.descriptors);
   for (uint32_t i = 0; i < large.feature_count; ++i) {
     large.keypoints[i] =
@@ -316,6 +400,35 @@ static bool run_test(void) {
                                             sizeof(last_descriptor)) == LARDON3D_FEATURE_STORE_OK &&
         last_descriptor[0] == 255);
   lardon3d_feature_reader_close(reader);
+  Lardon3DExtractedFeatures large_float = {
+      .image_width = 128, .image_height = 128, .feature_count = 8192};
+  large_float.keypoints = calloc(large_float.feature_count, sizeof(*large_float.keypoints));
+  large_float.descriptors = calloc((size_t)large_float.feature_count * 128, sizeof(float));
+  large_float.descriptor_bytes = (size_t)large_float.feature_count * 128 * sizeof(float);
+  CHECK(large_float.keypoints && large_float.descriptors);
+  memcpy(large_float.keypoints, large.keypoints,
+         (size_t)large_float.feature_count * sizeof(*large_float.keypoints));
+  unsigned char large_float_fp[32] = {0x4c, 0x41, 0x52, 0x47, 0x45};
+  Lardon3DProjectDbFeatureSet large_float_set;
+  CHECK(lardon3d_feature_store_publish_v2(
+            &state, ia.image_id, 0, "rootsift", 1, large_float_fp,
+            LARDON3D_FEATURE_DESCRIPTOR_F32, 128, capabilities, &large_float,
+            &large_float_set) == LARDON3D_FEATURE_STORE_OK &&
+        lardon3d_feature_reader_open(root, &large_float_set, &reader, &metadata) ==
+            LARDON3D_FEATURE_STORE_OK &&
+        metadata.feature_count == 8192);
+  float large_float_range[256 * 128];
+  CHECK(lardon3d_feature_reader_descriptors_f32(reader, 0, large_float_range, 1,
+                                                sizeof(large_float_range)) ==
+            LARDON3D_FEATURE_STORE_OK &&
+        lardon3d_feature_reader_descriptors_f32(reader, 4096, large_float_range, 256,
+                                                sizeof(large_float_range)) ==
+            LARDON3D_FEATURE_STORE_OK &&
+        lardon3d_feature_reader_descriptors_f32(reader, 8191, large_float_range, 1,
+                                                sizeof(large_float_range)) ==
+            LARDON3D_FEATURE_STORE_OK);
+  lardon3d_feature_reader_close(reader);
+  lardon3d_extracted_features_destroy(&large_float);
   lardon3d_extracted_features_destroy(&large);
   char features_dir[PATH_MAX];
   CHECK(join_path(features_dir, root, "assets/features"));
@@ -356,7 +469,7 @@ static bool run_test(void) {
         count == 1);
   CHECK(lardon3d_project_db_list_feature_sets(db, page[0].feature_set_id, page, 8, &count) ==
             LARDON3D_PROJECT_DB_OK &&
-        count == 6);
+        count == 8);
   for (uint32_t index = 0; index < 2000; ++index) {
     unsigned char metadata_fingerprint[32] = {0};
     metadata_fingerprint[0] = (unsigned char)index;
@@ -412,17 +525,52 @@ static bool run_test(void) {
           restore_file(asset_path, original, original_size));
   }
 
-  unsigned char future_version[4] = {2, 0, 0, 0};
+  unsigned char future_version[4] = {3, 0, 0, 0};
   fd = open(asset_path, O_WRONLY | O_CLOEXEC);
   CHECK(fd >= 0 && pwrite(fd, future_version, sizeof(future_version), 8) == 4 && close(fd) == 0 &&
         expect_reader_result(root, &sa, LARDON3D_FEATURE_STORE_UNSUPPORTED_VERSION) &&
         restore_file(asset_path, original, original_size));
+
+  char sift_asset_path[PATH_MAX];
+  CHECK(join_path(sift_asset_path, root, sift_set.asset.path));
+  fd = open(sift_asset_path, O_RDONLY | O_CLOEXEC);
+  CHECK(fd >= 0 && fstat(fd, &asset_info) == 0 && asset_info.st_size >= 176);
+  size_t sift_original_size = (size_t)asset_info.st_size;
+  unsigned char *sift_original = malloc(sift_original_size);
+  CHECK(sift_original && read(fd, sift_original, sift_original_size) ==
+                             (ssize_t)sift_original_size &&
+        close(fd) == 0);
+  const size_t v2_corrupt_offsets[] = {12, 16, 20, 24, 28, 32, 36, 40, 44,
+                                       48, 56, 64, 72, 104, 136, 152, 160};
+  for (size_t index = 0; index < sizeof(v2_corrupt_offsets) / sizeof(v2_corrupt_offsets[0]);
+       ++index) {
+    size_t offset = v2_corrupt_offsets[index];
+    unsigned char mutated = (unsigned char)(sift_original[offset] ^ 0x5aU);
+    fd = open(sift_asset_path, O_WRONLY | O_CLOEXEC);
+    CHECK(fd >= 0 && pwrite(fd, &mutated, 1, (off_t)offset) == 1 && close(fd) == 0 &&
+          expect_reader_result(root, &sift_set, LARDON3D_FEATURE_STORE_CORRUPT) &&
+          restore_file(sift_asset_path, sift_original, sift_original_size));
+  }
+  fd = open(sift_asset_path, O_WRONLY | O_CLOEXEC);
+  CHECK(fd >= 0 && pwrite(fd, future_version, sizeof(future_version), 8) == 4 && close(fd) == 0 &&
+        expect_reader_result(root, &sift_set, LARDON3D_FEATURE_STORE_UNSUPPORTED_VERSION) &&
+        restore_file(sift_asset_path, sift_original, sift_original_size));
+  uint64_t sift_descriptor_offset = read_u64_le(sift_original + 56);
+  unsigned char nan_le[4] = {0, 0, 0xc0, 0x7f};
+  fd = open(sift_asset_path, O_WRONLY | O_CLOEXEC);
+  CHECK(fd >= 0 && pwrite(fd, nan_le, sizeof(nan_le), (off_t)sift_descriptor_offset) == 4 &&
+        close(fd) == 0 &&
+        expect_reader_result(root, &sift_set, LARDON3D_FEATURE_STORE_CORRUPT) &&
+        expect_reader_result(root, &sa, LARDON3D_FEATURE_STORE_OK) &&
+        restore_file(sift_asset_path, sift_original, sift_original_size));
+  free(sift_original);
 
   fd = open(asset_path, O_WRONLY | O_TRUNC | O_CLOEXEC);
   CHECK(fd >= 0 && write(fd, "bad", 3) == 3 && close(fd) == 0 &&
         expect_reader_result(root, &sa, LARDON3D_FEATURE_STORE_CORRUPT));
   free(original);
   lardon3d_extracted_features_destroy(&f);
+  lardon3d_extracted_features_destroy(&sift);
   lardon3d_extracted_features_destroy(&uf);
   lardon3d_project_db_close(db);
   CHECK(remove_tree(root));

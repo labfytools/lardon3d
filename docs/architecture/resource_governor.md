@@ -1,5 +1,12 @@
 # Resource Governor Lardon3D
 
+## SIFT v1A
+
+Une extraction SIFT réserve séparément un slot CPU et un slot IO, aucun GPU,
+pour une image. L'estimation structurelle conservatrice est environ 1,06 Gio
+(décodage, pyramides, candidats et F32×128), lot 1, pic de record batch zéro.
+OpenCV peut employer son parallélisme interne ; aucun état global n'est modifié.
+
 ## Responsabilité
 
 Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU, IO). Il arbitre les ressources disponibles et calcule les lots adaptatifs pour chaque tâche.
@@ -81,6 +88,12 @@ Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU, IO).
 - `visual_index.update` réserve un thread CPU, un slot I/O, 8 Mio fixes et
   2 Mio par Feature Set, par lots de 1 à 16. Le GPU vaut zéro. `record_batch`
   compte uniquement les memberships commités et conserve la mémoire inconnue à zéro.
+- `candidate_pair.generate` réserve un thread CPU, un slot I/O, 128 Kio fixes
+  et 256 Kio par Feature Set, par lots de 1 à 64. Le GPU vaut zéro.
+  `record_batch` compte le nombre de paires générées par séquence et la durée
+  réelle du lot ; `peak_memory_bytes == 0` signifie « mesure inconnue ».
+  Chaque séquence interroge le Visual Index pour jusqu'à 64 Feature Sets et
+  persiste les paires candidates avec idempotence.
 
 ## Limites actuelles
 

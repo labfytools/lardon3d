@@ -1,5 +1,13 @@
 # Roadmap Lardon3D
 
+## Precision features
+
+- **IMPLEMENTED v1A** : ORB coarse stable, SIFT/RootSIFT OpenCV 5, Feature File
+  v2 F32×128, grille/coverage, tâches récupérables et consolidation intra-image.
+- **PLANNED** : Candidate Pair Generator et matching précis.
+- **PLANNED / BLOCKED** : ALIKED, en attente de provenance modèle et d'un export
+  ONNX reproductible validé contre un oracle upstream.
+
 ## Direction générale
 
 Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la consolidation avant l'ajout de fonctionnalités complexes.
@@ -29,7 +37,7 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 
 ### Phase 3 : Persistance
 - ✅ Fondation versionnée des checkpoints de tâches
-- ✅ Project Database v6 (tâches, catalogue, Feature Store et Visual Index)
+- ✅ Project Database v7 (tâches, catalogue, Feature Store, Visual Index et precision features)
 - ✅ Branchement Project Database au cycle de vie projet et inventaire de reprise
 - ✅ Registry durable des types métier de tâches
 - ✅ Premier type métier reconstructible (`import.images`)
@@ -37,7 +45,7 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 - ✅ ScanSet v1 et Image Catalog persistant v1
 
 ### Phase 4 : Pipeline avancé
-- ✅ Feature Store v1 et extraction ORB persistante
+- ✅ Feature Store v1/v2, ORB, SIFT/RootSIFT et consolidation intra-image
 - ✅ Visual Index v1 segmenté et persistant
 - 📋 Candidate Pair Generator
 - 📋 Matching et vérification géométrique

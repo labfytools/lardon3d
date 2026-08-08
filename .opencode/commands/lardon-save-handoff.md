@@ -1,10 +1,9 @@
 ---
-description: Sauvegarder l'état courant du ticket sans modifier les sources
+description: Sauvegarder un handoff complet sans modifier les sources
 agent: lardon-orchestrator
 subtask: false
 ---
 
-Sans sous-agent ni modification des sources, inspecte `git status`, le diff et
-le handoff existant. Mets `.opencode/work/current_ticket.md` à jour avec les
-rubriques prescrites. Résume les commandes et erreurs ; ne copie ni sources,
-documentation, longs logs, secrets ou données utilisateur.
+Actualise `current_ticket.md`, puis écris `.opencode/work/handoff.md` avec toutes
+les rubriques du modèle. Utilise le statut et un diff ciblé, sans longs logs,
+secrets ou sources complètes. Termine exactement par `NEXT SESSION START HERE`.
