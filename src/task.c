@@ -189,7 +189,21 @@ lardon3d_task_destroy(Lardon3DTask *task)
     if (!task) {
         return;
     }
-    lardon3d_task_request_cancel(task);
+    (void)pthread_mutex_lock(&task->mutex);
+    if (!is_terminal(task->state)) {
+        if (task->executing) {
+            task->cancel_requested = true;
+            copy_text(task->message, sizeof(task->message),
+                "Annulation demandée.");
+            (void)pthread_cond_broadcast(&task->condition);
+        } else {
+            /* Une tâche locale jamais soumise peut être abandonnée sans
+             * publier une fausse annulation métier. */
+            finish_locked(task, TASK_CANCELLED, "Tâche abandonnée.");
+            task->finished_notified = true;
+        }
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
     (void)lardon3d_task_join(task);
     (void)pthread_cond_destroy(&task->condition);
     (void)pthread_mutex_destroy(&task->mutex);

@@ -2,6 +2,7 @@
 #define LARDON3D_APP_STATE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <limits.h>
 #include <lardon3d/hardware_profile.h>
 typedef struct Lardon3DImageCatalog Lardon3DImageCatalog;
@@ -34,6 +35,12 @@ typedef struct {
     Lardon3DHardwareProfile hardware_profile;
     Lardon3DResourceGovernor *resource_governor;
     Lardon3DProjectDb *project_db;
+    size_t recovery_inspected;
+    size_t recovery_resumed;
+    size_t recovery_skipped;
+    size_t recovery_failed;
+    size_t recovery_published_not_durable;
+    bool recovery_queue_full;
 } Lardon3DAppState;
 
 void lardon3d_app_state_init(Lardon3DAppState *state);

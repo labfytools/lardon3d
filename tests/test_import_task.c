@@ -12,6 +12,7 @@
 #include <lardon3d/image_catalog.h>
 #include <lardon3d/import_task.h>
 #include <lardon3d/project.h>
+#include <lardon3d/task_checkpoint.h>
 #include <lardon3d/task_queue.h>
 
 #define CHECK(condition) do { if (!(condition)) { \
@@ -55,7 +56,7 @@ remove_tree(const char *path)
 }
 
 static bool
-setup_runtime(Lardon3DAppState *state)
+setup_runtime(Lardon3DAppState *state, size_t queue_capacity)
 {
     state->hardware_profile = (Lardon3DHardwareProfile) {
         .logical_cpu_count = 1024,
@@ -71,7 +72,8 @@ setup_runtime(Lardon3DAppState *state)
     state->resource_governor = lardon3d_resource_governor_create(
         &state->hardware_profile, &policy);
     state->task_queue = state->resource_governor
-        ? lardon3d_task_queue_create(state->resource_governor, 4) : NULL;
+        ? lardon3d_task_queue_create(state->resource_governor, queue_capacity)
+        : NULL;
     return state->task_queue != NULL;
 }
 
@@ -101,7 +103,7 @@ run_test(void)
     }
     CHECK(setenv("LARDON3D_PROJECTS_ROOT", root, 1) == 0);
     Lardon3DAppState state; lardon3d_app_state_init(&state);
-    CHECK(setup_runtime(&state));
+    CHECK(setup_runtime(&state, 4));
     CHECK(lardon3d_project_create(&state, "Persistent Import"));
 
     CHECK(setenv("LARDON3D_TEST_IMPORT_PAUSE_AFTER_BATCH", "1", 1) == 0);
@@ -113,42 +115,45 @@ run_test(void)
     CHECK(wait_for_state(state.task_queue, task_id, TASK_PAUSED, &runtime));
     CHECK(runtime.progress > 0 && runtime.progress < 100);
     lardon3d_task_queue_destroy(state.task_queue); state.task_queue = NULL;
+    char checkpoint_path[PATH_MAX];
+    CHECK(snprintf(checkpoint_path, sizeof(checkpoint_path),
+        "%s/.lardon3d/checkpoints/%llu.chk", state.project_path,
+        (unsigned long long)task_id) > 0);
+    Lardon3DTaskDurableSnapshot persisted_snapshot;
+    CHECK(lardon3d_task_checkpoint_load(checkpoint_path, &persisted_snapshot,
+        NULL) == LARDON3D_TASK_CHECKPOINT_OK);
+    Lardon3DProjectDbCheckpoint published_not_durable = {
+        .format_version = LARDON3D_TASK_CHECKPOINT_VERSION,
+        .durability = LARDON3D_DB_CHECKPOINT_PUBLISHED_NOT_DURABLE,
+        .updated_at = 1,
+    };
+    CHECK(snprintf(published_not_durable.path,
+        sizeof(published_not_durable.path),
+        ".lardon3d/checkpoints/%llu.chk",
+        (unsigned long long)task_id) > 0);
+    CHECK(lardon3d_project_db_record_image_import_task(state.project_db,
+        &persisted_snapshot, LARDON3D_IMAGE_IMPORT_TASK_KIND,
+        LARDON3D_IMAGE_IMPORT_TASK_KIND_VERSION, &published_not_durable,
+        source, 1) == LARDON3D_PROJECT_DB_OK);
     lardon3d_project_close(&state);
     CHECK(unsetenv("LARDON3D_TEST_IMPORT_PAUSE_AFTER_BATCH") == 0);
     CHECK(unsetenv("LARDON3D_TEST_IMPORT_SKIP_FINISHED_CHECKPOINT") == 0);
 
     state.task_queue = lardon3d_task_queue_create(state.resource_governor, 4);
+    CHECK(setenv("LARDON3D_TEST_IMPORT_PAUSE_AFTER_BATCH", "1", 1) == 0);
     CHECK(state.task_queue && lardon3d_project_open(&state, "Persistent Import"));
-    Lardon3DProjectRecoveryEntry entry; size_t count = 0;
-    const Lardon3DTaskKindRegistry *registry =
-        lardon3d_task_kind_registry_production();
-    CHECK(lardon3d_project_list_recoverable(&state, registry, 0, &entry, 1,
-        &count) == LARDON3D_PROJECT_DB_OK && count == 1);
-    CHECK(entry.task_id == task_id
-        && strcmp(entry.task_kind, LARDON3D_IMAGE_IMPORT_TASK_KIND) == 0
-        && entry.task_kind_version == LARDON3D_IMAGE_IMPORT_TASK_KIND_VERSION);
+    Lardon3DProjectRecoverySummary recovery;
+    CHECK(lardon3d_project_last_recovery_summary(&state, &recovery));
+    CHECK(recovery.inspected == 1 && recovery.resumed == 1
+        && recovery.skipped == 0 && recovery.failed == 0
+        && recovery.published_not_durable == 1);
+    CHECK(wait_for_state(state.task_queue, task_id, TASK_PAUSED, &runtime));
+    CHECK(unsetenv("LARDON3D_TEST_IMPORT_PAUSE_AFTER_BATCH") == 0);
+    CHECK(lardon3d_task_queue_resume(state.task_queue, task_id));
     Lardon3DProjectDbImageImport persisted_parameters;
     CHECK(lardon3d_project_db_load_image_import(state.project_db, task_id,
         &persisted_parameters) == LARDON3D_PROJECT_DB_OK);
     CHECK(strcmp(persisted_parameters.source_path, source) == 0);
-    Lardon3DImageImportReconstructionContext reconstruction = {
-        .project_path = state.project_path,
-        .project_db = state.project_db,
-        .resource_governor = state.resource_governor,
-    };
-    Lardon3DTask *restored = NULL;
-    char unavailable_source[PATH_MAX];
-    CHECK(join_path(unavailable_source, root, "source-unavailable"));
-    CHECK(rename(source, unavailable_source) == 0);
-    CHECK(lardon3d_task_kind_registry_restore(registry, entry.task_kind,
-        entry.task_kind_version, &entry.snapshot, &reconstruction, &restored)
-        == LARDON3D_TASK_KIND_RECONSTRUCTION_FAILED);
-    CHECK(!restored && rename(unavailable_source, source) == 0);
-    CHECK(lardon3d_task_kind_registry_restore(registry, entry.task_kind,
-        entry.task_kind_version, &entry.snapshot, &reconstruction, &restored)
-        == LARDON3D_TASK_KIND_OK);
-    CHECK(restored && lardon3d_task_id(restored) == task_id);
-    CHECK(lardon3d_task_queue_add(state.task_queue, restored, NULL));
     CHECK(wait_for_state(state.task_queue, task_id, TASK_COMPLETED, &runtime));
     CHECK(runtime.progress == 100);
 
@@ -162,8 +167,8 @@ run_test(void)
 
     state.task_queue = lardon3d_task_queue_create(state.resource_governor, 4);
     CHECK(state.task_queue && lardon3d_project_open(&state, "Persistent Import"));
-    CHECK(lardon3d_project_list_recoverable(&state, registry, 0, &entry, 1,
-        &count) == LARDON3D_PROJECT_DB_OK && count == 0);
+    CHECK(lardon3d_project_last_recovery_summary(&state, &recovery)
+        && recovery.inspected == 0 && recovery.resumed == 0);
     lardon3d_task_queue_destroy(state.task_queue); state.task_queue = NULL;
     lardon3d_project_close(&state);
     lardon3d_resource_governor_destroy(state.resource_governor);
@@ -172,4 +177,117 @@ run_test(void)
     return true;
 }
 
-int main(void) { return run_test() ? EXIT_SUCCESS : EXIT_FAILURE; }
+static bool
+test_selective_capacity_one(void)
+{
+    char root[] = "/tmp/lardon3d-import-recovery-window-XXXXXX";
+    CHECK(mkdtemp(root));
+    char missing_source[PATH_MAX], valid_source[PATH_MAX], second_valid_source[PATH_MAX];
+    char unavailable_source[PATH_MAX];
+    CHECK(join_path(missing_source, root, "missing-source"));
+    CHECK(join_path(valid_source, root, "valid-source"));
+    CHECK(join_path(second_valid_source, root, "second-valid-source"));
+    CHECK(join_path(unavailable_source, root, "source-unavailable"));
+    CHECK(mkdir(missing_source, 0700) == 0
+        && mkdir(valid_source, 0700) == 0
+        && mkdir(second_valid_source, 0700) == 0);
+    for (unsigned int index = 0; index < 40; ++index) {
+        char name[32], path[PATH_MAX];
+        CHECK(snprintf(name, sizeof(name), "missing-%03u.jpg", index) > 0);
+        CHECK(join_path(path, missing_source, name)
+            && write_fixture(path, index));
+        CHECK(snprintf(name, sizeof(name), "valid-%03u.jpg", index) > 0);
+        CHECK(join_path(path, valid_source, name)
+            && write_fixture(path, index + 100));
+        CHECK(snprintf(name, sizeof(name), "second-%03u.jpg", index) > 0);
+        CHECK(join_path(path, second_valid_source, name)
+            && write_fixture(path, index + 200));
+    }
+    CHECK(setenv("LARDON3D_PROJECTS_ROOT", root, 1) == 0);
+    Lardon3DAppState state;
+    lardon3d_app_state_init(&state);
+    CHECK(setup_runtime(&state, 4));
+    CHECK(lardon3d_project_create(&state, "Selective Recovery"));
+    CHECK(setenv("LARDON3D_TEST_IMPORT_PAUSE_AFTER_BATCH", "1", 1) == 0);
+    CHECK(setenv("LARDON3D_TEST_IMPORT_SKIP_FINISHED_CHECKPOINT", "1", 1)
+        == 0);
+    uint64_t missing_id = 0, valid_id = 0, second_valid_id = 0;
+    CHECK(lardon3d_project_enqueue_image_import(&state, missing_source,
+        &missing_id));
+    CHECK(lardon3d_project_enqueue_image_import(&state, valid_source,
+        &valid_id));
+    CHECK(lardon3d_project_enqueue_image_import(&state, second_valid_source,
+        &second_valid_id));
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(wait_for_state(state.task_queue, missing_id, TASK_PAUSED, &snapshot));
+    lardon3d_task_queue_destroy(state.task_queue);
+    state.task_queue = NULL;
+    lardon3d_project_close(&state);
+    CHECK(unsetenv("LARDON3D_TEST_IMPORT_PAUSE_AFTER_BATCH") == 0);
+    CHECK(unsetenv("LARDON3D_TEST_IMPORT_SKIP_FINISHED_CHECKPOINT") == 0);
+    CHECK(rename(missing_source, unavailable_source) == 0);
+
+    const Lardon3DResourceEstimate held_estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+        .desired_io_slots = 1,
+        .task_class = LARDON3D_RESOURCE_TASK_IMPORT,
+    };
+    Lardon3DResourceSnapshot available = {
+        .memory_available_bytes = UINT64_MAX,
+        .cpu_load_1m = 0.0,
+    };
+    Lardon3DResourceDecision decision;
+    Lardon3DResourceReservation *held = NULL;
+    CHECK(lardon3d_resource_governor_reserve(state.resource_governor,
+        &available, &held_estimate, &decision, &held));
+    state.task_queue = lardon3d_task_queue_create(state.resource_governor, 1);
+    CHECK(state.task_queue
+        && lardon3d_project_open(&state, "Selective Recovery"));
+    Lardon3DProjectRecoverySummary recovery;
+    CHECK(lardon3d_project_last_recovery_summary(&state, &recovery));
+    CHECK(recovery.inspected == 3 && recovery.resumed == 1
+        && recovery.skipped == 1 && recovery.failed == 1
+        && recovery.queue_full);
+    CHECK(lardon3d_resource_governor_release(state.resource_governor, held));
+    lardon3d_task_queue_resources_changed(state.task_queue);
+    CHECK(wait_for_state(state.task_queue, valid_id, TASK_COMPLETED, &snapshot));
+    CHECK(snapshot.id == valid_id && snapshot.progress == 100);
+    CHECK(!lardon3d_task_queue_get(state.task_queue, missing_id, &snapshot));
+    lardon3d_task_queue_destroy(state.task_queue);
+    state.task_queue = NULL;
+    lardon3d_project_close(&state);
+
+    state.task_queue = lardon3d_task_queue_create(state.resource_governor, 1);
+    CHECK(state.task_queue
+        && lardon3d_project_open(&state, "Selective Recovery"));
+    CHECK(lardon3d_project_last_recovery_summary(&state, &recovery));
+    CHECK(recovery.inspected == 2 && recovery.resumed == 1
+        && recovery.failed == 1);
+    CHECK(wait_for_state(state.task_queue, second_valid_id, TASK_COMPLETED,
+        &snapshot));
+    lardon3d_task_queue_destroy(state.task_queue);
+    state.task_queue = NULL;
+    lardon3d_project_close(&state);
+
+    state.task_queue = lardon3d_task_queue_create(state.resource_governor, 1);
+    CHECK(state.task_queue
+        && lardon3d_project_open(&state, "Selective Recovery"));
+    CHECK(lardon3d_project_last_recovery_summary(&state, &recovery));
+    CHECK(recovery.inspected == 1 && recovery.resumed == 0
+        && recovery.failed == 1);
+    lardon3d_task_queue_destroy(state.task_queue);
+    state.task_queue = NULL;
+    lardon3d_project_close(&state);
+    lardon3d_resource_governor_destroy(state.resource_governor);
+    CHECK(unsetenv("LARDON3D_PROJECTS_ROOT") == 0);
+    CHECK(remove_tree(root));
+    return true;
+}
+
+int main(void)
+{
+    return run_test() && test_selective_capacity_one()
+        ? EXIT_SUCCESS : EXIT_FAILURE;
+}

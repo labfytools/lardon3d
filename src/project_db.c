@@ -565,6 +565,12 @@ lardon3d_project_db_list_recoverable(Lardon3DProjectDb *database, uint64_t after
 {
     if (count) *count = 0;
     if (!database || !tasks || !count || after_task_id > INT64_MAX || capacity == 0 || capacity > LARDON3D_PROJECT_DB_RECOVERY_PAGE_MAX) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+#ifdef LARDON3D_PROJECT_DB_TESTING
+    const char *forced_busy = getenv("LARDON3D_TEST_PROJECT_DB_BUSY_RECOVERY");
+    if (forced_busy && strcmp(forced_busy, "1") == 0) {
+        return LARDON3D_PROJECT_DB_BUSY;
+    }
+#endif
     (void)pthread_mutex_lock(&database->mutex); sqlite3_stmt *statement = NULL; char sql[896];
     (void)snprintf(sql, sizeof(sql), "%s WHERE t.recovery_state=?1 AND c.task_id IS NOT NULL AND t.task_id>?2 ORDER BY t.task_id LIMIT ?3", task_select);
     Lardon3DProjectDbResult result = prepare(database, sql, &statement);

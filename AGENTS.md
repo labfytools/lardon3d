@@ -65,8 +65,8 @@ disponible. Ne jamais annoncer une vérification non exécutée.
 - Gouverneur thread-safe avec estimations, budgets et réservations opaques.
 - Scheduler relié au gouverneur ; réservation obligatoire avant callback.
 - Aucun DAG, aucune priorité, aucun pool de workers.
-- L'import asynchrone utilise encore son worker dédié et n'est pas migré vers
-  le scheduler générique.
+- L'import asynchrone `import.images` utilise le scheduler générique, ses lots
+  adaptatifs et ses checkpoints persistants.
 - Le viewer Vulkan n'est pas commencé.
 
 ## Prochains tickets recommandés

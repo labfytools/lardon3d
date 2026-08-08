@@ -33,7 +33,7 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 - ✅ Branchement Project Database au cycle de vie projet et inventaire de reprise
 - ✅ Registry durable des types métier de tâches
 - ✅ Premier type métier reconstructible (`import.images`)
-- 📋 Resoumission automatique contrôlée des tâches récupérables
+- ✅ Resoumission automatique contrôlée et bornée des tâches récupérables
 - 📋 ScanSet et Image Catalog persistants
 
 ### Phase 4 : Pipeline avancé

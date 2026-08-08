@@ -39,6 +39,15 @@ typedef struct {
     Lardon3DTaskDurableSnapshot snapshot;
 } Lardon3DProjectRecoveryEntry;
 
+typedef struct {
+    size_t inspected;
+    size_t resumed;
+    size_t skipped;
+    size_t failed;
+    size_t published_not_durable;
+    bool queue_full;
+} Lardon3DProjectRecoverySummary;
+
 bool lardon3d_project_create(
     Lardon3DAppState *state,
     const char *name
@@ -67,6 +76,15 @@ Lardon3DProjectDbResult lardon3d_project_list_recoverable(
     Lardon3DProjectRecoveryEntry *entries,
     size_t capacity,
     size_t *count
+);
+Lardon3DProjectDbResult lardon3d_project_resume_recoverable_tasks(
+    Lardon3DAppState *state,
+    const Lardon3DTaskKindRegistry *registry,
+    Lardon3DProjectRecoverySummary *summary
+);
+bool lardon3d_project_last_recovery_summary(
+    const Lardon3DAppState *state,
+    Lardon3DProjectRecoverySummary *summary
 );
 
 #endif

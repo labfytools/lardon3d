@@ -233,7 +233,8 @@ run_test(void)
     Lardon3DTask *duplicate = lardon3d_task_create(
         "Doublon", &estimate, queue_callback, &restored_work);
     CHECK(duplicate && lardon3d_task_assign_id(duplicate, 100));
-    CHECK(!lardon3d_task_queue_add(queue, duplicate, NULL));
+    CHECK(lardon3d_task_queue_try_add_ex(queue, duplicate, NULL)
+        == LARDON3D_TASK_QUEUE_ADD_DUPLICATE_ID);
     lardon3d_task_destroy(duplicate);
     CHECK(wait_terminal(queue, 100, &snapshot));
     CHECK(lardon3d_task_queue_remove(queue, 100));

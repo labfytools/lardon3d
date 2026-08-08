@@ -228,6 +228,35 @@ lardon3d_task_queue_cancel(Lardon3DTaskQueue *queue, uint64_t task_id)
     return node != NULL;
 }
 
+bool
+lardon3d_task_queue_pause(Lardon3DTaskQueue *queue, uint64_t task_id)
+{
+    if (!queue || task_id == 0) return false;
+    (void)pthread_mutex_lock(&queue->mutex);
+    TaskNode *node = queue->all_head;
+    while (node && lardon3d_task_id(node->task) != task_id) {
+        node = node->next_all;
+    }
+    bool paused = node && lardon3d_task_pause(node->task);
+    (void)pthread_mutex_unlock(&queue->mutex);
+    return paused;
+}
+
+bool
+lardon3d_task_queue_resume(Lardon3DTaskQueue *queue, uint64_t task_id)
+{
+    if (!queue || task_id == 0) return false;
+    (void)pthread_mutex_lock(&queue->mutex);
+    TaskNode *node = queue->all_head;
+    while (node && lardon3d_task_id(node->task) != task_id) {
+        node = node->next_all;
+    }
+    bool resumed = node && lardon3d_task_resume(node->task);
+    if (resumed) (void)pthread_cond_broadcast(&queue->not_empty);
+    (void)pthread_mutex_unlock(&queue->mutex);
+    return resumed;
+}
+
 void
 lardon3d_task_queue_resources_changed(Lardon3DTaskQueue *queue)
 {
@@ -357,21 +386,49 @@ lardon3d_task_queue_try_add(
     uint64_t *task_id
 )
 {
+    return lardon3d_task_queue_try_add_ex(queue, task, task_id)
+        == LARDON3D_TASK_QUEUE_ADD_OK;
+}
+
+Lardon3DTaskQueueAddResult
+lardon3d_task_queue_try_add_ex(
+    Lardon3DTaskQueue *queue,
+    Lardon3DTask *task,
+    uint64_t *task_id
+)
+{
     if (!queue || !task) {
-        return false;
+        return LARDON3D_TASK_QUEUE_ADD_ERROR;
     }
     TaskNode *node = calloc(1, sizeof(*node));
     if (!node) {
-        return false;
+        return LARDON3D_TASK_QUEUE_ADD_ERROR;
     }
     (void)pthread_mutex_lock(&queue->mutex);
-    bool accepted = queue->pending_count < queue->capacity
-        && enqueue_locked(queue, node, task, task_id);
+    Lardon3DTaskQueueAddResult result = LARDON3D_TASK_QUEUE_ADD_OK;
+    if (queue->stopping) {
+        result = LARDON3D_TASK_QUEUE_ADD_STOPPING;
+    } else if (queue->pending_count >= queue->capacity) {
+        result = LARDON3D_TASK_QUEUE_ADD_FULL;
+    } else {
+        uint64_t id = lardon3d_task_id(task);
+        for (TaskNode *existing = queue->all_head; existing;
+             existing = existing->next_all) {
+            if (id != 0 && lardon3d_task_id(existing->task) == id) {
+                result = LARDON3D_TASK_QUEUE_ADD_DUPLICATE_ID;
+                break;
+            }
+        }
+        if (result == LARDON3D_TASK_QUEUE_ADD_OK
+            && !enqueue_locked(queue, node, task, task_id)) {
+            result = LARDON3D_TASK_QUEUE_ADD_ERROR;
+        }
+    }
     (void)pthread_mutex_unlock(&queue->mutex);
-    if (!accepted) {
+    if (result != LARDON3D_TASK_QUEUE_ADD_OK) {
         free(node);
     }
-    return accepted;
+    return result;
 }
 
 bool

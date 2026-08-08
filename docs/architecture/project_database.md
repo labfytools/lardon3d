@@ -274,6 +274,18 @@ distingue `LEGACY_UNTYPED`, `UNKNOWN_TASK_KIND` et
 `UNSUPPORTED_TASK_KIND_VERSION`. Aucun reconstructeur métier n'est appelé sous
 le mutex DB. Un upsert ne peut pas changer le couple kind/version d'un task ID.
 
+À l'ouverture, le projet lit des pages de 8 dans l'ordre croissant des task
+IDs. Chaque record est copié hors mutex DB avant reconstruction et enqueue. Une
+fenêtre pleine interrompt le scan sans modifier les tâches restantes. Le résumé
+borné expose `inspected`, `resumed`, `skipped`, `failed`, le nombre de
+checkpoints `PUBLISHED_NOT_DURABLE` repris et la saturation éventuelle.
+
+Les erreurs d'ouverture/migration, de schéma ou d'identité restent fatales.
+Les erreurs propres à une tâche — legacy, kind inconnu/futur, checkpoint
+absent/invalide/futur, source indisponible ou reconstruction — sont non fatales.
+Un `BUSY` après le timeout SQLite arrête le scan sans boucle et laisse le projet
+ouvert.
+
 ## Statut
 
 **IMPLEMENTED** — SQLite système, schéma v3 et migrations v1→v2→v3, identité
@@ -289,8 +301,11 @@ reconstruction explicite testée hors scheduler.
 **IMPLEMENTED** — allocation transactionnelle de task IDs, paramètres
 immuables de `import.images` et reconstruction production explicite.
 
-**NOT_YET_WIRED** — resoumission automatique, autosave
-à toutes les transitions et réconciliation des checkpoints orphelins, ScanSet
+**IMPLEMENTED** — reprise automatique sélective, pagination de 8, ordre par ID,
+fenêtre de queue non bloquante et résumé consultable.
+
+**NOT_YET_WIRED** — autosave à toutes les transitions, retry UI des sources
+indisponibles et réconciliation des checkpoints orphelins, ScanSet
 et catalogue image persistants, Feature Store et Visual Index.
 
 **PLANNED** — migrations v4+, dépendances d'artefacts, graphe géométrique et

@@ -14,8 +14,10 @@
 #include <lardon3d/project.h>
 #include <lardon3d/image_catalog.h>
 #include <lardon3d/image_view.h>
+#include <lardon3d/import_task.h>
 #include <lardon3d/project_db.h>
 #include <lardon3d/task_checkpoint.h>
+#include <lardon3d/task_queue.h>
 
 enum {
     MAX_CREATED_DIRECTORIES = 16,
@@ -42,6 +44,19 @@ set_status(Lardon3DAppState *state, const char *message)
         "%s",
         message
     );
+}
+
+static void
+store_recovery_summary(Lardon3DAppState *state,
+    const Lardon3DProjectRecoverySummary *summary)
+{
+    state->recovery_inspected = summary ? summary->inspected : 0;
+    state->recovery_resumed = summary ? summary->resumed : 0;
+    state->recovery_skipped = summary ? summary->skipped : 0;
+    state->recovery_failed = summary ? summary->failed : 0;
+    state->recovery_published_not_durable = summary
+        ? summary->published_not_durable : 0;
+    state->recovery_queue_full = summary && summary->queue_full;
 }
 
 static void
@@ -475,6 +490,7 @@ lardon3d_project_create(Lardon3DAppState *state, const char *name)
 
     clear_catalog(state);
     state->project_loaded = true;
+    store_recovery_summary(state, NULL);
     state->project_db = database;
     (void)copy_path(
         state->project_name,
@@ -798,12 +814,23 @@ lardon3d_project_open(
         sizeof(state->project_path),
         project_path
     );
-    (void)snprintf(
-        state->status_message,
-        sizeof(state->status_message),
-        "Projet ouvert : %s",
-        state->project_name
-    );
+    store_recovery_summary(state, NULL);
+    if (state->task_queue && state->resource_governor) {
+        Lardon3DProjectRecoverySummary summary;
+        (void)lardon3d_project_resume_recoverable_tasks(state,
+            lardon3d_task_kind_registry_production(), &summary);
+        (void)snprintf(state->status_message, sizeof(state->status_message),
+            "Projet ouvert — %zu tâche(s) reprise(s), %zu ignorée(s), %zu en échec%s.",
+            summary.resumed, summary.skipped, summary.failed,
+            summary.queue_full ? ", fenêtre de reprise saturée" : "");
+    } else {
+        (void)snprintf(
+            state->status_message,
+            sizeof(state->status_message),
+            "Projet ouvert : %s",
+            state->project_name
+        );
+    }
     return true;
 }
 
@@ -826,6 +853,7 @@ lardon3d_project_close(Lardon3DAppState *state)
     state->project_name[0] = '\0';
     state->project_path[0] = '\0';
     state->project_stable_id[0] = '\0';
+    store_recovery_summary(state, NULL);
     set_status(state, "Projet fermé.");
 }
 
@@ -1050,4 +1078,110 @@ lardon3d_project_list_recoverable(
         }
     }
     return LARDON3D_PROJECT_DB_OK;
+}
+
+Lardon3DProjectDbResult
+lardon3d_project_resume_recoverable_tasks(
+    Lardon3DAppState *state,
+    const Lardon3DTaskKindRegistry *registry,
+    Lardon3DProjectRecoverySummary *summary
+)
+{
+    if (summary) memset(summary, 0, sizeof(*summary));
+    if (!state || !state->project_loaded || !state->project_db
+        || !state->task_queue || !state->resource_governor || !registry
+        || !summary) {
+        return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+    }
+    enum { RECOVERY_PAGE_SIZE = 8 };
+    uint64_t cursor = 0;
+    Lardon3DProjectDbResult result = LARDON3D_PROJECT_DB_OK;
+    bool stop = false;
+    do {
+        Lardon3DProjectRecoveryEntry entries[RECOVERY_PAGE_SIZE];
+        size_t count = 0;
+        result = lardon3d_project_list_recoverable(state, registry, cursor,
+            entries, RECOVERY_PAGE_SIZE, &count);
+        if (result != LARDON3D_PROJECT_DB_OK) {
+            ++summary->failed;
+            break;
+        }
+        for (size_t index = 0; index < count; ++index) {
+            Lardon3DProjectRecoveryEntry *entry = &entries[index];
+            cursor = entry->task_id;
+            ++summary->inspected;
+            bool recoverable = entry->status == LARDON3D_PROJECT_RECOVERABLE
+                || entry->status
+                    == LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE;
+            if (!recoverable || entry->snapshot.recovery_state != TASK_PENDING) {
+                ++summary->skipped;
+                continue;
+            }
+            if (entry->status
+                == LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE) {
+                ++summary->published_not_durable;
+            }
+            Lardon3DTaskSnapshot existing;
+            if (lardon3d_task_queue_get(state->task_queue, entry->task_id,
+                    &existing)) {
+                ++summary->skipped;
+                continue;
+            }
+            Lardon3DImageImportReconstructionContext context = {
+                .project_path = state->project_path,
+                .project_db = state->project_db,
+                .resource_governor = state->resource_governor,
+            };
+            Lardon3DTask *task = NULL;
+            Lardon3DTaskKindResult restored =
+                lardon3d_task_kind_registry_restore(registry,
+                    entry->task_kind, entry->task_kind_version,
+                    &entry->snapshot, &context, &task);
+            if (restored != LARDON3D_TASK_KIND_OK || !task) {
+                ++summary->failed;
+                continue;
+            }
+            Lardon3DTaskQueueAddResult added =
+                lardon3d_task_queue_try_add_ex(state->task_queue, task, NULL);
+            if (added == LARDON3D_TASK_QUEUE_ADD_OK) {
+                ++summary->resumed;
+                continue;
+            }
+            lardon3d_task_destroy(task);
+            if (added == LARDON3D_TASK_QUEUE_ADD_DUPLICATE_ID) {
+                ++summary->skipped;
+            } else if (added == LARDON3D_TASK_QUEUE_ADD_FULL) {
+                ++summary->skipped;
+            } else {
+                ++summary->failed;
+            }
+            if (added == LARDON3D_TASK_QUEUE_ADD_FULL
+                || added == LARDON3D_TASK_QUEUE_ADD_STOPPING) {
+                summary->queue_full = added == LARDON3D_TASK_QUEUE_ADD_FULL;
+                stop = true;
+                break;
+            }
+        }
+        if (stop || count < RECOVERY_PAGE_SIZE) break;
+    } while (cursor > 0);
+    store_recovery_summary(state, summary);
+    return result;
+}
+
+bool
+lardon3d_project_last_recovery_summary(
+    const Lardon3DAppState *state,
+    Lardon3DProjectRecoverySummary *summary
+)
+{
+    if (!state || !summary) return false;
+    *summary = (Lardon3DProjectRecoverySummary) {
+        .inspected = state->recovery_inspected,
+        .resumed = state->recovery_resumed,
+        .skipped = state->recovery_skipped,
+        .failed = state->recovery_failed,
+        .published_not_durable = state->recovery_published_not_durable,
+        .queue_full = state->recovery_queue_full,
+    };
+    return true;
 }

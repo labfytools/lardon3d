@@ -41,8 +41,10 @@ migration DB v1→v2, classification recovery et restauration explicite testée.
 le chemin source borné depuis la table dédiée et reconstruit callback et
 userdata sans `AppState *` ancien.
 
-**NOT_YET_WIRED** — autosave complet, resoumission automatique et
-réconciliation orpheline.
+**IMPLEMENTED** — `project_open()` utilise la registry production immutable
+pour restaurer hors mutex DB et transférer chaque tâche acceptée à la queue.
+
+**NOT_YET_WIRED** — autosave complet et réconciliation orpheline.
 
 **PLANNED** — kinds des tâches ScanSet, Image Catalog, Feature Store, Visual
 Index et reconstruction lorsque ces traitements existeront réellement.

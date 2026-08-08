@@ -10,6 +10,7 @@
 
 #include <lardon3d/project.h>
 #include <lardon3d/task_checkpoint.h>
+#include <lardon3d/task_queue.h>
 
 #define CHECK(condition) do { if (!(condition)) { \
     (void)fprintf(stderr, "Échec ligne %d : %s\n", __LINE__, #condition); return false; \
@@ -220,6 +221,33 @@ run_test(void)
     CHECK(lardon3d_project_open(&state, "Projet Cycle"));
     CHECK(lardon3d_project_list_recoverable(&state, &registry, 0, entries, 2, &count) == LARDON3D_PROJECT_DB_OK);
     CHECK(count == 1 && entries[0].status == LARDON3D_PROJECT_RECOVERABLE);
+    Lardon3DHardwareProfile recovery_profile = {
+        .logical_cpu_count = 2,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = UINT64_MAX,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy recovery_policy = {
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 100.0,
+        .io_slot_capacity = 1,
+    };
+    state.resource_governor = lardon3d_resource_governor_create(
+        &recovery_profile, &recovery_policy);
+    state.task_queue = state.resource_governor
+        ? lardon3d_task_queue_create(state.resource_governor, 1) : NULL;
+    CHECK(state.task_queue);
+    Lardon3DProjectRecoverySummary busy_summary;
+    CHECK(setenv("LARDON3D_TEST_PROJECT_DB_BUSY_RECOVERY", "1", 1) == 0);
+    CHECK(lardon3d_project_resume_recoverable_tasks(&state, &registry,
+        &busy_summary) == LARDON3D_PROJECT_DB_BUSY);
+    CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_BUSY_RECOVERY") == 0);
+    CHECK(busy_summary.inspected == 0 && busy_summary.resumed == 0
+        && busy_summary.failed == 1);
+    lardon3d_task_queue_destroy(state.task_queue);
+    state.task_queue = NULL;
+    lardon3d_resource_governor_destroy(state.resource_governor);
+    state.resource_governor = NULL;
     CHECK(strcmp(entries[0].task_kind, "test.persisted") == 0
         && entries[0].task_kind_version == 1);
     Lardon3DTask *restored = NULL;
@@ -275,6 +303,25 @@ run_test(void)
             == LARDON3D_PROJECT_RECOVERY_UNSUPPORTED_TASK_KIND_VERSION);
     CHECK(negative_entries[3].task_id == 6
         && negative_entries[3].status == LARDON3D_PROJECT_RECOVERY_LEGACY_UNTYPED);
+    state.resource_governor = lardon3d_resource_governor_create(
+        &recovery_profile, &recovery_policy);
+    state.task_queue = state.resource_governor
+        ? lardon3d_task_queue_create(state.resource_governor, 4) : NULL;
+    CHECK(state.task_queue);
+    Lardon3DProjectRecoverySummary selective_summary;
+    CHECK(lardon3d_project_resume_recoverable_tasks(&state, &registry,
+        &selective_summary) == LARDON3D_PROJECT_DB_OK);
+    CHECK(selective_summary.inspected == 4 && selective_summary.resumed == 1
+        && selective_summary.skipped == 3 && selective_summary.failed == 0);
+    Lardon3DTaskSnapshot resumed_snapshot;
+    CHECK(lardon3d_task_queue_get(state.task_queue, 1, &resumed_snapshot));
+    CHECK(lardon3d_project_resume_recoverable_tasks(&state, &registry,
+        &selective_summary) == LARDON3D_PROJECT_DB_OK);
+    CHECK(selective_summary.resumed == 0 && selective_summary.skipped == 4);
+    lardon3d_task_queue_destroy(state.task_queue);
+    state.task_queue = NULL;
+    lardon3d_resource_governor_destroy(state.resource_governor);
+    state.resource_governor = NULL;
     lardon3d_task_destroy(legacy);
     lardon3d_task_destroy(future_kind);
     lardon3d_task_destroy(unknown);

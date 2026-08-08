@@ -28,6 +28,7 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
 - **Project Database v3** : identité, tâches typées/checkpoints, paramètres d'import et inventaire d'artefacts SQLite
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
+- **Recovery projet** : reprise automatique sélective et bornée des imports récupérables
 - **Task Queue** : file FIFO avec sélection adaptative et backpressure
 - **Hardware Profile** : détection des capacités matérielles
 - **Resource Snapshot** : capture instantanée des ressources
@@ -40,7 +41,7 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 
 ### Briques prévues (PLANNED)
 
-- Resoumission contrôlée des tâches récupérables à l'ouverture
+- Graphe de dépendances pour ordonner les futures reprises interdépendantes
 - DAG de dépendances
 - Pools de workers multiples (CPU/GPU/IO)
 - Publication live validée

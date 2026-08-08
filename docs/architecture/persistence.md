@@ -172,8 +172,17 @@ checkpoint de fin de lot. Si ce checkpoint ou sa transaction DB échoue, le
 manifeste demeure la frontière idempotente plus récente et un checkpoint
 orphelin peut subsister selon le protocole filesystem puis SQLite.
 
-**NOT_YET_WIRED** — autosave complet, resoumission scheduler et réconciliation
-des fichiers orphelins.
+**IMPLEMENTED** — reprise automatique sélective à l'ouverture : pagination
+bornée, validation checkpoint/kind, reconstruction production et enqueue sans
+claim persistant supplémentaire.
+
+Les records sont parcourus par task ID croissant. Un checkpoint
+`PUBLISHED_NOT_DURABLE` présent, valide et cohérent peut être repris ; le résumé
+conserve cet avertissement jusqu'au prochain checkpoint durable. Une tâche
+terminale n'appartient pas à la requête de reprise.
+
+**NOT_YET_WIRED** — autosave complet, réconciliation des fichiers orphelins et
+retry piloté par l'utilisateur pour les sources indisponibles.
 
 **PLANNED** — catalogue d'artefacts photogrammétriques réels, migrations v4+ et
-reprise globale.
+reprise avec dépendances.

@@ -57,7 +57,7 @@
 
 - Worker unique (pas de pools multiples)
 - Pas de parallélisme inter-tâches
-- Checkpoints isolés disponibles mais pas encore orchestrés au démarrage
+- Reprise automatique limitée aux tâches indépendantes reconstructibles
 
 ## Reprise durable
 
@@ -78,8 +78,17 @@ qu'à la terminaison de cette tentative.
 **IMPLEMENTED** — l'import `import.images` se sauvegarde à chaque fin de lot et
 se reconstruit explicitement avec un userdata neuf lié au projet rouvert.
 
-**NOT_YET_WIRED** — resoumission automatique à l'ouverture et autosave
-générique des autres kinds.
+**IMPLEMENTED** — `project_open()` inventorie par pages de 8, restaure puis
+resoumet automatiquement les tâches production valides. Il retourne après
+l'enqueue et n'attend jamais leur terminaison.
+
+L'ordre d'initialisation production est : profil matériel, governor, queue et
+worker, TUI, puis ouverture DB/projet et reprise synchrone. Une fermeture ne
+peut commencer qu'après le retour de `project_open()`. Le worker peut consommer
+pendant le scan ; chaque tâche exécutée est néanmoins réadmise normalement.
+
+**NOT_YET_WIRED** — autosave générique des autres kinds et reprise ordonnée par
+dépendances.
 
 **PLANNED** — reprise globale du scheduler via la Project Database.
 
@@ -99,7 +108,10 @@ mutex DB pour un kind connu ; elle ne soumet aucune tâche.
 n'entre en collision avec aucune tâche connue. L'import production peut donc
 être reconstruit puis soumis explicitement.
 
-**NOT_YET_WIRED** — aucune resoumission automatique à `project_open()`.
+**IMPLEMENTED** — la resoumission automatique utilise la registry production,
+conserve le task ID et laisse le worker obtenir une nouvelle réservation.
+Kinds inconnus, tâches legacy, checkpoints invalides et sources absentes ne
+bloquent pas l'ouverture.
 
 ## Invariants
 

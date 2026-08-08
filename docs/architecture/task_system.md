@@ -83,7 +83,10 @@ par la tâche restaurée et exécuté après arrêt de son exécution.
 de séquence et les checkpoints génériques ; une tâche restaurée conserve son ID
 lors de sa soumission explicite à la file.
 
-**NOT_YET_WIRED** — autosave générique et resoumission automatique.
+**IMPLEMENTED** — resoumission automatique sélective des tâches production à
+l'ouverture du projet.
+
+**NOT_YET_WIRED** — autosave générique et dépendances entre tâches.
 
 Le chemin de production de l'import ne possède plus de thread ni de drapeau
 d'annulation privés. Son wrapper TUI ne fait qu'enqueue/cancel/observer la
@@ -98,6 +101,11 @@ avant l'appel hors mutex. `join()` attend la fin du callback ; le userdata reste
 donc valide pendant celui-ci et son destructeur n'est appelé qu'ensuite par la
 destruction de la tâche.
 
+Une tâche reconstruite mais refusée avant transfert à la queue est abandonnée
+localement : son userdata est détruit, sans callback terminal ni écriture
+durable d'une fausse annulation. Une annulation explicitement demandée conserve
+le contrat de notification terminale.
+
 La Project Database v3 peut enregistrer transactionnellement un résumé
 `Lardon3DTaskDurableSnapshot` et la référence de son checkpoint. Elle ne stocke
 ni estimation sérialisée complète, ni callback, ni réservation, et ne remplace
@@ -111,6 +119,6 @@ d'inventaire retourne des snapshots durables validés, mais ne peut pas appeler
 ## Limites
 
 - Aucune priorité interne : l'ordre est uniquement FIFO.
-- Pas encore de reprise globale au démarrage du projet.
+- Pas encore de DAG pour ordonner des reprises interdépendantes.
 - Aucune dépendance inter-tâches (pas de DAG).
 - Pas encore de références d'artefacts métier validés.

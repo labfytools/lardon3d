@@ -29,6 +29,8 @@ Le type public réel est l'opaque `Lardon3DTaskQueue`.
 | `lardon3d_task_queue_destroy()` | Arrête, annule, attend puis libère la file |
 | `lardon3d_task_queue_add()` | Ajoute avec backpressure bloquante |
 | `lardon3d_task_queue_try_add()` | Ajoute sans bloquer si une place existe |
+| `lardon3d_task_queue_try_add_ex()` | Distingue succès, saturation, arrêt, collision d'ID et erreur |
+| `lardon3d_task_queue_pause()` / `resume()` | Contrôle une tâche par son ID stable |
 | `lardon3d_task_queue_cancel()` | Demande l'annulation par ID |
 | `lardon3d_task_queue_remove()` | Retire une tâche terminale |
 | `lardon3d_task_queue_snapshot()` | Copie une vue bornée de la file |
@@ -75,14 +77,20 @@ le blocage par la tête de file lorsqu'une tâche ne peut pas démarrer.
 
 ## Statut
 
-**IMPLÉMENTÉ** — file FIFO avec worker unique, sélection adaptative, pause et
-annulation coopératives.
+**IMPLÉMENTÉ** — file FIFO avec worker unique, sélection adaptative, pause,
+annulation coopérative et accueil des tâches restaurées avec ID préassigné.
+
+La reprise projet utilise `try_add_ex()` et ne bloque jamais `project_open()`.
+À saturation, elle arrête sa fenêtre : les tâches non transférées restent
+`PENDING` en DB et seront réévaluées lors d'une ouverture ultérieure. Ce n'est
+pas un second scheduler.
 
 ## Limites
 
 - Worker unique : pas de parallélisme interne.
 - Pas de DAG ni de dépendances inter-tâches.
 - Pas de priorités (FIFO strict).
-- La reprise depuis Project Database n'est pas encore branchée.
+- La reprise ne possède pas encore de DAG ni de déclenchement différé lorsque
+  une place se libère pendant la session courante.
 - Pas de pool de workers CPU/IO/GPU.
 - La backpressure borne les producteurs à la capacité configurée.
