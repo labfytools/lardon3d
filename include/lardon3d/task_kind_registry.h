@@ -14,6 +14,8 @@ typedef struct {
     Lardon3DTaskCallback callback;
     void *userdata;
     Lardon3DTaskUserdataDestroy userdata_destroy;
+    Lardon3DTaskFinishedCallback finished_callback;
+    void *finished_userdata;
 } Lardon3DTaskKindBinding;
 
 typedef bool (*Lardon3DTaskKindReconstruct)(
@@ -61,5 +63,6 @@ Lardon3DTaskKindResult lardon3d_task_kind_registry_restore(
     void *context,
     Lardon3DTask **task
 );
+const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_production(void);
 
 #endif

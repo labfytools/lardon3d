@@ -281,11 +281,25 @@ enqueue_locked(
     uint64_t *task_id
 )
 {
-    if (queue->stopping || queue->next_id == 0
-        || !lardon3d_task_assign_id(task, queue->next_id)) {
+    uint64_t id = lardon3d_task_id(task);
+    if (queue->stopping) {
         return false;
     }
-    uint64_t id = queue->next_id++;
+    for (TaskNode *existing = queue->all_head; existing;
+         existing = existing->next_all) {
+        if (id != 0 && lardon3d_task_id(existing->task) == id) {
+            return false;
+        }
+    }
+    if (id == 0) {
+        if (queue->next_id == 0
+            || !lardon3d_task_assign_id(task, queue->next_id)) {
+            return false;
+        }
+        id = queue->next_id++;
+    } else if (id >= queue->next_id) {
+        queue->next_id = id == UINT64_MAX ? 0 : id + 1;
+    }
     node->task = task;
     if (queue->all_tail) {
         queue->all_tail->next_all = node;

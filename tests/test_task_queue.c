@@ -223,6 +223,21 @@ run_test(void)
 
     queue = lardon3d_task_queue_create(governor, 1024);
     CHECK(queue);
+    OrderLog restored_log = {0};
+    CHECK(pthread_mutex_init(&restored_log.mutex, NULL) == 0);
+    QueueWork restored_work = {.log = &restored_log, .value = 0, .steps = 1};
+    Lardon3DTask *restored = lardon3d_task_create(
+        "Restaurée", &estimate, queue_callback, &restored_work);
+    CHECK(restored && lardon3d_task_assign_id(restored, 100));
+    CHECK(lardon3d_task_queue_add(queue, restored, NULL));
+    Lardon3DTask *duplicate = lardon3d_task_create(
+        "Doublon", &estimate, queue_callback, &restored_work);
+    CHECK(duplicate && lardon3d_task_assign_id(duplicate, 100));
+    CHECK(!lardon3d_task_queue_add(queue, duplicate, NULL));
+    lardon3d_task_destroy(duplicate);
+    CHECK(wait_terminal(queue, 100, &snapshot));
+    CHECK(lardon3d_task_queue_remove(queue, 100));
+    CHECK(pthread_mutex_destroy(&restored_log.mutex) == 0);
     OrderLog control_log = {0};
     CHECK(pthread_mutex_init(&control_log.mutex, NULL) == 0);
     QueueWork slow = {.log = &control_log, .value = 1, .steps = 500};

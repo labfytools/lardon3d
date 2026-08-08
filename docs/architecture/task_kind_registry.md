@@ -26,7 +26,7 @@ fin de l'exécution. Le constructeur métier n'est jamais appelé sous mutex DB.
 
 ## Persistance et legacy
 
-Le checkpoint générique reste en version 1. Project Database v2 conserve le
+Le checkpoint générique reste en version 1. Project Database v3 conserve le
 kind/version ; les lignes migrées depuis v1 restent `NULL/NULL` et sont classées
 `LEGACY_UNTYPED`. Un kind inconnu ou une version non supportée reste inspectable
 mais inexécutable. Aucun type n'est inventé et aucun code n'est sélectionné par
@@ -37,8 +37,12 @@ adresse persistée.
 **IMPLEMENTED** — identité typée immutable, registry statique, lookup,
 migration DB v1→v2, classification recovery et restauration explicite testée.
 
-**NOT_YET_WIRED** — type métier de production, paramètres métier persistants,
-autosave complet, resoumission automatique et réconciliation orpheline.
+**IMPLEMENTED** — le descriptor production `import.images`, version 1, charge
+le chemin source borné depuis la table dédiée et reconstruit callback et
+userdata sans `AppState *` ancien.
+
+**NOT_YET_WIRED** — autosave complet, resoumission automatique et
+réconciliation orpheline.
 
 **PLANNED** — kinds des tâches ScanSet, Image Catalog, Feature Store, Visual
 Index et reconstruction lorsque ces traitements existeront réellement.

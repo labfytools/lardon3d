@@ -35,6 +35,7 @@ task_snapshot(uint64_t id, Lardon3DTaskState saved)
 }
 
 typedef struct { Lardon3DProjectDb *database; bool success; } ThreadContext;
+typedef struct { Lardon3DProjectDb *database; uint64_t id; bool success; } IdThreadContext;
 
 static void *
 read_thread(void *userdata)
@@ -51,13 +52,22 @@ read_thread(void *userdata)
     return NULL;
 }
 
+static void *
+allocate_id_thread(void *userdata)
+{
+    IdThreadContext *context = userdata;
+    context->success = lardon3d_project_db_allocate_task_id(
+        context->database, &context->id) == LARDON3D_PROJECT_DB_OK;
+    return NULL;
+}
+
 static bool
 create_future_database(const char *path)
 {
     sqlite3 *connection = NULL;
     if (sqlite3_open(path, &connection) != SQLITE_OK) return false;
     bool ok = sqlite3_exec(connection, "CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
-        "INSERT INTO metadata VALUES('schema_version',3);", NULL, NULL, NULL) == SQLITE_OK;
+        "INSERT INTO metadata VALUES('schema_version',4);", NULL, NULL, NULL) == SQLITE_OK;
     return sqlite3_close(connection) == SQLITE_OK && ok;
 }
 
@@ -86,6 +96,21 @@ create_v1_database(const char *path)
 }
 
 static bool
+create_v2_database(const char *path)
+{
+    if (!create_v1_database(path)) return false;
+    sqlite3 *connection = NULL;
+    if (sqlite3_open(path, &connection) != SQLITE_OK) return false;
+    bool ok = sqlite3_exec(connection,
+        "ALTER TABLE tasks ADD COLUMN task_kind TEXT;"
+        "ALTER TABLE tasks ADD COLUMN task_kind_version INTEGER CHECK(task_kind_version IS NULL OR task_kind_version>0);"
+        "UPDATE tasks SET task_kind='test.work',task_kind_version=1 WHERE task_id=9;"
+        "UPDATE metadata SET value=2 WHERE key='schema_version'",
+        NULL, NULL, NULL) == SQLITE_OK;
+    return sqlite3_close(connection) == SQLITE_OK && ok;
+}
+
+static bool
 query_integer(const char *path, const char *sql, sqlite3_int64 expected)
 {
     sqlite3 *connection = NULL;
@@ -109,18 +134,22 @@ run_test(void)
     char directory[] = "/tmp/lardon3d-project-db-XXXXXX";
     CHECK(mkdtemp(directory));
     char database_path[512], artifact_path[512], future_path[512], corrupt_path[512];
-    char legacy_path[512], failed_migration_path[512];
+    char legacy_path[512], failed_migration_path[512], v2_path[512];
+    char failed_v3_migration_path[512];
     CHECK(snprintf(database_path, sizeof(database_path), "%s/project.db", directory) > 0);
     CHECK(snprintf(artifact_path, sizeof(artifact_path), "%s/artifact.bin", directory) > 0);
     CHECK(snprintf(future_path, sizeof(future_path), "%s/future.db", directory) > 0);
     CHECK(snprintf(corrupt_path, sizeof(corrupt_path), "%s/corrupt.db", directory) > 0);
     CHECK(snprintf(legacy_path, sizeof(legacy_path), "%s/legacy.db", directory) > 0);
     CHECK(snprintf(failed_migration_path, sizeof(failed_migration_path), "%s/failed-migration.db", directory) > 0);
+    CHECK(snprintf(v2_path, sizeof(v2_path), "%s/v2.db", directory) > 0);
+    CHECK(snprintf(failed_v3_migration_path, sizeof(failed_v3_migration_path),
+        "%s/failed-v3-migration.db", directory) > 0);
 
     char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
     Lardon3DProjectDb *database = NULL;
     CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-    CHECK(database && lardon3d_project_db_schema_version(database) == 2);
+    CHECK(database && lardon3d_project_db_schema_version(database) == 3);
 
     Lardon3DProjectDbProject project = {.created_at = 100, .updated_at = 100};
     (void)snprintf(project.stable_id, sizeof(project.stable_id), "project-0001");
@@ -161,6 +190,9 @@ run_test(void)
         &checkpoint, 202) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
     CHECK(lardon3d_project_db_record_task(database, &running, "test.work", 0,
         &checkpoint, 202) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
+    CHECK(lardon3d_project_db_record_image_import_task(database, &running,
+        "import.images", 1, &checkpoint, "/tmp/source-a", 202)
+        == LARDON3D_PROJECT_DB_CONSTRAINT);
 
     Lardon3DTaskDurableSnapshot completed = task_snapshot(2, TASK_COMPLETED);
     CHECK(lardon3d_project_db_record_task(database, &completed, "test.work", 1, NULL, 202) == LARDON3D_PROJECT_DB_OK);
@@ -171,6 +203,19 @@ run_test(void)
     CHECK(count == 1 && page[0].task_id == 1);
     CHECK(lardon3d_project_db_list_recoverable(database, 1, page, 1, &count) == LARDON3D_PROJECT_DB_OK && count == 0);
     CHECK(lardon3d_project_db_list_recoverable(database, 0, page, LARDON3D_PROJECT_DB_RECOVERY_PAGE_MAX + 1, &count) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
+
+    Lardon3DTaskDurableSnapshot image_import = task_snapshot(5, TASK_PENDING);
+    CHECK(lardon3d_project_db_record_image_import_task(database, &image_import,
+        "import.images", 1, &checkpoint, "/tmp/source-a", 202)
+        == LARDON3D_PROJECT_DB_OK);
+    Lardon3DProjectDbImageImport import_parameters;
+    CHECK(lardon3d_project_db_load_image_import(database, 5,
+        &import_parameters) == LARDON3D_PROJECT_DB_OK);
+    CHECK(import_parameters.task_id == 5
+        && strcmp(import_parameters.source_path, "/tmp/source-a") == 0);
+    CHECK(lardon3d_project_db_record_image_import_task(database, &image_import,
+        "import.images", 1, &checkpoint, "/tmp/source-b", 203)
+        == LARDON3D_PROJECT_DB_CONSTRAINT);
 
     Lardon3DTaskDurableSnapshot rollback_task = task_snapshot(3, TASK_PENDING);
     CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_CHECKPOINT", "1", 1) == 0);
@@ -206,11 +251,21 @@ run_test(void)
     CHECK(pthread_create(&threads[1], NULL, read_thread, &contexts[1]) == 0);
     CHECK(pthread_join(threads[0], NULL) == 0 && pthread_join(threads[1], NULL) == 0);
     CHECK(contexts[0].success && contexts[1].success);
+    IdThreadContext id_contexts[2] = {{.database = database}, {.database = database}};
+    CHECK(pthread_create(&threads[0], NULL, allocate_id_thread,
+        &id_contexts[0]) == 0);
+    CHECK(pthread_create(&threads[1], NULL, allocate_id_thread,
+        &id_contexts[1]) == 0);
+    CHECK(pthread_join(threads[0], NULL) == 0
+        && pthread_join(threads[1], NULL) == 0);
+    CHECK(id_contexts[0].success && id_contexts[1].success
+        && id_contexts[0].id != id_contexts[1].id
+        && id_contexts[0].id > 5 && id_contexts[1].id > 5);
 
     char too_long[LARDON3D_PROJECT_DB_PATH_CAPACITY + 1]; memset(too_long, 'x', sizeof(too_long)); too_long[sizeof(too_long) - 1] = '\0';
     CHECK(lardon3d_project_db_open(too_long, &database, error) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
     lardon3d_project_db_close(contexts[0].database); database = NULL;
-    CHECK(query_integer(database_path, "SELECT value FROM metadata WHERE key='schema_version'", 2));
+    CHECK(query_integer(database_path, "SELECT value FROM metadata WHERE key='schema_version'", 3));
     CHECK(query_integer(database_path, "SELECT count(*) FROM tasks WHERE task_id=1", 1));
     CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
     CHECK(lardon3d_project_db_load_task(database, 1, &task) == LARDON3D_PROJECT_DB_OK);
@@ -225,7 +280,7 @@ run_test(void)
 
     CHECK(create_v1_database(legacy_path));
     CHECK(lardon3d_project_db_open(legacy_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-    CHECK(lardon3d_project_db_schema_version(database) == 2);
+    CHECK(lardon3d_project_db_schema_version(database) == 3);
     CHECK(lardon3d_project_db_get_project(database, &loaded_project) == LARDON3D_PROJECT_DB_OK
         && strcmp(loaded_project.stable_id, "legacy-project") == 0);
     CHECK(lardon3d_project_db_load_task(database, 9, &task) == LARDON3D_PROJECT_DB_OK);
@@ -234,7 +289,7 @@ run_test(void)
     CHECK(lardon3d_project_db_load_artifact(database, "legacy-artifact",
         &loaded_artifact) == LARDON3D_PROJECT_DB_OK);
     lardon3d_project_db_close(database); database = NULL;
-    CHECK(query_integer(legacy_path, "SELECT value FROM metadata WHERE key='schema_version'", 2));
+    CHECK(query_integer(legacy_path, "SELECT value FROM metadata WHERE key='schema_version'", 3));
 
     CHECK(create_v1_database(failed_migration_path));
     CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V2", "1", 1) == 0);
@@ -249,8 +304,33 @@ run_test(void)
         && !task.has_task_kind);
     lardon3d_project_db_close(database); database = NULL;
 
+    CHECK(create_v2_database(v2_path));
+    CHECK(lardon3d_project_db_open(v2_path, &database, error)
+        == LARDON3D_PROJECT_DB_OK);
+    CHECK(lardon3d_project_db_load_task(database, 9, &task)
+        == LARDON3D_PROJECT_DB_OK && task.has_task_kind
+        && strcmp(task.task_kind, "test.work") == 0);
+    CHECK(task.has_checkpoint
+        && strcmp(task.checkpoint.path, "legacy.chk") == 0);
+    CHECK(lardon3d_project_db_load_artifact(database, "legacy-artifact",
+        &loaded_artifact) == LARDON3D_PROJECT_DB_OK);
+    lardon3d_project_db_close(database); database = NULL;
+    CHECK(query_integer(v2_path,
+        "SELECT value FROM metadata WHERE key='schema_version'", 3));
+
+    CHECK(create_v2_database(failed_v3_migration_path));
+    CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V3", "1", 1) == 0);
+    CHECK(lardon3d_project_db_open(failed_v3_migration_path, &database, error)
+        == LARDON3D_PROJECT_DB_IO_ERROR);
+    CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V3") == 0);
+    CHECK(query_integer(failed_v3_migration_path,
+        "SELECT value FROM metadata WHERE key='schema_version'", 2));
+    CHECK(query_integer(failed_v3_migration_path,
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='image_import_tasks'", 0));
+
     CHECK(unlink(artifact_path) == 0); CHECK(unlink(database_path) == 0); CHECK(unlink(future_path) == 0); CHECK(unlink(corrupt_path) == 0);
     CHECK(unlink(legacy_path) == 0); CHECK(unlink(failed_migration_path) == 0);
+    CHECK(unlink(v2_path) == 0); CHECK(unlink(failed_v3_migration_path) == 0);
     CHECK(rmdir(directory) == 0);
     return true;
 }

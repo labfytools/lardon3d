@@ -17,9 +17,10 @@ struct Lardon3DProjectDb {
     char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
 };
 
-static const char schema_v2[] =
+static const char schema_v3[] =
     "CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
-    "INSERT INTO metadata(key,value) VALUES('schema_version',2);"
+    "INSERT INTO metadata(key,value) VALUES('schema_version',3);"
+    "INSERT INTO metadata(key,value) VALUES('next_task_id',1);"
     "CREATE TABLE project(singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
     "stable_id TEXT NOT NULL UNIQUE,name TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);"
     "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY CHECK(task_id>0),name TEXT NOT NULL,"
@@ -38,7 +39,9 @@ static const char schema_v2[] =
     "state INTEGER NOT NULL CHECK(state BETWEEN 0 AND 1),size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),"
     "producer_task_id INTEGER REFERENCES tasks(task_id),created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);"
     "CREATE INDEX artifacts_state_idx ON artifacts(state,artifact_id);"
-    "CREATE INDEX artifacts_producer_idx ON artifacts(producer_task_id);";
+    "CREATE INDEX artifacts_producer_idx ON artifacts(producer_task_id);"
+    "CREATE TABLE image_import_tasks(task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,"
+    "source_path TEXT NOT NULL);";
 
 static void
 copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text)
@@ -127,12 +130,12 @@ migrate(Lardon3DProjectDb *database, unsigned int from_version)
     if (from_version == LARDON3D_PROJECT_DB_SCHEMA_VERSION) {
         return LARDON3D_PROJECT_DB_OK;
     }
-    if (from_version != 0 && from_version != 1) {
+    if (from_version != 0 && from_version != 1 && from_version != 2) {
         return LARDON3D_PROJECT_DB_CORRUPT;
     }
     Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
     if (result == LARDON3D_PROJECT_DB_OK && from_version == 0) {
-        result = execute(database, schema_v2, "create schema v2");
+        result = execute(database, schema_v3, "create schema v3");
     }
     if (result == LARDON3D_PROJECT_DB_OK && from_version == 1) {
         result = execute(database,
@@ -151,6 +154,25 @@ migrate(Lardon3DProjectDb *database, unsigned int from_version)
             result = execute(database,
                 "UPDATE metadata SET value=2 WHERE key='schema_version' AND value=1",
                 "finish schema v2 migration");
+        }
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && from_version != 0) {
+        result = execute(database,
+            "CREATE TABLE image_import_tasks(task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,source_path TEXT NOT NULL);"
+            "INSERT INTO metadata(key,value) VALUES('next_task_id',(SELECT CASE WHEN COALESCE(MAX(task_id),0)>=9223372036854775807 THEN 0 ELSE COALESCE(MAX(task_id),0)+1 END FROM tasks))",
+            "migrate schema v2 to v3");
+#ifdef LARDON3D_PROJECT_DB_TESTING
+        const char *forced_failure = getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V3");
+        if (result == LARDON3D_PROJECT_DB_OK && forced_failure
+            && strcmp(forced_failure, "1") == 0) {
+            result = execute(database, "INSERT INTO missing_test_table VALUES(1)",
+                "forced migration failure");
+        }
+#endif
+        if (result == LARDON3D_PROJECT_DB_OK) {
+            result = execute(database,
+                "UPDATE metadata SET value=3 WHERE key='schema_version' AND value=2",
+                "finish schema v3 migration");
         }
     }
     if (result == LARDON3D_PROJECT_DB_OK) result = execute(database, "COMMIT", "commit migration");
@@ -215,8 +237,8 @@ lardon3d_project_db_open(const char *path, Lardon3DProjectDb **output, char erro
     if (result == LARDON3D_PROJECT_DB_OK) result = read_schema_version(database, &version);
     if (result == LARDON3D_PROJECT_DB_OK) result = migrate(database, version);
     if (result == LARDON3D_PROJECT_DB_OK) {
-        const char *required[] = {"project", "tasks", "checkpoints", "artifacts"};
-        for (size_t index = 0; index < 4 && result == LARDON3D_PROJECT_DB_OK; ++index) {
+        const char *required[] = {"project", "tasks", "checkpoints", "artifacts", "image_import_tasks"};
+        for (size_t index = 0; index < 5 && result == LARDON3D_PROJECT_DB_OK; ++index) {
             if (!table_exists(database->connection, required[index])) {
                 copy_error(database->error, "Schéma v1 incomplet.");
                 result = LARDON3D_PROJECT_DB_CORRUPT;
@@ -348,16 +370,19 @@ valid_durable_task(const Lardon3DTaskDurableSnapshot *snapshot, int64_t updated_
         && updated_at >= 0;
 }
 
-Lardon3DProjectDbResult
-lardon3d_project_db_record_task(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+static Lardon3DProjectDbResult
+record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
     const char *task_kind, uint32_t task_kind_version,
-    const Lardon3DProjectDbCheckpoint *checkpoint, int64_t updated_at)
+    const Lardon3DProjectDbCheckpoint *checkpoint, const char *source_path,
+    int64_t updated_at)
 {
     bool typed = task_kind != NULL;
     if (!database || !valid_durable_task(snapshot, updated_at)
         || (typed && (!lardon3d_task_kind_is_valid(task_kind)
             || task_kind_version == 0))
         || (!typed && task_kind_version != 0)
+        || (source_path && !bounded_text(source_path,
+            LARDON3D_PROJECT_DB_PATH_CAPACITY, false))
         || (checkpoint && !valid_checkpoint(checkpoint))) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
 #ifdef LARDON3D_PROJECT_DB_TESTING
     const char *forced_busy = getenv("LARDON3D_TEST_PROJECT_DB_BUSY_CHECKPOINT");
@@ -402,6 +427,35 @@ lardon3d_project_db_record_task(Lardon3DProjectDb *database, const Lardon3DTaskD
         }
 #endif
     }
+    if (result == LARDON3D_PROJECT_DB_OK) {
+        result = prepare(database,
+            "UPDATE metadata SET value=CASE WHEN ?1=9223372036854775807 THEN 0 ELSE ?1+1 END "
+            "WHERE key='next_task_id' AND value>0 AND value<=?1",
+            &statement);
+        if (result == LARDON3D_PROJECT_DB_OK) {
+            (void)sqlite3_bind_int64(statement, 1,
+                (sqlite3_int64)snapshot->id);
+            result = step_done(database, statement, "advance recorded task id");
+        }
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && source_path) {
+        result = prepare(database,
+            "INSERT INTO image_import_tasks(task_id,source_path) VALUES(?1,?2) "
+            "ON CONFLICT(task_id) DO UPDATE SET source_path=excluded.source_path "
+            "WHERE image_import_tasks.source_path=excluded.source_path",
+            &statement);
+        if (result == LARDON3D_PROJECT_DB_OK) {
+            (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)snapshot->id);
+            (void)sqlite3_bind_text(statement, 2, source_path, -1,
+                SQLITE_TRANSIENT);
+            result = step_done(database, statement, "upsert image import");
+            if (result == LARDON3D_PROJECT_DB_OK
+                && sqlite3_changes(database->connection) != 1) {
+                copy_error(database->error, "Source d'import immuable.");
+                result = LARDON3D_PROJECT_DB_CONSTRAINT;
+            }
+        }
+    }
     if (result == LARDON3D_PROJECT_DB_OK && checkpoint) {
         result = prepare(database, "INSERT INTO checkpoints(task_id,path,format_version,durability,updated_at) VALUES(?1,?2,?3,?4,?5) "
             "ON CONFLICT(task_id) DO UPDATE SET path=excluded.path,format_version=excluded.format_version,durability=excluded.durability,updated_at=excluded.updated_at", &statement);
@@ -415,6 +469,36 @@ lardon3d_project_db_record_task(Lardon3DProjectDb *database, const Lardon3DTaskD
     if (result != LARDON3D_PROJECT_DB_OK) (void)execute(database, "ROLLBACK", "rollback task record");
     (void)pthread_mutex_unlock(&database->mutex);
     return result;
+}
+
+Lardon3DProjectDbResult
+lardon3d_project_db_record_task(
+    Lardon3DProjectDb *database,
+    const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind,
+    uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    int64_t updated_at
+)
+{
+    return record_task_internal(database, snapshot, task_kind,
+        task_kind_version, checkpoint, NULL, updated_at);
+}
+
+Lardon3DProjectDbResult
+lardon3d_project_db_record_image_import_task(
+    Lardon3DProjectDb *database,
+    const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind,
+    uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const char *source_path,
+    int64_t updated_at
+)
+{
+    if (!source_path) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+    return record_task_internal(database, snapshot, task_kind,
+        task_kind_version, checkpoint, source_path, updated_at);
 }
 
 static bool
@@ -491,6 +575,91 @@ lardon3d_project_db_list_recoverable(Lardon3DProjectDb *database, uint64_t after
         (void)sqlite3_finalize(statement);
     }
     (void)pthread_mutex_unlock(&database->mutex); return result;
+}
+
+Lardon3DProjectDbResult
+lardon3d_project_db_allocate_task_id(
+    Lardon3DProjectDb *database,
+    uint64_t *task_id
+)
+{
+    if (task_id) *task_id = 0;
+    if (!database || !task_id) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+    (void)pthread_mutex_lock(&database->mutex);
+    Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE",
+        "begin task id allocation");
+    sqlite3_stmt *statement = NULL;
+    sqlite3_int64 next = 0;
+    if (result == LARDON3D_PROJECT_DB_OK) {
+        result = prepare(database,
+            "SELECT value FROM metadata WHERE key='next_task_id'", &statement);
+    }
+    if (result == LARDON3D_PROJECT_DB_OK) {
+        int code = sqlite3_step(statement);
+        if (code != SQLITE_ROW || sqlite3_column_type(statement, 0) != SQLITE_INTEGER) {
+            result = LARDON3D_PROJECT_DB_CORRUPT;
+        } else {
+            next = sqlite3_column_int64(statement, 0);
+            if (next <= 0 || next > INT64_MAX) result = LARDON3D_PROJECT_DB_CONSTRAINT;
+        }
+        (void)sqlite3_finalize(statement); statement = NULL;
+    }
+    if (result == LARDON3D_PROJECT_DB_OK) {
+        result = prepare(database,
+            "UPDATE metadata SET value=CASE WHEN value=9223372036854775807 THEN 0 ELSE value+1 END WHERE key='next_task_id' AND value=?1",
+            &statement);
+    }
+    if (result == LARDON3D_PROJECT_DB_OK) {
+        (void)sqlite3_bind_int64(statement, 1, next);
+        result = step_done(database, statement, "advance task id");
+        statement = NULL;
+        if (result == LARDON3D_PROJECT_DB_OK
+            && sqlite3_changes(database->connection) != 1) {
+            result = LARDON3D_PROJECT_DB_CONSTRAINT;
+        }
+    }
+    if (result == LARDON3D_PROJECT_DB_OK) {
+        result = execute(database, "COMMIT", "commit task id allocation");
+    }
+    if (result != LARDON3D_PROJECT_DB_OK) {
+        (void)execute(database, "ROLLBACK", "rollback task id allocation");
+    } else {
+        *task_id = (uint64_t)next;
+    }
+    (void)pthread_mutex_unlock(&database->mutex);
+    return result;
+}
+
+Lardon3DProjectDbResult
+lardon3d_project_db_load_image_import(
+    Lardon3DProjectDb *database,
+    uint64_t task_id,
+    Lardon3DProjectDbImageImport *parameters
+)
+{
+    if (!database || !valid_task_id(task_id) || !parameters) {
+        return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+    }
+    memset(parameters, 0, sizeof(*parameters));
+    (void)pthread_mutex_lock(&database->mutex);
+    sqlite3_stmt *statement = NULL;
+    Lardon3DProjectDbResult result = prepare(database,
+        "SELECT source_path FROM image_import_tasks WHERE task_id=?1",
+        &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+        (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+        int code = sqlite3_step(statement);
+        if (code == SQLITE_DONE) result = LARDON3D_PROJECT_DB_NOT_FOUND;
+        else if (code != SQLITE_ROW || !copy_column(statement, 0,
+                parameters->source_path, sizeof(parameters->source_path))) {
+            result = LARDON3D_PROJECT_DB_CORRUPT;
+        } else {
+            parameters->task_id = task_id;
+        }
+        (void)sqlite3_finalize(statement);
+    }
+    (void)pthread_mutex_unlock(&database->mutex);
+    return result;
 }
 
 Lardon3DProjectDbResult

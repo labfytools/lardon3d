@@ -12,11 +12,13 @@
 
 typedef struct {
     int *destroyed;
+    int *finished;
     uint64_t expected_id;
 } TestUserdata;
 
 typedef struct {
     int *destroyed;
+    int *finished;
     bool fail;
 } ReconstructContext;
 
@@ -37,6 +39,17 @@ destroy_userdata(void *userdata)
     }
 }
 
+static void
+finished_callback(const Lardon3DTask *task, void *userdata)
+{
+    TestUserdata *data = userdata;
+    Lardon3DTaskSnapshot terminal;
+    if (data && lardon3d_task_snapshot(task, &terminal)
+        && terminal.state == TASK_COMPLETED && *data->destroyed == 0) {
+        ++*data->finished;
+    }
+}
+
 static bool
 reconstruct(
     const Lardon3DTaskDurableSnapshot *snapshot,
@@ -51,11 +64,14 @@ reconstruct(
     }
     *data = (TestUserdata) {
         .destroyed = settings->destroyed,
+        .finished = settings->finished,
         .expected_id = snapshot->id,
     };
     binding->callback = test_callback;
     binding->userdata = data;
     binding->userdata_destroy = destroy_userdata;
+    binding->finished_callback = finished_callback;
+    binding->finished_userdata = data;
     return !settings->fail;
 }
 
@@ -113,8 +129,11 @@ run_test(void)
     CHECK(!lardon3d_task_kind_registry_init(&registry, duplicate, 2));
     CHECK(lardon3d_task_kind_registry_init(&registry, descriptors, 2));
 
-    int destroyed = 0;
-    ReconstructContext context = {.destroyed = &destroyed};
+    int destroyed = 0, finished = 0;
+    ReconstructContext context = {
+        .destroyed = &destroyed,
+        .finished = &finished,
+    };
     Lardon3DTaskDurableSnapshot durable = snapshot();
     Lardon3DTask *task = NULL;
     CHECK(lardon3d_task_kind_registry_restore(&registry, "test.recovery", 1,
@@ -149,9 +168,10 @@ run_test(void)
     Lardon3DTaskSnapshot runtime;
     CHECK(lardon3d_task_snapshot(task, &runtime)
         && runtime.state == TASK_COMPLETED);
+    CHECK(finished == 1 && destroyed == 0);
     lardon3d_task_destroy(task);
     lardon3d_resource_governor_destroy(governor);
-    CHECK(destroyed == 1);
+    CHECK(destroyed == 1 && finished == 1);
 
     context.fail = true;
     CHECK(lardon3d_task_kind_registry_restore(&registry, "test.recovery", 1,

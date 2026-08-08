@@ -19,6 +19,10 @@ struct Lardon3DTask {
     Lardon3DTaskCallback callback;
     void *userdata;
     Lardon3DTaskUserdataDestroy userdata_destroy;
+    Lardon3DTaskFinishedCallback finished_callback;
+    void *finished_userdata;
+    bool finished_notified;
+    bool finished_callback_running;
     char task_kind[LARDON3D_TASK_KIND_CAPACITY];
     uint32_t task_kind_version;
     Lardon3DResourceEstimate estimate;
@@ -96,6 +100,28 @@ finish_locked(
     (void)clock_gettime(CLOCK_REALTIME, &task->finished_at);
     task->executing = false;
     (void)pthread_cond_broadcast(&task->condition);
+}
+
+static void
+notify_finished(Lardon3DTask *task)
+{
+    Lardon3DTaskFinishedCallback callback = NULL;
+    void *userdata = NULL;
+    (void)pthread_mutex_lock(&task->mutex);
+    if (is_terminal(task->state) && !task->finished_notified) {
+        task->finished_notified = true;
+        callback = task->finished_callback;
+        userdata = task->finished_userdata;
+        task->finished_callback_running = callback != NULL;
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    if (callback) {
+        callback(task, userdata);
+        (void)pthread_mutex_lock(&task->mutex);
+        task->finished_callback_running = false;
+        (void)pthread_cond_broadcast(&task->condition);
+        (void)pthread_mutex_unlock(&task->mutex);
+    }
 }
 
 Lardon3DTask *
@@ -218,6 +244,7 @@ lardon3d_task_start(
                 reservation_copy
             );
         }
+        notify_finished(task);
         return true;
     }
     while (task->pause_requested && !task->cancel_requested) {
@@ -237,6 +264,7 @@ lardon3d_task_start(
                 reservation_copy
             );
         }
+        notify_finished(task);
         return true;
     }
     task->state = TASK_RUNNING;
@@ -257,15 +285,36 @@ lardon3d_task_start(
     } else {
         finish_locked(task, TASK_COMPLETED, "Tâche terminée.");
     }
+    Lardon3DResourceReservation *reservation_copy = task->current_reservation;
+    task->current_reservation = NULL;
     (void)pthread_mutex_unlock(&task->mutex);
-    if (task->current_reservation) {
+    if (reservation_copy) {
         (void)lardon3d_resource_governor_release(
             governor,
-            task->current_reservation
+            reservation_copy
         );
-        task->current_reservation = NULL;
     }
+    notify_finished(task);
     return true;
+}
+
+bool
+lardon3d_task_set_finished_callback(
+    Lardon3DTask *task,
+    Lardon3DTaskFinishedCallback callback,
+    void *userdata
+)
+{
+    if (!task || !callback) return false;
+    (void)pthread_mutex_lock(&task->mutex);
+    bool accepted = !task->executing && task->state == TASK_PENDING
+        && !task->finished_callback;
+    if (accepted) {
+        task->finished_callback = callback;
+        task->finished_userdata = userdata;
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return accepted;
 }
 
 void
@@ -274,16 +323,19 @@ lardon3d_task_request_cancel(Lardon3DTask *task)
     if (!task) {
         return;
     }
+    bool finished_here = false;
     (void)pthread_mutex_lock(&task->mutex);
     if (!is_terminal(task->state)) {
         task->cancel_requested = true;
         copy_text(task->message, sizeof(task->message), "Annulation demandée.");
         if (!task->executing) {
             finish_locked(task, TASK_CANCELLED, "Tâche annulée.");
+            finished_here = true;
         }
         (void)pthread_cond_broadcast(&task->condition);
     }
     (void)pthread_mutex_unlock(&task->mutex);
+    if (finished_here) notify_finished(task);
 }
 
 bool
@@ -332,7 +384,9 @@ lardon3d_task_join(Lardon3DTask *task)
         return false;
     }
     (void)pthread_mutex_lock(&task->mutex);
-    while (task->executing) {
+    while (task->executing
+        || (is_terminal(task->state) && task->finished_callback
+            && (!task->finished_notified || task->finished_callback_running))) {
         (void)pthread_cond_wait(&task->condition, &task->mutex);
     }
     bool terminal = is_terminal(task->state);
@@ -817,6 +871,7 @@ lardon3d_task_reject(Lardon3DTask *task, const char *message)
         );
     }
     (void)pthread_mutex_unlock(&task->mutex);
+    if (accepted) notify_finished(task);
     return accepted;
 }
 

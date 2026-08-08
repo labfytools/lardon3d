@@ -3,8 +3,13 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include <lardon3d/app_state.h>
+#include <lardon3d/task_kind_registry.h>
+
+#define LARDON3D_IMAGE_IMPORT_TASK_KIND "import.images"
+enum { LARDON3D_IMAGE_IMPORT_TASK_KIND_VERSION = 1 };
 
 typedef enum {
     LARDON3D_IMPORT_TASK_IDLE = 0,
@@ -26,10 +31,33 @@ typedef struct {
 
 typedef struct Lardon3DImportTask Lardon3DImportTask;
 
+typedef struct {
+    const char *project_path;
+    Lardon3DProjectDb *project_db;
+    Lardon3DResourceGovernor *resource_governor;
+} Lardon3DImageImportReconstructionContext;
+
+Lardon3DTask *lardon3d_project_create_image_import_task(
+    Lardon3DAppState *state,
+    const char *source_directory,
+    uint64_t *task_id
+);
+bool lardon3d_project_enqueue_image_import(
+    Lardon3DAppState *state,
+    const char *source_directory,
+    uint64_t *task_id
+);
+bool lardon3d_image_import_reconstruct(
+    const Lardon3DTaskDurableSnapshot *snapshot,
+    void *context,
+    Lardon3DTaskKindBinding *binding
+);
+
+/* Compatibilité TUI : handle léger sur une tâche de la queue, sans thread. */
 Lardon3DImportTask *lardon3d_import_task_create(void);
 bool lardon3d_import_task_start(
     Lardon3DImportTask *task,
-    const Lardon3DAppState *state,
+    Lardon3DAppState *state,
     const char *source_directory
 );
 void lardon3d_import_task_request_cancel(Lardon3DImportTask *task);

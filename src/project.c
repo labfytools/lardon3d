@@ -848,10 +848,11 @@ checkpoint_paths(
         && join_path(absolute, PATH_MAX, state->project_path, relative);
 }
 
-Lardon3DProjectTaskCheckpointResult
-lardon3d_project_checkpoint_task(
+static Lardon3DProjectTaskCheckpointResult
+checkpoint_task_internal(
     Lardon3DAppState *state,
-    const Lardon3DTask *task
+    const Lardon3DTask *task,
+    const char *image_import_source
 )
 {
     if (!state || !state->project_loaded || !state->project_db) {
@@ -894,14 +895,13 @@ lardon3d_project_checkpoint_task(
         .updated_at = now.tv_sec,
     };
     (void)snprintf(checkpoint.path, sizeof(checkpoint.path), "%s", relative);
-    Lardon3DProjectDbResult recorded = lardon3d_project_db_record_task(
-        state->project_db,
-        &snapshot,
-        task_kind,
-        task_kind_version,
-        &checkpoint,
-        now.tv_sec
-    );
+    Lardon3DProjectDbResult recorded = image_import_source
+        ? lardon3d_project_db_record_image_import_task(
+            state->project_db, &snapshot, task_kind, task_kind_version,
+            &checkpoint, image_import_source, now.tv_sec)
+        : lardon3d_project_db_record_task(
+            state->project_db, &snapshot, task_kind, task_kind_version,
+            &checkpoint, now.tv_sec);
     if (recorded == LARDON3D_PROJECT_DB_BUSY) {
         return LARDON3D_PROJECT_TASK_CHECKPOINT_DB_BUSY;
     }
@@ -911,6 +911,28 @@ lardon3d_project_checkpoint_task(
     return saved == LARDON3D_TASK_CHECKPOINT_OK
         ? LARDON3D_PROJECT_TASK_CHECKPOINT_OK
         : LARDON3D_PROJECT_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE;
+}
+
+Lardon3DProjectTaskCheckpointResult
+lardon3d_project_checkpoint_task(
+    Lardon3DAppState *state,
+    const Lardon3DTask *task
+)
+{
+    return checkpoint_task_internal(state, task, NULL);
+}
+
+Lardon3DProjectTaskCheckpointResult
+lardon3d_project_checkpoint_image_import_task(
+    Lardon3DAppState *state,
+    const Lardon3DTask *task,
+    const char *source_path
+)
+{
+    if (!source_path || !source_path[0]) {
+        return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
+    }
+    return checkpoint_task_internal(state, task, source_path);
 }
 
 static bool

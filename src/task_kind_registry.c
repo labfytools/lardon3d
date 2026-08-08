@@ -112,5 +112,12 @@ lardon3d_task_kind_registry_restore(
         }
         return LARDON3D_TASK_KIND_RESTORE_FAILED;
     }
+    if (binding.finished_callback
+        && !lardon3d_task_set_finished_callback(*task,
+            binding.finished_callback, binding.finished_userdata)) {
+        lardon3d_task_destroy(*task);
+        *task = NULL;
+        return LARDON3D_TASK_KIND_RESTORE_FAILED;
+    }
     return LARDON3D_TASK_KIND_OK;
 }

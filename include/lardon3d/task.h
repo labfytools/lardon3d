@@ -25,6 +25,10 @@ typedef enum {
 typedef struct Lardon3DTask Lardon3DTask;
 typedef bool (*Lardon3DTaskCallback)(Lardon3DTask *task, void *userdata);
 typedef void (*Lardon3DTaskUserdataDestroy)(void *userdata);
+typedef void (*Lardon3DTaskFinishedCallback)(
+    const Lardon3DTask *task,
+    void *userdata
+);
 
 typedef struct {
     uint64_t id;
@@ -119,6 +123,13 @@ bool lardon3d_task_kind(
     const Lardon3DTask *task,
     char task_kind[LARDON3D_TASK_KIND_CAPACITY],
     uint32_t *task_kind_version
+);
+/* Appelé au plus une fois, hors mutex de tâche et après libération de la
+ * réservation terminale. Le userdata de tâche reste vivant jusqu'au retour. */
+bool lardon3d_task_set_finished_callback(
+    Lardon3DTask *task,
+    Lardon3DTaskFinishedCallback callback,
+    void *userdata
 );
 uint64_t lardon3d_task_id(const Lardon3DTask *task);
 bool lardon3d_task_assign_id(Lardon3DTask *task, uint64_t id);

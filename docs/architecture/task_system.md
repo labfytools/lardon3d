@@ -79,10 +79,26 @@ adaptatives et fondation de checkpoints persistants isolés.
 callback et le userdata d'un kind connu. Le destructeur du userdata est détenu
 par la tâche restaurée et exécuté après arrêt de son exécution.
 
-**NOT_YET_WIRED** — sauvegarde automatique, types métier de production et
-restauration par la file.
+**IMPLEMENTED** — `import.images` utilise la pause, l'annulation, les ruptures
+de séquence et les checkpoints génériques ; une tâche restaurée conserve son ID
+lors de sa soumission explicite à la file.
 
-La Project Database v2 peut enregistrer transactionnellement un résumé
+**NOT_YET_WIRED** — autosave générique et resoumission automatique.
+
+Le chemin de production de l'import ne possède plus de thread ni de drapeau
+d'annulation privés. Son wrapper TUI ne fait qu'enqueue/cancel/observer la
+tâche générique. Chaque callback traite un lot borné, checkpoint hors mutex de
+tâche, puis effectue une rupture de séquence afin d'obtenir un nouveau contrat
+et une nouvelle réservation.
+
+Le callback terminal optionnel est notifié exactement une fois pour
+`COMPLETED`, `FAILED` ou `CANCELLED`, jamais pour une pause ou une rupture de
+séquence. L'état est fixé sous mutex, puis la réservation terminale est libérée
+avant l'appel hors mutex. `join()` attend la fin du callback ; le userdata reste
+donc valide pendant celui-ci et son destructeur n'est appelé qu'ensuite par la
+destruction de la tâche.
+
+La Project Database v3 peut enregistrer transactionnellement un résumé
 `Lardon3DTaskDurableSnapshot` et la référence de son checkpoint. Elle ne stocke
 ni estimation sérialisée complète, ni callback, ni réservation, et ne remplace
 pas la validation du fichier checkpoint avant `task_restore()`.

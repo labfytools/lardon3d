@@ -26,6 +26,26 @@ typedef struct {
     Lardon3DResourceReservation *reservation;
 } StartContext;
 
+typedef struct {
+    Lardon3DResourceGovernor *governor;
+    size_t count;
+    Lardon3DTaskState state;
+    bool snapshot_succeeded;
+    bool reservation_released;
+} FinishProbe;
+
+static void
+finished_callback(const Lardon3DTask *task, void *userdata)
+{
+    FinishProbe *probe = userdata;
+    Lardon3DTaskSnapshot snapshot;
+    ++probe->count;
+    probe->snapshot_succeeded = lardon3d_task_snapshot(task, &snapshot);
+    if (probe->snapshot_succeeded) probe->state = snapshot.state;
+    probe->reservation_released = !probe->governor
+        || lardon3d_resource_governor_reservation_count(probe->governor) == 0;
+}
+
 static void
 short_pause(long nanoseconds)
 {
@@ -128,6 +148,9 @@ run_test(void)
         &work
     );
     CHECK(task);
+    FinishProbe completed_probe = {.governor = governor};
+    CHECK(lardon3d_task_set_finished_callback(task, finished_callback,
+        &completed_probe));
     CHECK(lardon3d_task_assign_id(task, 42));
     CHECK(!lardon3d_task_assign_id(task, 43));
     CHECK(lardon3d_task_id(task) == 42);
@@ -146,6 +169,7 @@ run_test(void)
     CHECK(wait_for_state(task, TASK_RUNNING));
     CHECK(lardon3d_task_pause(task));
     CHECK(wait_for_state(task, TASK_PAUSED));
+    CHECK(completed_probe.count == 0);
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     unsigned int paused_progress = snapshot.progress;
     short_pause(5000000);
@@ -163,12 +187,18 @@ run_test(void)
     CHECK(snapshot.progress == 100);
     CHECK(snapshot.started_at.tv_sec > 0);
     CHECK(snapshot.finished_at.tv_sec > 0);
+    CHECK(completed_probe.count == 1 && completed_probe.snapshot_succeeded
+        && completed_probe.state == TASK_COMPLETED
+        && completed_probe.reservation_released);
     CHECK(!lardon3d_task_start(task, NULL, NULL));
     lardon3d_task_destroy(task);
 
     work = (Work) {.steps = 1000, .pause_ns = 1000000};
     task = lardon3d_task_create("Annulation", &estimate, work_callback, &work);
     CHECK(task);
+    FinishProbe cancelled_probe = {.governor = governor};
+    CHECK(lardon3d_task_set_finished_callback(task, finished_callback,
+        &cancelled_probe));
     CHECK(lardon3d_resource_governor_reserve(
         governor, &resource_snapshot, &estimate, &decision, &reservation
     ));
@@ -182,10 +212,16 @@ run_test(void)
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_CANCELLED);
     CHECK(snapshot.progress < 100);
+    CHECK(cancelled_probe.count == 1 && cancelled_probe.snapshot_succeeded
+        && cancelled_probe.state == TASK_CANCELLED
+        && cancelled_probe.reservation_released);
     lardon3d_task_destroy(task);
 
     task = lardon3d_task_create("Échec", &estimate, failure_callback, NULL);
     CHECK(task);
+    FinishProbe failed_probe = {.governor = governor};
+    CHECK(lardon3d_task_set_finished_callback(task, finished_callback,
+        &failed_probe));
     CHECK(lardon3d_resource_governor_reserve(
         governor, &resource_snapshot, &estimate, &decision, &reservation
     ));
@@ -194,6 +230,9 @@ run_test(void)
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_FAILED);
     CHECK(strcmp(snapshot.message, "Erreur contrôlée.") == 0);
+    CHECK(failed_probe.count == 1 && failed_probe.snapshot_succeeded
+        && failed_probe.state == TASK_FAILED
+        && failed_probe.reservation_released);
     lardon3d_task_destroy(task);
 
     task = lardon3d_task_create(
@@ -206,8 +245,14 @@ run_test(void)
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_PAUSED);
     CHECK(lardon3d_task_resume(task));
+    FinishProbe pending_cancel_probe = {0};
+    CHECK(lardon3d_task_set_finished_callback(task, finished_callback,
+        &pending_cancel_probe));
+    lardon3d_task_request_cancel(task);
     lardon3d_task_request_cancel(task);
     CHECK(lardon3d_task_join(task));
+    CHECK(pending_cancel_probe.count == 1
+        && pending_cancel_probe.state == TASK_CANCELLED);
     lardon3d_task_destroy(task);
     lardon3d_resource_governor_destroy(governor);
     return true;

@@ -189,6 +189,9 @@ run_test(void)
     CHECK(create_file(path, "one"));
     CHECK(join_path(path, valid_source, "two.PNG"));
     CHECK(create_file(path, "two-two"));
+    CHECK(create_directory(originals));
+    CHECK(join_path(path, originals, "one.jpg"));
+    CHECK(create_file(path, "one"));
 
     Lardon3DAppState state;
     lardon3d_app_state_init(&state);
@@ -201,10 +204,14 @@ run_test(void)
     ) > 0);
 
     Lardon3DImportResult result;
-    CHECK(lardon3d_import_directory(&state, valid_source, &result));
+    bool batch_complete = false;
+    CHECK(lardon3d_import_directory_batch(&state, valid_source, 8, &result,
+        NULL, &batch_complete) == LARDON3D_IMPORT_SUCCEEDED);
+    CHECK(batch_complete);
     CHECK(result.admissible_found == 2);
-    CHECK(result.copied == 2);
-    CHECK(result.already_present == 0);
+    CHECK(result.newly_manifested == 2);
+    CHECK(result.copied == 1);
+    CHECK(result.already_present == 1);
 
     char manifest[PATH_MAX];
     CHECK(join_path(manifest, images, "manifest.tsv"));
@@ -233,6 +240,18 @@ run_test(void)
     CHECK(read_file(manifest, manifest_after, sizeof(manifest_after)));
     CHECK(strcmp(manifest_before, manifest_after) == 0);
     CHECK(!has_manifest_temporary(images));
+
+    char collision_source[PATH_MAX], collision_destination[PATH_MAX];
+    CHECK(join_path(collision_source, valid_source, "collision.jpg"));
+    CHECK(join_path(collision_destination, originals, "collision.jpg"));
+    CHECK(create_file(collision_source, "new-source"));
+    CHECK(create_file(collision_destination, "different-existing-output"));
+    batch_complete = false;
+    CHECK(lardon3d_import_directory_batch(&state, valid_source, 8, &result,
+        NULL, &batch_complete) == LARDON3D_IMPORT_FAILED);
+    CHECK(read_file(manifest, manifest_after, sizeof(manifest_after)));
+    CHECK(strcmp(manifest_before, manifest_after) == 0);
+    CHECK(unlink(collision_source) == 0 && unlink(collision_destination) == 0);
 
     CHECK(join_path(path, valid_source, "three.tiff"));
     CHECK(create_file(path, "three-three-three"));

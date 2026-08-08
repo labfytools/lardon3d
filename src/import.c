@@ -450,6 +450,16 @@ manifest_commit(Lardon3DAppState *state, ManifestWriter *writer)
     return success;
 }
 
+static ssize_t
+read_retry(int descriptor, void *buffer, size_t capacity)
+{
+    ssize_t count;
+    do {
+        count = read(descriptor, buffer, capacity);
+    } while (count < 0 && errno == EINTR);
+    return count;
+}
+
 static int
 copy_image(
     const char *source_path,
@@ -479,8 +489,38 @@ copy_image(
         mode
     );
     if (destination < 0) {
-        (void)close(source);
-        return errno == EEXIST ? 0 : -1;
+        if (errno != EEXIST) {
+            (void)close(source);
+            return COPY_IMAGE_ERROR;
+        }
+        destination = open(destination_path, O_RDONLY | O_NOFOLLOW);
+        struct stat destination_info;
+        bool identical = destination >= 0
+            && fstat(destination, &destination_info) == 0
+            && S_ISREG(destination_info.st_mode)
+            && destination_info.st_size == source_info.st_size;
+        char source_buffer[64 * 1024], destination_buffer[64 * 1024];
+        while (identical) {
+            ssize_t source_count = read_retry(source, source_buffer,
+                sizeof(source_buffer));
+            ssize_t destination_count = read_retry(destination,
+                destination_buffer, sizeof(destination_buffer));
+            if (source_count < 0 || destination_count < 0
+                || source_count != destination_count) {
+                identical = false;
+                break;
+            }
+            if (source_count == 0) break;
+            if (memcmp(source_buffer, destination_buffer,
+                    (size_t)source_count) != 0) {
+                identical = false;
+            }
+        }
+        if (destination >= 0 && close(destination) != 0) identical = false;
+        if (close(source) != 0) identical = false;
+        if (!identical) return COPY_IMAGE_ERROR;
+        *destination_size = source_info.st_size;
+        return COPY_IMAGE_COLLISION;
     }
 
     bool success = true;
@@ -720,6 +760,147 @@ cancel_import(
     publish_progress(control, result, processed, state->status_message);
     free(candidates->items);
     return LARDON3D_IMPORT_CANCELLED;
+}
+
+Lardon3DImportOutcome
+lardon3d_import_directory_batch(
+    Lardon3DAppState *state,
+    const char *source_directory,
+    size_t batch_size,
+    Lardon3DImportResult *result,
+    const Lardon3DImportControl *control,
+    bool *complete
+)
+{
+    if (complete) *complete = false;
+    if (!state || !result || !complete || batch_size == 0
+        || !state->project_loaded) {
+        return LARDON3D_IMPORT_FAILED;
+    }
+    *result = (Lardon3DImportResult) {0};
+    char trimmed_source[PATH_MAX], absolute_source[PATH_MAX];
+    if (!trim_source_path(state, source_directory, trimmed_source)
+        || !resolve_source_path(state, trimmed_source, absolute_source)
+        || has_forbidden_manifest_character(absolute_source)) {
+        return LARDON3D_IMPORT_FAILED;
+    }
+    struct stat source_info;
+    if (lstat(absolute_source, &source_info) != 0
+        || !S_ISDIR(source_info.st_mode)) {
+        set_status(state, "Erreur : dossier source absent ou invalide.");
+        return LARDON3D_IMPORT_FAILED;
+    }
+    char images_path[PATH_MAX], originals_path[PATH_MAX];
+    if (!join_path(images_path, state->project_path, "images")
+        || !join_path(originals_path, images_path, "originals")
+        || !ensure_originals_directory(state, images_path, originals_path)) {
+        return LARDON3D_IMPORT_FAILED;
+    }
+    ManifestWriter manifest;
+    if (!manifest_begin(state, images_path, &manifest)) {
+        return LARDON3D_IMPORT_FAILED;
+    }
+    DIR *directory = opendir(absolute_source);
+    if (!directory) {
+        manifest_abort(&manifest);
+        set_status(state, "Erreur : impossible d'ouvrir le dossier source.");
+        return LARDON3D_IMPORT_FAILED;
+    }
+    CandidateList created = {0};
+    bool success = true, cancelled = false;
+    size_t added = 0;
+    for (;;) {
+        if (import_is_cancelled(control)) {
+            cancelled = true;
+            break;
+        }
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (!entry) {
+            if (errno != 0) success = false;
+            break;
+        }
+        if (strcmp(entry->d_name, ".") == 0
+            || strcmp(entry->d_name, "..") == 0) continue;
+        char source_path[PATH_MAX], destination_path[PATH_MAX];
+        struct stat item_info;
+        if (!join_path(source_path, absolute_source, entry->d_name)) {
+            success = false; break;
+        }
+        if (lstat(source_path, &item_info) != 0
+            || !S_ISREG(item_info.st_mode)
+            || !has_supported_extension(entry->d_name)) {
+            ++result->ignored;
+            continue;
+        }
+        ++result->admissible_found;
+        if (has_forbidden_manifest_character(entry->d_name)) {
+            success = false; break;
+        }
+        int listed = manifest_contains(&manifest, entry->d_name);
+        if (listed < 0) {
+            success = false; break;
+        }
+        if (listed > 0) {
+            ++result->processed;
+            ++result->already_present;
+            continue;
+        }
+        if (added >= batch_size
+            || !join_path(destination_path, originals_path, entry->d_name)) {
+            if (added < batch_size) success = false;
+            continue;
+        }
+        off_t size = 0;
+        int copied = copy_image(source_path, destination_path, &size, control);
+        if (copied == COPY_IMAGE_CANCELLED) {
+            cancelled = true; break;
+        }
+        if (copied == COPY_IMAGE_ERROR) {
+            success = false; break;
+        }
+        if (copied == COPY_IMAGE_COLLISION) {
+            struct stat destination_info;
+            if (lstat(destination_path, &destination_info) != 0
+                || !S_ISREG(destination_info.st_mode)) {
+                success = false; break;
+            }
+            size = destination_info.st_size;
+            ++result->already_present;
+        } else {
+            if (!candidate_list_append(state, &created, entry->d_name)) {
+                (void)unlink(destination_path);
+                success = false; break;
+            }
+            created.items[created.count - 1].created = true;
+            ++result->copied;
+        }
+        if (!manifest_append(&manifest, entry->d_name, size, source_path)) {
+            success = false; break;
+        }
+        ++added;
+        ++result->newly_manifested;
+        ++result->processed;
+    }
+    if (closedir(directory) != 0) success = false;
+    if (!success || cancelled) {
+        manifest_abort(&manifest);
+        (void)rollback_created_files(&created, originals_path);
+        free(created.items);
+        set_status(state, cancelled ? "Import annulé à une frontière sûre."
+                                    : "Erreur pendant un lot d'import.");
+        return cancelled ? LARDON3D_IMPORT_CANCELLED : LARDON3D_IMPORT_FAILED;
+    }
+    if (!manifest_commit(state, &manifest)) {
+        (void)rollback_created_files(&created, originals_path);
+        free(created.items);
+        return LARDON3D_IMPORT_FAILED;
+    }
+    free(created.items);
+    *complete = result->processed == result->admissible_found;
+    set_status(state, *complete ? "Import terminé." : "Lot d'import publié.");
+    publish_progress(control, result, result->processed, state->status_message);
+    return LARDON3D_IMPORT_SUCCEEDED;
 }
 
 Lardon3DImportOutcome

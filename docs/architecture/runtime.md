@@ -75,8 +75,11 @@ qu'à la terminaison de cette tentative.
 
 **IMPLEMENTED** — snapshot, codec v1 et restauration isolée.
 
-**NOT_YET_WIRED** — sauvegarde périodique, reconstruction métier des tâches et
-resoumission automatique.
+**IMPLEMENTED** — l'import `import.images` se sauvegarde à chaque fin de lot et
+se reconstruit explicitement avec un userdata neuf lié au projet rouvert.
+
+**NOT_YET_WIRED** — resoumission automatique à l'ouverture et autosave
+générique des autres kinds.
 
 **PLANNED** — reprise globale du scheduler via la Project Database.
 
@@ -92,9 +95,11 @@ fermeture finale du projet.
 **IMPLEMENTED** — la registry reconstruit explicitement callback/userdata hors
 mutex DB pour un kind connu ; elle ne soumet aucune tâche.
 
-**NOT_YET_WIRED** — aucun type métier de production ni resoumission
-automatique. Une future resoumission devra aussi permettre à la queue de
-conserver l'identifiant stable restauré au lieu d'en assigner un nouveau.
+**IMPLEMENTED** — la queue accepte un identifiant restauré préassigné s'il
+n'entre en collision avec aucune tâche connue. L'import production peut donc
+être reconstruit puis soumis explicitement.
+
+**NOT_YET_WIRED** — aucune resoumission automatique à `project_open()`.
 
 ## Invariants
 

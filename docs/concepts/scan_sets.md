@@ -9,6 +9,8 @@ Une **acquisition** désigne le processus physique de capture des images : posit
 ## Statut
 
 **PLANNED** — Concept définissant la structure d'entrée, pas encore implémenté comme module distinct. Actuellement, le module `import` et `image_catalog` gèrent les images individuellement sans regroupement en scan sets.
+Le chemin source durable de `import.images` ne constitue donc pas encore une
+identité de ScanSet.
 
 ## Place dans le pipeline
 

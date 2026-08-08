@@ -180,6 +180,8 @@ record_batch_locked(
     metrics[head] = (Lardon3DBatchMetrics) {
         .batch_size = batch_size,
         .duration_ns = duration_ns,
+        /* Zéro est le marqueur persistant « mesure inconnue ». La boucle
+         * d'adaptation ignore explicitement ces échantillons. */
         .peak_memory_bytes = peak_memory_bytes,
     };
     head = (head + 1) % LARDON3D_BATCH_METRICS_CAPACITY;

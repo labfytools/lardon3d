@@ -38,7 +38,9 @@ pas encore structuré avec UUID et vague d'import.
 | **État de traitement** | Pour chaque image, le catalogue maintient un état : RAW, FEATURES_EXTRACTED, MATCHED, REGISTERED. Cet état est lu par le pipeline pour décider de l'étape suivante. |
 
 **Statut :** PARTIELLEMENT IMPLEMENTÉ — le `image_catalog` gère les
-métadonnées de base mais pas encore l'état de traitement ni l'UUID.
+métadonnées de base mais pas encore l'état de traitement ni l'UUID. L'import
+`import.images` est exécuté par le scheduler générique, copie au plus 32 images
+par lot et reprend à partir du manifeste publié sans dupliquer une entrée.
 
 ---
 

@@ -54,6 +54,12 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_task(
     Lardon3DAppState *state,
     const Lardon3DTask *task
 );
+Lardon3DProjectTaskCheckpointResult
+lardon3d_project_checkpoint_image_import_task(
+    Lardon3DAppState *state,
+    const Lardon3DTask *task,
+    const char *source_path
+);
 Lardon3DProjectDbResult lardon3d_project_list_recoverable(
     Lardon3DAppState *state,
     const Lardon3DTaskKindRegistry *registry,

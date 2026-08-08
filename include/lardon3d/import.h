@@ -8,6 +8,8 @@
 
 typedef struct {
     size_t admissible_found;
+    size_t processed;
+    size_t newly_manifested;
     size_t copied;
     size_t already_present;
     size_t ignored;
@@ -51,6 +53,15 @@ Lardon3DImportOutcome lardon3d_import_directory_controlled(
     const char *source_directory,
     Lardon3DImportResult *result,
     const Lardon3DImportControl *control
+);
+
+Lardon3DImportOutcome lardon3d_import_directory_batch(
+    Lardon3DAppState *state,
+    const char *source_directory,
+    size_t batch_size,
+    Lardon3DImportResult *result,
+    const Lardon3DImportControl *control,
+    bool *complete
 );
 
 #endif

@@ -9,7 +9,7 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 ### Phase 1 : Fondations
 - ✅ TUI modulaire avec ncursesw
 - ✅ Gestion persistante des projets
-- ✅ Import asynchrone et annulable
+- ✅ Import d'images migré vers le scheduler générique, borné et reconstructible
 - ✅ Catalogue d'images et vues
 - ✅ Moteur de tâches avec pause/reprise, annulation, checkpoints
 - ✅ File FIFO avec sélection adaptative et backpressure
@@ -29,10 +29,11 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 
 ### Phase 3 : Persistance
 - ✅ Fondation versionnée des checkpoints de tâches
-- ✅ Project Database v2 (SQLite, migration v1 et tâches typées)
+- ✅ Project Database v3 (paramètres d'import et allocation durable des task IDs)
 - ✅ Branchement Project Database au cycle de vie projet et inventaire de reprise
 - ✅ Registry durable des types métier de tâches
-- 📋 Premier type métier reconstructible et resoumission des tâches récupérables
+- ✅ Premier type métier reconstructible (`import.images`)
+- 📋 Resoumission automatique contrôlée des tâches récupérables
 - 📋 ScanSet et Image Catalog persistants
 
 ### Phase 4 : Pipeline avancé

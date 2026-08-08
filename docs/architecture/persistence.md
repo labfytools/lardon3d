@@ -108,7 +108,7 @@ par le `time_t` local avant conversion. Le format reste donc lisible entre
 plateformes uniquement pour les valeurs communes à leurs domaines `size_t` et
 `time_t`.
 
-## Project Database v2
+## Project Database v3
 
 SQLite contient l'état logique interrogable et les références aux fichiers ;
 les checkpoints et artefacts volumineux restent externes. L'enregistrement du
@@ -136,7 +136,7 @@ non durable, absent, invalide, version inconnue et erreur d'I/O. Aucune réparat
 ou suppression silencieuse n'est effectuée.
 
 Le format checkpoint reste en version 1 et ne contient pas de `task_kind`. Le
-schéma SQLite v2 conserve `task_kind` et `task_kind_version` dans le résumé
+schéma SQLite v3 conserve `task_kind` et `task_kind_version` dans le résumé
 logique interrogable. La migration v1→v2 laisse ces deux colonnes à `NULL` : une
 tâche legacy reste inspectable mais ne peut pas être reconstruite ou resoumise.
 Un kind inconnu ou une version non supportée est diagnostiqué sans exécuter de
@@ -147,7 +147,7 @@ code.
 **IMPLEMENTED** — modèle durable, codec v1, lecture validée, publication
 atomique et restauration sûre d'une tâche isolée.
 
-**IMPLEMENTED** — Project Database v2 pour identité, résumés de tâches typées,
+**IMPLEMENTED** — Project Database v3 pour identité, résumés de tâches typées,
 références checkpoint et artefacts génériques.
 
 **IMPLEMENTED** — registry statique bornée et reconstruction explicite avec
@@ -156,8 +156,24 @@ ownership du userdata.
 **IMPLEMENTED** — API projet de sauvegarde fichier+DB et inventaire validé au
 redémarrage.
 
-**NOT_YET_WIRED** — autosave complet, premier type métier de production,
-resoumission scheduler et réconciliation des fichiers orphelins.
+**IMPLEMENTED** — `import.images` persiste son chemin source absolu dans une
+table dédiée et publie un checkpoint après chaque lot validé. Le manifeste
+publié rend le rejeu idempotent à la granularité d'une image.
 
-**PLANNED** — catalogue d'artefacts photogrammétriques réels, migrations v3+ et
+Le chemin source absolu est l'intention durable v1 : il doit rester accessible
+après redémarrage et un projet déplacé ne rend pas une source externe portable.
+Une source absente ou devenue non-répertoire fait échouer proprement la
+reconstruction. Une image déjà inscrite au manifeste est un résultat validé et
+les modifications ultérieures de sa source sont ignorées. Pour la fenêtre
+« copie publiée, manifeste non publié », la reprise n'adopte la destination
+orpheline qu'après comparaison octet par octet avec la source ; une collision
+différente est une erreur. Le manifeste est republié atomiquement avant le
+checkpoint de fin de lot. Si ce checkpoint ou sa transaction DB échoue, le
+manifeste demeure la frontière idempotente plus récente et un checkpoint
+orphelin peut subsister selon le protocole filesystem puis SQLite.
+
+**NOT_YET_WIRED** — autosave complet, resoumission scheduler et réconciliation
+des fichiers orphelins.
+
+**PLANNED** — catalogue d'artefacts photogrammétriques réels, migrations v4+ et
 reprise globale.

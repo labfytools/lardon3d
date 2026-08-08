@@ -21,13 +21,12 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 ### Briques implémentées (IMPLEMENTED)
 
 - **Project** : cycle de vie persistant, identité stable et Project Database ouverte
-- **Import** : import asynchrone et annulable d'images
-- **Import Task** : wrapper asynchrone avec états et progression
+- **Import** : premier task kind de production, exécuté par la file générique en lots bornés et reprenables
 - **Image Catalog** : indexage des métadonnées d'images
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v2** : identité, tâches typées/checkpoints et inventaire d'artefacts SQLite
+- **Project Database v3** : identité, tâches typées/checkpoints, paramètres d'import et inventaire d'artefacts SQLite
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
 - **Task Queue** : file FIFO avec sélection adaptative et backpressure
 - **Hardware Profile** : détection des capacités matérielles
@@ -41,7 +40,7 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 
 ### Briques prévues (PLANNED)
 
-- Premiers types métier reconstructibles et resoumission contrôlée des tâches récupérables
+- Resoumission contrôlée des tâches récupérables à l'ouverture
 - DAG de dépendances
 - Pools de workers multiples (CPU/GPU/IO)
 - Publication live validée

@@ -9,7 +9,7 @@
 #include <lardon3d/task.h>
 
 enum {
-    LARDON3D_PROJECT_DB_SCHEMA_VERSION = 2,
+    LARDON3D_PROJECT_DB_SCHEMA_VERSION = 3,
     LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
     LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
     LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -83,6 +83,11 @@ typedef struct {
     int64_t updated_at;
 } Lardon3DProjectDbArtifact;
 
+typedef struct {
+    uint64_t task_id;
+    char source_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+} Lardon3DProjectDbImageImport;
+
 Lardon3DProjectDbResult lardon3d_project_db_open(
     const char *path,
     Lardon3DProjectDb **database,
@@ -110,6 +115,24 @@ Lardon3DProjectDbResult lardon3d_project_db_record_task(
     uint32_t task_kind_version,
     const Lardon3DProjectDbCheckpoint *checkpoint,
     int64_t updated_at
+);
+Lardon3DProjectDbResult lardon3d_project_db_record_image_import_task(
+    Lardon3DProjectDb *database,
+    const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind,
+    uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const char *source_path,
+    int64_t updated_at
+);
+Lardon3DProjectDbResult lardon3d_project_db_load_image_import(
+    Lardon3DProjectDb *database,
+    uint64_t task_id,
+    Lardon3DProjectDbImageImport *parameters
+);
+Lardon3DProjectDbResult lardon3d_project_db_allocate_task_id(
+    Lardon3DProjectDb *database,
+    uint64_t *task_id
 );
 Lardon3DProjectDbResult lardon3d_project_db_load_task(
     Lardon3DProjectDb *database,

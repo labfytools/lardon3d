@@ -430,6 +430,26 @@ run_adaptive_batch_test(void)
     CHECK(decision.kind == LARDON3D_RESOURCE_START);
     CHECK(decision.batch_size == 8);
 
+    /* Une mesure mémoire à zéro est inconnue : elle ne doit pas réduire un
+     * lot, même si sa taille et sa durée sont enregistrées. */
+    CHECK(lardon3d_resource_governor_record_batch(
+        governor,
+        LARDON3D_RESOURCE_TASK_IO,
+        8,
+        1000000000ULL,
+        0
+    ));
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot,
+        &(Lardon3DResourceRequest) {
+            .memory_bytes_per_item = MEBIBYTES(100),
+            .minimum_batch_size = 2,
+            .preferred_batch_size = 8,
+            .requested_cpu_threads = 4,
+            .io_intensive = true,
+        }, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_START);
+    CHECK(decision.batch_size == 8);
+
     /* Test 2: Record batch matching estimate → no reduction */
     CHECK(lardon3d_resource_governor_record_batch(
         governor,
