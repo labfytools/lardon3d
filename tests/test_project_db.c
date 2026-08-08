@@ -16,6 +16,24 @@
 } } while (0)
 
 Lardon3DProjectDbResult lardon3d_project_db_test_orphan_checkpoint(Lardon3DProjectDb *database);
+Lardon3DProjectDbResult lardon3d_project_db_test_delete_catalog_identity(
+    Lardon3DProjectDb *database, uint64_t scanset_id, uint64_t image_id,
+    uint64_t asset_id);
+
+static void
+asset_path_for_hash(const unsigned char hash[LARDON3D_PROJECT_DB_SHA256_SIZE],
+    char path[LARDON3D_PROJECT_DB_PATH_CAPACITY])
+{
+    static const char digits[] = "0123456789abcdef";
+    char hex[65];
+    for (size_t index = 0; index < sizeof(hex) / 2; ++index) {
+        hex[index * 2] = digits[hash[index] >> 4];
+        hex[index * 2 + 1] = digits[hash[index] & 15U];
+    }
+    hex[64] = '\0';
+    (void)snprintf(path, LARDON3D_PROJECT_DB_PATH_CAPACITY,
+        "assets/images/%c%c/%s", hex[0], hex[1], hex);
+}
 
 static Lardon3DTaskDurableSnapshot
 task_snapshot(uint64_t id, Lardon3DTaskState saved)
@@ -67,7 +85,7 @@ create_future_database(const char *path)
     sqlite3 *connection = NULL;
     if (sqlite3_open(path, &connection) != SQLITE_OK) return false;
     bool ok = sqlite3_exec(connection, "CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
-        "INSERT INTO metadata VALUES('schema_version',4);", NULL, NULL, NULL) == SQLITE_OK;
+        "INSERT INTO metadata VALUES('schema_version',5);", NULL, NULL, NULL) == SQLITE_OK;
     return sqlite3_close(connection) == SQLITE_OK && ok;
 }
 
@@ -111,6 +129,21 @@ create_v2_database(const char *path)
 }
 
 static bool
+create_v3_database(const char *path)
+{
+    if (!create_v2_database(path)) return false;
+    sqlite3 *connection = NULL;
+    if (sqlite3_open(path, &connection) != SQLITE_OK) return false;
+    bool ok = sqlite3_exec(connection,
+        "CREATE TABLE image_import_tasks(task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,source_path TEXT NOT NULL);"
+        "INSERT INTO image_import_tasks VALUES(9,'/legacy/source');"
+        "INSERT INTO metadata(key,value) VALUES('next_task_id',10);"
+        "UPDATE metadata SET value=3 WHERE key='schema_version'",
+        NULL, NULL, NULL) == SQLITE_OK;
+    return sqlite3_close(connection) == SQLITE_OK && ok;
+}
+
+static bool
 query_integer(const char *path, const char *sql, sqlite3_int64 expected)
 {
     sqlite3 *connection = NULL;
@@ -135,7 +168,7 @@ run_test(void)
     CHECK(mkdtemp(directory));
     char database_path[512], artifact_path[512], future_path[512], corrupt_path[512];
     char legacy_path[512], failed_migration_path[512], v2_path[512];
-    char failed_v3_migration_path[512];
+    char failed_v3_migration_path[512], v3_path[512], failed_v4_path[512];
     CHECK(snprintf(database_path, sizeof(database_path), "%s/project.db", directory) > 0);
     CHECK(snprintf(artifact_path, sizeof(artifact_path), "%s/artifact.bin", directory) > 0);
     CHECK(snprintf(future_path, sizeof(future_path), "%s/future.db", directory) > 0);
@@ -145,11 +178,47 @@ run_test(void)
     CHECK(snprintf(v2_path, sizeof(v2_path), "%s/v2.db", directory) > 0);
     CHECK(snprintf(failed_v3_migration_path, sizeof(failed_v3_migration_path),
         "%s/failed-v3-migration.db", directory) > 0);
+    CHECK(snprintf(v3_path, sizeof(v3_path), "%s/v3.db", directory) > 0);
+    CHECK(snprintf(failed_v4_path, sizeof(failed_v4_path),
+        "%s/failed-v4-migration.db", directory) > 0);
 
     char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
     Lardon3DProjectDb *database = NULL;
     CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-    CHECK(database && lardon3d_project_db_schema_version(database) == 3);
+    CHECK(database && lardon3d_project_db_schema_version(database) == 4);
+    bool legacy_pending = true;
+    CHECK(lardon3d_project_db_legacy_catalog_pending(database, &legacy_pending)
+        == LARDON3D_PROJECT_DB_OK && !legacy_pending);
+
+    Lardon3DProjectDbScanSet deleted_scanset;
+    CHECK(lardon3d_project_db_create_scanset(database, "Deleted identity",
+        &deleted_scanset) == LARDON3D_PROJECT_DB_OK);
+    unsigned char first_hash[LARDON3D_PROJECT_DB_SHA256_SIZE] = {1};
+    char first_asset_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+    asset_path_for_hash(first_hash, first_asset_path);
+    Lardon3DProjectDbImageRegisterStatus identity_status;
+    Lardon3DProjectDbImage deleted_image;
+    CHECK(lardon3d_project_db_register_image(database,
+        deleted_scanset.scanset_id, first_hash, first_asset_path, 1,
+        "deleted.jpg", "/source/deleted.jpg", 0, 1, &identity_status,
+        &deleted_image) == LARDON3D_PROJECT_DB_OK);
+    CHECK(lardon3d_project_db_test_delete_catalog_identity(database,
+        deleted_scanset.scanset_id, deleted_image.image_id,
+        deleted_image.asset_id) == LARDON3D_PROJECT_DB_OK);
+    Lardon3DProjectDbScanSet replacement_scanset;
+    CHECK(lardon3d_project_db_create_scanset(database, "Replacement identity",
+        &replacement_scanset) == LARDON3D_PROJECT_DB_OK
+        && replacement_scanset.scanset_id > deleted_scanset.scanset_id);
+    unsigned char second_hash[LARDON3D_PROJECT_DB_SHA256_SIZE] = {2};
+    char second_asset_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+    asset_path_for_hash(second_hash, second_asset_path);
+    Lardon3DProjectDbImage replacement_image;
+    CHECK(lardon3d_project_db_register_image(database,
+        replacement_scanset.scanset_id, second_hash, second_asset_path, 1,
+        "replacement.jpg", "/source/replacement.jpg", 0, 2,
+        &identity_status, &replacement_image) == LARDON3D_PROJECT_DB_OK
+        && replacement_image.image_id > deleted_image.image_id
+        && replacement_image.asset_id > deleted_image.asset_id);
 
     Lardon3DProjectDbProject project = {.created_at = 100, .updated_at = 100};
     (void)snprintf(project.stable_id, sizeof(project.stable_id), "project-0001");
@@ -174,6 +243,9 @@ run_test(void)
     CHECK(lardon3d_project_db_record_task(database, &running, "test.work", 1, &checkpoint, 200) == LARDON3D_PROJECT_DB_OK);
     running.progress = 30; running.sequence_count = 3;
     CHECK(lardon3d_project_db_record_task(database, &running, "test.work", 1, &checkpoint, 201) == LARDON3D_PROJECT_DB_OK);
+    Lardon3DProjectDbScanSet import_scanset;
+    CHECK(lardon3d_project_db_create_scanset(database, "Legacy import",
+        &import_scanset) == LARDON3D_PROJECT_DB_OK);
     Lardon3DProjectDbTask task;
     CHECK(lardon3d_project_db_load_task(database, 1, &task) == LARDON3D_PROJECT_DB_OK);
     CHECK(task.recovery_state == TASK_PENDING && task.progress == 30 && task.sequence_count == 3);
@@ -191,7 +263,8 @@ run_test(void)
     CHECK(lardon3d_project_db_record_task(database, &running, "test.work", 0,
         &checkpoint, 202) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
     CHECK(lardon3d_project_db_record_image_import_task(database, &running,
-        "import.images", 1, &checkpoint, "/tmp/source-a", 202)
+        "import.images", 1, &checkpoint, "/tmp/source-a",
+        import_scanset.scanset_id, 202)
         == LARDON3D_PROJECT_DB_CONSTRAINT);
 
     Lardon3DTaskDurableSnapshot completed = task_snapshot(2, TASK_COMPLETED);
@@ -206,15 +279,18 @@ run_test(void)
 
     Lardon3DTaskDurableSnapshot image_import = task_snapshot(5, TASK_PENDING);
     CHECK(lardon3d_project_db_record_image_import_task(database, &image_import,
-        "import.images", 1, &checkpoint, "/tmp/source-a", 202)
+        "import.images", 1, &checkpoint, "/tmp/source-a",
+        import_scanset.scanset_id, 202)
         == LARDON3D_PROJECT_DB_OK);
     Lardon3DProjectDbImageImport import_parameters;
     CHECK(lardon3d_project_db_load_image_import(database, 5,
         &import_parameters) == LARDON3D_PROJECT_DB_OK);
     CHECK(import_parameters.task_id == 5
-        && strcmp(import_parameters.source_path, "/tmp/source-a") == 0);
+        && strcmp(import_parameters.source_path, "/tmp/source-a") == 0
+        && import_parameters.scanset_id == import_scanset.scanset_id);
     CHECK(lardon3d_project_db_record_image_import_task(database, &image_import,
-        "import.images", 1, &checkpoint, "/tmp/source-b", 203)
+        "import.images", 1, &checkpoint, "/tmp/source-b",
+        import_scanset.scanset_id, 203)
         == LARDON3D_PROJECT_DB_CONSTRAINT);
 
     Lardon3DTaskDurableSnapshot rollback_task = task_snapshot(3, TASK_PENDING);
@@ -265,7 +341,7 @@ run_test(void)
     char too_long[LARDON3D_PROJECT_DB_PATH_CAPACITY + 1]; memset(too_long, 'x', sizeof(too_long)); too_long[sizeof(too_long) - 1] = '\0';
     CHECK(lardon3d_project_db_open(too_long, &database, error) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
     lardon3d_project_db_close(contexts[0].database); database = NULL;
-    CHECK(query_integer(database_path, "SELECT value FROM metadata WHERE key='schema_version'", 3));
+    CHECK(query_integer(database_path, "SELECT value FROM metadata WHERE key='schema_version'", 4));
     CHECK(query_integer(database_path, "SELECT count(*) FROM tasks WHERE task_id=1", 1));
     CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
     CHECK(lardon3d_project_db_load_task(database, 1, &task) == LARDON3D_PROJECT_DB_OK);
@@ -280,7 +356,7 @@ run_test(void)
 
     CHECK(create_v1_database(legacy_path));
     CHECK(lardon3d_project_db_open(legacy_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-    CHECK(lardon3d_project_db_schema_version(database) == 3);
+    CHECK(lardon3d_project_db_schema_version(database) == 4);
     CHECK(lardon3d_project_db_get_project(database, &loaded_project) == LARDON3D_PROJECT_DB_OK
         && strcmp(loaded_project.stable_id, "legacy-project") == 0);
     CHECK(lardon3d_project_db_load_task(database, 9, &task) == LARDON3D_PROJECT_DB_OK);
@@ -289,7 +365,7 @@ run_test(void)
     CHECK(lardon3d_project_db_load_artifact(database, "legacy-artifact",
         &loaded_artifact) == LARDON3D_PROJECT_DB_OK);
     lardon3d_project_db_close(database); database = NULL;
-    CHECK(query_integer(legacy_path, "SELECT value FROM metadata WHERE key='schema_version'", 3));
+    CHECK(query_integer(legacy_path, "SELECT value FROM metadata WHERE key='schema_version'", 4));
 
     CHECK(create_v1_database(failed_migration_path));
     CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V2", "1", 1) == 0);
@@ -316,7 +392,7 @@ run_test(void)
         &loaded_artifact) == LARDON3D_PROJECT_DB_OK);
     lardon3d_project_db_close(database); database = NULL;
     CHECK(query_integer(v2_path,
-        "SELECT value FROM metadata WHERE key='schema_version'", 3));
+        "SELECT value FROM metadata WHERE key='schema_version'", 4));
 
     CHECK(create_v2_database(failed_v3_migration_path));
     CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V3", "1", 1) == 0);
@@ -328,9 +404,37 @@ run_test(void)
     CHECK(query_integer(failed_v3_migration_path,
         "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='image_import_tasks'", 0));
 
+    CHECK(create_v3_database(v3_path));
+    CHECK(lardon3d_project_db_open(v3_path, &database, error)
+        == LARDON3D_PROJECT_DB_OK);
+    CHECK(lardon3d_project_db_load_image_import(database, 9,
+        &import_parameters) == LARDON3D_PROJECT_DB_OK);
+    CHECK(strcmp(import_parameters.source_path, "/legacy/source") == 0
+        && import_parameters.scanset_id > 0);
+    CHECK(lardon3d_project_db_legacy_catalog_pending(database, &legacy_pending)
+        == LARDON3D_PROJECT_DB_OK && legacy_pending);
+    CHECK(lardon3d_project_db_load_task(database, 9, &task)
+        == LARDON3D_PROJECT_DB_OK && task.has_task_kind);
+    CHECK(lardon3d_project_db_load_artifact(database, "legacy-artifact",
+        &loaded_artifact) == LARDON3D_PROJECT_DB_OK);
+    lardon3d_project_db_close(database); database = NULL;
+    CHECK(query_integer(v3_path,
+        "SELECT value FROM metadata WHERE key='schema_version'", 4));
+
+    CHECK(create_v3_database(failed_v4_path));
+    CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V4", "1", 1) == 0);
+    CHECK(lardon3d_project_db_open(failed_v4_path, &database, error)
+        == LARDON3D_PROJECT_DB_IO_ERROR);
+    CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V4") == 0);
+    CHECK(query_integer(failed_v4_path,
+        "SELECT value FROM metadata WHERE key='schema_version'", 3));
+    CHECK(query_integer(failed_v4_path,
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='scansets'", 0));
+
     CHECK(unlink(artifact_path) == 0); CHECK(unlink(database_path) == 0); CHECK(unlink(future_path) == 0); CHECK(unlink(corrupt_path) == 0);
     CHECK(unlink(legacy_path) == 0); CHECK(unlink(failed_migration_path) == 0);
     CHECK(unlink(v2_path) == 0); CHECK(unlink(failed_v3_migration_path) == 0);
+    CHECK(unlink(v3_path) == 0); CHECK(unlink(failed_v4_path) == 0);
     CHECK(rmdir(directory) == 0);
     return true;
 }

@@ -9,12 +9,16 @@
 #include <lardon3d/task.h>
 
 enum {
-    LARDON3D_PROJECT_DB_SCHEMA_VERSION = 3,
+    LARDON3D_PROJECT_DB_SCHEMA_VERSION = 4,
     LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
     LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
     LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
     LARDON3D_PROJECT_DB_ERROR_CAPACITY = 256,
     LARDON3D_PROJECT_DB_RECOVERY_PAGE_MAX = 256,
+    LARDON3D_PROJECT_DB_CATALOG_PAGE_MAX = 256,
+    LARDON3D_PROJECT_DB_SCANSET_NAME_CAPACITY = 256,
+    LARDON3D_PROJECT_DB_IMAGE_NAME_CAPACITY = 256,
+    LARDON3D_PROJECT_DB_SHA256_SIZE = 32,
 };
 
 typedef struct Lardon3DProjectDb Lardon3DProjectDb;
@@ -86,7 +90,44 @@ typedef struct {
 typedef struct {
     uint64_t task_id;
     char source_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+    uint64_t scanset_id;
 } Lardon3DProjectDbImageImport;
+
+typedef struct {
+    uint64_t scanset_id;
+    char name[LARDON3D_PROJECT_DB_SCANSET_NAME_CAPACITY];
+    int64_t created_at;
+    int64_t updated_at;
+} Lardon3DProjectDbScanSet;
+
+typedef enum {
+    LARDON3D_DB_IMAGE_ASSET_READY = 1
+} Lardon3DProjectDbImageAssetState;
+
+typedef struct {
+    uint64_t asset_id;
+    unsigned char sha256[LARDON3D_PROJECT_DB_SHA256_SIZE];
+    char path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+    uint64_t size_bytes;
+    Lardon3DProjectDbImageAssetState state;
+    int64_t created_at;
+} Lardon3DProjectDbImageAsset;
+
+typedef struct {
+    uint64_t image_id;
+    uint64_t scanset_id;
+    uint64_t asset_id;
+    char original_name[LARDON3D_PROJECT_DB_IMAGE_NAME_CAPACITY];
+    char source_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+    bool has_producer_task;
+    uint64_t producer_task_id;
+    int64_t imported_at;
+} Lardon3DProjectDbImage;
+
+typedef enum {
+    LARDON3D_PROJECT_DB_IMAGE_REGISTERED = 0,
+    LARDON3D_PROJECT_DB_IMAGE_ALREADY_PRESENT
+} Lardon3DProjectDbImageRegisterStatus;
 
 Lardon3DProjectDbResult lardon3d_project_db_open(
     const char *path,
@@ -97,6 +138,9 @@ void lardon3d_project_db_close(Lardon3DProjectDb *database);
 bool lardon3d_project_db_last_error(
     Lardon3DProjectDb *database,
     char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY]
+);
+Lardon3DProjectDbResult lardon3d_project_db_legacy_catalog_pending(
+    Lardon3DProjectDb *database, bool *pending
 );
 unsigned int lardon3d_project_db_schema_version(Lardon3DProjectDb *database);
 
@@ -123,7 +167,40 @@ Lardon3DProjectDbResult lardon3d_project_db_record_image_import_task(
     uint32_t task_kind_version,
     const Lardon3DProjectDbCheckpoint *checkpoint,
     const char *source_path,
+    uint64_t scanset_id,
     int64_t updated_at
+);
+Lardon3DProjectDbResult lardon3d_project_db_create_scanset(
+    Lardon3DProjectDb *database, const char *name,
+    Lardon3DProjectDbScanSet *scanset
+);
+Lardon3DProjectDbResult lardon3d_project_db_load_scanset(
+    Lardon3DProjectDb *database, uint64_t scanset_id,
+    Lardon3DProjectDbScanSet *scanset
+);
+Lardon3DProjectDbResult lardon3d_project_db_list_scansets(
+    Lardon3DProjectDb *database, uint64_t after_scanset_id,
+    Lardon3DProjectDbScanSet *scansets, size_t capacity, size_t *count
+);
+Lardon3DProjectDbResult lardon3d_project_db_register_image(
+    Lardon3DProjectDb *database, uint64_t scanset_id,
+    const unsigned char sha256[LARDON3D_PROJECT_DB_SHA256_SIZE],
+    const char *asset_path, uint64_t size_bytes, const char *original_name,
+    const char *source_path, uint64_t producer_task_id, int64_t imported_at,
+    Lardon3DProjectDbImageRegisterStatus *status,
+    Lardon3DProjectDbImage *image
+);
+Lardon3DProjectDbResult lardon3d_project_db_load_image(
+    Lardon3DProjectDb *database, uint64_t image_id,
+    Lardon3DProjectDbImage *image, Lardon3DProjectDbImageAsset *asset
+);
+Lardon3DProjectDbResult lardon3d_project_db_list_images(
+    Lardon3DProjectDb *database, uint64_t scanset_id, uint64_t after_image_id,
+    Lardon3DProjectDbImage *images, Lardon3DProjectDbImageAsset *assets,
+    size_t capacity, size_t *count
+);
+Lardon3DProjectDbResult lardon3d_project_db_count_images(
+    Lardon3DProjectDb *database, uint64_t scanset_id, uint64_t *count
 );
 Lardon3DProjectDbResult lardon3d_project_db_load_image_import(
     Lardon3DProjectDb *database,

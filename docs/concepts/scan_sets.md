@@ -1,91 +1,120 @@
-# Scan Sets & Acquisitions
-
-## Définition
-
-Un **scan set** (ou ensemble de scans) regroupe l'ensemble des images capturées lors d'une session d'acquisition unique, correspondant à un seul objet ou site reconstruit. Chaque scan set constitue l'unité atomique d'entrée du pipeline de photogrammétrie.
-
-Une **acquisition** désigne le processus physique de capture des images : positioning des capteurs, paramètres d'exposition, et conditions d'éclairage. Le scan set est le résultat numérique de cette acquisition.
+# ScanSets et catalogue d'images
 
 ## Statut
 
-**PLANNED** — Concept définissant la structure d'entrée, pas encore implémenté comme module distinct. Actuellement, le module `import` et `image_catalog` gèrent les images individuellement sans regroupement en scan sets.
-Le chemin source durable de `import.images` ne constitue donc pas encore une
-identité de ScanSet.
+**IMPLEMENTED — ScanSet v1 et Image Catalog persistant v1.**
 
-## Place dans le pipeline
+Un projet contient zéro ou plusieurs acquisitions logiques appelées
+`ScanSet`. Un ScanSet vide est valide : il peut être créé avant la capture ou
+l'import.
 
-```
-Acquisition physique
-    ↓
-Scan Set (import groupé)
-    ↓
-Image Catalog (indexation)
-    ↓
-Visual Index (indexation visuelle)
-    ↓
-Matching & Tracks
-    ↓
-Reconstruction Layers
+## Modèle durable
+
+```text
+Project
+  └── ScanSet (acquisition logique)
+        └── Image (observation logique)
+              └── Image Asset (contenu physique géré)
 ```
 
-Le scan set est la première structure organisée après l'import brut. Il fournit le contexte de regroupement nécessaire pour les étapes suivantes.
+- `scanset_id` identifie durablement une acquisition, indépendamment de son
+  nom.
+- `image_id` identifie durablement une observation dans un ScanSet,
+  indépendamment du nom du fichier et de la tâche d'import.
+- `asset_id` identifie un contenu physique. Son SHA-256, sa taille et son
+  chemin relatif décrivent le fichier géré par Lardon3D.
+- La provenance d'une image conserve son nom original, son chemin source, son
+  instant d'import et, s'il existe, le `task_id` importeur.
 
-## Concepts clés
+Un contenu identique n'implique pas une identité logique unique. Dans un même
+ScanSet, le couple `(scanset_id, asset_id)` est unique : réimporter le même
+contenu retourne `ALREADY_PRESENT`. Dans deux ScanSets distincts, deux images
+logiques possèdent deux `image_id`, mais peuvent partager le même `asset_id` et
+le même fichier physique.
 
-### Structure d'un scan set
+Un ScanSet peut documenter un objet complet, une sous-zone ou une pièce
+démontée. Aucune pose ni transformation 3D entre ScanSets n'est inventée en v1.
 
-| Champ | Type | Description |
-|-------|------|-------------|
-| `id` | `uint64_t` | Identifiant unique du scan set |
-| `name` | `char[]` | Nom lisible (ex: "table_statue_01") |
-| `project_ref` | `uint64_t` | Référence au projet parent |
-| `image_count` | `uint32_t` | Nombre d'images dans le set |
-| `acquisition_date` | `int64_t` | Timestamp de la session |
-| `camera_model` | `char[]` | Modèle de caméra utilisé |
-| `pixel_size_um` | `double` | Taille de pixel en micromètres |
-| `focal_length_mm` | `double` | Distance focale nominale |
+Ces trois identifiants utilisent `AUTOINCREMENT`. Un ID issu d'une transaction
+validée ne sera jamais réattribué, même après une future suppression physique.
+Cette garantie est nécessaire avant que Feature Store, Visual Index, matches et
+tracks ne commencent à les référencer.
 
-### Relations entre images
+## Stockage physique
 
-Au sein d'un scan set, les images entretiennent des relations spatiales :
+Les assets image sont content-addressed :
 
-- **Overlap horizontal** : chevauchement entre images adjacentes d'une même ligne de capture (typiquement 60-80%)
-- **Overlap vertical** : chevauchement entre lignes de capture successives (typiquement 30-50%)
-- **Baseline** : distance physique entre deux positions de capture consécutives
-- **Convergence angle** : angle entre les axes optiques de deux caméras pour un même point
+```text
+assets/images/<2 premiers hex>/<sha256 hex lowercase>
+```
 
-### Types de scan sets
+Le hash est un SHA-256 binaire de 32 octets dans SQLite et est encodé par le
+programme pour construire le chemin. Le nom utilisateur ne participe jamais au
+chemin de stockage. Le calcul et la copie utilisent un tampon fixe de 64 Kio ;
+une image entière n'est jamais chargée en mémoire.
 
-- **Grid scan** : captures organisées en grille régulière, adapté aux objets de taille moyenne
-- **Orbital scan** : captures circulaires autour d'un objet, adapté à la sculpture et aux artefacts
-- **Linear scan** : captures le long d'un axe linéaire, adapté aux façades et structures longues
-- **Free-form scan** : captures sans contrainte géométrique, nécessite plus d'overlap pour compenser
+La publication crée un temporaire, le synchronise, publie sans écrasement puis
+synchronise le répertoire. Un asset existant n'est adopté qu'après vérification
+complète de sa taille et de son SHA-256. La transaction SQLite vient ensuite.
+Un échec SQLite peut donc laisser un fichier orphelin, mais jamais une ligne
+`READY` créée par le chemin métier avant publication.
 
-## Relations avec les autres modules
+## Import et reprise
 
-| Module | Relation |
-|--------|----------|
-| **Project** | Un scan set appartient à un projet. Le projet contient la structure de répertoires pour les images du set. |
-| **Import** | L'import copie les images dans le projet. Le scan set représente un groupe logique d'images importées. |
-| **Image Catalog** | Le catalogue indexe les métadonnées de chaque image du scan set. |
-| **Image View** | Les vues peuvent filtrer ou trier les images par scan set. |
-| **Resource Governor** | Le gouverneur estime les ressources nécessaires pour traiter un scan set complet. |
-| **Task** | Le traitement d'un scan set est décomposé en tâches unitaires par le scheduler. |
+`import.images` persiste désormais `source_path + scanset_id`. Le ScanSet est
+immuable pour un `task_id`. L'import parcourt le dossier en streaming et traite
+des lots bornés. Sa correction ne dépend pas de l'ordre de `readdir()` : la
+présence logique est décidée par `(scanset_id, SHA-256)` dans la base.
 
-## Contraintes de conception
+Une source externe reste nécessaire tant que la tâche est récupérable. Après
+`COMPLETED`, le catalogue et l'asset géré ne dépendent plus de sa présence.
 
-- Un scan set ne doit jamais être modifié après le début du traitement (immutabilité partielle).
-- L'ajout d'images à un scan set existant doit déclencher un recalcul incrémental, pas un retraitement complet.
-- La taille maximale d'un scan set est bornée par la RAM disponible : pas plus de N images en mémoire simultanément.
-- Chaque image appartient à exactement un scan set (relation 1:N).
+Les anciennes tâches v3 sont rattachées par migration à un ScanSet explicite
+nommé `Imports antérieurs à ScanSet v1`. Ce rattachement exprime seulement
+l'absence historique de regroupement ; aucune provenance de capture n'est
+inventée.
 
-## Terminologie
+La migration ne transforme pas les lignes de `manifest.tsv` en images v4 : elle
+n'a ni hash ni transaction catalogue historique permettant de le faire sans
+rejouer les fichiers. Elle pose donc l'indicateur durable
+`legacy_image_catalog_pending=1` lorsqu'une ancienne tâche d'import existe.
 
-| Terme | Définition |
-|-------|------------|
-| **Scan set** | Groupe d'images d'une même session d'acquisition |
-| **Acquisition** | Processus physique de capture |
-| **Overlap** | Pourcentage de superficie commune entre deux images |
-| **Baseline** | Distance entre deux positions de capture |
-| **Capture session** | Période continue d'acquisition d'images |
-| **Footprint** | Zone physique couverte par une image au sol |
+- Si une tâche v3 récupérable retrouve sa source, sa reprise relit les sources,
+  publie les assets content-addressed et remplit le catalogue. Les anciennes
+  copies sous `images/originals` ne sont ni écrasées ni supprimées.
+- Si sa source a disparu, la reconstruction échoue proprement et les anciennes
+  données restent uniquement legacy ; aucune provenance ni image v4 n'est
+  inventée.
+- Un import v3 déjà terminal n'est pas rejoué automatiquement. Ses images du
+  manifeste restent accessibles par la projection legacy mais sont marquées
+  conceptuellement **LEGACY DATA NOT YET CATALOGUED** via l'indicateur DB.
+
+L'indicateur reste conservateur en v1 et n'est pas effacé automatiquement : une
+future commande de migration/reconciliation devra vérifier l'intégralité des
+données historiques avant de le lever.
+
+## Accès borné
+
+Les listes de ScanSets et d'images utilisent un curseur par ID et une limite de
+1 à 256. Aucun `get_all_images()` persistant n'existe. Des milliers d'images ne
+nécessitent donc pas autant de records simultanément en mémoire.
+
+## Transition du manifeste
+
+`images/manifest.tsv` reste pris en charge par l'ancien catalogue en mémoire et
+les anciennes API d'import. Le chemin production maintient une projection
+best-effort par hardlinks pour que la TUI existante continue d'afficher les
+nouvelles images sans seconde copie physique. `project.db + assets/images`
+reste toutefois la vérité canonique : le manifeste est legacy et diagnostique,
+et n'est plus une condition de reprise. Deux images de ScanSets différents qui
+partagent un nom ne peuvent pas toutes deux être représentées dans cette vue
+legacy. La migration de la TUI vers les pages SQLite reste donc nécessaire.
+
+## Futures étapes
+
+**NOT_YET_WIRED** — sélection de ScanSet dans la TUI, migration de l'ancienne
+vue mémoire, vérification/scrub des assets et réconciliation globale des
+orphelins.
+
+**PLANNED** — Feature Store, Visual Index, paires candidates, matching, tracks,
+SfM, MVS et relations géométriques entre ScanSets.

@@ -108,7 +108,7 @@ par le `time_t` local avant conversion. Le format reste donc lisible entre
 plateformes uniquement pour les valeurs communes à leurs domaines `size_t` et
 `time_t`.
 
-## Project Database v3
+## Project Database v4
 
 SQLite contient l'état logique interrogable et les références aux fichiers ;
 les checkpoints et artefacts volumineux restent externes. L'enregistrement du
@@ -136,7 +136,7 @@ non durable, absent, invalide, version inconnue et erreur d'I/O. Aucune réparat
 ou suppression silencieuse n'est effectuée.
 
 Le format checkpoint reste en version 1 et ne contient pas de `task_kind`. Le
-schéma SQLite v3 conserve `task_kind` et `task_kind_version` dans le résumé
+schéma SQLite v4 conserve `task_kind` et `task_kind_version` dans le résumé
 logique interrogable. La migration v1→v2 laisse ces deux colonnes à `NULL` : une
 tâche legacy reste inspectable mais ne peut pas être reconstruite ou resoumise.
 Un kind inconnu ou une version non supportée est diagnostiqué sans exécuter de
@@ -147,8 +147,8 @@ code.
 **IMPLEMENTED** — modèle durable, codec v1, lecture validée, publication
 atomique et restauration sûre d'une tâche isolée.
 
-**IMPLEMENTED** — Project Database v3 pour identité, résumés de tâches typées,
-références checkpoint et artefacts génériques.
+**IMPLEMENTED** — Project Database v4 pour identité, tâches typées, ScanSets,
+images logiques, assets SHA-256, références checkpoint et artefacts génériques.
 
 **IMPLEMENTED** — registry statique bornée et reconstruction explicite avec
 ownership du userdata.
@@ -156,21 +156,39 @@ ownership du userdata.
 **IMPLEMENTED** — API projet de sauvegarde fichier+DB et inventaire validé au
 redémarrage.
 
-**IMPLEMENTED** — `import.images` persiste son chemin source absolu dans une
-table dédiée et publie un checkpoint après chaque lot validé. Le manifeste
-publié rend le rejeu idempotent à la granularité d'une image.
+**IMPLEMENTED** — `import.images` persiste son chemin source absolu et son
+`scanset_id`, puis publie un checkpoint après chaque lot validé. Le catalogue
+SQLite rend le rejeu idempotent à la granularité du contenu dans un ScanSet.
 
 Le chemin source absolu est l'intention durable v1 : il doit rester accessible
 après redémarrage et un projet déplacé ne rend pas une source externe portable.
 Une source absente ou devenue non-répertoire fait échouer proprement la
-reconstruction. Une image déjà inscrite au manifeste est un résultat validé et
-les modifications ultérieures de sa source sont ignorées. Pour la fenêtre
-« copie publiée, manifeste non publié », la reprise n'adopte la destination
-orpheline qu'après comparaison octet par octet avec la source ; une collision
-différente est une erreur. Le manifeste est republié atomiquement avant le
-checkpoint de fin de lot. Si ce checkpoint ou sa transaction DB échoue, le
-manifeste demeure la frontière idempotente plus récente et un checkpoint
-orphelin peut subsister selon le protocole filesystem puis SQLite.
+reconstruction. Après import terminé, l'image dépend de l'asset géré, plus de la
+source. Le SHA-256 est calculé pendant la copie avec un tampon fixe de 64 Kio.
+L'asset est publié sans écrasement sous
+`assets/images/<prefix>/<sha256>`, puis seulement enregistré `READY` dans une
+transaction SQLite. Un asset concurrent déjà présent n'est adopté qu'après
+rehash complet et vérification de taille. Si SQLite échoue après publication,
+le fichier reste orphelin pour une future réconciliation ; aucune transaction
+FS+SQLite n'est revendiquée.
+
+Les identités publiées `scanset_id`, `image_id` et `asset_id` utilisent les
+séquences SQLite `AUTOINCREMENT` : une valeur issue d'une transaction validée
+n'est jamais réattribuée à un autre objet, même après suppression de la ligne.
+Une valeur réservée par une transaction annulée n'est pas une identité publiée.
+
+`manifest.tsv` reste supporté par l'ancien chemin d'import/catalogue. Le chemin
+persistant entretient une projection best-effort par hardlinks pour la TUI,
+mais SQLite est le commit logique canonique : la correction de la reprise ne
+dépend plus de l'ordre de `readdir()` ni du nom de fichier.
+
+La migration v3 vers v4 ne transforme pas les lignes du manifeste historique
+en images cataloguées : elles ne contiennent pas toutes les preuves exigées par
+le modèle v4. Le marqueur durable `legacy_image_catalog_pending` rend cette
+situation visible. Une tâche récupérable peut repeupler le catalogue par rejeu
+si sa source existe encore ; sinon les fichiers et le manifeste restent une
+projection legacy, explicitement non cataloguée. Une tâche v3 déjà terminée
+n'est pas rejouée automatiquement.
 
 **IMPLEMENTED** — reprise automatique sélective à l'ouverture : pagination
 bornée, validation checkpoint/kind, reconstruction production et enqueue sans
@@ -184,5 +202,8 @@ terminale n'appartient pas à la requête de reprise.
 **NOT_YET_WIRED** — autosave complet, réconciliation des fichiers orphelins et
 retry piloté par l'utilisateur pour les sources indisponibles.
 
-**PLANNED** — catalogue d'artefacts photogrammétriques réels, migrations v4+ et
-reprise avec dépendances.
+**NOT_YET_WIRED** — migration de la vue TUI en mémoire vers la pagination
+SQLite, scrub des assets et réconciliation globale des orphelins.
+
+**PLANNED** — Feature Store, Visual Index, migrations v5+ et reprise avec
+dépendances.

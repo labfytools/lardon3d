@@ -131,7 +131,8 @@ La base de données projet stocke les métadonnées de reconstruction et les rel
 ## Relations
 
 - Project → Scan Set (1:N)
-- Scan Set → Image (N:M)
+- Scan Set → Image logique (1:N)
+- Image logique → Image Asset (N:1)
 - Image → Feature Set (1:N)
 - Image → Visual Signature (1:N)
 - Candidate Pair → Image (2)
@@ -167,9 +168,9 @@ référence vers le fichier checkpoint. Le fichier checkpoint validé reste la
 source complète pour `lardon3d_task_restore()` ; la DB seule ne reconstruit
 jamais une tâche. Un écart ou un fichier invalide interdit la reprise.
 
-## Schéma v3 implémenté
+## Schéma v4 implémenté
 
-- `metadata(key PRIMARY KEY, value)` contient `schema_version=3` et
+- `metadata(key PRIMARY KEY, value)` contient `schema_version=4` et
   `next_task_id`, prochain ID durable allouable.
 - `project(singleton=1, stable_id UNIQUE, name, created_at, updated_at)` décrit
   l'unique identité logique de la DB.
@@ -182,22 +183,41 @@ jamais une tâche. Un écart ou un fichier invalide interdit la reprise.
 - `artifacts(artifact_id PRIMARY KEY, kind, path, state, size_bytes,
   producer_task_id REFERENCES tasks, created_at, updated_at)` inventorie des
   fichiers externes. Les états v1 sont `STAGED` et `READY`.
+- `scansets(scanset_id INTEGER PRIMARY KEY AUTOINCREMENT, name, created_at, updated_at)`
+  représente les acquisitions logiques, y compris les ScanSets vides.
+- `image_assets(asset_id INTEGER PRIMARY KEY AUTOINCREMENT, sha256 UNIQUE, path UNIQUE,
+  size_bytes, state, created_at)` décrit les contenus physiques `READY`.
+- `images(image_id INTEGER PRIMARY KEY AUTOINCREMENT, scanset_id REFERENCES scansets,
+  asset_id REFERENCES image_assets, original_name, source_path,
+  producer_task_id REFERENCES tasks, imported_at)` décrit les images logiques.
+  `UNIQUE(scanset_id,asset_id)` interdit les doublons de contenu dans une même
+  acquisition sans fusionner deux acquisitions différentes.
 - `image_import_tasks(task_id PRIMARY KEY REFERENCES tasks ON DELETE CASCADE,
-  source_path)` conserve l'unique paramètre métier v1 de `import.images`.
+  source_path, scanset_id REFERENCES scansets)` conserve les paramètres
+  métier immuables de `import.images`.
 
-Les indexes portent uniquement sur `tasks(recovery_state, task_id)`,
-`artifacts(state, artifact_id)` et `artifacts(producer_task_id)`.
+`AUTOINCREMENT` est volontairement limité à ces trois identités publiées. Il
+empêche la réutilisation d'un ID issu d'une transaction validée même si sa ligne
+maximale est supprimée plus tard. Le coût de `sqlite_sequence` est accepté pour
+garantir qu'un futur Feature Store, match ou track ne voie jamais son identifiant
+désigner un autre objet. Les IDs de transactions rollbackées ne sont pas
+considérés publiés et peuvent être réutilisés.
+
+Les indexes ajoutés en v4 sont `images(scanset_id,image_id)`, pagination réelle,
+et `images(producer_task_id,image_id)`, recherche par tâche productrice. Le
+SHA-256 et le chemin asset sont déjà indexés par leurs contraintes `UNIQUE`.
 
 ## Ouverture et migrations
 
-Une DB vide reçoit directement le schéma v3 dans une transaction
+Une DB vide reçoit directement le schéma v4 dans une transaction
 `BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
 `task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
 `NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
-artefacts. Une interruption ou erreur provoque un rollback complet. Une DB v2
-est migrée vers v3 ; une DB v3 est validée puis ouverte. Une version future est refusée et une DB contenant
+artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1,
+v2 et v3 sont migrées séquentiellement vers v4. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
-interne de migration ne connaît que `0 → 3`, `1 → 2 → 3` et `2 → 3`.
+interne de migration ne connaît que `0 → 4`, `1 → 2 → 3 → 4`,
+`2 → 3 → 4` et `3 → 4`.
 
 Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
 
@@ -227,7 +247,53 @@ UPDATE metadata SET value=3
     WHERE key='schema_version' AND value=2;
 ```
 
-Configuration v3 : `foreign_keys=ON`, `journal_mode=DELETE`,
+Migration v3→v4 exacte, dans la même transaction :
+
+```sql
+CREATE TABLE scansets(
+    scanset_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(scanset_id>0),
+    name TEXT NOT NULL CHECK(length(name)>0 AND length(name)<256),
+    created_at INTEGER NOT NULL CHECK(created_at>=0),
+    updated_at INTEGER NOT NULL CHECK(updated_at>=created_at)
+);
+CREATE TABLE image_assets(
+    asset_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(asset_id>0),
+    sha256 BLOB NOT NULL UNIQUE CHECK(length(sha256)=32),
+    path TEXT NOT NULL UNIQUE CHECK(length(path)>0 AND length(path)<4096),
+    size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),
+    state INTEGER NOT NULL CHECK(state=1),
+    created_at INTEGER NOT NULL CHECK(created_at>=0)
+);
+CREATE TABLE images(
+    image_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(image_id>0),
+    scanset_id INTEGER NOT NULL REFERENCES scansets(scanset_id),
+    asset_id INTEGER NOT NULL REFERENCES image_assets(asset_id),
+    original_name TEXT NOT NULL CHECK(length(original_name)>0 AND length(original_name)<256),
+    source_path TEXT NOT NULL CHECK(length(source_path)>0 AND length(source_path)<4096),
+    producer_task_id INTEGER REFERENCES tasks(task_id),
+    imported_at INTEGER NOT NULL CHECK(imported_at>=0),
+    UNIQUE(scanset_id,asset_id)
+);
+CREATE INDEX images_scanset_idx ON images(scanset_id,image_id);
+CREATE INDEX images_producer_idx ON images(producer_task_id,image_id);
+ALTER TABLE image_import_tasks
+    ADD COLUMN scanset_id INTEGER REFERENCES scansets(scanset_id);
+INSERT INTO scansets(name,created_at,updated_at)
+    SELECT 'Imports antérieurs à ScanSet v1',0,0
+    WHERE EXISTS(SELECT 1 FROM image_import_tasks);
+UPDATE image_import_tasks
+    SET scanset_id=(SELECT scanset_id FROM scansets
+                    WHERE name='Imports antérieurs à ScanSet v1'
+                    ORDER BY scanset_id LIMIT 1)
+    WHERE scanset_id IS NULL;
+INSERT INTO metadata(key,value)
+    VALUES('legacy_image_catalog_pending',
+           CASE WHEN EXISTS(SELECT 1 FROM image_import_tasks) THEN 1 ELSE 0 END);
+UPDATE metadata SET value=4
+    WHERE key='schema_version' AND value=3;
+```
+
+Configuration v4 : `foreign_keys=ON`, `journal_mode=DELETE`,
 `synchronous=FULL`, `busy_timeout=5000`. Le mode DELETE convient au propriétaire
 unique actuel, évite les fichiers WAL/SHM durables et conserve la synchronisation
 forte. Le timeout borne l'attente d'un verrou externe à cinq secondes.
@@ -288,7 +354,7 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v3 et migrations v1→v2→v3, identité
+**IMPLEMENTED** — SQLite système, schéma v4 et migrations v1→v2→v3→v4, identité
 projet, transactions tâche+checkpoint, pagination de reprise et artefacts
 génériques.
 
@@ -304,9 +370,19 @@ immuables de `import.images` et reconstruction production explicite.
 **IMPLEMENTED** — reprise automatique sélective, pagination de 8, ordre par ID,
 fenêtre de queue non bloquante et résumé consultable.
 
-**NOT_YET_WIRED** — autosave à toutes les transitions, retry UI des sources
-indisponibles et réconciliation des checkpoints orphelins, ScanSet
-et catalogue image persistants, Feature Store et Visual Index.
+**IMPLEMENTED** — ScanSets, images logiques, assets SHA-256 et pagination
+bornée à 256. Les identités sont des `INTEGER PRIMARY KEY AUTOINCREMENT` SQLite
+allouées sous transaction ; aucun `SELECT MAX()+1` n'est utilisé en
+fonctionnement normal et une identité validée n'est jamais réutilisée.
 
-**PLANNED** — migrations v4+, dépendances d'artefacts, graphe géométrique et
+La migration v3→v4 ne lit pas `manifest.tsv`. Elle crée le ScanSet legacy et
+positionne `metadata.legacy_image_catalog_pending=1` dès qu'une ancienne tâche
+d'import existe. Cet indicateur signifie « données legacy potentiellement non
+cataloguées », pas « images migrées ».
+
+**NOT_YET_WIRED** — autosave à toutes les transitions, retry UI des sources
+indisponibles, migration de la TUI legacy et réconciliation des fichiers
+orphelins, Feature Store et Visual Index.
+
+**PLANNED** — migrations v5+, dépendances d'artefacts, graphe géométrique et
 reconstruction incrémentale.

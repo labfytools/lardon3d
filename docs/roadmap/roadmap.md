@@ -29,12 +29,12 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 
 ### Phase 3 : Persistance
 - ✅ Fondation versionnée des checkpoints de tâches
-- ✅ Project Database v3 (paramètres d'import et allocation durable des task IDs)
+- ✅ Project Database v4 (tâches, ScanSets, images, assets et migrations)
 - ✅ Branchement Project Database au cycle de vie projet et inventaire de reprise
 - ✅ Registry durable des types métier de tâches
 - ✅ Premier type métier reconstructible (`import.images`)
 - ✅ Resoumission automatique contrôlée et bornée des tâches récupérables
-- 📋 ScanSet et Image Catalog persistants
+- ✅ ScanSet v1 et Image Catalog persistant v1
 
 ### Phase 4 : Pipeline avancé
 - 📋 Feature Store

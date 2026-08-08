@@ -106,7 +106,7 @@ localement : son userdata est détruit, sans callback terminal ni écriture
 durable d'une fausse annulation. Une annulation explicitement demandée conserve
 le contrat de notification terminale.
 
-La Project Database v3 peut enregistrer transactionnellement un résumé
+La Project Database v4 peut enregistrer transactionnellement un résumé
 `Lardon3DTaskDurableSnapshot` et la référence de son checkpoint. Elle ne stocke
 ni estimation sérialisée complète, ni callback, ni réservation, et ne remplace
 pas la validation du fichier checkpoint avant `task_restore()`.

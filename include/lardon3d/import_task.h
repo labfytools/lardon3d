@@ -39,11 +39,13 @@ typedef struct {
 
 Lardon3DTask *lardon3d_project_create_image_import_task(
     Lardon3DAppState *state,
+    uint64_t scanset_id,
     const char *source_directory,
     uint64_t *task_id
 );
 bool lardon3d_project_enqueue_image_import(
     Lardon3DAppState *state,
+    uint64_t scanset_id,
     const char *source_directory,
     uint64_t *task_id
 );

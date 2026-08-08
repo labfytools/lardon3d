@@ -76,7 +76,9 @@ qu'à la terminaison de cette tentative.
 **IMPLEMENTED** — snapshot, codec v1 et restauration isolée.
 
 **IMPLEMENTED** — l'import `import.images` se sauvegarde à chaque fin de lot et
-se reconstruit explicitement avec un userdata neuf lié au projet rouvert.
+se reconstruit explicitement avec un userdata neuf lié au projet rouvert. Son
+intention durable contient `source_path + scanset_id`; le hash/copie et la
+transaction catalogue restent hors mutex Task et hors mutex DB pendant l'I/O.
 
 **IMPLEMENTED** — `project_open()` inventorie par pages de 8, restaure puis
 resoumet automatiquement les tâches production valides. Il retourne après

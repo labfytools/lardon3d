@@ -21,6 +21,7 @@ add_project_arguments(
 ncursesw = dependency('ncursesw', required: true)
 threads = dependency('threads')
 sqlite3 = dependency('sqlite3', required: true)
+openssl = dependency('openssl', required: true)
 
 executable(
     'lardon3d',
@@ -33,6 +34,7 @@ executable(
         'src/import.c',
         'src/import_task.c',
         'src/image_catalog.c',
+        'src/image_catalog_persistent.c',
         'src/image_view.c',
         'src/project.c',
         'src/project_db.c',
@@ -46,7 +48,7 @@ executable(
         'src/hardware_profile.c',
     ],
     include_directories: include_directories('include'),
-    dependencies: [ncursesw, threads, sqlite3],
+    dependencies: [ncursesw, threads, sqlite3, openssl],
 )
 
 import_test = executable(
@@ -55,8 +57,14 @@ import_test = executable(
         'tests/test_import.c',
         'src/app_state.c',
         'src/import.c',
+        'src/image_catalog_persistent.c',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
     ],
     include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl],
 )
 
 test('import', import_test)
@@ -78,6 +86,7 @@ import_task_test = executable(
         'src/resource_governor.c',
         'src/resource_snapshot.c',
         'src/image_catalog.c',
+        'src/image_catalog_persistent.c',
         'src/image_view.c',
     ],
     c_args: [
@@ -86,7 +95,7 @@ import_task_test = executable(
         '-DLARDON3D_CHECKPOINT_TESTING',
     ],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3],
+    dependencies: [threads, sqlite3, openssl],
 )
 
 test('import-task', import_task_test, timeout: 30)
@@ -97,11 +106,35 @@ image_catalog_test = executable(
         'tests/test_image_catalog.c',
         'src/app_state.c',
         'src/image_catalog.c',
+        'src/image_catalog_persistent.c',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
     ],
     include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl],
 )
 
 test('image-catalog', image_catalog_test, timeout: 30)
+
+persistent_image_catalog_test = executable(
+    'test-persistent-image-catalog',
+    sources: [
+        'tests/test_persistent_image_catalog.c',
+        'src/app_state.c',
+        'src/image_catalog_persistent.c',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl],
+)
+
+test('persistent-image-catalog', persistent_image_catalog_test, timeout: 60)
 
 image_view_test = executable(
     'test-image-view',
@@ -157,7 +190,7 @@ project_db_test = executable(
     ],
     c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3],
+    dependencies: [threads, sqlite3, openssl],
 )
 
 test('project-db', project_db_test, timeout: 30)
@@ -177,6 +210,7 @@ project_test = executable(
         'src/import.c',
         'src/import_task.c',
         'src/image_catalog.c',
+        'src/image_catalog_persistent.c',
         'src/image_view.c',
         'src/resource_governor.c',
         'src/resource_snapshot.c',
@@ -186,7 +220,7 @@ project_test = executable(
         '-DLARDON3D_CHECKPOINT_TESTING',
     ],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3],
+    dependencies: [threads, sqlite3, openssl],
 )
 
 test('project', project_test, timeout: 30)

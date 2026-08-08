@@ -880,7 +880,8 @@ static Lardon3DProjectTaskCheckpointResult
 checkpoint_task_internal(
     Lardon3DAppState *state,
     const Lardon3DTask *task,
-    const char *image_import_source
+    const char *image_import_source,
+    uint64_t image_import_scanset_id
 )
 {
     if (!state || !state->project_loaded || !state->project_db) {
@@ -926,7 +927,8 @@ checkpoint_task_internal(
     Lardon3DProjectDbResult recorded = image_import_source
         ? lardon3d_project_db_record_image_import_task(
             state->project_db, &snapshot, task_kind, task_kind_version,
-            &checkpoint, image_import_source, now.tv_sec)
+            &checkpoint, image_import_source, image_import_scanset_id,
+            now.tv_sec)
         : lardon3d_project_db_record_task(
             state->project_db, &snapshot, task_kind, task_kind_version,
             &checkpoint, now.tv_sec);
@@ -947,20 +949,21 @@ lardon3d_project_checkpoint_task(
     const Lardon3DTask *task
 )
 {
-    return checkpoint_task_internal(state, task, NULL);
+    return checkpoint_task_internal(state, task, NULL, 0);
 }
 
 Lardon3DProjectTaskCheckpointResult
 lardon3d_project_checkpoint_image_import_task(
     Lardon3DAppState *state,
     const Lardon3DTask *task,
-    const char *source_path
+    const char *source_path,
+    uint64_t scanset_id
 )
 {
-    if (!source_path || !source_path[0]) {
+    if (!source_path || !source_path[0] || scanset_id == 0) {
         return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
     }
-    return checkpoint_task_internal(state, task, source_path);
+    return checkpoint_task_internal(state, task, source_path, scanset_id);
 }
 
 static bool

@@ -64,4 +64,15 @@ Lardon3DImportOutcome lardon3d_import_directory_batch(
     bool *complete
 );
 
+Lardon3DImportOutcome lardon3d_import_directory_batch_to_scanset(
+    Lardon3DAppState *state,
+    uint64_t scanset_id,
+    uint64_t producer_task_id,
+    const char *source_directory,
+    size_t batch_size,
+    Lardon3DImportResult *result,
+    const Lardon3DImportControl *control,
+    bool *complete
+);
+
 #endif

@@ -105,11 +105,14 @@ run_test(void)
     Lardon3DAppState state; lardon3d_app_state_init(&state);
     CHECK(setup_runtime(&state, 4));
     CHECK(lardon3d_project_create(&state, "Persistent Import"));
+    Lardon3DProjectDbScanSet scanset;
+    CHECK(lardon3d_image_catalog_create_scanset(&state, "Campagne A", &scanset));
 
     CHECK(setenv("LARDON3D_TEST_IMPORT_PAUSE_AFTER_BATCH", "1", 1) == 0);
     CHECK(setenv("LARDON3D_TEST_IMPORT_SKIP_FINISHED_CHECKPOINT", "1", 1) == 0);
     uint64_t task_id = 0;
-    CHECK(lardon3d_project_enqueue_image_import(&state, source, &task_id));
+    CHECK(lardon3d_project_enqueue_image_import(&state, scanset.scanset_id,
+        source, &task_id));
     CHECK(task_id > 0 && task_id <= INT64_MAX);
     Lardon3DTaskSnapshot runtime;
     CHECK(wait_for_state(state.task_queue, task_id, TASK_PAUSED, &runtime));
@@ -134,7 +137,7 @@ run_test(void)
     CHECK(lardon3d_project_db_record_image_import_task(state.project_db,
         &persisted_snapshot, LARDON3D_IMAGE_IMPORT_TASK_KIND,
         LARDON3D_IMAGE_IMPORT_TASK_KIND_VERSION, &published_not_durable,
-        source, 1) == LARDON3D_PROJECT_DB_OK);
+        source, scanset.scanset_id, 1) == LARDON3D_PROJECT_DB_OK);
     lardon3d_project_close(&state);
     CHECK(unsetenv("LARDON3D_TEST_IMPORT_PAUSE_AFTER_BATCH") == 0);
     CHECK(unsetenv("LARDON3D_TEST_IMPORT_SKIP_FINISHED_CHECKPOINT") == 0);
@@ -154,14 +157,19 @@ run_test(void)
     CHECK(lardon3d_project_db_load_image_import(state.project_db, task_id,
         &persisted_parameters) == LARDON3D_PROJECT_DB_OK);
     CHECK(strcmp(persisted_parameters.source_path, source) == 0);
+    CHECK(persisted_parameters.scanset_id == scanset.scanset_id);
     CHECK(wait_for_state(state.task_queue, task_id, TASK_COMPLETED, &runtime));
     CHECK(runtime.progress == 100);
 
-    char error[256];
-    Lardon3DImageCatalog *catalog = lardon3d_image_catalog_load(
-        &state, error, sizeof(error));
-    CHECK(catalog && lardon3d_image_catalog_count(catalog) == 80);
-    lardon3d_image_catalog_destroy(catalog);
+    uint64_t image_count = 0;
+    CHECK(lardon3d_project_db_count_images(state.project_db,
+        scanset.scanset_id, &image_count) == LARDON3D_PROJECT_DB_OK
+        && image_count == 80);
+    char catalog_error[256];
+    Lardon3DImageCatalog *legacy_catalog = lardon3d_image_catalog_load(&state,
+        catalog_error, sizeof(catalog_error));
+    CHECK(legacy_catalog && lardon3d_image_catalog_count(legacy_catalog) == 80);
+    lardon3d_image_catalog_destroy(legacy_catalog);
     lardon3d_task_queue_destroy(state.task_queue); state.task_queue = NULL;
     lardon3d_project_close(&state);
 
@@ -208,15 +216,20 @@ test_selective_capacity_one(void)
     lardon3d_app_state_init(&state);
     CHECK(setup_runtime(&state, 4));
     CHECK(lardon3d_project_create(&state, "Selective Recovery"));
+    Lardon3DProjectDbScanSet scanset;
+    CHECK(lardon3d_image_catalog_create_scanset(&state, "Sélectif", &scanset));
     CHECK(setenv("LARDON3D_TEST_IMPORT_PAUSE_AFTER_BATCH", "1", 1) == 0);
     CHECK(setenv("LARDON3D_TEST_IMPORT_SKIP_FINISHED_CHECKPOINT", "1", 1)
         == 0);
     uint64_t missing_id = 0, valid_id = 0, second_valid_id = 0;
-    CHECK(lardon3d_project_enqueue_image_import(&state, missing_source,
+    CHECK(lardon3d_project_enqueue_image_import(&state, scanset.scanset_id,
+        missing_source,
         &missing_id));
-    CHECK(lardon3d_project_enqueue_image_import(&state, valid_source,
+    CHECK(lardon3d_project_enqueue_image_import(&state, scanset.scanset_id,
+        valid_source,
         &valid_id));
-    CHECK(lardon3d_project_enqueue_image_import(&state, second_valid_source,
+    CHECK(lardon3d_project_enqueue_image_import(&state, scanset.scanset_id,
+        second_valid_source,
         &second_valid_id));
     Lardon3DTaskSnapshot snapshot;
     CHECK(wait_for_state(state.task_queue, missing_id, TASK_PAUSED, &snapshot));

@@ -10,6 +10,7 @@
 
 #include <lardon3d/import.h>
 #include <lardon3d/import_task.h>
+#include <lardon3d/image_catalog.h>
 #include <lardon3d/project.h>
 #include <lardon3d/task_queue.h>
 
@@ -23,6 +24,7 @@ enum {
 typedef struct {
     char project_path[PATH_MAX];
     char source_path[PATH_MAX];
+    uint64_t scanset_id;
     Lardon3DProjectDb *project_db;
     Lardon3DResourceGovernor *governor;
 } Lardon3DImageImportContext;
@@ -124,9 +126,10 @@ run_image_import(Lardon3DTask *task, void *userdata)
         bool complete = false;
         struct timespec begin, end;
         (void)clock_gettime(CLOCK_MONOTONIC, &begin);
-        Lardon3DImportOutcome outcome = lardon3d_import_directory_batch(
-            &state, context->source_path, contract.batch_size, &result,
-            &control, &complete);
+        Lardon3DImportOutcome outcome = lardon3d_import_directory_batch_to_scanset(
+            &state, context->scanset_id, lardon3d_task_id(task),
+            context->source_path, contract.batch_size, &result, &control,
+            &complete);
         (void)clock_gettime(CLOCK_MONOTONIC, &end);
         if (outcome == LARDON3D_IMPORT_CANCELLED) return false;
         if (outcome != LARDON3D_IMPORT_SUCCEEDED) {
@@ -143,7 +146,7 @@ run_image_import(Lardon3DTask *task, void *userdata)
             result.newly_manifested,
             elapsed_ns(begin, end), 0);
         if (lardon3d_project_checkpoint_image_import_task(
-                &state, task, context->source_path)
+                &state, task, context->source_path, context->scanset_id)
             != LARDON3D_PROJECT_TASK_CHECKPOINT_OK) {
             return lardon3d_task_fail(task, "Checkpoint import impossible.");
         }
@@ -162,9 +165,10 @@ run_image_import(Lardon3DTask *task, void *userdata)
 
 static Lardon3DImageImportContext *
 create_context(const char *project_path, const char *source_path,
-    Lardon3DProjectDb *database, Lardon3DResourceGovernor *governor)
+    uint64_t scanset_id, Lardon3DProjectDb *database,
+    Lardon3DResourceGovernor *governor)
 {
-    if (!project_path || !source_path || !database || !governor) return NULL;
+    if (!project_path || !source_path || scanset_id == 0 || !database || !governor) return NULL;
     Lardon3DImageImportContext *context = calloc(1, sizeof(*context));
     if (!context) return NULL;
     int project_written = snprintf(context->project_path,
@@ -177,6 +181,7 @@ create_context(const char *project_path, const char *source_path,
     }
     context->project_db = database;
     context->governor = governor;
+    context->scanset_id = scanset_id;
     return context;
 }
 
@@ -196,7 +201,8 @@ lardon3d_image_import_reconstruct(
     char source[PATH_MAX];
     if (!canonical_source(parameters.source_path, source)) return false;
     Lardon3DImageImportContext *context = create_context(runtime->project_path,
-        source, runtime->project_db, runtime->resource_governor);
+        source, parameters.scanset_id, runtime->project_db,
+        runtime->resource_governor);
     if (!context) return false;
     *binding = (Lardon3DTaskKindBinding) {
         .callback = run_image_import,
@@ -211,20 +217,24 @@ lardon3d_image_import_reconstruct(
 Lardon3DTask *
 lardon3d_project_create_image_import_task(
     Lardon3DAppState *state,
+    uint64_t scanset_id,
     const char *source_directory,
     uint64_t *task_id
 )
 {
     if (task_id) *task_id = 0;
     if (!state || !state->project_loaded || !state->project_db
-        || !state->resource_governor || !task_id) return NULL;
+        || !state->resource_governor || !task_id || scanset_id == 0) return NULL;
+    Lardon3DProjectDbScanSet scanset;
+    if (lardon3d_project_db_load_scanset(state->project_db, scanset_id, &scanset)
+        != LARDON3D_PROJECT_DB_OK) return NULL;
     char source[PATH_MAX];
     if (!canonical_source(source_directory, source)) return NULL;
     uint64_t id = 0;
     if (lardon3d_project_db_allocate_task_id(state->project_db, &id)
         != LARDON3D_PROJECT_DB_OK) return NULL;
     Lardon3DImageImportContext *context = create_context(state->project_path,
-        source, state->project_db, state->resource_governor);
+        source, scanset_id, state->project_db, state->resource_governor);
     if (!context) return NULL;
     const Lardon3DResourceEstimate estimate = {
         .memory_fixed_bytes = IMAGE_IMPORT_FIXED_MEMORY,
@@ -241,7 +251,8 @@ lardon3d_project_create_image_import_task(
         destroy_context);
     if (!task || !lardon3d_task_assign_id(task, id)
         || !lardon3d_task_set_finished_callback(task, import_finished, context)
-        || lardon3d_project_checkpoint_image_import_task(state, task, source)
+        || lardon3d_project_checkpoint_image_import_task(state, task, source,
+            scanset_id)
             != LARDON3D_PROJECT_TASK_CHECKPOINT_OK) {
         lardon3d_task_destroy(task);
         return NULL;
@@ -252,11 +263,11 @@ lardon3d_project_create_image_import_task(
 
 bool
 lardon3d_project_enqueue_image_import(Lardon3DAppState *state,
-    const char *source_directory, uint64_t *task_id)
+    uint64_t scanset_id, const char *source_directory, uint64_t *task_id)
 {
     if (!state || !state->task_queue) return false;
     Lardon3DTask *task = lardon3d_project_create_image_import_task(
-        state, source_directory, task_id);
+        state, scanset_id, source_directory, task_id);
     if (!task) return false;
     if (!lardon3d_task_queue_add(state->task_queue, task, NULL)) {
         lardon3d_task_destroy(task);
@@ -273,8 +284,11 @@ lardon3d_import_task_start(Lardon3DImportTask *task, Lardon3DAppState *state,
 {
     if (!task || task->task_id != 0 || !state) return false;
     task->state = state;
-    return lardon3d_project_enqueue_image_import(state, source_directory,
-        &task->task_id);
+    Lardon3DProjectDbScanSet scanset;
+    if (!lardon3d_image_catalog_create_scanset(state, "Import d'images",
+            &scanset)) return false;
+    return lardon3d_project_enqueue_image_import(state, scanset.scanset_id,
+        source_directory, &task->task_id);
 }
 
 void lardon3d_import_task_request_cancel(Lardon3DImportTask *task)

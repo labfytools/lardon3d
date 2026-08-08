@@ -66,7 +66,8 @@ Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU, IO).
 - Pas d'adaptation basée sur le débit (duration_ns non encore utilisé)
 - L'import `import.images` est admis avec 128 Kio fixes, un coût borné par item,
   un thread CPU, un slot I/O et des lots de 1 à 32. Il enregistre le nombre
-  d'images nouvellement publiées dans le manifeste et la durée réelle du lot.
+  d'images logiques nouvellement enregistrées dans le ScanSet et la durée
+  réelle du lot.
   Cela inclut une copie orpheline identique adoptée, même si aucun octet n'est
   recopié. `peak_memory_bytes == 0` signifie explicitement « mesure inconnue » :
   l'échantillon peut conserver taille/durée mais n'alimente jamais l'adaptation

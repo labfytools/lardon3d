@@ -22,10 +22,10 @@ viewer, puis reprendre ultérieurement exactement où il s'était arrêté.
 |--------|-------------|
 | **Définition** | Un *scan set* (ou acquisition) regroupe un ensemble d'images capturées dans un contexte donné : même lieu, même session, même objectif de reconstruction. |
 | **Enrichissement progressif** | Un scan set peut être alimenté par vagues successives : images initiales, images de relèvement, images de contrôle. Chaque vague est horodatée et traçable. |
-| **Identification stable** | Chaque scan set reçoit un identifiant UUID qui ne change jamais, même si le nom lisible est renommé. Les références internes utilisent cet UUID. |
+| **Identification stable** | Chaque ScanSet reçoit un `scanset_id` SQLite positif qui ne dépend pas de son nom. |
 
-**Statut :** PLANNED — le concept existe dans le manifeste projet mais n'est
-pas encore structuré avec UUID et vague d'import.
+**Statut :** IMPLEMENTED v1 — identité, nom et horodatages persistants. Les
+vagues et relations géométriques entre acquisitions restent planifiées.
 
 ---
 
@@ -33,14 +33,12 @@ pas encore structuré avec UUID et vague d'import.
 
 | Aspect | Description |
 |--------|-------------|
-| **Identité stable** | Chaque image possède un identifiant interne stable (UUID), distinct du nom de fichier sur disque. Le fichier peut être renommé ou déplacé sans casser les références. |
-| **Provenance** | Le catalogue enregistre le scan set d'origine, la date d'import, le chemin original et le chemin local. |
-| **État de traitement** | Pour chaque image, le catalogue maintient un état : RAW, FEATURES_EXTRACTED, MATCHED, REGISTERED. Cet état est lu par le pipeline pour décider de l'étape suivante. |
+| **Identité stable** | Chaque image possède un `image_id` stable, distinct du nom et de l'asset physique. |
+| **Provenance** | Le catalogue enregistre le ScanSet, la date d'import, le nom et le chemin source, ainsi que la tâche productrice éventuelle. |
+| **Asset** | Le contenu physique est identifié par `asset_id`, SHA-256, taille et chemin géré. Plusieurs images logiques peuvent partager cet asset. |
 
-**Statut :** PARTIELLEMENT IMPLEMENTÉ — le `image_catalog` gère les
-métadonnées de base mais pas encore l'état de traitement ni l'UUID. L'import
-`import.images` est exécuté par le scheduler générique, copie au plus 32 images
-par lot et reprend à partir du manifeste publié sans dupliquer une entrée.
+**Statut :** IMPLEMENTED v1 — catalogue SQLite paginé et assets
+content-addressed. Les états Feature/Matching/Reconstruction restent planifiés.
 
 ---
 
@@ -64,8 +62,7 @@ par lot et reprend à partir du manifeste publié sans dupliquer une entrée.
 | **Pipeline conceptuel** | Extraction de features globales → construction de l'index → requête par similarité → retour des K plus proches voisins. |
 | **Proximité temporelle comme signal secondaire** | Lorsque les images portent un horodatage EXIF, la proximité temporelle sert de signal complémentaire au contenu visuel, mais ne remplace jamais l'analyse visuelle. |
 
-**Statut :** PLANNED — le pipeline d'import利用 déjà la proximité temporelle
-pour les paires candidats, mais aucun index visuel n'existe.
+**Statut :** PLANNED — aucun index visuel ni générateur de paires n'existe.
 
 ---
 
@@ -97,7 +94,7 @@ candidate generator n'existe pas encore.
 | Aspect | Description |
 |--------|-------------|
 | **Observation 2D → track → point3D** | Un *track* est une chaîne d'observations 2D cohérentes d'un même point 3D à travers plusieurs images. Chaque observation est un keypoint indexé par image. |
-| **Lien avec le catalog** | Les tracks référencent les images par leur UUID interne, pas par nom de fichier. |
+| **Lien avec le catalogue** | Les tracks référenceront les images par `image_id`, jamais par nom ou chemin. |
 | **Persistance** | Les tracks sont persistés entre les sessions de traitement. Un track ne peut être détruit que par une action explicite de l'utilisateur. |
 
 **Statut :** PLANNED — aucune implémentation existante.

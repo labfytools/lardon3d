@@ -28,6 +28,11 @@ Reconstruction Layers (triangulation)
 
 Le matching est le pont entre les caractéristiques 2D des images et la structure 3D de la scène.
 
+La génération future de paires candidates combinera `image_id`, appartenance
+au ScanSet, résultats du Visual Index et provenance. Une proximité temporelle
+pourra servir de signal secondaire ; la proximité dans un dossier et le nom de
+fichier ne constituent jamais l'identité principale.
+
 ## Concepts clés
 
 ### Étapes du matching

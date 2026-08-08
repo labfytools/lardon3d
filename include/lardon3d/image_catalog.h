@@ -5,6 +5,31 @@
 #include <stdint.h>
 
 #include <lardon3d/app_state.h>
+#include <lardon3d/project_db.h>
+
+typedef enum {
+    LARDON3D_IMAGE_CATALOG_IMPORTED = 0,
+    LARDON3D_IMAGE_CATALOG_ALREADY_PRESENT,
+    LARDON3D_IMAGE_CATALOG_INVALID_ARGUMENT,
+    LARDON3D_IMAGE_CATALOG_SOURCE_ERROR,
+    LARDON3D_IMAGE_CATALOG_PUBLICATION_ERROR,
+    LARDON3D_IMAGE_CATALOG_DB_ERROR
+} Lardon3DImageCatalogImportResult;
+
+bool lardon3d_image_catalog_create_scanset(
+    Lardon3DAppState *state, const char *name,
+    Lardon3DProjectDbScanSet *scanset
+);
+Lardon3DImageCatalogImportResult lardon3d_image_catalog_import_file(
+    Lardon3DAppState *state, uint64_t scanset_id, const char *source_path,
+    uint64_t producer_task_id, Lardon3DProjectDbImage *image,
+    Lardon3DProjectDbImageAsset *asset
+);
+Lardon3DProjectDbResult lardon3d_image_catalog_list(
+    Lardon3DAppState *state, uint64_t scanset_id, uint64_t after_image_id,
+    Lardon3DProjectDbImage *images, Lardon3DProjectDbImageAsset *assets,
+    size_t capacity, size_t *count
+);
 
 typedef struct {
     char *filename;

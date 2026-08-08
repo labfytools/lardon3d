@@ -26,7 +26,7 @@ fin de l'exécution. Le constructeur métier n'est jamais appelé sous mutex DB.
 
 ## Persistance et legacy
 
-Le checkpoint générique reste en version 1. Project Database v3 conserve le
+Le checkpoint générique reste en version 1. Project Database v4 conserve le
 kind/version ; les lignes migrées depuis v1 restent `NULL/NULL` et sont classées
 `LEGACY_UNTYPED`. Un kind inconnu ou une version non supportée reste inspectable
 mais inexécutable. Aucun type n'est inventé et aucun code n'est sélectionné par

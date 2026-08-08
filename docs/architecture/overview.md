@@ -44,15 +44,15 @@ des fichiers admissibles et maintenance d'un manifeste cohérent.
 **Statut :** IMPLEMENTED
 
 ### Import Task
-Wrapper asynchrone de l'import avec états, progression et annulation
-coopérative. Exécute l'import dans un worker dédié (non encore migré vers
-le scheduler générique).
+Premier type métier persistant. Il s'exécute par lots bornés dans le scheduler
+générique, cible explicitement un ScanSet et peut être reconstruit puis repris.
 
 **Statut :** IMPLEMENTED
 
-### Image Catalog
-Chargement et indexage en mémoire des métadonnées d'images depuis le
-manifeste du projet. Fournit un accès structuré aux images.
+### ScanSet et Image Catalog
+Catalogue SQLite persistant séparant acquisition, image logique et asset
+physique SHA-256. Les parcours persistants sont paginés ; l'ancien catalogue
+mémoire depuis `manifest.tsv` reste une façade legacy pour la TUI.
 
 **Statut :** IMPLEMENTED
 
@@ -120,6 +120,6 @@ frontière de séquence connue.
 - Absence de DAG de dépendances.
 - Absence de priorités.
 - Absence de pools de workers multiples (CPU/GPU/IO).
-- Import non migré vers le scheduler générique.
-- Persistance des tâches et checkpoints non implémentée.
+- La TUI legacy ne sélectionne pas encore explicitement ses ScanSets.
+- La réconciliation globale des assets/checkpoints orphelins n'est pas implémentée.
 - Viewer et publication live non implémentés.

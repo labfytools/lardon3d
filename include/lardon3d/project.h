@@ -67,7 +67,8 @@ Lardon3DProjectTaskCheckpointResult
 lardon3d_project_checkpoint_image_import_task(
     Lardon3DAppState *state,
     const Lardon3DTask *task,
-    const char *source_path
+    const char *source_path,
+    uint64_t scanset_id
 );
 Lardon3DProjectDbResult lardon3d_project_list_recoverable(
     Lardon3DAppState *state,

@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include <lardon3d/import.h>
+#include <lardon3d/image_catalog.h>
 
 enum {
     MANIFEST_LINE_CAPACITY = PATH_MAX + 512,
@@ -1161,4 +1162,107 @@ lardon3d_import_directory(
         result,
         NULL
     ) == LARDON3D_IMPORT_SUCCEEDED;
+}
+
+Lardon3DImportOutcome
+lardon3d_import_directory_batch_to_scanset(
+    Lardon3DAppState *state,
+    uint64_t scanset_id,
+    uint64_t producer_task_id,
+    const char *source_directory,
+    size_t batch_size,
+    Lardon3DImportResult *result,
+    const Lardon3DImportControl *control,
+    bool *complete
+)
+{
+    if (!state || !state->project_loaded || !state->project_db || !result
+        || !complete || scanset_id == 0 || producer_task_id == 0
+        || batch_size == 0) return LARDON3D_IMPORT_FAILED;
+    *result = (Lardon3DImportResult){0};
+    *complete = false;
+    char trimmed[PATH_MAX], source[PATH_MAX];
+    if (!trim_source_path(state, source_directory, trimmed)
+        || !resolve_source_path(state, trimmed, source)) return LARDON3D_IMPORT_FAILED;
+    struct stat directory_info;
+    if (lstat(source, &directory_info) != 0 || !S_ISDIR(directory_info.st_mode)
+        || S_ISLNK(directory_info.st_mode)) {
+        set_status(state, "Erreur : dossier source absent ou invalide.");
+        return LARDON3D_IMPORT_FAILED;
+    }
+    DIR *directory = opendir(source);
+    if (!directory) return LARDON3D_IMPORT_FAILED;
+    bool success = true, cancelled = false, remaining = false;
+    size_t registered = 0;
+    ManifestWriter legacy_manifest = {0};
+    bool legacy_manifest_active = false;
+    char legacy_images[PATH_MAX], legacy_originals[PATH_MAX];
+    bool legacy_paths = ensure_originals_directory(state, legacy_images,
+        legacy_originals);
+    for (;;) {
+        if (import_is_cancelled(control)) { cancelled = true; break; }
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (!entry) { if (errno) success = false; break; }
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+        char path[PATH_MAX]; struct stat information;
+        if (!join_path(path, source, entry->d_name)) { success = false; break; }
+        if (lstat(path, &information) != 0 || !S_ISREG(information.st_mode)
+            || S_ISLNK(information.st_mode) || !has_supported_extension(entry->d_name)) {
+            ++result->ignored; continue;
+        }
+        ++result->admissible_found;
+        if (registered >= batch_size) { remaining = true; continue; }
+        Lardon3DProjectDbImage image;
+        Lardon3DProjectDbImageAsset asset;
+        Lardon3DImageCatalogImportResult imported =
+            lardon3d_image_catalog_import_file(state, scanset_id, path,
+                producer_task_id, &image, &asset);
+        if (imported == LARDON3D_IMAGE_CATALOG_ALREADY_PRESENT) {
+            ++result->already_present;
+            ++result->processed;
+        } else if (imported == LARDON3D_IMAGE_CATALOG_IMPORTED) {
+            ++registered;
+            ++result->newly_manifested;
+            ++result->copied;
+            ++result->processed;
+            if (legacy_paths && (!legacy_manifest_active
+                    ? manifest_begin(state, legacy_images, &legacy_manifest)
+                    : true)) {
+                legacy_manifest_active = true;
+                int listed = manifest_contains(&legacy_manifest, entry->d_name);
+                char asset_path[PATH_MAX], legacy_path[PATH_MAX];
+                if (listed == 0
+                    && join_path(asset_path, state->project_path, asset.path)
+                    && join_path(legacy_path, legacy_originals, entry->d_name)
+                    && link(asset_path, legacy_path) == 0
+                    && !manifest_append(&legacy_manifest, entry->d_name,
+                        (off_t)asset.size_bytes, path)) {
+                    (void)unlink(legacy_path);
+                    manifest_abort(&legacy_manifest);
+                    legacy_manifest_active = false;
+                    legacy_paths = false;
+                }
+            }
+        } else {
+            success = false; break;
+        }
+    }
+    if (closedir(directory) != 0) success = false;
+    if (legacy_manifest_active && !manifest_commit(state, &legacy_manifest)) {
+        legacy_manifest_active = false;
+    }
+    if (cancelled) {
+        set_status(state, "Import annulé à une frontière sûre.");
+        return LARDON3D_IMPORT_CANCELLED;
+    }
+    if (!success) {
+        set_status(state, "Erreur pendant un lot d'import.");
+        return LARDON3D_IMPORT_FAILED;
+    }
+    *complete = !remaining;
+    set_status(state, *complete ? "Import terminé." : "Lot d'import publié.");
+    publish_progress(control, result, result->processed, state->status_message);
+    return LARDON3D_IMPORT_SUCCEEDED;
 }
