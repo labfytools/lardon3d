@@ -14,7 +14,9 @@ Lardon3D est un moteur de photogrammétrie Linux qui privilégie :
 - **Traçabilité** : historique des opérations et métriques
 - **Enrichissement progressif** : reconstruction incrémentale
 
-Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble progressif d'observations et de contraintes → reconstruction géométrique persistante, enrichissable et versionnable".
+Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais un ensemble
+progressif d'observations et de contraintes donnant une reconstruction géométrique
+persistante, enrichissable et versionnable.
 
 ## État actuel
 
@@ -27,8 +29,9 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v12** : tâches, catalogue, matching et résultats géométriques durables
+- **Project Database v13** : résultats géométriques et tâche Geometric Verifier durables
 - **Geometric Verification Model v1** : identité, masque d'inliers et modèle 3×3 persistants
+- **Geometric Verifier v1** : Fundamental USAC/MAGSAC, reprise et lots resource-aware
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
 - **Recovery projet** : reprise automatique sélective et bornée des imports récupérables
 - **Task Queue** : file FIFO avec sélection adaptative et backpressure
@@ -113,6 +116,7 @@ Acquisitions
 - [Match Result](docs/architecture/match_result.md)
 - [Matcher](docs/architecture/matcher.md)
 - [Geometric Verification](docs/architecture/geometric_verification.md)
+- [Geometric Verifier](docs/architecture/geometric_verifier.md)
 - [Backend Vulkan ORB](docs/architecture/vulkan_matcher.md)
 - [Viewer](docs/architecture/viewer.md)
 - [Revue des fondations](docs/architecture/foundation_review.md)
@@ -154,12 +158,12 @@ Pour les changements sensibles à la mémoire ou à la concurrence, ajouter ASan
 
 Lardon3D est en développement actif. La persistance des tâches, le catalogue,
 le Feature Store multipasse, le Visual Index ORB, Candidate Pair Generator
-et Matcher v1 sont implémentés. Geometric Verification Model v1 est implémenté ;
-le Geometric Verifier reste planifié. Le runtime Feature + Matcher emploie des tâches
-durables, de petits lots, le Resource Governor interactif et un hot path Vulkan
-ORB exact avec fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ;
-ces deux matchers restent sur OpenCV L2. DAG générique,
-calcul de vérification géométrique, SfM et viewer restent des tickets séparés planifiés.
+Matcher v1, Geometric Verification Model v1 et Geometric Verifier Fundamental v1
+sont implémentés. Le runtime Feature + Matcher + Verifier emploie des tâches durables,
+de petits lots, le Resource Governor interactif et un hot path Vulkan ORB exact avec
+fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ; ces deux matchers
+restent sur OpenCV L2. DAG générique, Tracks, SfM et viewer restent des tickets
+séparés planifiés.
 
 ## Licence
 

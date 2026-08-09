@@ -69,3 +69,8 @@ l'identité Feature Set et le curseur `after_candidate_pair_id`. Il traite une
 Candidate Pair atomique à la fois dans des lots bornés à huit, checkpoint le
 curseur et repasse par le Governor entre les lots. La table durable
 `matcher_tasks` est introduite par Project DB v11, après le Match Result v10.
+
+**IMPLEMENTED** — `geometric_verifier.run`, version 1, recharge la configuration
+Fundamental immuable, en revalide le fingerprint et reprend `after_match_result_id`.
+Project DB v13 ajoute uniquement `geometric_verifier_tasks`, car le checkpoint
+générique v1 ne possède aucun payload propre au kind.

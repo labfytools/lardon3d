@@ -70,6 +70,30 @@ de parité couvrent exactement le top-2 jusqu'à 8192, le Match File complet et 
 fallback CPU. Ces nombres décrivent la machine mesurée et ne sont pas un contrat
 portable de latence.
 
+## Geometric Verifier Fundamental — Gate A
+
+Le 9 août 2026, `benchmark-geometric-verifier` a comparé FM_RANSAC, USAC_DEFAULT, USAC_MAGSAC,
+USAC_ACCURATE et MAGSAC à seed locale sur le Ryzen 7 8845HS, OpenCV 5.0.0 et Clang 22.1.8. Sur
+8192 correspondances, 70 % d'outliers et bruit 0,75 px, le candidat local mesure
+10,80/11,04/11,35 ms médiane/p95/pire. FM_RANSAC mesure 316,44/318,87/319,66 ms avec seulement
+0,413 de recall.
+
+Avant campagne, PSI CPU/mémoire/I/O avg10 était nul, `MemAvailable` environ 9,72 Gio et
+`pswpin/pswpout` nul. Après 30,4 s à environ 99 % d'un CPU, PSI et swap restaient nuls,
+`MemAvailable` environ 9,74 Gio et le capteur CPU observé passait d'environ 54,6 à 55 °C. Ce sont
+des proxies objectifs, pas une mesure subjective de fluidité.
+
+Le coût court et le faible working set rendent Vulkan `NOT_JUSTIFIED` pour ce verifier sur la
+Radeon 780M. Le GPU reste utilisé uniquement par le Matcher ORB existant.
+
+Le profil production réserve un CPU logique, 4 Mio et un worker, avec lots 1/2/4/8. Un run de la
+vraie Task sur 1000 parents, suivi de ses chemins de reprise/configuration, a traversé environ
+2001 parents réutilisés en 5,870 s (environ 341/s). Ce chiffre inclut DB, checkpoints et fixture ;
+il ne remplace pas la latence estimator-only Gate A. Le processus de test a culminé à 25 964 Kio
+RSS. `MemAvailable` a varié de 10 702 988 à 10 692 916 Kio, sans swap ; PSI avg10 final était
+0,34 % CPU et 0 % mémoire/I/O. Les latences médiane/p95 par parent et le RSS début/fin n'étaient
+pas mesurables avec ce harness et ne sont donc pas extrapolés.
+
 ## Feasibility Vulkan SIFT / RootSIFT
 
 Sur le même RADV PHOENIX, `shaderFloat64`, les timestamps compute, un subgroup

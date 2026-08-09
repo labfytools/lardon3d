@@ -28,13 +28,19 @@ opencv = dependency(
     'opencv5',
     required: true,
     include_type: 'system',
-    modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d'],
+    modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d', 'opencv_geometry'],
 )
 opencv_benchmark = dependency(
     'opencv5',
     required: true,
     include_type: 'system',
     modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d', 'opencv_imgproc'],
+)
+
+opencv_geometry = dependency(
+    'opencv5',
+    version: '>=5.0.0',
+    modules: ['opencv_core', 'opencv_geometry'],
 )
 
 vulkan_orb = get_option('vulkan_orb')
@@ -134,6 +140,7 @@ executable(
         'src/candidate_pair_gen.c',
         'src/candidate_pair_task.c',
         'src/matcher_task.c',
+        'src/geometric_verifier_task.c',
         'src/image_view.c',
         'src/project.c',
         'src/project_db.c',
@@ -147,9 +154,10 @@ executable(
         'src/hardware_profile.c',
         'src/match_file.c',
         'src/matcher.cpp',
+        'src/geometric_verifier.cpp',
     ] + matcher_backend_sources,
     include_directories: include_directories('include'),
-    dependencies: [ncursesw, threads, sqlite3, openssl, opencv]
+    dependencies: [ncursesw, threads, sqlite3, openssl, opencv, opencv_geometry]
         + matcher_backend_dependencies,
 )
 
@@ -185,6 +193,7 @@ import_task_test = executable(
         'src/task_kind_registry.c',
         'src/task_kinds.c',
         'src/matcher_task.c', 'src/matcher.cpp', 'src/match_file.c',
+        'src/geometric_verifier_task.c', 'src/geometric_verifier.cpp',
         'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/feature_store.c',
         'src/visual_index.c',
@@ -324,6 +333,7 @@ candidate_pair_task_test = executable(
         'src/project.c', 'src/project_db.c', 'src/task.c',
         'src/task_checkpoint.c', 'src/task_kind_registry.c',
         'src/task_kinds.c', 'src/matcher_task.c', 'src/matcher.cpp',
+        'src/geometric_verifier_task.c', 'src/geometric_verifier.cpp',
         'src/match_file.c', 'src/task_queue.c', 'src/import.c',
         'src/import_task.c', 'src/image_catalog.c',
         'src/image_catalog_persistent.c', 'src/image_view.c',
@@ -353,6 +363,7 @@ matcher_task_test = executable(
         'src/project_db.c', 'src/task.c', 'src/task_checkpoint.c',
         'src/task_kind_registry.c', 'src/task_kinds.c', 'src/task_queue.c',
         'src/matcher_task.c', 'src/matcher.cpp', 'src/match_file.c',
+        'src/geometric_verifier_task.c', 'src/geometric_verifier.cpp',
         'src/feature_store.c', 'src/resource_governor.c',
         'src/resource_snapshot.c', 'src/hardware_profile.c',
         'src/import.c', 'src/import_task.c', 'src/image_catalog.c',
@@ -378,6 +389,7 @@ feature_task_test = executable(
         'src/project_db.c', 'src/task.c', 'src/task_checkpoint.c',
         'src/task_kind_registry.c', 'src/task_kinds.c', 'src/task_queue.c',
         'src/matcher_task.c', 'src/matcher.cpp', 'src/match_file.c',
+        'src/geometric_verifier_task.c', 'src/geometric_verifier.cpp',
         'src/import.c', 'src/import_task.c', 'src/image_catalog.c',
         'src/image_catalog_persistent.c', 'src/image_view.c',
         'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
@@ -411,6 +423,7 @@ precision_consolidation_test = executable(
         'src/project.c', 'src/project_db.c', 'src/task.c',
         'src/task_checkpoint.c', 'src/task_kind_registry.c',
         'src/task_kinds.c', 'src/matcher_task.c', 'src/matcher.cpp',
+        'src/geometric_verifier_task.c', 'src/geometric_verifier.cpp',
         'src/match_file.c', 'src/task_queue.c', 'src/import.c',
         'src/import_task.c', 'src/image_catalog.c',
         'src/image_catalog_persistent.c', 'src/image_view.c',
@@ -535,6 +548,7 @@ project_test = executable(
         'src/task_kind_registry.c',
         'src/task_kinds.c',
         'src/matcher_task.c', 'src/matcher.cpp', 'src/match_file.c',
+        'src/geometric_verifier_task.c', 'src/geometric_verifier.cpp',
         'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/feature_store.c',
         'src/visual_index.c',
@@ -763,3 +777,57 @@ executable(
     include_directories: include_directories('include'),
     dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
+
+executable(
+    'benchmark-geometric-verifier',
+    sources: ['tests/benchmark_geometric_verifier.cpp'],
+    build_by_default: false,
+    dependencies: [opencv_geometry],
+)
+
+geometric_verifier_test = executable(
+    'test-geometric-verifier-core',
+    sources: [
+        'tests/test_geometric_verifier_core.cpp',
+        'src/geometric_verifier.cpp',
+        'src/match_file.c',
+        'src/feature_store.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+        'src/image_catalog_persistent.c',
+        'src/app_state.c',
+    ],
+    cpp_args: ['-DLARDON3D_GEOMETRIC_VERIFIER_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv_geometry],
+)
+
+test('geometric-verifier-core', geometric_verifier_test, timeout: 60)
+
+geometric_verifier_task_test = executable(
+    'test-geometric-verifier-task',
+    sources: [
+        'tests/test_geometric_verifier_task.c', 'src/app_state.c', 'src/project.c',
+        'src/project_db.c', 'src/task.c', 'src/task_checkpoint.c',
+        'src/task_kind_registry.c', 'src/task_kinds.c', 'src/task_queue.c',
+        'src/geometric_verifier_task.c', 'src/geometric_verifier.cpp',
+        'src/match_file.c', 'src/feature_store.c', 'src/resource_governor.c',
+        'src/resource_snapshot.c', 'src/import.c', 'src/import_task.c',
+        'src/image_catalog.c', 'src/image_catalog_persistent.c', 'src/image_view.c',
+        'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
+        'src/feature_extractor_opencv.cpp', 'src/visual_index.c',
+        'src/visual_index_task.c', 'src/candidate_pair_gen.c',
+        'src/candidate_pair_task.c', 'src/matcher_task.c', 'src/matcher.cpp',
+    ] + matcher_backend_sources,
+    c_args: [
+        '-DLARDON3D_PROJECT_DB_TESTING',
+        '-DLARDON3D_GEOMETRIC_VERIFIER_TASK_TESTING',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
+)
+test('geometric-verifier-task', geometric_verifier_task_test, timeout: 60,
+     env: opencv_test_environment)

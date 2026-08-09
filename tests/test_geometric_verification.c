@@ -157,6 +157,7 @@ static bool create_v11_database(const char *path) {
   lardon3d_project_db_close(database);
   return execute_sql(path,
                      "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+                     "DROP TABLE geometric_verifier_tasks;"
                      "DROP TABLE geometric_verification_results;"
                      "UPDATE metadata SET value=11 WHERE key='schema_version';"
                      "COMMIT;PRAGMA foreign_keys=ON;");
@@ -166,7 +167,7 @@ static bool test_model_api(const char *path) {
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
   Lardon3DProjectDb *database = NULL;
   CHECK(lardon3d_project_db_open(path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 12);
+  CHECK(lardon3d_project_db_schema_version(database) == 13);
   Parents parents;
   CHECK(create_parents(database, &parents));
 
@@ -401,7 +402,7 @@ static bool test_migration(const char *v11_path, const char *failed_path) {
                       "name='geometric_verification_results'",
                       0));
   CHECK(lardon3d_project_db_open(v11_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 12);
+  CHECK(lardon3d_project_db_schema_version(database) == 13);
   Parents parents;
   CHECK(create_parents(database, &parents));
   unsigned char fingerprint[32] = {0x91};
@@ -413,7 +414,7 @@ static bool test_migration(const char *v11_path, const char *failed_path) {
             &migrated_result) == LARDON3D_PROJECT_DB_OK);
   uint64_t migrated_result_id = migrated_result.geometric_verification_result_id;
   lardon3d_project_db_close(database);
-  CHECK(query_integer(v11_path, "SELECT value FROM metadata WHERE key='schema_version'", 12));
+  CHECK(query_integer(v11_path, "SELECT value FROM metadata WHERE key='schema_version'", 13));
   CHECK(query_integer(v11_path,
                       "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
                       "name='geometric_verification_results_parent_idx'",
@@ -434,7 +435,7 @@ static bool test_migration(const char *v11_path, const char *failed_path) {
                       "name='geometric_verification_results'",
                       0));
   CHECK(lardon3d_project_db_open(failed_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 12);
+  CHECK(lardon3d_project_db_schema_version(database) == 13);
   lardon3d_project_db_close(database);
   return true;
 }

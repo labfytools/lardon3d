@@ -1,7 +1,8 @@
 # Base de données projet Lardon3D
 
-> Version courante : **v12**. La migration transactionnelle v11→v12 ajoute le
-> modèle immutable `geometric_verification_results`. La migration v10→v11 ajoute
+> Version courante : **v13**. La migration transactionnelle v12→v13 ajoute
+> uniquement `geometric_verifier_tasks` pour la tâche durable. La migration
+> v11→v12 ajoute le modèle immutable `geometric_verification_results`. La migration v10→v11 ajoute
 > `matcher_tasks` pour la tâche Matcher durable. La version v10 publiée ajoute
 > uniquement `match_results` pour le Match Result Model. La migration v8→v9
 > ajoute la table `candidate_pair_generate_tasks` pour la tâche durable
@@ -12,7 +13,8 @@
 
 ## Vision
 
-La base de données projet stocke les métadonnées de reconstruction et les relations entre les entités. Elle est conçue pour être légère, persistante et permettre la reprise après interruption.
+La base de données projet stocke les métadonnées de reconstruction et les relations entre les
+entités. Elle est conçue pour être légère, persistante et permettre la reprise après interruption.
 
 ## Structure conceptuelle
 
@@ -338,6 +340,14 @@ Le curseur est le dernier `candidate_pair_id` checkpointé. Il n'implique ni
 continuité des IDs ni liste persistée de Candidate Pairs. La configuration ne
 peut pas changer lors d'un UPSERT ; seul le curseur avance.
 
+## Schéma v13 implémenté
+
+La migration v12→v13 ajoute uniquement `geometric_verifier_tasks`. Elle porte
+le curseur `after_match_result_id`, les sept paramètres scientifiques v1 et le
+fingerprint de contrôle. L'UPSERT autorise seulement le curseur à évoluer ; la
+configuration reste immuable. La migration est transactionnelle, son rollback
+forcé conserve une vraie v12 sans la table et un retry termine en v13.
+
 Le Match Result ci-dessous reste le contrat publié de v10 :
 
 ```sql
@@ -379,10 +389,13 @@ CREATE INDEX match_results_feature_set_b_idx
 ```
 
 **Invariants** :
-- `UNIQUE(candidate_pair_id, feature_set_id_a, feature_set_id_b, matcher_kind, matcher_version, parameter_fingerprint)` : identité déterministe 6 parties
-- `candidate_pair_id` référence `candidate_pairs(candidate_pair_id)` avec l'action par défaut (NO ACTION)
+- `UNIQUE(candidate_pair_id, feature_set_id_a, feature_set_id_b, matcher_kind, matcher_version,
+  parameter_fingerprint)` : identité déterministe 6 parties
+- `candidate_pair_id` référence `candidate_pairs(candidate_pair_id)` avec l'action par défaut
+  (NO ACTION)
 - `feature_set_id_a` et `feature_set_id_b` référencent `feature_sets(feature_set_id)`
-- `feature_set_id_a` appartient à `image_id_a` de la Candidate Pair, `feature_set_id_b` appartient à `image_id_b` (validé par l'API create)
+- `feature_set_id_a` appartient à `image_id_a` de la Candidate Pair, `feature_set_id_b` appartient
+  à `image_id_b` (validé par l'API create)
 - `NO_MATCH` impose `match_count=0` et aucun asset
 - `MATCHED` impose `match_count>0` et SHA/path/taille complets
 - les échecs d'exécution restent dans le Task Runtime et ne créent pas de ligne
@@ -392,7 +405,8 @@ CREATE INDEX match_results_feature_set_b_idx
 **API** :
 - `lardon3d_project_db_create_match_result()` — INSERT avec validation des contraintes
 - `lardon3d_project_db_load_match_result()` — SELECT par ID
-- `lardon3d_project_db_find_match_result()` — SELECT par (candidate_pair_id, feature_set_id_a, feature_set_id_b, matcher_kind, matcher_version, parameter_fingerprint)
+- `lardon3d_project_db_find_match_result()` — SELECT par (candidate_pair_id, feature_set_id_a,
+  feature_set_id_b, matcher_kind, matcher_version, parameter_fingerprint)
 - `lardon3d_project_db_list_match_results()` — SELECT paginé ORDER BY id
 - `lardon3d_project_db_record_matcher_task()` — UPSERT configuration/curseur
 - `lardon3d_project_db_load_matcher_task()` — SELECT par task_id
@@ -444,18 +458,20 @@ Le contrat complet, dont l'ordre des bits, est dans
 
 ## Ouverture et migrations
 
-Une DB vide reçoit la chaîne de schémas jusqu'à v12 dans une transaction
+Une DB vide reçoit la chaîne de schémas jusqu'à v13 dans une transaction
 `BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
 `task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
 `NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
-artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1,
-v2, v3, v4, v5, v6, v7, v8, v9, v10 et v11 sont migrées séquentiellement vers v12.
+artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1
+à v12 sont migrées séquentiellement vers v13.
 Une v10 publiée est validée comme telle avant que v10→v11 crée
 `matcher_tasks` ; son absence n'est donc pas une corruption. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
 interne de migration applique uniquement la chaîne séquentielle connue jusqu'à
-v12 ; une valeur hors de 1..12 est refusée. La failure injectée v12 rollbacke
+v13 ; une valeur hors de 1..13 est refusée. La failure injectée v12 rollbacke
 la table, l'index et le changement de version, laissant une vraie v11 utilisable.
+La failure injectée v13 conserve une vraie v12 sans `geometric_verifier_tasks` ;
+un retry applique ensuite v12→v13.
 
 Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
 
@@ -592,8 +608,8 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v12 et migrations séquentielles
-v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12, identité projet, transactions
+**IMPLEMENTED** — SQLite système, schéma v13 et migrations séquentielles
+v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13, identité projet, transactions
 tâche+checkpoint, pagination de reprise et artefacts génériques.
 
 **IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,

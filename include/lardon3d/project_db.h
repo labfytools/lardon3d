@@ -9,7 +9,7 @@
 #include <lardon3d/task.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 12,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 13,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -143,6 +143,19 @@ typedef struct {
   int matcher_kind;
   float ratio_threshold;
 } Lardon3DProjectDbMatcherTask;
+
+typedef struct {
+  uint64_t task_id;
+  uint64_t after_match_result_id;
+  double threshold_pixels;
+  double confidence;
+  uint32_t max_iterations;
+  uint32_t min_inlier_count;
+  double min_inlier_ratio;
+  uint32_t seed_policy_version;
+  uint32_t canonicalization_version;
+  unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
+} Lardon3DProjectDbGeometricVerifierTask;
 
 typedef struct {
   uint64_t match_result_id;
@@ -508,6 +521,14 @@ Lardon3DProjectDbResult lardon3d_project_db_record_matcher_task(
 Lardon3DProjectDbResult lardon3d_project_db_load_matcher_task(
     Lardon3DProjectDb *database, uint64_t task_id,
     Lardon3DProjectDbMatcherTask *parameters);
+Lardon3DProjectDbResult lardon3d_project_db_record_geometric_verifier_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbGeometricVerifierTask *parameters, int64_t updated_at);
+Lardon3DProjectDbResult lardon3d_project_db_load_geometric_verifier_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbGeometricVerifierTask *parameters);
 
 Lardon3DProjectDbResult lardon3d_project_db_create_match_result(
     Lardon3DProjectDb *database, uint64_t candidate_pair_id, uint64_t feature_set_id_a,

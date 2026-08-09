@@ -97,19 +97,20 @@ Index, persistance, canonicalisation, idempotence et tâche durable.
 | **Orchestration** | `matcher.run` traite les Candidate Pairs par pages et lots durables de 1/2/4/8. |
 
 **Statut :** IMPLEMENTED v1 — Matcher, Match Store, reprise idempotente et Task
-durable. Le calcul Geometric Verifier reste l'étape suivante, non commencée.
+durable. Le Geometric Verifier consomme désormais ces résultats.
 Le Match Result appartient à Project DB v10 et la tâche durable `matcher.run`
 à Project DB v11.
 
 ### F2. Geometric Verification
 
-Project DB v12 implémente uniquement le modèle scientifique persistant. Chaque
+Project DB v12 implémente le modèle scientifique persistant. Chaque
 résultat appartient à un Match Result `MATCHED`, possède une identité exacte,
 un masque compact borné et, si VERIFIED, une matrice fondamentale 3×3 finie.
-La publication est atomique et immutable. Le calcul, son task kind et le choix
-d'algorithme restent planifiés dans Geometric Verifier v1.
+La publication est atomique et immutable. Project DB v13 ajoute uniquement la
+persistance de `geometric_verifier.run` v1. Le calcul Fundamental emploie
+USAC/MAGSAC avec configuration, seed et fingerprint déterministes.
 
-**Statut :** MODEL IMPLEMENTED v1 — VERIFIER PLANNED.
+**Statut :** IMPLEMENTED v1 — MODEL, VERIFIER ET TASK DURABLE.
 
 ---
 

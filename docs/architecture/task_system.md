@@ -111,10 +111,11 @@ par lots adaptatifs de 1, 2, 4 ou 8. Il persiste le curseur
 effectue une rupture de séquence avant le suivant. Une paire repassée après un
 crash est réutilisée par son Match Result.
 
-Geometric Verification Model v1 n'ajoute aucun task kind ni état runtime.
-Project DB v12 ne contient que les deux états scientifiques terminaux. Le futur
-Geometric Verifier v1 devra obtenir réservation, pause/cancel, lot et checkpoint
-dans un ticket séparé avant toute exécution.
+**IMPLEMENTED** — `geometric_verifier.run` v1 traite un Match Result atomique à
+la fois, par lots adaptatifs de 1, 2, 4 ou 8. Project DB v13 conserve sa
+configuration scientifique et `after_match_result_id`. Chaque résultat est
+publié avant le curseur ; pause, annulation, checkpoint et rupture de séquence
+restent coopératifs aux frontières des parents et des lots.
 
 Le chemin de production de l'import ne possède plus de thread ni de drapeau
 d'annulation privés. Son wrapper TUI ne fait qu'enqueue/cancel/observer la

@@ -55,13 +55,14 @@ chaque paire et entre les lots. Un crash après publication mais avant le
 checkpoint revoit la paire : le Matcher réutilise alors le Match Result et ne
 recalcule pas les descripteurs.
 
-## Geometric Verification Model
+## Geometric Verification
 
 Project DB v12 stocke un résultat borné à 1024 octets de masque et neuf
-binary64. Le modèle ne lit aucun signal matériel et ne modifie pas le Governor.
-Le futur verifier calculera une paire hors transaction, publiera par une courte
-transaction, checkpoint puis libérera ses buffers avant réadmission. Admission,
-threads et lots resteront exclusivement décidés par Runtime et Governor.
+binary64. `geometric_verifier.run` v1 traite un Match Result atomique, publie
+par une transaction courte puis checkpoint son curseur par lots 1/2/4/8 avant
+`task_sequence_break()`. Sa ligne durable appartient à Project DB v13. Le job
+réserve un CPU logique et 4 Mio, sans slot GPU. Admission, pression, lots et
+slow-start restent exclusivement décidés par Runtime et Governor.
 
 ## GPU et files
 
@@ -84,6 +85,7 @@ reste inchangée.
 - hard floor `MemAvailable` : un huitième, environ 1,9 Gio ;
 - Feature workers : 1 ; batch : 1 image ;
 - Matcher workers : 1 ; lots adaptatifs 1, 2, 4 ou 8 Candidate Pairs ;
+- Geometric Verifier workers : 1 ; lots adaptatifs 1, 2, 4 ou 8 Match Results ;
 - profondeur de la Task Queue : 64 tâches légères, un seul callback actif ;
 - PSI CPU avg10 : nouvelle admission suspendue à 20 % ;
 - PSI mémoire avg10 : nouvelle admission suspendue à 1 % ;
@@ -92,6 +94,13 @@ reste inchangée.
 Le benchmark Matcher 8192 mesure environ 70 ms ORB et 135 ms SIFT à 12 threads,
 contre 68 ms et 127 ms à 16 threads : le profil interactif abandonne environ
 3–7 % de latence isolée pour réserver quatre threads logiques au desktop.
+
+Le run soutenu Geometric Verifier traverse environ 2001 parents réutilisés en
+5,870 s via Task, DB, checkpoints et Governor. Le processus de test culmine à
+25 964 Kio RSS ; `MemAvailable` reste au-dessus de 10,69 Gio et les compteurs
+swap restent nuls. PSI avg10 final vaut 0,34 % CPU et 0 % mémoire/I/O. Cette
+mesure valide le chemin resource-aware et la reprise ; elle ne prétend pas être
+une distribution de latence estimator-only.
 
 ## Limites
 
