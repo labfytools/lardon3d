@@ -92,6 +92,9 @@ static bool downgrade_project_to_historical_v10(const char *database_path) {
       "DROP TABLE geometric_verifier_tasks;"
       "DROP TABLE geometric_verification_results;"
       "DROP TABLE matcher_tasks;"
+      "DROP TABLE track_observations;"
+      "DROP TABLE tracks;"
+      "DROP TABLE track_sets;"
       "UPDATE metadata SET value=10 WHERE key='schema_version';"
       "COMMIT;PRAGMA foreign_keys=ON;";
   bool success = sqlite3_exec(connection, sql, NULL, NULL, NULL) == SQLITE_OK;
@@ -352,7 +355,7 @@ static bool run_test(void) {
                       "name='matcher_tasks'",
                       0));
   CHECK(reopen_runtime(&fixture));
-  CHECK(lardon3d_project_db_schema_version(fixture.state.project_db) == 13);
+  CHECK(lardon3d_project_db_schema_version(fixture.state.project_db) == 14);
   CHECK(query_integer(database_path,
                       "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
                       "name='matcher_tasks'",

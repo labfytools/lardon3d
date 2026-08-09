@@ -1,7 +1,7 @@
 ---
 description: Audite concurrence, ownership et durées de vie partagées
 mode: subagent
-model: opencode-go/deepseek-v4-pro
+model: opencode-go/gpt-5.6-luna
 temperature: 0.1
 maxSteps: 50
 permission:

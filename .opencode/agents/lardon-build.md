@@ -1,7 +1,7 @@
 ---
 description: Implémente les tranches substantielles et corrections complexes de Lardon3D
 mode: subagent
-model: opencode-go/deepseek-v4-pro
+model: opencode-go/gpt-5.6-luna
 temperature: 0.1
 maxSteps: 120
 permission:

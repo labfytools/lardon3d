@@ -1,7 +1,7 @@
 ---
 description: Analyse en lecture seule architecture, persistance et invariants
 mode: subagent
-model: opencode-go/qwen3.8-max
+model: opencode-go/gpt-5.6-luna
 temperature: 0.1
 maxSteps: 40
 permission:

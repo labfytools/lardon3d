@@ -1,5 +1,14 @@
 # Matching & Tracks
 
+> **Document historique.** Ce document décrit la vision conceptuelle initiale
+> du matching et des tracks. Le contrat persistant réel du Track Model v1
+> (schéma, invariants, API) est documenté dans
+> [tracks.md](../architecture/tracks.md). Les différences notables :
+> le Track Model v1 ne contient aucune coordonnée 3D, aucun statut
+> (ACTIVE/OPTIMIZED/REJECTED), aucune matrice de co-visibilité et aucun
+> plafond de longueur arbitraire. La triangulation, le Sparse SfM et le
+> Bundle Adjustment sont des étapes ultérieures séparées.
+
 > Frontière v1A : les groupes de support ORB/SIFT sont uniquement des preuves
 > locales intra-image. Ils ne comparent pas les espaces Hamming et L2, ne sont
 > pas des matches multivues et ne créent aucun track. Le futur matcher choisira

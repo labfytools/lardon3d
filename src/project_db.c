@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include <lardon3d/project_db.h>
 
@@ -263,6 +264,32 @@ static const char schema_geometric_verification_v12[] =
     "CREATE INDEX geometric_verification_results_parent_idx ON "
     "geometric_verification_results(match_result_id,geometric_verification_result_id);";
 
+static const char schema_track_v14[] =
+    "CREATE TABLE track_sets(track_set_id INTEGER PRIMARY KEY AUTOINCREMENT "
+    "CHECK(track_set_id>0),builder_kind TEXT NOT NULL CHECK(length(builder_kind)>0 AND "
+    "length(builder_kind)<=64),builder_version INTEGER NOT NULL CHECK(builder_version>0),"
+    "parameter_fingerprint BLOB NOT NULL CHECK(length(parameter_fingerprint)=32),"
+    "verifier_kind INTEGER NOT NULL CHECK(verifier_kind>0),verifier_version INTEGER NOT NULL "
+    "CHECK(verifier_version>0),verifier_fingerprint BLOB NOT NULL "
+    "CHECK(length(verifier_fingerprint)=32),input_scope_hash BLOB NOT NULL "
+    "CHECK(length(input_scope_hash)=32),gvr_count INTEGER NOT NULL CHECK(gvr_count>=1),"
+    "track_count INTEGER NOT NULL CHECK(track_count>=0),created_at INTEGER NOT NULL "
+    "CHECK(created_at>=0),UNIQUE(builder_kind,builder_version,parameter_fingerprint,"
+    "verifier_kind,verifier_version,verifier_fingerprint,input_scope_hash));"
+    "CREATE TABLE tracks(track_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(track_id>0),"
+    "track_set_id INTEGER NOT NULL REFERENCES track_sets(track_set_id) ON DELETE CASCADE,"
+    "observation_count INTEGER NOT NULL CHECK(observation_count>=2));"
+    "CREATE INDEX tracks_set_idx ON tracks(track_set_id,track_id);"
+    "CREATE TABLE track_observations(track_set_id INTEGER NOT NULL,"
+    "track_id INTEGER NOT NULL REFERENCES tracks(track_id) ON DELETE CASCADE,"
+    "feature_set_id INTEGER NOT NULL REFERENCES feature_sets(feature_set_id),"
+    "feature_index INTEGER NOT NULL CHECK(feature_index>=0),"
+    "position_in_track INTEGER NOT NULL CHECK(position_in_track>=0),"
+    "PRIMARY KEY(track_set_id,feature_set_id,feature_index),"
+    "UNIQUE(track_id,position_in_track));"
+    "CREATE INDEX track_observations_lookup_idx ON "
+    "track_observations(feature_set_id,feature_index,track_set_id);";
+
 static const char schema_geometric_verifier_task_v13[] =
     "CREATE TABLE geometric_verifier_tasks("
     "task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,"
@@ -366,7 +393,7 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
   if (from_version != 0 && from_version != 1 && from_version != 2 && from_version != 3 &&
       from_version != 4 && from_version != 5 && from_version != 6 && from_version != 7 &&
       from_version != 8 && from_version != 9 && from_version != 10 && from_version != 11 &&
-      from_version != 12) {
+      from_version != 12 && from_version != 13) {
     return LARDON3D_PROJECT_DB_CORRUPT;
   }
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
@@ -639,6 +666,21 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
                        "finish schema v13 migration");
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version < 14) {
+    result = execute(database, schema_track_v14, "migrate schema v13 to v14");
+#ifdef LARDON3D_PROJECT_DB_TESTING
+    const char *forced_failure = getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V14");
+    if (result == LARDON3D_PROJECT_DB_OK && forced_failure && strcmp(forced_failure, "1") == 0) {
+      result = execute(database, "INSERT INTO missing_test_table VALUES(1)",
+                       "forced migration v14 failure");
+    }
+#endif
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database,
+                       "UPDATE metadata SET value=14 WHERE key='schema_version' AND value=13",
+                       "finish schema v14 migration");
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit migration");
   }
@@ -755,7 +797,10 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
                               "matcher_tasks",
                               "match_results",
                               "geometric_verification_results",
-                              "geometric_verifier_tasks"};
+                              "geometric_verifier_tasks",
+                              "track_sets",
+                              "tracks",
+                              "track_observations"};
     for (size_t index = 0; index < sizeof(required) / sizeof(required[0]) &&
                            result == LARDON3D_PROJECT_DB_OK;
          ++index) {
@@ -4305,6 +4350,593 @@ Lardon3DProjectDbResult lardon3d_project_db_list_geometric_verification_results(
   (void)pthread_mutex_unlock(&database->mutex);
   return db_result;
 }
+
+/* Track persistence is deliberately kept as a small, self-contained API.  The
+ * caller owns input arrays; loaded observation arrays are owned by the Track
+ * value until lardon3d_project_db_free_track(). */
+static bool valid_track_identity(const Lardon3DProjectDbTrackSet *set) {
+  return set && set->builder_kind[0] != '\0' && strlen(set->builder_kind) < 65 &&
+         set->builder_version > 0 && set->verifier_kind > 0 && set->verifier_version > 0 &&
+         set->gvr_count > 0 &&
+         set->created_at >= 0;
+}
+
+static Lardon3DProjectDbResult read_track_set(sqlite3_stmt *statement,
+                                              Lardon3DProjectDbTrackSet *set) {
+  sqlite3_int64 id = sqlite3_column_int64(statement, 0);
+  sqlite3_int64 builder_version = sqlite3_column_int64(statement, 2);
+  sqlite3_int64 verifier_kind = sqlite3_column_int64(statement, 4);
+  sqlite3_int64 verifier_version = sqlite3_column_int64(statement, 5);
+  sqlite3_int64 gvr_count = sqlite3_column_int64(statement, 8);
+  sqlite3_int64 track_count = sqlite3_column_int64(statement, 9);
+  const unsigned char *builder = sqlite3_column_text(statement, 1);
+  const void *parameter = sqlite3_column_blob(statement, 3);
+  const void *verifier = sqlite3_column_blob(statement, 6);
+  const void *scope = sqlite3_column_blob(statement, 7);
+  if (id <= 0 || builder_version <= 0 || verifier_kind <= 0 || verifier_version <= 0 ||
+      gvr_count <= 0 || track_count < 0 || sqlite3_column_bytes(statement, 3) != 32 ||
+      sqlite3_column_bytes(statement, 6) != 32 || sqlite3_column_bytes(statement, 7) != 32 ||
+      !builder || !parameter || !verifier || !scope || strlen((const char *)builder) >= 65) {
+    return LARDON3D_PROJECT_DB_CORRUPT;
+  }
+  memset(set, 0, sizeof(*set));
+  set->track_set_id = (uint64_t)id;
+  (void)snprintf(set->builder_kind, sizeof(set->builder_kind), "%s", (const char *)builder);
+  set->builder_version = (uint32_t)builder_version;
+  memcpy(set->parameter_fingerprint, parameter, 32);
+  set->verifier_kind = (int)verifier_kind;
+  set->verifier_version = (uint32_t)verifier_version;
+  memcpy(set->verifier_fingerprint, verifier, 32);
+  memcpy(set->input_scope_hash, scope, 32);
+  set->gvr_count = (uint64_t)gvr_count;
+  set->track_count = (uint64_t)track_count;
+  set->created_at = sqlite3_column_int64(statement, 10);
+  return set->created_at >= 0 ? LARDON3D_PROJECT_DB_OK : LARDON3D_PROJECT_DB_CORRUPT;
+}
+
+void lardon3d_project_db_free_track(Lardon3DProjectDbTrack *track) {
+  if (!track) {
+    return;
+  }
+  free(track->observations);
+  memset(track, 0, sizeof(*track));
+}
+
+static void bind_track_identity(sqlite3_stmt *statement,
+                                const Lardon3DProjectDbTrackSet *set, int first) {
+  (void)sqlite3_bind_text(statement, first, set->builder_kind, -1, SQLITE_TRANSIENT);
+  (void)sqlite3_bind_int64(statement, first + 1, set->builder_version);
+  (void)sqlite3_bind_blob(statement, first + 2, set->parameter_fingerprint, 32, SQLITE_TRANSIENT);
+  (void)sqlite3_bind_int(statement, first + 3, set->verifier_kind);
+  (void)sqlite3_bind_int64(statement, first + 4, set->verifier_version);
+  (void)sqlite3_bind_blob(statement, first + 5, set->verifier_fingerprint, 32, SQLITE_TRANSIENT);
+  (void)sqlite3_bind_blob(statement, first + 6, set->input_scope_hash, 32, SQLITE_TRANSIENT);
+}
+
+static Lardon3DProjectDbResult read_track_set_by_statement(
+    Lardon3DProjectDb *database, sqlite3_stmt *statement, Lardon3DProjectDbTrackSet *set) {
+  int code = sqlite3_step(statement);
+  Lardon3DProjectDbResult result = code == SQLITE_ROW ? read_track_set(statement, set)
+                                                       : LARDON3D_PROJECT_DB_NOT_FOUND;
+  if (code != SQLITE_ROW && code != SQLITE_DONE) {
+    result = sqlite_result(database, code, "read track set");
+  }
+  (void)sqlite3_finalize(statement);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_track_set(
+    Lardon3DProjectDb *database, uint64_t track_set_id, Lardon3DProjectDbTrackSet *track_set) {
+  if (!database || !valid_catalog_id(track_set_id) || !track_set) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(track_set, 0, sizeof(*track_set));
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT track_set_id,builder_kind,builder_version,parameter_fingerprint,verifier_kind,"
+      "verifier_version,verifier_fingerprint,input_scope_hash,gvr_count,track_count,created_at "
+      "FROM track_sets WHERE track_set_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)track_set_id);
+    result = read_track_set_by_statement(database, statement, track_set);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_find_track_set(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbTrackSet *identity,
+    Lardon3DProjectDbTrackSet *track_set) {
+  if (!database || !valid_track_identity(identity) || !track_set) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(track_set, 0, sizeof(*track_set));
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT track_set_id,builder_kind,builder_version,parameter_fingerprint,verifier_kind,"
+      "verifier_version,verifier_fingerprint,input_scope_hash,gvr_count,track_count,created_at "
+      "FROM track_sets WHERE builder_kind=?1 AND builder_version=?2 AND parameter_fingerprint=?3 "
+      "AND verifier_kind=?4 AND verifier_version=?5 AND verifier_fingerprint=?6 "
+      "AND input_scope_hash=?7",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    bind_track_identity(statement, identity, 1);
+    result = read_track_set_by_statement(database, statement, track_set);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_list_track_sets(
+    Lardon3DProjectDb *database, uint64_t after_track_set_id, Lardon3DProjectDbTrackSet *track_sets,
+    size_t capacity, size_t *count) {
+  if (!database || !track_sets || !count || capacity == 0 ||
+      capacity > LARDON3D_PROJECT_DB_TRACK_PAGE_MAX) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  *count = 0;
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT track_set_id,builder_kind,builder_version,parameter_fingerprint,verifier_kind,"
+      "verifier_version,verifier_fingerprint,input_scope_hash,gvr_count,track_count,created_at "
+      "FROM track_sets WHERE track_set_id>?1 ORDER BY track_set_id LIMIT ?2",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)after_track_set_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)capacity);
+    int code;
+    while ((code = sqlite3_step(statement)) == SQLITE_ROW) {
+      result = read_track_set(statement, &track_sets[*count]);
+      if (result != LARDON3D_PROJECT_DB_OK) {
+        break;
+      }
+      ++*count;
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && code == SQLITE_DONE) {
+      result = LARDON3D_PROJECT_DB_OK;
+    } else if (result == LARDON3D_PROJECT_DB_OK) {
+      result = sqlite_result(database, code, "list track sets");
+    }
+    (void)sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+static Lardon3DProjectDbResult validate_track_observations_locked(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbTrack *tracks, size_t track_count) {
+  for (size_t track_index = 0; track_index < track_count; ++track_index) {
+    const Lardon3DProjectDbTrack *track = &tracks[track_index];
+    if (!track->observations || track->observation_count < 2) {
+      return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+    }
+    for (uint32_t observation_index = 0; observation_index < track->observation_count;
+         ++observation_index) {
+      const Lardon3DProjectDbTrackObservation *observation = &track->observations[observation_index];
+      if (observation->position_in_track != observation_index || observation->feature_set_id == 0) {
+        return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+      }
+      sqlite3_stmt *statement = NULL;
+      Lardon3DProjectDbResult result = prepare(
+          database, "SELECT image_id,feature_count FROM feature_sets WHERE feature_set_id=?1",
+          &statement);
+      if (result != LARDON3D_PROJECT_DB_OK) {
+        return result;
+      }
+      (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)observation->feature_set_id);
+      int code = sqlite3_step(statement);
+      sqlite3_int64 image_id = code == SQLITE_ROW ? sqlite3_column_int64(statement, 0) : 0;
+      sqlite3_int64 feature_count = code == SQLITE_ROW ? sqlite3_column_int64(statement, 1) : 0;
+      (void)sqlite3_finalize(statement);
+      if (code != SQLITE_ROW) {
+        return code == SQLITE_DONE ? LARDON3D_PROJECT_DB_NOT_FOUND
+                                   : sqlite_result(database, code, "validate track feature set");
+      }
+      if (image_id <= 0 || feature_count < 0 || (uint64_t)observation->feature_index >=
+                              (uint64_t)feature_count) {
+        return LARDON3D_PROJECT_DB_CONSTRAINT;
+      }
+      for (uint32_t prior = 0; prior < observation_index; ++prior) {
+        const Lardon3DProjectDbTrackObservation *old = &track->observations[prior];
+        if (old->feature_set_id == observation->feature_set_id &&
+            old->feature_index == observation->feature_index) {
+          return LARDON3D_PROJECT_DB_CONSTRAINT;
+        }
+        sqlite3_stmt *image_statement = NULL;
+        result = prepare(database, "SELECT image_id FROM feature_sets WHERE feature_set_id=?1",
+                         &image_statement);
+        if (result != LARDON3D_PROJECT_DB_OK) {
+          return result;
+        }
+        (void)sqlite3_bind_int64(image_statement, 1, (sqlite3_int64)old->feature_set_id);
+        code = sqlite3_step(image_statement);
+        sqlite3_int64 old_image = code == SQLITE_ROW ? sqlite3_column_int64(image_statement, 0) : 0;
+        (void)sqlite3_finalize(image_statement);
+        if (code != SQLITE_ROW) {
+          return LARDON3D_PROJECT_DB_CORRUPT;
+        }
+        if (old_image == image_id) {
+          return LARDON3D_PROJECT_DB_CONSTRAINT;
+        }
+      }
+    }
+  }
+  for (size_t first = 0; first < track_count; ++first) {
+    for (size_t second = first + 1; second < track_count; ++second) {
+      for (uint32_t a = 0; a < tracks[first].observation_count; ++a) {
+        for (uint32_t b = 0; b < tracks[second].observation_count; ++b) {
+          if (tracks[first].observations[a].feature_set_id == tracks[second].observations[b].feature_set_id &&
+              tracks[first].observations[a].feature_index == tracks[second].observations[b].feature_index) {
+            return LARDON3D_PROJECT_DB_CONSTRAINT;
+          }
+        }
+      }
+    }
+  }
+  return LARDON3D_PROJECT_DB_OK;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_create_track_set(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbTrackSet *configuration,
+    const Lardon3DProjectDbTrack *tracks, size_t track_count,
+    Lardon3DProjectDbTrackSet *published) {
+  if (!database || !valid_track_identity(configuration) || !published ||
+      (track_count > 0 && !tracks)) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  if (configuration->track_count != 0 && configuration->track_count != track_count) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(published, 0, sizeof(*published));
+  (void)pthread_mutex_lock(&database->mutex);
+  Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin track set publish");
+  int64_t publication_time = (int64_t)time(NULL);
+  if (result == LARDON3D_PROJECT_DB_OK && publication_time < 0) {
+    result = LARDON3D_PROJECT_DB_IO_ERROR;
+  }
+  bool reused = false;
+  sqlite3_stmt *statement = NULL;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(database,
+                     "SELECT track_set_id,builder_kind,builder_version,parameter_fingerprint,"
+                     "verifier_kind,verifier_version,verifier_fingerprint,input_scope_hash,gvr_count,"
+                     "track_count,created_at FROM track_sets WHERE builder_kind=?1 AND "
+                     "builder_version=?2 AND parameter_fingerprint=?3 AND verifier_kind=?4 AND "
+                     "verifier_version=?5 AND verifier_fingerprint=?6 AND input_scope_hash=?7",
+                     &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      bind_track_identity(statement, configuration, 1);
+      int code = sqlite3_step(statement);
+      if (code == SQLITE_ROW) {
+        result = read_track_set(statement, published);
+        if (result == LARDON3D_PROJECT_DB_OK &&
+            published->gvr_count != configuration->gvr_count) {
+          result = LARDON3D_PROJECT_DB_CONSTRAINT;
+        }
+        reused = result == LARDON3D_PROJECT_DB_OK;
+      } else if (code != SQLITE_DONE) {
+        result = sqlite_result(database, code, "find reusable track set");
+      } else {
+        result = validate_track_observations_locked(database, tracks, track_count);
+      }
+      (void)sqlite3_finalize(statement);
+      statement = NULL;
+    }
+  }
+  if (result == LARDON3D_PROJECT_DB_OK && published->track_set_id == 0) {
+    result = prepare(database,
+                     "INSERT INTO track_sets(builder_kind,builder_version,parameter_fingerprint,"
+                     "verifier_kind,verifier_version,verifier_fingerprint,input_scope_hash,gvr_count,"
+                     "track_count,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                     &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      bind_track_identity(statement, configuration, 1);
+      (void)sqlite3_bind_int64(statement, 8, (sqlite3_int64)configuration->gvr_count);
+      (void)sqlite3_bind_int64(statement, 9, (sqlite3_int64)track_count);
+       (void)sqlite3_bind_int64(statement, 10, publication_time);
+      result = step_done(database, statement, "insert track set");
+      statement = NULL;
+      if (result == LARDON3D_PROJECT_DB_OK) {
+        sqlite3_int64 id = sqlite3_last_insert_rowid(database->connection);
+        if (id <= 0) {
+          result = LARDON3D_PROJECT_DB_CORRUPT;
+        } else {
+          published->track_set_id = (uint64_t)id;
+        }
+      }
+    }
+    for (size_t index = 0; result == LARDON3D_PROJECT_DB_OK && index < track_count; ++index) {
+      const Lardon3DProjectDbTrack *track = &tracks[index];
+      result = prepare(database,
+                       "INSERT INTO tracks(track_set_id,observation_count) VALUES(?1,?2)",
+                       &statement);
+      if (result != LARDON3D_PROJECT_DB_OK) {
+        break;
+      }
+      (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)published->track_set_id);
+      (void)sqlite3_bind_int64(statement, 2, track->observation_count);
+      result = step_done(database, statement, "insert track");
+      statement = NULL;
+      if (result != LARDON3D_PROJECT_DB_OK) {
+        break;
+      }
+      sqlite3_int64 track_id = sqlite3_last_insert_rowid(database->connection);
+      if (track_id <= 0) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      for (uint32_t observation = 0;
+           result == LARDON3D_PROJECT_DB_OK && observation < track->observation_count; ++observation) {
+        const Lardon3DProjectDbTrackObservation *item = &track->observations[observation];
+        result = prepare(database,
+                         "INSERT INTO track_observations(track_set_id,track_id,feature_set_id,"
+                         "feature_index,position_in_track) VALUES(?1,?2,?3,?4,?5)",
+                         &statement);
+        if (result != LARDON3D_PROJECT_DB_OK) {
+          break;
+        }
+        (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)published->track_set_id);
+        (void)sqlite3_bind_int64(statement, 2, track_id);
+        (void)sqlite3_bind_int64(statement, 3, (sqlite3_int64)item->feature_set_id);
+        (void)sqlite3_bind_int64(statement, 4, item->feature_index);
+        (void)sqlite3_bind_int64(statement, 5, item->position_in_track);
+        result = step_done(database, statement, "insert track observation");
+        statement = NULL;
+      }
+    }
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = execute(database, "COMMIT", "commit track set publish");
+  } else {
+    if (statement) {
+      (void)sqlite3_finalize(statement);
+    }
+    (void)execute(database, "ROLLBACK", "rollback track set publish");
+  }
+  uint64_t published_id = published->track_set_id;
+  (void)pthread_mutex_unlock(&database->mutex);
+  if (result == LARDON3D_PROJECT_DB_OK && published_id != 0 && !reused) {
+    *published = *configuration;
+    published->track_set_id = published_id;
+    published->track_count = track_count;
+    published->created_at = publication_time;
+  }
+  return result;
+}
+
+static Lardon3DProjectDbResult load_track_locked(Lardon3DProjectDb *database, uint64_t track_id,
+                                                 Lardon3DProjectDbTrack *track) {
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database, "SELECT track_id,track_set_id,observation_count FROM tracks WHERE track_id=?1",
+      &statement);
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    return result;
+  }
+  (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)track_id);
+  int code = sqlite3_step(statement);
+  if (code != SQLITE_ROW) {
+    result = code == SQLITE_DONE ? LARDON3D_PROJECT_DB_NOT_FOUND
+                                 : sqlite_result(database, code, "load track");
+    (void)sqlite3_finalize(statement);
+    return result;
+  }
+  sqlite3_int64 set_id = sqlite3_column_int64(statement, 1);
+  sqlite3_int64 count = sqlite3_column_int64(statement, 2);
+  (void)sqlite3_finalize(statement);
+  if (set_id <= 0 || count < 2 || (uint64_t)count > SIZE_MAX / sizeof(*track->observations)) {
+    return LARDON3D_PROJECT_DB_CORRUPT;
+  }
+  sqlite3_stmt *set_statement = NULL;
+  result = prepare(database, "SELECT 1 FROM track_sets WHERE track_set_id=?1", &set_statement);
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    return result;
+  }
+  (void)sqlite3_bind_int64(set_statement, 1, set_id);
+  int set_code = sqlite3_step(set_statement);
+  (void)sqlite3_finalize(set_statement);
+  if (set_code != SQLITE_ROW) {
+    return set_code == SQLITE_DONE ? LARDON3D_PROJECT_DB_CORRUPT
+                                    : sqlite_result(database, set_code, "load track set parent");
+  }
+  track->observations = calloc((size_t)count, sizeof(*track->observations));
+  if (!track->observations) {
+    return LARDON3D_PROJECT_DB_IO_ERROR;
+  }
+  result = prepare(database,
+                   "SELECT feature_set_id,feature_index,position_in_track FROM track_observations "
+                   "WHERE track_id=?1 AND track_set_id=?2 ORDER BY position_in_track",
+                   &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)track_id);
+    (void)sqlite3_bind_int64(statement, 2, set_id);
+    size_t index = 0;
+    while ((code = sqlite3_step(statement)) == SQLITE_ROW) {
+      if (index == (size_t)count || sqlite3_column_int64(statement, 2) != (sqlite3_int64)index) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      sqlite3_int64 feature_set = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 feature_index = sqlite3_column_int64(statement, 1);
+      if (feature_set <= 0 || feature_index < 0 || feature_index > UINT32_MAX) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      sqlite3_stmt *feature_statement = NULL;
+       result = prepare(database,
+                        "SELECT image_id,feature_count FROM feature_sets WHERE feature_set_id=?1",
+                       &feature_statement);
+      if (result != LARDON3D_PROJECT_DB_OK) {
+        break;
+      }
+      (void)sqlite3_bind_int64(feature_statement, 1, feature_set);
+      int feature_code = sqlite3_step(feature_statement);
+       sqlite3_int64 image_id = feature_code == SQLITE_ROW ? sqlite3_column_int64(feature_statement, 0) : 0;
+       sqlite3_int64 feature_count = feature_code == SQLITE_ROW
+                                          ? sqlite3_column_int64(feature_statement, 1)
+                                          : -1;
+      (void)sqlite3_finalize(feature_statement);
+       if (feature_code != SQLITE_ROW || image_id <= 0 || feature_count < 0 ||
+           (uint64_t)feature_index >= (uint64_t)feature_count) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      for (size_t prior = 0; prior < index; ++prior) {
+        sqlite3_stmt *prior_statement = NULL;
+        result = prepare(database, "SELECT image_id FROM feature_sets WHERE feature_set_id=?1",
+                         &prior_statement);
+        if (result != LARDON3D_PROJECT_DB_OK) {
+          break;
+        }
+        (void)sqlite3_bind_int64(prior_statement, 1,
+                                 (sqlite3_int64)track->observations[prior].feature_set_id);
+        int prior_code = sqlite3_step(prior_statement);
+        sqlite3_int64 prior_image = prior_code == SQLITE_ROW
+                                         ? sqlite3_column_int64(prior_statement, 0)
+                                         : 0;
+        (void)sqlite3_finalize(prior_statement);
+        if (prior_code != SQLITE_ROW || prior_image <= 0) {
+          result = LARDON3D_PROJECT_DB_CORRUPT;
+          break;
+        }
+        if (prior_image == image_id) {
+          result = LARDON3D_PROJECT_DB_CORRUPT;
+          break;
+        }
+      }
+      if (result != LARDON3D_PROJECT_DB_OK) {
+        break;
+      }
+      track->observations[index] = (Lardon3DProjectDbTrackObservation){
+          .feature_set_id = (uint64_t)feature_set,
+          .feature_index = (uint32_t)feature_index,
+          .position_in_track = (uint32_t)index};
+      ++index;
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && code != SQLITE_DONE) {
+      result = sqlite_result(database, code, "read track observations");
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && index != (size_t)count) {
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    }
+    (void)sqlite3_finalize(statement);
+  }
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    lardon3d_project_db_free_track(track);
+    return result;
+  }
+  track->track_id = track_id;
+  track->track_set_id = (uint64_t)set_id;
+  track->observation_count = (uint32_t)count;
+  return LARDON3D_PROJECT_DB_OK;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_track(
+    Lardon3DProjectDb *database, uint64_t track_id, Lardon3DProjectDbTrack *track) {
+  if (!database || !valid_catalog_id(track_id) || !track) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(track, 0, sizeof(*track));
+  (void)pthread_mutex_lock(&database->mutex);
+  Lardon3DProjectDbResult result = load_track_locked(database, track_id, track);
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_list_tracks(
+    Lardon3DProjectDb *database, uint64_t track_set_id, uint64_t after_track_id,
+    Lardon3DProjectDbTrack *tracks, size_t capacity, size_t *count) {
+  if (!database || !valid_catalog_id(track_set_id) || !tracks || !count || capacity == 0 ||
+      capacity > LARDON3D_PROJECT_DB_TRACK_PAGE_MAX) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  *count = 0;
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database, "SELECT track_id FROM tracks WHERE track_set_id=?1 AND track_id>?2 "
+                "ORDER BY track_id LIMIT ?3", &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)track_set_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)after_track_id);
+    (void)sqlite3_bind_int64(statement, 3, (sqlite3_int64)capacity);
+    int code;
+    while ((code = sqlite3_step(statement)) == SQLITE_ROW) {
+      sqlite3_int64 id = sqlite3_column_int64(statement, 0);
+      if (id <= 0) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      result = load_track_locked(database, (uint64_t)id, &tracks[*count]);
+      if (result != LARDON3D_PROJECT_DB_OK || tracks[*count].track_set_id != track_set_id) {
+        if (result == LARDON3D_PROJECT_DB_OK) {
+          lardon3d_project_db_free_track(&tracks[*count]);
+          result = LARDON3D_PROJECT_DB_CORRUPT;
+        }
+        break;
+      }
+      ++*count;
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && code != SQLITE_DONE) {
+      result = sqlite_result(database, code, "list tracks");
+    }
+    if (result != LARDON3D_PROJECT_DB_OK) {
+      for (size_t index = 0; index < *count; ++index) {
+        lardon3d_project_db_free_track(&tracks[index]);
+      }
+      *count = 0;
+    }
+    (void)sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_find_track_by_observation(
+    Lardon3DProjectDb *database, uint64_t track_set_id, uint64_t feature_set_id,
+    uint32_t feature_index, Lardon3DProjectDbTrack *track) {
+  if (!database || !valid_catalog_id(track_set_id) || !valid_catalog_id(feature_set_id) || !track) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(track, 0, sizeof(*track));
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database, "SELECT track_id FROM track_observations WHERE track_set_id=?1 AND "
+                "feature_set_id=?2 AND feature_index=?3", &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)track_set_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)feature_set_id);
+    (void)sqlite3_bind_int64(statement, 3, feature_index);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_ROW) {
+      sqlite3_int64 id = sqlite3_column_int64(statement, 0);
+      result = id > 0 ? load_track_locked(database, (uint64_t)id, track)
+                      : LARDON3D_PROJECT_DB_CORRUPT;
+      if (result == LARDON3D_PROJECT_DB_NOT_FOUND) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+      if (result == LARDON3D_PROJECT_DB_OK && track->track_set_id != track_set_id) {
+        lardon3d_project_db_free_track(track);
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+    } else {
+      result = code == SQLITE_DONE ? LARDON3D_PROJECT_DB_NOT_FOUND
+                                   : sqlite_result(database, code, "find track observation");
+    }
+    (void)sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
 
 #ifdef LARDON3D_PROJECT_DB_TESTING
 Lardon3DProjectDbResult lardon3d_project_db_test_delete_feature_identity(

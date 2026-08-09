@@ -1,7 +1,7 @@
 ---
 description: Fallback MiMo pour reprendre une tranche déjà préparée
 mode: subagent
-model: opencode-go/mimo-v2.5-pro
+model: opencode-go/gpt-5.6-luna
 temperature: 0.1
 maxSteps: 100
 permission:

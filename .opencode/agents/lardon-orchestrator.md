@@ -1,7 +1,7 @@
 ---
 description: Orchestre les tickets Lardon3D longs par phases durables
 mode: primary
-model: opencode-go/mimo-v2.5-pro
+model: opencode-go/gpt-5.6-luna
 temperature: 0.1
 maxSteps: 200
 permission:

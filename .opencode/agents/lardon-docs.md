@@ -1,7 +1,7 @@
 ---
 description: Maintient la documentation canonique selon le code validé
 mode: subagent
-model: opencode-go/mimo-v2.5-pro
+model: opencode-go/gpt-5.6-luna
 temperature: 0.0
 maxSteps: 60
 permission:

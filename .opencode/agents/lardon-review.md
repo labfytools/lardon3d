@@ -1,7 +1,7 @@
 ---
 description: Effectue la seconde revue de production après tests verts
 mode: subagent
-model: opencode-go/qwen3.8-max
+model: opencode-go/gpt-5.6-luna
 temperature: 0.0
 maxSteps: 20
 permission:

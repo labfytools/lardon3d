@@ -9,7 +9,7 @@
 #include <lardon3d/task.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 13,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 14,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -19,6 +19,7 @@ enum {
   LARDON3D_PROJECT_DB_CANDIDATE_PAIR_PAGE_MAX = 256,
   LARDON3D_PROJECT_DB_MATCH_RESULT_PAGE_MAX = 256,
   LARDON3D_PROJECT_DB_GEOMETRIC_RESULT_PAGE_MAX = 256,
+  LARDON3D_PROJECT_DB_TRACK_PAGE_MAX = 64,
   LARDON3D_PROJECT_DB_INLIER_MASK_MAX = 1024,
   LARDON3D_PROJECT_DB_FUNDAMENTAL_COEFFICIENTS = 9,
   LARDON3D_PROJECT_DB_SCANSET_NAME_CAPACITY = 256,
@@ -346,6 +347,55 @@ typedef struct {
   int scanset_filter;
   bool exclude_same_asset;
 } Lardon3DProjectDbCandidatePairGenerateTask;
+
+typedef struct {
+  uint64_t feature_set_id;
+  uint32_t feature_index;
+  uint32_t position_in_track;
+} Lardon3DProjectDbTrackObservation;
+
+typedef struct {
+  uint64_t track_id;
+  uint64_t track_set_id;
+  uint32_t observation_count;
+  Lardon3DProjectDbTrackObservation *observations;
+} Lardon3DProjectDbTrack;
+
+typedef struct {
+  uint64_t track_set_id;
+  char builder_kind[LARDON3D_PROJECT_DB_KIND_CAPACITY];
+  uint32_t builder_version;
+  unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  int verifier_kind;
+  uint32_t verifier_version;
+  unsigned char verifier_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  unsigned char input_scope_hash[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  uint64_t gvr_count;
+  uint64_t track_count;
+  int64_t created_at;
+} Lardon3DProjectDbTrackSet;
+
+void lardon3d_project_db_free_track(Lardon3DProjectDbTrack *track);
+Lardon3DProjectDbResult lardon3d_project_db_create_track_set(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbTrackSet *configuration,
+    const Lardon3DProjectDbTrack *tracks, size_t track_count,
+    Lardon3DProjectDbTrackSet *published);
+Lardon3DProjectDbResult lardon3d_project_db_load_track_set(
+    Lardon3DProjectDb *database, uint64_t track_set_id, Lardon3DProjectDbTrackSet *track_set);
+Lardon3DProjectDbResult lardon3d_project_db_find_track_set(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbTrackSet *identity,
+    Lardon3DProjectDbTrackSet *track_set);
+Lardon3DProjectDbResult lardon3d_project_db_list_track_sets(
+    Lardon3DProjectDb *database, uint64_t after_track_set_id, Lardon3DProjectDbTrackSet *track_sets,
+    size_t capacity, size_t *count);
+Lardon3DProjectDbResult lardon3d_project_db_load_track(
+    Lardon3DProjectDb *database, uint64_t track_id, Lardon3DProjectDbTrack *track);
+Lardon3DProjectDbResult lardon3d_project_db_list_tracks(
+    Lardon3DProjectDb *database, uint64_t track_set_id, uint64_t after_track_id,
+    Lardon3DProjectDbTrack *tracks, size_t capacity, size_t *count);
+Lardon3DProjectDbResult lardon3d_project_db_find_track_by_observation(
+    Lardon3DProjectDb *database, uint64_t track_set_id, uint64_t feature_set_id,
+    uint32_t feature_index, Lardon3DProjectDbTrack *track);
 
 Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProjectDb **database,
                                                  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY]);

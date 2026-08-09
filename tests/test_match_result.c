@@ -52,6 +52,9 @@ static bool create_v9_database(const char *path) {
       "DROP TABLE geometric_verification_results;"
       "DROP TABLE matcher_tasks;"
       "DROP TABLE match_results;"
+      "DROP TABLE track_observations;"
+      "DROP TABLE tracks;"
+      "DROP TABLE track_sets;"
       "UPDATE metadata SET value=9 WHERE key='schema_version';COMMIT;PRAGMA foreign_keys=ON;";
   bool ok = sqlite3_exec(connection, sql, NULL, NULL, NULL) == SQLITE_OK;
   return sqlite3_close(connection) == SQLITE_OK && ok;
@@ -95,7 +98,7 @@ static bool run_test(void) {
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
   Lardon3DProjectDb *database = NULL;
   CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(database && lardon3d_project_db_schema_version(database) == 13);
+  CHECK(database && lardon3d_project_db_schema_version(database) == 14);
 
   Lardon3DProjectDbScanSet scanset;
   CHECK(lardon3d_project_db_create_scanset(database, "Match-test", &scanset) ==
@@ -454,7 +457,7 @@ static bool run_test(void) {
   database = NULL;
 
   CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 13);
+  CHECK(lardon3d_project_db_schema_version(database) == 14);
 
   /* Verify persistence: load previously created results */
   CHECK(lardon3d_project_db_load_match_result(database, first_id, &loaded) ==
@@ -494,10 +497,10 @@ static bool run_test(void) {
   CHECK(create_v9_database(v9_path));
   CHECK(query_integer(v9_path, "SELECT value FROM metadata WHERE key='schema_version'", 9));
   CHECK(lardon3d_project_db_open(v9_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 13);
+  CHECK(lardon3d_project_db_schema_version(database) == 14);
   lardon3d_project_db_close(database);
   database = NULL;
-  CHECK(query_integer(v9_path, "SELECT value FROM metadata WHERE key='schema_version'", 13));
+  CHECK(query_integer(v9_path, "SELECT value FROM metadata WHERE key='schema_version'", 14));
   CHECK(query_integer(v9_path,
                       "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
                       "name='match_results'", 1));
@@ -516,7 +519,7 @@ static bool run_test(void) {
                       "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
                       "name='matcher_tasks'", 0));
   CHECK(lardon3d_project_db_open(failed_v10_path, &database, error) == LARDON3D_PROJECT_DB_OK &&
-        lardon3d_project_db_schema_version(database) == 13);
+      lardon3d_project_db_schema_version(database) == 14);
   lardon3d_project_db_close(database);
   database = NULL;
 

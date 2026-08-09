@@ -29,7 +29,7 @@ persistante, enrichissable et versionnable.
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v13** : résultats géométriques et tâche Geometric Verifier durables
+- **Project Database v14** : résultats géométriques, tâche Geometric Verifier durable et Track Model v1
 - **Geometric Verification Model v1** : identité, masque d'inliers et modèle 3×3 persistants
 - **Geometric Verifier v1** : Fundamental USAC/MAGSAC, reprise et lots resource-aware
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
@@ -117,6 +117,7 @@ Acquisitions
 - [Matcher](docs/architecture/matcher.md)
 - [Geometric Verification](docs/architecture/geometric_verification.md)
 - [Geometric Verifier](docs/architecture/geometric_verifier.md)
+- [Track Model](docs/architecture/tracks.md)
 - [Backend Vulkan ORB](docs/architecture/vulkan_matcher.md)
 - [Viewer](docs/architecture/viewer.md)
 - [Revue des fondations](docs/architecture/foundation_review.md)

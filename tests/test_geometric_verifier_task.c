@@ -331,9 +331,12 @@ static bool run_task_test(void) {
   lardon3d_project_db_close(state.project_db);
   CHECK(exec_sql(
       database_path,
-      "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
-      "DROP TABLE geometric_verifier_tasks;"
-      "UPDATE metadata SET value=12 WHERE key='schema_version';COMMIT;"));
+       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+       "DROP TABLE geometric_verifier_tasks;"
+       "DROP TABLE track_observations;"
+       "DROP TABLE tracks;"
+       "DROP TABLE track_sets;"
+       "UPDATE metadata SET value=12 WHERE key='schema_version';COMMIT;"));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V13", "1", 1) == 0);
   Lardon3DProjectDb *database = NULL;
   CHECK(lardon3d_project_db_open(database_path, &database, error) ==
@@ -349,7 +352,7 @@ static bool run_task_test(void) {
                     0));
   CHECK(lardon3d_project_db_open(database_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 13);
+  CHECK(lardon3d_project_db_schema_version(database) == 14);
   lardon3d_project_db_close(database);
   CHECK(remove_tree(root));
   return true;

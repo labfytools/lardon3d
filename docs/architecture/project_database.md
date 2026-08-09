@@ -1,8 +1,10 @@
 # Base de données projet Lardon3D
 
-> Version courante : **v13**. La migration transactionnelle v12→v13 ajoute
-> uniquement `geometric_verifier_tasks` pour la tâche durable. La migration
-> v11→v12 ajoute le modèle immutable `geometric_verification_results`. La migration v10→v11 ajoute
+> Version courante : **v14**. La migration transactionnelle v13→v14 ajoute
+> les tables `track_sets`, `tracks` et `track_observations` pour le Track
+> Model v1. La migration v12→v13 ajoute uniquement `geometric_verifier_tasks`
+> pour la tâche durable. La migration v11→v12 ajoute le modèle immutable
+> `geometric_verification_results`. La migration v10→v11 ajoute
 > `matcher_tasks` pour la tâche Matcher durable. La version v10 publiée ajoute
 > uniquement `match_results` pour le Match Result Model. La migration v8→v9
 > ajoute la table `candidate_pair_generate_tasks` pour la tâche durable
@@ -68,18 +70,23 @@ entités. Elle est conçue pour être légère, persistante et permettre la repr
 - Statut (validée, rejetée)
 - Métriques
 
-#### Track
-- Identifiant unique
-- Observations
-- Point 3D associé
-- Qualité
+#### Track Set (v14)
+- Identifiant unique (`track_set_id`)
+- Identité de reuse (builder, verifier, scope)
+- Nombre de tracks et GVR
+- Immutable après publication
 
-#### Observation
-- Identifiant unique
-- Image
-- Position 2D
-- Descripteur
+#### Track (v14)
+- Identifiant unique (`track_id`)
+- Track Set parent
+- Nombre d'observations (≥ 2)
+- Pas de coordonnées 3D en v1
+
+#### Track Observation (v14)
+- Identifiant composite `(track_set_id, feature_set_id, feature_index)`
 - Track parent
+- Position dans le track (`position_in_track`)
+- Feature Set et index de feature
 
 #### Camera
 - Identifiant unique
@@ -151,9 +158,9 @@ entités. Elle est conçue pour être légère, persistante et permettre la repr
 - Image → Visual Signature (1:N)
 - Candidate Pair → Image (2)
 - Verified Pair → Candidate Pair (1)
-- Track → Observation (N:M)
-- Observation → Image (1)
-- Observation → Point3D (N:1)
+- Track Set → Track (1:N, CASCADE)
+- Track → Track Observation (1:N, CASCADE)
+- Track Observation → Feature Set (N:1)
 - Camera → Pose (1:N)
 - Pose → Reconstruction Layer (N:M)
 - Reconstruction Layer → Artifact (1:N)
@@ -456,22 +463,108 @@ L'index parent sert la liste paginée ; la contrainte UNIQUE sert le find exact.
 Le contrat complet, dont l'ordre des bits, est dans
 `geometric_verification.md`.
 
+## Schéma v14 implémenté
+
+La migration v13→v14 ajoute les tables `track_sets`, `tracks` et
+`track_observations` pour le Track Model v1. Le schéma complet est dans
+`tracks.md`. Schéma abrégé (la chaîne SQL exécutable canonique reste dans
+`src/project_db.c`) :
+
+```sql
+CREATE TABLE track_sets(
+    track_set_id INTEGER PRIMARY KEY AUTOINCREMENT
+        CHECK(track_set_id > 0),
+    builder_kind TEXT NOT NULL
+        CHECK(length(builder_kind) > 0 AND length(builder_kind) <= 64),
+    builder_version INTEGER NOT NULL CHECK(builder_version > 0),
+    parameter_fingerprint BLOB NOT NULL
+        CHECK(length(parameter_fingerprint) = 32),
+    verifier_kind INTEGER NOT NULL CHECK(verifier_kind > 0),
+    verifier_version INTEGER NOT NULL CHECK(verifier_version > 0),
+    verifier_fingerprint BLOB NOT NULL
+        CHECK(length(verifier_fingerprint) = 32),
+    input_scope_hash BLOB NOT NULL
+        CHECK(length(input_scope_hash) = 32),
+    gvr_count INTEGER NOT NULL CHECK(gvr_count >= 1),
+    track_count INTEGER NOT NULL CHECK(track_count >= 0),
+    created_at INTEGER NOT NULL CHECK(created_at >= 0),
+    UNIQUE(builder_kind, builder_version, parameter_fingerprint,
+           verifier_kind, verifier_version, verifier_fingerprint,
+           input_scope_hash)
+);
+
+CREATE TABLE tracks(
+    track_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(track_id > 0),
+    track_set_id INTEGER NOT NULL
+        REFERENCES track_sets(track_set_id) ON DELETE CASCADE,
+    observation_count INTEGER NOT NULL CHECK(observation_count >= 2)
+);
+
+CREATE INDEX tracks_set_idx
+    ON tracks(track_set_id, track_id);
+
+CREATE TABLE track_observations(
+    track_set_id INTEGER NOT NULL,
+    track_id INTEGER NOT NULL
+        REFERENCES tracks(track_id) ON DELETE CASCADE,
+    feature_set_id INTEGER NOT NULL
+        REFERENCES feature_sets(feature_set_id),
+    feature_index INTEGER NOT NULL CHECK(feature_index >= 0),
+    position_in_track INTEGER NOT NULL CHECK(position_in_track >= 0),
+    PRIMARY KEY(track_set_id, feature_set_id, feature_index),
+    UNIQUE(track_id, position_in_track)
+);
+
+CREATE INDEX track_observations_lookup_idx
+    ON track_observations(feature_set_id, feature_index, track_set_id);
+```
+
+**Invariants SQL** :
+- `PRIMARY KEY(track_set_id, feature_set_id, feature_index)` : dans un Track
+  Set donné, une observation n'apparaît qu'une fois
+- `REFERENCES tracks(track_id) ON DELETE CASCADE` : supprimer un track
+  supprime ses observations
+- `REFERENCES feature_sets(feature_set_id)` : le Feature Set existe
+- `CHECK(observation_count >= 2)` : minimum structurel
+- `UNIQUE(builder_kind, builder_version, parameter_fingerprint,
+  verifier_kind, verifier_version, verifier_fingerprint, input_scope_hash)` :
+  identité de reuse sur `track_sets`
+- `ON DELETE CASCADE` depuis `track_sets` : supprimer un set supprime tout
+- `UNIQUE(track_id, position_in_track)` : chaque position dans un track est
+  unique
+
+**Invariants API** (non protégés par le schéma SQL) :
+- `track_set_id` dans `track_observations` correspond au `track_set_id` du
+  `track_id` parent
+- Une seule observation par image par track (validation via
+  `feature_sets.image_id`)
+- `feature_index < feature_sets.feature_count`
+- `observation_count` cohérent avec le nombre réel d'observations
+- `track_count` cohérent avec le nombre réel de tracks
+
+**Statut** : les tables sont créées par la migration et validées par les
+tests. L'API C (`create_track_set`, `load_track_set`, `find_track_set`,
+`list_track_sets`, `load_track`, `list_tracks`, `find_track_by_observation`)
+est exposée et implémentée. Les limites réelles restent l'absence de Track
+Builder algorithmique, de tâche dédiée et de triangulation.
+
 ## Ouverture et migrations
 
-Une DB vide reçoit la chaîne de schémas jusqu'à v13 dans une transaction
+Une DB vide reçoit la chaîne de schémas jusqu'à v14 dans une transaction
 `BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
 `task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
 `NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
 artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1
-à v12 sont migrées séquentiellement vers v13.
+à v13 sont migrées séquentiellement vers v14.
 Une v10 publiée est validée comme telle avant que v10→v11 crée
 `matcher_tasks` ; son absence n'est donc pas une corruption. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
 interne de migration applique uniquement la chaîne séquentielle connue jusqu'à
-v13 ; une valeur hors de 1..13 est refusée. La failure injectée v12 rollbacke
+v14 ; une valeur hors de 1..14 est refusée. La failure injectée v12 rollbacke
 la table, l'index et le changement de version, laissant une vraie v11 utilisable.
 La failure injectée v13 conserve une vraie v12 sans `geometric_verifier_tasks` ;
-un retry applique ensuite v12→v13.
+un retry applique ensuite v12→v13. La failure injectée v14 conserve une vraie
+v13 sans `track_sets` ; un retry applique ensuite v13→v14.
 
 Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
 
@@ -608,8 +701,8 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v13 et migrations séquentielles
-v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13, identité projet, transactions
+**IMPLEMENTED** — SQLite système, schéma v14 et migrations séquentielles
+v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14, identité projet, transactions
 tâche+checkpoint, pagination de reprise et artefacts génériques.
 
 **IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,
@@ -633,6 +726,20 @@ La migration v3→v4 ne lit pas `manifest.tsv`. Elle crée le ScanSet legacy et
 positionne `metadata.legacy_image_catalog_pending=1` dès qu'une ancienne tâche
 d'import existe. Cet indicateur signifie « données legacy potentiellement non
 cataloguées », pas « images migrées ».
+
+**IMPLEMENTED** — Track Model v1 : tables `track_sets`, `tracks` et
+`track_observations` créées par la migration v13→v14, contraintes SQL
+(unicité d'identité de reuse, CASCADE, observation unique par set) et
+tests de migration/failure validés. Le schéma complet et les invariants
+sont documentés dans `tracks.md`.
+
+**IMPLEMENTED** — API C Track Model v1 : header `project_db.h` et
+source `project_db.c` exposent `create_track_set`, `load_track_set`,
+`find_track_set`, `list_track_sets`, `load_track`, `list_tracks`,
+`find_track_by_observation` et `free_track`. Contraintes et
+invariants documentés dans `tracks.md`. Limites réelles : pas de
+Track Builder algorithmique, pas de tâche dédiée, pas de
+triangulation.
 
 **NOT_YET_WIRED** — autosave à toutes les transitions, retry UI des sources
 indisponibles, migration de la TUI legacy et réconciliation des fichiers

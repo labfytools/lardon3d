@@ -1,7 +1,7 @@
 ---
 description: Exécute les validations Lardon3D strictement séquencées
 mode: subagent
-model: opencode-go/deepseek-v4-pro
+model: opencode-go/gpt-5.6-luna
 temperature: 0.0
 maxSteps: 80
 permission:

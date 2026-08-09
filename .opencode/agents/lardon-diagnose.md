@@ -1,7 +1,7 @@
 ---
 description: Diagnostic technique ciblé en lecture seule pour Lardon3D
 mode: subagent
-model: opencode-go/deepseek-v4-pro
+model: opencode-go/gpt-5.6-luna
 temperature: 0.1
 maxSteps: 12
 permission:

@@ -122,7 +122,9 @@ USAC/MAGSAC avec configuration, seed et fingerprint déterministes.
 | **Lien avec le catalogue** | Les tracks référenceront les images par `image_id`, jamais par nom ou chemin. |
 | **Persistance** | Les tracks sont persistés entre les sessions de traitement. Un track ne peut être détruit que par une action explicite de l'utilisateur. |
 
-**Statut :** PLANNED — aucune implémentation existante.
+**Statut :** PARTIAL — le Track Model v1 (persistance) est implémenté dans
+Project DB v14 (`track_sets`, `tracks`, `track_observations`). Le Track
+Builder, la triangulation et le Sparse SfM restent PLANNED.
 
 ---
 

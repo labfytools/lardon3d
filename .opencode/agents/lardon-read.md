@@ -1,7 +1,7 @@
 ---
 description: Lit des fichiers et symboles ciblés puis retourne une synthèse
 mode: subagent
-model: opencode-go/mimo-v2.5
+model: opencode-go/gpt-5.6-luna
 temperature: 0.0
 maxSteps: 30
 permission:
