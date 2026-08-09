@@ -55,6 +55,14 @@ chaque paire et entre les lots. Un crash après publication mais avant le
 checkpoint revoit la paire : le Matcher réutilise alors le Match Result et ne
 recalcule pas les descripteurs.
 
+## Geometric Verification Model
+
+Project DB v12 stocke un résultat borné à 1024 octets de masque et neuf
+binary64. Le modèle ne lit aucun signal matériel et ne modifie pas le Governor.
+Le futur verifier calculera une paire hors transaction, publiera par une courte
+transaction, checkpoint puis libérera ses buffers avant réadmission. Admission,
+threads et lots resteront exclusivement décidés par Runtime et Governor.
+
 ## GPU et files
 
 La Radeon 780M est UMA : toute mémoire GPU compte aussi comme pression RAM. Un

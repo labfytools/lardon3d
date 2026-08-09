@@ -97,9 +97,19 @@ Index, persistance, canonicalisation, idempotence et tâche durable.
 | **Orchestration** | `matcher.run` traite les Candidate Pairs par pages et lots durables de 1/2/4/8. |
 
 **Statut :** IMPLEMENTED v1 — Matcher, Match Store, reprise idempotente et Task
-durable. La vérification géométrique reste l'étape suivante, non commencée.
+durable. Le calcul Geometric Verifier reste l'étape suivante, non commencée.
 Le Match Result appartient à Project DB v10 et la tâche durable `matcher.run`
 à Project DB v11.
+
+### F2. Geometric Verification
+
+Project DB v12 implémente uniquement le modèle scientifique persistant. Chaque
+résultat appartient à un Match Result `MATCHED`, possède une identité exacte,
+un masque compact borné et, si VERIFIED, une matrice fondamentale 3×3 finie.
+La publication est atomique et immutable. Le calcul, son task kind et le choix
+d'algorithme restent planifiés dans Geometric Verifier v1.
+
+**Statut :** MODEL IMPLEMENTED v1 — VERIFIER PLANNED.
 
 ---
 
@@ -229,7 +239,8 @@ Image Catalog (B) ──► Feature Store (C)
 ## Statut du pipeline
 
 Import, Image Catalog, Feature Extraction, Feature Store, Visual Index,
-Candidate Pair et Matching v1 sont **IMPLEMENTED**. Geometric Verification,
+Candidate Pair, Matching v1 et Geometric Verification Model v1 sont
+**IMPLEMENTED**. Geometric Verifier,
 Tracks et SfM sont **PLANNED**.
 
 Ce document décrit la vision architecturale cible du pipeline de

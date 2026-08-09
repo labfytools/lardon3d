@@ -1,6 +1,7 @@
 # Base de données projet Lardon3D
 
-> Version courante : **v11**. La migration transactionnelle v10→v11 ajoute
+> Version courante : **v12**. La migration transactionnelle v11→v12 ajoute le
+> modèle immutable `geometric_verification_results`. La migration v10→v11 ajoute
 > `matcher_tasks` pour la tâche Matcher durable. La version v10 publiée ajoute
 > uniquement `match_results` pour le Match Result Model. La migration v8→v9
 > ajoute la table `candidate_pair_generate_tasks` pour la tâche durable
@@ -396,19 +397,65 @@ CREATE INDEX match_results_feature_set_b_idx
 - `lardon3d_project_db_record_matcher_task()` — UPSERT configuration/curseur
 - `lardon3d_project_db_load_matcher_task()` — SELECT par task_id
 
+## Schéma v12 implémenté
+
+La migration v11→v12 ajoute uniquement `geometric_verification_results`. Le
+parent est un Match Result `MATCHED`; sa validation interligne reste dans l'API.
+
+Schéma abrégé (la chaîne SQL exécutable canonique reste dans `src/project_db.c`) :
+
+```sql
+CREATE TABLE geometric_verification_results(
+    geometric_verification_result_id INTEGER PRIMARY KEY AUTOINCREMENT
+        CHECK(geometric_verification_result_id>0),
+    match_result_id INTEGER NOT NULL
+        REFERENCES match_results(match_result_id) ON DELETE CASCADE,
+    verifier_kind INTEGER NOT NULL CHECK(verifier_kind=1),
+    verifier_version INTEGER NOT NULL
+        CHECK(verifier_version>0 AND verifier_version<=4294967295),
+    parameter_fingerprint BLOB NOT NULL
+        CHECK(length(parameter_fingerprint)=32),
+    status INTEGER NOT NULL CHECK(status IN (1,2)),
+    inlier_count INTEGER NOT NULL
+        CHECK(inlier_count>=0 AND inlier_count<=8192),
+    inlier_mask BLOB NOT NULL
+        CHECK(length(inlier_mask)>=1 AND length(inlier_mask)<=1024),
+    model_m00 REAL, model_m01 REAL, model_m02 REAL,
+    model_m10 REAL, model_m11 REAL, model_m12 REAL,
+    model_m20 REAL, model_m21 REAL, model_m22 REAL,
+    created_at INTEGER NOT NULL CHECK(created_at>=0),
+    CHECK(/* REJECTED: neuf NULL ; VERIFIED: neuf non-NULL */),
+    UNIQUE(match_result_id, verifier_kind, verifier_version,
+           parameter_fingerprint)
+);
+CREATE INDEX geometric_verification_results_parent_idx
+    ON geometric_verification_results(
+        match_result_id, geometric_verification_result_id
+    );
+```
+
+Les valeurs stables sont FUNDAMENTAL=1, GEOMETRIC_REJECTED=1 et
+GEOMETRIC_VERIFIED=2. REJECTED interdit le modèle ; VERIFIED exige neuf valeurs
+finies. Pour les deux états, l'API impose taille canonique, padding nul et
+popcount exact du masque, ainsi que `inlier_count <= parent.match_count`.
+L'index parent sert la liste paginée ; la contrainte UNIQUE sert le find exact.
+Le contrat complet, dont l'ordre des bits, est dans
+`geometric_verification.md`.
+
 ## Ouverture et migrations
 
-Une DB vide reçoit la chaîne de schémas jusqu'à v11 dans une transaction
+Une DB vide reçoit la chaîne de schémas jusqu'à v12 dans une transaction
 `BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
 `task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
 `NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
 artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1,
-v2, v3, v4, v5, v6, v7, v8, v9 et v10 sont migrées séquentiellement vers v11.
+v2, v3, v4, v5, v6, v7, v8, v9, v10 et v11 sont migrées séquentiellement vers v12.
 Une v10 publiée est validée comme telle avant que v10→v11 crée
 `matcher_tasks` ; son absence n'est donc pas une corruption. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
 interne de migration applique uniquement la chaîne séquentielle connue jusqu'à
-v11 ; une valeur hors de 1..11 est refusée.
+v12 ; une valeur hors de 1..12 est refusée. La failure injectée v12 rollbacke
+la table, l'index et le changement de version, laissant une vraie v11 utilisable.
 
 Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
 
@@ -545,8 +592,8 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v11 et migrations séquentielles
-v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11, identité projet, transactions
+**IMPLEMENTED** — SQLite système, schéma v12 et migrations séquentielles
+v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12, identité projet, transactions
 tâche+checkpoint, pagination de reprise et artefacts génériques.
 
 **IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,

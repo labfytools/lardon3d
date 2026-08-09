@@ -92,6 +92,10 @@ estimation couvrant ce working set ; aucune seconde logique de budget n'est
 introduite. Sa ligne durable `matcher_tasks` appartient au schéma Project DB
 v11 ; le Match Result reste le contrat publié en v10.
 
+Project DB v12 ajoute un enfant `Geometric Verification Result` référencé par
+`match_result_id`. Le Matcher ne calcule, ne stocke et ne valide aucun inlier
+géométrique ; seul son Match File canonique définit l'ordre indexé par le masque.
+
 ### Backend Vulkan ORB
 
 La frontière évaluée remplace uniquement KNN Hamming par un compute top-2 : un
@@ -113,4 +117,4 @@ mêmes paires attendues, l'ordre et la sérialisation stables. Aucune promesse
 bit-à-bit cross-platform n'est faite pour les distances L2 flottantes.
 ORB/Hamming bénéficie d'une garantie plus forte grâce à sa distance entière.
 
-NEXT: GEOMETRIC VERIFICATION MODEL
+NEXT: GEOMETRIC VERIFIER v1

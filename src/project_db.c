@@ -238,6 +238,31 @@ static const char schema_matcher_task_v11[] =
     "matcher_kind INTEGER NOT NULL CHECK(matcher_kind BETWEEN 0 AND 2),"
     "ratio_threshold REAL NOT NULL CHECK(ratio_threshold>0.0 AND ratio_threshold<1.0));";
 
+static const char schema_geometric_verification_v12[] =
+    "CREATE TABLE geometric_verification_results("
+    "geometric_verification_result_id INTEGER PRIMARY KEY AUTOINCREMENT "
+    "CHECK(geometric_verification_result_id>0),"
+    "match_result_id INTEGER NOT NULL REFERENCES match_results(match_result_id) ON DELETE CASCADE,"
+    "verifier_kind INTEGER NOT NULL CHECK(verifier_kind=1),"
+    "verifier_version INTEGER NOT NULL CHECK(verifier_version>0 AND verifier_version<=4294967295),"
+    "parameter_fingerprint BLOB NOT NULL CHECK(length(parameter_fingerprint)=32),"
+    "status INTEGER NOT NULL CHECK(status IN (1,2)),"
+    "inlier_count INTEGER NOT NULL CHECK(inlier_count>=0 AND inlier_count<=8192),"
+    "inlier_mask BLOB NOT NULL CHECK(length(inlier_mask)>=1 AND length(inlier_mask)<=1024),"
+    "model_m00 REAL,model_m01 REAL,model_m02 REAL,"
+    "model_m10 REAL,model_m11 REAL,model_m12 REAL,"
+    "model_m20 REAL,model_m21 REAL,model_m22 REAL,"
+    "created_at INTEGER NOT NULL CHECK(created_at>=0),"
+    "CHECK((status=1 AND model_m00 IS NULL AND model_m01 IS NULL AND model_m02 IS NULL AND "
+    "model_m10 IS NULL AND model_m11 IS NULL AND model_m12 IS NULL AND model_m20 IS NULL AND "
+    "model_m21 IS NULL AND model_m22 IS NULL) OR "
+    "(status=2 AND model_m00 IS NOT NULL AND model_m01 IS NOT NULL AND model_m02 IS NOT NULL AND "
+    "model_m10 IS NOT NULL AND model_m11 IS NOT NULL AND model_m12 IS NOT NULL AND "
+    "model_m20 IS NOT NULL AND model_m21 IS NOT NULL AND model_m22 IS NOT NULL)),"
+    "UNIQUE(match_result_id,verifier_kind,verifier_version,parameter_fingerprint));"
+    "CREATE INDEX geometric_verification_results_parent_idx ON "
+    "geometric_verification_results(match_result_id,geometric_verification_result_id);";
+
 static void copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text) {
   if (destination) {
     (void)snprintf(destination, LARDON3D_PROJECT_DB_ERROR_CAPACITY, "%s", text ? text : "");
@@ -327,7 +352,7 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
   }
   if (from_version != 0 && from_version != 1 && from_version != 2 && from_version != 3 &&
       from_version != 4 && from_version != 5 && from_version != 6 && from_version != 7 &&
-      from_version != 8 && from_version != 9 && from_version != 10) {
+      from_version != 8 && from_version != 9 && from_version != 10 && from_version != 11) {
     return LARDON3D_PROJECT_DB_CORRUPT;
   }
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
@@ -568,6 +593,22 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
                        "finish schema v11 migration");
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version < 12) {
+    result = execute(database, schema_geometric_verification_v12,
+                     "migrate schema v11 to v12");
+#ifdef LARDON3D_PROJECT_DB_TESTING
+    const char *forced_failure = getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V12");
+    if (result == LARDON3D_PROJECT_DB_OK && forced_failure && strcmp(forced_failure, "1") == 0) {
+      result = execute(database, "INSERT INTO missing_test_table VALUES(1)",
+                       "forced migration v12 failure");
+    }
+#endif
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database,
+                       "UPDATE metadata SET value=12 WHERE key='schema_version' AND value=11",
+                       "finish schema v12 migration");
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit migration");
   }
@@ -682,7 +723,8 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
                               "feature_support_members",
                               "candidate_pairs",
                               "matcher_tasks",
-                              "match_results"};
+                              "match_results",
+                              "geometric_verification_results"};
     for (size_t index = 0; index < sizeof(required) / sizeof(required[0]) &&
                            result == LARDON3D_PROJECT_DB_OK;
          ++index) {
@@ -3744,6 +3786,366 @@ Lardon3DProjectDbResult lardon3d_project_db_list_match_results(
     }
     if (db_result == LARDON3D_PROJECT_DB_OK && *count < capacity && code != SQLITE_DONE) {
       db_result = sqlite_result(database, code, "list match results");
+    }
+    (void)sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  return db_result;
+}
+
+static size_t geometric_mask_size(uint32_t match_count) {
+  return ((size_t)match_count + 7U) / 8U;
+}
+
+static uint32_t geometric_mask_popcount(const unsigned char *mask, size_t size) {
+  uint32_t count = 0;
+  for (size_t byte_index = 0; byte_index < size; ++byte_index) {
+    unsigned int value = mask[byte_index];
+    while (value != 0U) {
+      value &= value - 1U;
+      ++count;
+    }
+  }
+  return count;
+}
+
+static bool valid_geometric_mask(const unsigned char *mask, size_t size, uint32_t match_count,
+                                 uint32_t inlier_count) {
+  size_t expected_size = geometric_mask_size(match_count);
+  if (!mask || size != expected_size || expected_size == 0 ||
+      expected_size > LARDON3D_PROJECT_DB_INLIER_MASK_MAX || inlier_count > match_count) {
+    return false;
+  }
+  unsigned int used_bits = match_count % 8U;
+  if (used_bits != 0U) {
+    unsigned int padding_mask = 0xffU << used_bits;
+    if (((unsigned int)mask[size - 1] & padding_mask) != 0U) {
+      return false;
+    }
+  }
+  return geometric_mask_popcount(mask, size) == inlier_count;
+}
+
+static bool valid_geometric_model(Lardon3DGeometricVerificationStatus status,
+                                  const double *model) {
+  if (status == LARDON3D_GEOMETRIC_REJECTED) {
+    return model == NULL;
+  }
+  if (status != LARDON3D_GEOMETRIC_VERIFIED || !model) {
+    return false;
+  }
+  for (size_t index = 0; index < LARDON3D_PROJECT_DB_FUNDAMENTAL_COEFFICIENTS; ++index) {
+    if (!isfinite(model[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static const char geometric_result_columns[] =
+    "g.geometric_verification_result_id,g.match_result_id,g.verifier_kind,"
+    "g.verifier_version,g.parameter_fingerprint,g.status,g.inlier_count,g.inlier_mask,"
+    "g.model_m00,g.model_m01,g.model_m02,g.model_m10,g.model_m11,g.model_m12,"
+    "g.model_m20,g.model_m21,g.model_m22,g.created_at,m.result_status,m.match_count ";
+
+static bool read_geometric_result(sqlite3_stmt *statement,
+                                  Lardon3DProjectDbGeometricVerificationResult *result) {
+  if (!statement || !result) {
+    return false;
+  }
+  for (int column = 0; column <= 7; ++column) {
+    int expected_type = column == 4 || column == 7 ? SQLITE_BLOB : SQLITE_INTEGER;
+    if (sqlite3_column_type(statement, column) != expected_type) {
+      return false;
+    }
+  }
+  if (sqlite3_column_type(statement, 17) != SQLITE_INTEGER ||
+      sqlite3_column_type(statement, 18) != SQLITE_INTEGER ||
+      sqlite3_column_type(statement, 19) != SQLITE_INTEGER) {
+    return false;
+  }
+  sqlite3_int64 id = sqlite3_column_int64(statement, 0);
+  sqlite3_int64 parent_id = sqlite3_column_int64(statement, 1);
+  sqlite3_int64 kind = sqlite3_column_int64(statement, 2);
+  sqlite3_int64 version = sqlite3_column_int64(statement, 3);
+  sqlite3_int64 status = sqlite3_column_int64(statement, 5);
+  sqlite3_int64 inlier_count = sqlite3_column_int64(statement, 6);
+  sqlite3_int64 created_at = sqlite3_column_int64(statement, 17);
+  sqlite3_int64 parent_status = sqlite3_column_int64(statement, 18);
+  sqlite3_int64 match_count = sqlite3_column_int64(statement, 19);
+  int fingerprint_size = sqlite3_column_bytes(statement, 4);
+  int mask_size = sqlite3_column_bytes(statement, 7);
+  const void *fingerprint = sqlite3_column_blob(statement, 4);
+  const void *mask = sqlite3_column_blob(statement, 7);
+  if (id <= 0 || parent_id <= 0 || kind != LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL ||
+      version <= 0 || version > UINT32_MAX ||
+      (status != LARDON3D_GEOMETRIC_REJECTED && status != LARDON3D_GEOMETRIC_VERIFIED) ||
+      inlier_count < 0 || inlier_count > 8192 || created_at < 0 ||
+      parent_status != LARDON3D_MATCH_RESULT_STATUS_MATCHED || match_count <= 0 ||
+      match_count > 8192 || fingerprint_size != LARDON3D_PROJECT_DB_SHA256_SIZE ||
+      !fingerprint || mask_size <= 0 || mask_size > LARDON3D_PROJECT_DB_INLIER_MASK_MAX || !mask ||
+      !valid_geometric_mask(mask, (size_t)mask_size, (uint32_t)match_count,
+                            (uint32_t)inlier_count)) {
+    return false;
+  }
+  double model[LARDON3D_PROJECT_DB_FUNDAMENTAL_COEFFICIENTS] = {0};
+  bool has_model = status == LARDON3D_GEOMETRIC_VERIFIED;
+  for (int index = 0; index < LARDON3D_PROJECT_DB_FUNDAMENTAL_COEFFICIENTS; ++index) {
+    int type = sqlite3_column_type(statement, 8 + index);
+    if ((!has_model && type != SQLITE_NULL) ||
+        (has_model && type != SQLITE_FLOAT && type != SQLITE_INTEGER)) {
+      return false;
+    }
+    if (has_model) {
+      model[index] = sqlite3_column_double(statement, 8 + index);
+      if (!isfinite(model[index])) {
+        return false;
+      }
+    }
+  }
+  memset(result, 0, sizeof(*result));
+  result->geometric_verification_result_id = (uint64_t)id;
+  result->match_result_id = (uint64_t)parent_id;
+  result->verifier_kind = (Lardon3DGeometricVerifierKind)kind;
+  result->verifier_version = (uint32_t)version;
+  memcpy(result->parameter_fingerprint, fingerprint, LARDON3D_PROJECT_DB_SHA256_SIZE);
+  result->status = (Lardon3DGeometricVerificationStatus)status;
+  result->inlier_count = (uint32_t)inlier_count;
+  result->inlier_mask_size = (size_t)mask_size;
+  memcpy(result->inlier_mask, mask, (size_t)mask_size);
+  result->has_model = has_model;
+  memcpy(result->model, model, sizeof(model));
+  result->created_at = created_at;
+  return true;
+}
+
+static Lardon3DProjectDbResult read_single_geometric_result(
+    Lardon3DProjectDb *database, sqlite3_stmt *statement,
+    Lardon3DProjectDbGeometricVerificationResult *result) {
+  int code = sqlite3_step(statement);
+  if (code == SQLITE_DONE) {
+    (void)sqlite3_finalize(statement);
+    return LARDON3D_PROJECT_DB_NOT_FOUND;
+  }
+  if (code != SQLITE_ROW) {
+    Lardon3DProjectDbResult db_result = sqlite_result(database, code, "read geometric result");
+    (void)sqlite3_finalize(statement);
+    return db_result;
+  }
+  bool valid = read_geometric_result(statement, result);
+  code = sqlite3_step(statement);
+  (void)sqlite3_finalize(statement);
+  return valid && code == SQLITE_DONE ? LARDON3D_PROJECT_DB_OK : LARDON3D_PROJECT_DB_CORRUPT;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_create_geometric_verification_result(
+    Lardon3DProjectDb *database, uint64_t match_result_id,
+    Lardon3DGeometricVerifierKind verifier_kind, uint32_t verifier_version,
+    const unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE],
+    Lardon3DGeometricVerificationStatus status, uint32_t inlier_count,
+    const unsigned char *inlier_mask, size_t inlier_mask_size, const double *model,
+    int64_t created_at, Lardon3DProjectDbGeometricVerificationResult *result) {
+  if (!database || !valid_catalog_id(match_result_id) ||
+      verifier_kind != LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL || verifier_version == 0 ||
+      !parameter_fingerprint || inlier_count > 8192 || !inlier_mask || inlier_mask_size == 0 ||
+      inlier_mask_size > LARDON3D_PROJECT_DB_INLIER_MASK_MAX ||
+      !valid_geometric_model(status, model) || created_at < 0 || !result) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(result, 0, sizeof(*result));
+  (void)pthread_mutex_lock(&database->mutex);
+  Lardon3DProjectDbResult db_result =
+      execute(database, "BEGIN IMMEDIATE", "begin geometric result creation");
+  sqlite3_stmt *statement = NULL;
+  uint32_t match_count = 0;
+  if (db_result == LARDON3D_PROJECT_DB_OK) {
+    db_result = prepare(database,
+                        "SELECT result_status,match_count FROM match_results "
+                        "WHERE match_result_id=?1",
+                        &statement);
+  }
+  if (db_result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)match_result_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE) {
+      db_result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    } else if (code != SQLITE_ROW || sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
+               sqlite3_column_type(statement, 1) != SQLITE_INTEGER) {
+      db_result = LARDON3D_PROJECT_DB_CORRUPT;
+    } else {
+      sqlite3_int64 parent_status = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 parent_count = sqlite3_column_int64(statement, 1);
+      if (parent_status != LARDON3D_MATCH_RESULT_STATUS_MATCHED || parent_count <= 0 ||
+          parent_count > 8192) {
+        db_result = LARDON3D_PROJECT_DB_CONSTRAINT;
+      } else {
+        match_count = (uint32_t)parent_count;
+      }
+    }
+    (void)sqlite3_finalize(statement);
+    statement = NULL;
+  }
+  if (db_result == LARDON3D_PROJECT_DB_OK &&
+      !valid_geometric_mask(inlier_mask, inlier_mask_size, match_count, inlier_count)) {
+    db_result = LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  if (db_result == LARDON3D_PROJECT_DB_OK) {
+    db_result = prepare(
+        database,
+        "INSERT INTO geometric_verification_results("
+        "match_result_id,verifier_kind,verifier_version,parameter_fingerprint,status,"
+        "inlier_count,inlier_mask,model_m00,model_m01,model_m02,model_m10,model_m11,model_m12,"
+        "model_m20,model_m21,model_m22,created_at) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+        &statement);
+  }
+  if (db_result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)match_result_id);
+    (void)sqlite3_bind_int(statement, 2, (int)verifier_kind);
+    (void)sqlite3_bind_int64(statement, 3, (sqlite3_int64)verifier_version);
+    (void)sqlite3_bind_blob(statement, 4, parameter_fingerprint,
+                            LARDON3D_PROJECT_DB_SHA256_SIZE, SQLITE_TRANSIENT);
+    (void)sqlite3_bind_int(statement, 5, (int)status);
+    (void)sqlite3_bind_int64(statement, 6, (sqlite3_int64)inlier_count);
+    (void)sqlite3_bind_blob(statement, 7, inlier_mask, (int)inlier_mask_size, SQLITE_TRANSIENT);
+    for (int index = 0; index < LARDON3D_PROJECT_DB_FUNDAMENTAL_COEFFICIENTS; ++index) {
+      if (model) {
+        (void)sqlite3_bind_double(statement, 8 + index, model[index]);
+      } else {
+        (void)sqlite3_bind_null(statement, 8 + index);
+      }
+    }
+    (void)sqlite3_bind_int64(statement, 17, created_at);
+    db_result = step_done(database, statement, "create geometric result");
+    statement = NULL;
+  }
+  uint64_t result_id = 0;
+  if (db_result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_int64 inserted_id = sqlite3_last_insert_rowid(database->connection);
+    if (inserted_id <= 0) {
+      db_result = LARDON3D_PROJECT_DB_CORRUPT;
+    } else {
+      result_id = (uint64_t)inserted_id;
+      db_result = execute(database, "COMMIT", "commit geometric result creation");
+    }
+  }
+  if (db_result != LARDON3D_PROJECT_DB_OK) {
+    (void)execute(database, "ROLLBACK", "rollback geometric result creation");
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  if (db_result != LARDON3D_PROJECT_DB_OK) {
+    return db_result;
+  }
+  result->geometric_verification_result_id = result_id;
+  result->match_result_id = match_result_id;
+  result->verifier_kind = verifier_kind;
+  result->verifier_version = verifier_version;
+  memcpy(result->parameter_fingerprint, parameter_fingerprint,
+         LARDON3D_PROJECT_DB_SHA256_SIZE);
+  result->status = status;
+  result->inlier_count = inlier_count;
+  result->inlier_mask_size = inlier_mask_size;
+  memcpy(result->inlier_mask, inlier_mask, inlier_mask_size);
+  result->has_model = model != NULL;
+  if (model) {
+    memcpy(result->model, model, sizeof(result->model));
+  }
+  result->created_at = created_at;
+  return LARDON3D_PROJECT_DB_OK;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_geometric_verification_result(
+    Lardon3DProjectDb *database, uint64_t geometric_verification_result_id,
+    Lardon3DProjectDbGeometricVerificationResult *result) {
+  if (!database || !valid_catalog_id(geometric_verification_result_id) || !result) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(result, 0, sizeof(*result));
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  char sql[1024];
+  (void)snprintf(sql, sizeof(sql), "SELECT %sFROM geometric_verification_results g "
+                                      "JOIN match_results m ON m.match_result_id=g.match_result_id "
+                                      "WHERE g.geometric_verification_result_id=?1",
+                 geometric_result_columns);
+  Lardon3DProjectDbResult db_result = prepare(database, sql, &statement);
+  if (db_result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)geometric_verification_result_id);
+    db_result = read_single_geometric_result(database, statement, result);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  return db_result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_find_geometric_verification_result(
+    Lardon3DProjectDb *database, uint64_t match_result_id,
+    Lardon3DGeometricVerifierKind verifier_kind, uint32_t verifier_version,
+    const unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE],
+    Lardon3DProjectDbGeometricVerificationResult *result) {
+  if (!database || !valid_catalog_id(match_result_id) ||
+      verifier_kind != LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL || verifier_version == 0 ||
+      !parameter_fingerprint || !result) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(result, 0, sizeof(*result));
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  char sql[1280];
+  (void)snprintf(sql, sizeof(sql), "SELECT %sFROM geometric_verification_results g "
+                                      "JOIN match_results m ON m.match_result_id=g.match_result_id "
+                                      "WHERE g.match_result_id=?1 AND g.verifier_kind=?2 AND "
+                                      "g.verifier_version=?3 AND g.parameter_fingerprint=?4",
+                 geometric_result_columns);
+  Lardon3DProjectDbResult db_result = prepare(database, sql, &statement);
+  if (db_result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)match_result_id);
+    (void)sqlite3_bind_int(statement, 2, (int)verifier_kind);
+    (void)sqlite3_bind_int64(statement, 3, (sqlite3_int64)verifier_version);
+    (void)sqlite3_bind_blob(statement, 4, parameter_fingerprint,
+                            LARDON3D_PROJECT_DB_SHA256_SIZE, SQLITE_TRANSIENT);
+    db_result = read_single_geometric_result(database, statement, result);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  return db_result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_list_geometric_verification_results(
+    Lardon3DProjectDb *database, uint64_t match_result_id,
+    uint64_t after_geometric_verification_result_id,
+    Lardon3DProjectDbGeometricVerificationResult *results, size_t capacity, size_t *count) {
+  if (count) {
+    *count = 0;
+  }
+  if (!database || !valid_catalog_id(match_result_id) ||
+      after_geometric_verification_result_id > INT64_MAX || !results || !count || capacity == 0 ||
+      capacity > LARDON3D_PROJECT_DB_GEOMETRIC_RESULT_PAGE_MAX) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  char sql[1280];
+  (void)snprintf(sql, sizeof(sql), "SELECT %sFROM geometric_verification_results g "
+                                      "JOIN match_results m ON m.match_result_id=g.match_result_id "
+                                      "WHERE g.match_result_id=?1 AND "
+                                      "g.geometric_verification_result_id>?2 "
+                                      "ORDER BY g.geometric_verification_result_id LIMIT ?3",
+                 geometric_result_columns);
+  Lardon3DProjectDbResult db_result = prepare(database, sql, &statement);
+  if (db_result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)match_result_id);
+    (void)sqlite3_bind_int64(statement, 2,
+                             (sqlite3_int64)after_geometric_verification_result_id);
+    (void)sqlite3_bind_int64(statement, 3, (sqlite3_int64)capacity);
+    int code = SQLITE_DONE;
+    while (*count < capacity && (code = sqlite3_step(statement)) == SQLITE_ROW) {
+      if (!read_geometric_result(statement, &results[*count])) {
+        db_result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      ++*count;
+    }
+    if (db_result == LARDON3D_PROJECT_DB_OK && *count < capacity && code != SQLITE_DONE) {
+      db_result = sqlite_result(database, code, "list geometric results");
     }
     (void)sqlite3_finalize(statement);
   }

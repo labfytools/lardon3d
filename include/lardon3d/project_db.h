@@ -9,7 +9,7 @@
 #include <lardon3d/task.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 11,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 12,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -18,6 +18,9 @@ enum {
   LARDON3D_PROJECT_DB_CATALOG_PAGE_MAX = 256,
   LARDON3D_PROJECT_DB_CANDIDATE_PAIR_PAGE_MAX = 256,
   LARDON3D_PROJECT_DB_MATCH_RESULT_PAGE_MAX = 256,
+  LARDON3D_PROJECT_DB_GEOMETRIC_RESULT_PAGE_MAX = 256,
+  LARDON3D_PROJECT_DB_INLIER_MASK_MAX = 1024,
+  LARDON3D_PROJECT_DB_FUNDAMENTAL_COEFFICIENTS = 9,
   LARDON3D_PROJECT_DB_SCANSET_NAME_CAPACITY = 256,
   LARDON3D_PROJECT_DB_IMAGE_NAME_CAPACITY = 256,
   LARDON3D_PROJECT_DB_SHA256_SIZE = 32,
@@ -157,6 +160,30 @@ typedef struct {
   uint64_t match_asset_size_bytes;
   int64_t created_at;
 } Lardon3DProjectDbMatchResult;
+
+typedef enum {
+  LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL = 1,
+} Lardon3DGeometricVerifierKind;
+
+typedef enum {
+  LARDON3D_GEOMETRIC_REJECTED = 1,
+  LARDON3D_GEOMETRIC_VERIFIED = 2,
+} Lardon3DGeometricVerificationStatus;
+
+typedef struct {
+  uint64_t geometric_verification_result_id;
+  uint64_t match_result_id;
+  Lardon3DGeometricVerifierKind verifier_kind;
+  uint32_t verifier_version;
+  unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  Lardon3DGeometricVerificationStatus status;
+  uint32_t inlier_count;
+  size_t inlier_mask_size;
+  unsigned char inlier_mask[LARDON3D_PROJECT_DB_INLIER_MASK_MAX];
+  bool has_model;
+  double model[LARDON3D_PROJECT_DB_FUNDAMENTAL_COEFFICIENTS];
+  int64_t created_at;
+} Lardon3DProjectDbGeometricVerificationResult;
 
 typedef enum {
   LARDON3D_PROJECT_DB_IMAGE_REGISTERED = 0,
@@ -506,5 +533,25 @@ Lardon3DProjectDbResult lardon3d_project_db_find_match_result(
 Lardon3DProjectDbResult lardon3d_project_db_list_match_results(
     Lardon3DProjectDb *database, uint64_t after_match_result_id,
     Lardon3DProjectDbMatchResult *results, size_t capacity, size_t *count);
+
+Lardon3DProjectDbResult lardon3d_project_db_create_geometric_verification_result(
+    Lardon3DProjectDb *database, uint64_t match_result_id,
+    Lardon3DGeometricVerifierKind verifier_kind, uint32_t verifier_version,
+    const unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE],
+    Lardon3DGeometricVerificationStatus status, uint32_t inlier_count,
+    const unsigned char *inlier_mask, size_t inlier_mask_size, const double *model,
+    int64_t created_at, Lardon3DProjectDbGeometricVerificationResult *result);
+Lardon3DProjectDbResult lardon3d_project_db_load_geometric_verification_result(
+    Lardon3DProjectDb *database, uint64_t geometric_verification_result_id,
+    Lardon3DProjectDbGeometricVerificationResult *result);
+Lardon3DProjectDbResult lardon3d_project_db_find_geometric_verification_result(
+    Lardon3DProjectDb *database, uint64_t match_result_id,
+    Lardon3DGeometricVerifierKind verifier_kind, uint32_t verifier_version,
+    const unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE],
+    Lardon3DProjectDbGeometricVerificationResult *result);
+Lardon3DProjectDbResult lardon3d_project_db_list_geometric_verification_results(
+    Lardon3DProjectDb *database, uint64_t match_result_id,
+    uint64_t after_geometric_verification_result_id,
+    Lardon3DProjectDbGeometricVerificationResult *results, size_t capacity, size_t *count);
 
 #endif

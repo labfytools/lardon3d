@@ -61,4 +61,7 @@ contrainte `UNIQUE`.
 Le prochain modèle possède ses propres statistiques géométriques, dont un
 éventuel `inlier_count`.
 
-NEXT: GEOMETRIC VERIFICATION MODEL
+Geometric Verification Model v1 est désormais l'enfant scientifique persistant
+de ce résultat dans Project DB v12.
+
+NEXT: GEOMETRIC VERIFIER v1

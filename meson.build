@@ -507,6 +507,22 @@ match_result_test = executable(
 
 test('match-result', match_result_test, timeout: 30)
 
+geometric_verification_test = executable(
+    'test-geometric-verification',
+    sources: [
+        'tests/test_geometric_verification.c',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl],
+)
+
+test('geometric-verification', geometric_verification_test, timeout: 30)
+
 project_test = executable(
     'test-project',
     sources: [
