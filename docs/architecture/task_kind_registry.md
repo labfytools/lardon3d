@@ -74,3 +74,8 @@ curseur et repasse par le Governor entre les lots. La table durable
 Fundamental immuable, en revalide le fingerprint et reprend `after_match_result_id`.
 Project DB v13 ajoute uniquement `geometric_verifier_tasks`, car le checkpoint
 générique v1 ne possède aucun payload propre au kind.
+
+**IMPLEMENTED** — `track_builder.run`, version 1, reconstruit un scope explicite
+depuis son payload Project DB v15 et son asset little-endian validé. Le callback
+réutilise l'orchestration Gate C et le reconstructeur refuse toute corruption,
+version, fingerprint, checksum, tri, unicité ou L3DTSIS1 incohérents.

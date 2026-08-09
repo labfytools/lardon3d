@@ -336,6 +336,7 @@ static bool run_task_test(void) {
        "DROP TABLE track_observations;"
        "DROP TABLE tracks;"
        "DROP TABLE track_sets;"
+       "DROP TABLE track_builder_tasks;"
        "UPDATE metadata SET value=12 WHERE key='schema_version';COMMIT;"));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V13", "1", 1) == 0);
   Lardon3DProjectDb *database = NULL;
@@ -352,7 +353,7 @@ static bool run_task_test(void) {
                     0));
   CHECK(lardon3d_project_db_open(database_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 14);
+  CHECK(lardon3d_project_db_schema_version(database) == 15);
   lardon3d_project_db_close(database);
   CHECK(remove_tree(root));
   return true;

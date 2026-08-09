@@ -300,8 +300,24 @@ static const char schema_geometric_verifier_task_v13[] =
     "min_inlier_count INTEGER NOT NULL CHECK(min_inlier_count BETWEEN 1 AND 8192),"
     "min_inlier_ratio REAL NOT NULL CHECK(min_inlier_ratio>=0.0 AND min_inlier_ratio<=1.0),"
     "seed_policy_version INTEGER NOT NULL CHECK(seed_policy_version>0),"
-    "canonicalization_version INTEGER NOT NULL CHECK(canonicalization_version>0),"
-    "parameter_fingerprint BLOB NOT NULL CHECK(length(parameter_fingerprint)=32));";
+     "canonicalization_version INTEGER NOT NULL CHECK(canonicalization_version>0),"
+     "parameter_fingerprint BLOB NOT NULL CHECK(length(parameter_fingerprint)=32));";
+
+static const char schema_track_builder_task_v15[] =
+    "CREATE TABLE track_builder_tasks("
+    "task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,"
+    "builder_kind TEXT NOT NULL CHECK(builder_kind='track_builder'),"
+    "builder_version INTEGER NOT NULL CHECK(builder_version>0),"
+    "builder_fingerprint BLOB NOT NULL CHECK(length(builder_fingerprint)=32),"
+    "verifier_kind INTEGER NOT NULL CHECK(verifier_kind>0),"
+    "verifier_version INTEGER NOT NULL CHECK(verifier_version>0),"
+    "verifier_fingerprint BLOB NOT NULL CHECK(length(verifier_fingerprint)=32),"
+    "input_scope_hash BLOB NOT NULL CHECK(length(input_scope_hash)=32),"
+    "gvr_count INTEGER NOT NULL CHECK(gvr_count>=1),"
+    "scope_path TEXT NOT NULL CHECK(length(scope_path)>0 AND length(scope_path)<=4096),"
+    "scope_size_bytes INTEGER NOT NULL CHECK(scope_size_bytes>0),"
+    "scope_sha256 BLOB NOT NULL CHECK(length(scope_sha256)=32),"
+    "scope_format_version INTEGER NOT NULL CHECK(scope_format_version=1));";
 
 static void copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text) {
   if (destination) {
@@ -393,7 +409,7 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
   if (from_version != 0 && from_version != 1 && from_version != 2 && from_version != 3 &&
       from_version != 4 && from_version != 5 && from_version != 6 && from_version != 7 &&
       from_version != 8 && from_version != 9 && from_version != 10 && from_version != 11 &&
-      from_version != 12 && from_version != 13) {
+       from_version != 12 && from_version != 13 && from_version != 14) {
     return LARDON3D_PROJECT_DB_CORRUPT;
   }
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
@@ -681,6 +697,22 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
                        "finish schema v14 migration");
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version < 15) {
+    result = execute(database, schema_track_builder_task_v15,
+                     "migrate schema v14 to v15");
+#ifdef LARDON3D_PROJECT_DB_TESTING
+    const char *forced_failure = getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V15");
+    if (result == LARDON3D_PROJECT_DB_OK && forced_failure && strcmp(forced_failure, "1") == 0) {
+      result = execute(database, "INSERT INTO missing_test_table VALUES(1)",
+                       "forced migration v15 failure");
+    }
+#endif
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database,
+                       "UPDATE metadata SET value=15 WHERE key='schema_version' AND value=14",
+                       "finish schema v15 migration");
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit migration");
   }
@@ -798,9 +830,10 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
                               "match_results",
                               "geometric_verification_results",
                               "geometric_verifier_tasks",
-                              "track_sets",
-                              "tracks",
-                              "track_observations"};
+                               "track_sets",
+                               "tracks",
+                               "track_observations",
+                               "track_builder_tasks"};
     for (size_t index = 0; index < sizeof(required) / sizeof(required[0]) &&
                            result == LARDON3D_PROJECT_DB_OK;
          ++index) {
@@ -3581,6 +3614,126 @@ Lardon3DProjectDbResult lardon3d_project_db_load_geometric_verifier_task(
       parameters->canonicalization_version = (uint32_t)canonical_version;
       memcpy(parameters->parameter_fingerprint, sqlite3_column_blob(statement, 8),
              LARDON3D_PROJECT_DB_SHA256_SIZE);
+    }
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_record_track_builder_task(
+    Lardon3DProjectDb *db, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *kind, uint32_t version, const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbTrackBuilderTask *parameters, int64_t updated_at) {
+  if (!db || !snapshot || !parameters || parameters->task_id != snapshot->id ||
+      strcmp(parameters->builder_kind, "track_builder") != 0 ||
+      parameters->builder_version == 0 || parameters->verifier_kind <= 0 ||
+      parameters->verifier_version == 0 || parameters->gvr_count == 0 ||
+      parameters->scope_format_version != 1 || parameters->scope_size_bytes == 0 ||
+      !bounded_text(parameters->scope_path, sizeof(parameters->scope_path), false) ||
+      strncmp(parameters->scope_path, ".lardon3d/checkpoints/", 21) != 0) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  Lardon3DProjectDbResult result = record_task_internal(
+      db, snapshot, kind, version, checkpoint, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL,
+      updated_at);
+  if (result != LARDON3D_PROJECT_DB_OK) return result;
+  (void)pthread_mutex_lock(&db->mutex);
+  result = execute(db, "BEGIN IMMEDIATE", "begin track builder task");
+  sqlite3_stmt *statement = NULL;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(
+        db,
+        "INSERT INTO track_builder_tasks(task_id,builder_kind,builder_version,builder_fingerprint,"
+        "verifier_kind,verifier_version,verifier_fingerprint,input_scope_hash,gvr_count,scope_path,"
+        "scope_size_bytes,scope_sha256,scope_format_version) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,"
+        "?10,?11,?12,?13) ON CONFLICT(task_id) DO UPDATE SET scope_path=excluded.scope_path,"
+        "scope_size_bytes=excluded.scope_size_bytes,scope_sha256=excluded.scope_sha256 "
+        "WHERE track_builder_tasks.builder_kind=excluded.builder_kind AND "
+        "track_builder_tasks.builder_version=excluded.builder_version AND "
+        "track_builder_tasks.builder_fingerprint=excluded.builder_fingerprint AND "
+        "track_builder_tasks.verifier_kind=excluded.verifier_kind AND "
+        "track_builder_tasks.verifier_version=excluded.verifier_version AND "
+        "track_builder_tasks.verifier_fingerprint=excluded.verifier_fingerprint AND "
+        "track_builder_tasks.input_scope_hash=excluded.input_scope_hash AND "
+        "track_builder_tasks.gvr_count=excluded.gvr_count",
+        &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)parameters->task_id);
+    sqlite3_bind_text(statement, 2, parameters->builder_kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 3, parameters->builder_version);
+    sqlite3_bind_blob(statement, 4, parameters->builder_fingerprint, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int(statement, 5, parameters->verifier_kind);
+    sqlite3_bind_int64(statement, 6, parameters->verifier_version);
+    sqlite3_bind_blob(statement, 7, parameters->verifier_fingerprint, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(statement, 8, parameters->input_scope_hash, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 9, (sqlite3_int64)parameters->gvr_count);
+    sqlite3_bind_text(statement, 10, parameters->scope_path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 11, (sqlite3_int64)parameters->scope_size_bytes);
+    sqlite3_bind_blob(statement, 12, parameters->scope_sha256, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 13, parameters->scope_format_version);
+    result = step_done(db, statement, "upsert track builder task");
+    statement = NULL;
+    if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(db->connection) != 1) {
+      result = LARDON3D_PROJECT_DB_CONSTRAINT;
+    }
+  }
+  if (statement) sqlite3_finalize(statement);
+  if (result == LARDON3D_PROJECT_DB_OK) result = execute(db, "COMMIT", "commit track builder task");
+  if (result != LARDON3D_PROJECT_DB_OK) (void)execute(db, "ROLLBACK", "rollback track builder task");
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_track_builder_task(
+    Lardon3DProjectDb *db, uint64_t task_id,
+    Lardon3DProjectDbTrackBuilderTask *parameters) {
+  if (!db || !valid_task_id(task_id) || !parameters) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  memset(parameters, 0, sizeof(*parameters));
+  (void)pthread_mutex_lock(&db->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      db,
+      "SELECT builder_kind,builder_version,builder_fingerprint,verifier_kind,"
+      "verifier_version,verifier_fingerprint,input_scope_hash,gvr_count,scope_path,"
+      "scope_size_bytes,scope_sha256,scope_format_version FROM track_builder_tasks WHERE task_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    int code = sqlite3_step(statement);
+    sqlite3_int64 builder_version = sqlite3_column_int64(statement, 1);
+    sqlite3_int64 verifier_version = sqlite3_column_int64(statement, 4);
+    sqlite3_int64 gvr_count = sqlite3_column_int64(statement, 7);
+    sqlite3_int64 scope_size = sqlite3_column_int64(statement, 9);
+    sqlite3_int64 scope_format = sqlite3_column_int64(statement, 11);
+    if (code == SQLITE_DONE) {
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    } else if (code != SQLITE_ROW || builder_version <= 0 || verifier_version <= 0 ||
+               gvr_count <= 0 || scope_size <= 0 || scope_format != 1 ||
+               sqlite3_column_bytes(statement, 2) != 32 ||
+               sqlite3_column_bytes(statement, 5) != 32 ||
+               sqlite3_column_bytes(statement, 6) != 32 ||
+               sqlite3_column_bytes(statement, 10) != 32 ||
+               !copy_column(statement, 0, parameters->builder_kind,
+                            sizeof(parameters->builder_kind)) ||
+               !copy_column(statement, 8, parameters->scope_path,
+                            sizeof(parameters->scope_path)) ||
+               strcmp(parameters->builder_kind, "track_builder") != 0 ||
+               strncmp(parameters->scope_path, ".lardon3d/checkpoints/", 21) != 0) {
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    } else {
+      parameters->task_id = task_id;
+      parameters->builder_version = (uint32_t)builder_version;
+      memcpy(parameters->builder_fingerprint, sqlite3_column_blob(statement, 2), 32);
+      parameters->verifier_kind = sqlite3_column_int(statement, 3);
+      parameters->verifier_version = (uint32_t)verifier_version;
+      memcpy(parameters->verifier_fingerprint, sqlite3_column_blob(statement, 5), 32);
+      memcpy(parameters->input_scope_hash, sqlite3_column_blob(statement, 6), 32);
+      parameters->gvr_count = (uint64_t)gvr_count;
+      parameters->scope_size_bytes = (uint64_t)scope_size;
+      memcpy(parameters->scope_sha256, sqlite3_column_blob(statement, 10), 32);
+      parameters->scope_format_version = (uint32_t)scope_format;
     }
     sqlite3_finalize(statement);
   }

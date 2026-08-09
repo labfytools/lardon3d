@@ -103,7 +103,7 @@ static bool create_future_database(const char *path) {
   }
   bool ok = sqlite3_exec(connection,
                          "CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
-                         "INSERT INTO metadata VALUES('schema_version',15);",
+                          "INSERT INTO metadata VALUES('schema_version',16);",
                          NULL, NULL, NULL) == SQLITE_OK;
   return sqlite3_close(connection) == SQLITE_OK && ok;
 }
@@ -123,7 +123,8 @@ static bool create_v7_database(const char *path) {
       "DROP TABLE match_results;"
       "DROP TABLE candidate_pair_generate_tasks;"
       "DROP TABLE candidate_pairs;"
-      "DROP TABLE track_observations;"
+       "DROP TABLE track_observations;"
+       "DROP TABLE track_builder_tasks;"
       "DROP TABLE tracks;"
       "DROP TABLE track_sets;"
       "UPDATE metadata SET value=7 WHERE key='schema_version';COMMIT;PRAGMA foreign_keys=ON;";
@@ -152,7 +153,8 @@ static bool create_v6_database(const char *path) {
       "ALTER TABLE feature_sets DROP COLUMN coverage_ratio;"
       "ALTER TABLE feature_sets DROP COLUMN total_cells;"
       "ALTER TABLE feature_sets DROP COLUMN occupied_cells;"
-      "DROP TABLE track_observations;"
+       "DROP TABLE track_observations;"
+       "DROP TABLE track_builder_tasks;"
       "DROP TABLE tracks;"
       "DROP TABLE track_sets;"
       "UPDATE metadata SET value=6 WHERE key='schema_version';COMMIT;PRAGMA foreign_keys=ON;";
@@ -176,7 +178,8 @@ static bool create_v10_database(const char *path) {
       "DROP TABLE geometric_verifier_tasks;"
       "DROP TABLE geometric_verification_results;"
       "DROP TABLE matcher_tasks;"
-      "DROP TABLE track_observations;"
+       "DROP TABLE track_observations;"
+       "DROP TABLE track_builder_tasks;"
       "DROP TABLE tracks;"
       "DROP TABLE track_sets;"
       "UPDATE metadata SET value=10 WHERE key='schema_version';"
@@ -194,11 +197,28 @@ static bool create_v13_database(const char *path) {
   if (sqlite3_open(path, &connection) != SQLITE_OK) return false;
   static const char sql[] =
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
-      "DROP TABLE track_observations;"
+       "DROP TABLE track_observations;"
+       "DROP TABLE track_builder_tasks;"
       "DROP TABLE tracks;"
       "DROP TABLE track_sets;"
       "UPDATE metadata SET value=13 WHERE key='schema_version';COMMIT;PRAGMA foreign_keys=ON;";
   bool ok = sqlite3_exec(connection, sql, NULL, NULL, NULL) == SQLITE_OK;
+  return sqlite3_close(connection) == SQLITE_OK && ok;
+}
+
+static bool create_v14_database(const char *path) {
+  Lardon3DProjectDb *database = NULL;
+  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
+  if (lardon3d_project_db_open(path, &database, error) != LARDON3D_PROJECT_DB_OK) return false;
+  lardon3d_project_db_close(database);
+  sqlite3 *connection = NULL;
+  if (sqlite3_open(path, &connection) != SQLITE_OK) return false;
+  bool ok = sqlite3_exec(connection,
+                         "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+                         "DROP TABLE track_builder_tasks;"
+                         "UPDATE metadata SET value=14 WHERE key='schema_version';"
+                         "COMMIT;PRAGMA foreign_keys=ON;",
+                         NULL, NULL, NULL) == SQLITE_OK;
   return sqlite3_close(connection) == SQLITE_OK && ok;
 }
 
@@ -369,7 +389,7 @@ static bool run_test(void) {
   char v4_path[512], failed_v5_path[512], failed_v6_path[512], failed_v7_path[512];
   char direct_v5_path[512], v8_path[512], failed_v8_path[512];
   char v10_path[512], failed_v11_path[512];
-  char v13_path[512], failed_v14_path[512];
+  char v13_path[512], true_v14_path[512], failed_v14_path[512], failed_v15_path[512];
   CHECK(snprintf(database_path, sizeof(database_path), "%s/project.db", directory) > 0);
   CHECK(snprintf(artifact_path, sizeof(artifact_path), "%s/artifact.bin", directory) > 0);
   CHECK(snprintf(future_path, sizeof(future_path), "%s/future.db", directory) > 0);
@@ -397,12 +417,14 @@ static bool run_test(void) {
   CHECK(snprintf(v10_path, sizeof(v10_path), "%s/v10.db", directory) > 0);
   CHECK(snprintf(failed_v11_path, sizeof(failed_v11_path), "%s/failed-v11.db", directory) > 0);
   CHECK(snprintf(v13_path, sizeof(v13_path), "%s/v13.db", directory) > 0);
+  CHECK(snprintf(true_v14_path, sizeof(true_v14_path), "%s/true-v14.db", directory) > 0);
   CHECK(snprintf(failed_v14_path, sizeof(failed_v14_path), "%s/failed-v14.db", directory) > 0);
+  CHECK(snprintf(failed_v15_path, sizeof(failed_v15_path), "%s/failed-v15.db", directory) > 0);
 
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
   Lardon3DProjectDb *database = NULL;
   CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(database && lardon3d_project_db_schema_version(database) == 14);
+  CHECK(database && lardon3d_project_db_schema_version(database) == 15);
   bool legacy_pending = true;
   CHECK(lardon3d_project_db_legacy_catalog_pending(database, &legacy_pending) ==
             LARDON3D_PROJECT_DB_OK &&
@@ -668,7 +690,7 @@ static bool run_test(void) {
         LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
   lardon3d_project_db_close(contexts[0].database);
   database = NULL;
-  CHECK(query_integer(database_path, "SELECT value FROM metadata WHERE key='schema_version'", 14));
+  CHECK(query_integer(database_path, "SELECT value FROM metadata WHERE key='schema_version'", 15));
   CHECK(query_integer(database_path, "SELECT count(*) FROM tasks WHERE task_id=1", 1));
   CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_load_task(database, 1, &task) == LARDON3D_PROJECT_DB_OK);
@@ -690,7 +712,7 @@ static bool run_test(void) {
 
   CHECK(create_v1_database(legacy_path));
   CHECK(lardon3d_project_db_open(legacy_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 14);
+  CHECK(lardon3d_project_db_schema_version(database) == 15);
   CHECK(lardon3d_project_db_get_project(database, &loaded_project) == LARDON3D_PROJECT_DB_OK &&
         strcmp(loaded_project.stable_id, "legacy-project") == 0);
   CHECK(lardon3d_project_db_load_task(database, 9, &task) == LARDON3D_PROJECT_DB_OK);
@@ -700,7 +722,7 @@ static bool run_test(void) {
         LARDON3D_PROJECT_DB_OK);
   lardon3d_project_db_close(database);
   database = NULL;
-  CHECK(query_integer(legacy_path, "SELECT value FROM metadata WHERE key='schema_version'", 14));
+  CHECK(query_integer(legacy_path, "SELECT value FROM metadata WHERE key='schema_version'", 15));
 
   CHECK(create_v1_database(failed_migration_path));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V2", "1", 1) == 0);
@@ -725,7 +747,7 @@ static bool run_test(void) {
         LARDON3D_PROJECT_DB_OK);
   lardon3d_project_db_close(database);
   database = NULL;
-  CHECK(query_integer(v2_path, "SELECT value FROM metadata WHERE key='schema_version'", 14));
+  CHECK(query_integer(v2_path, "SELECT value FROM metadata WHERE key='schema_version'", 15));
 
   CHECK(create_v2_database(failed_v3_migration_path));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V3", "1", 1) == 0);
@@ -753,7 +775,7 @@ static bool run_test(void) {
         LARDON3D_PROJECT_DB_OK);
   lardon3d_project_db_close(database);
   database = NULL;
-  CHECK(query_integer(v3_path, "SELECT value FROM metadata WHERE key='schema_version'", 14));
+  CHECK(query_integer(v3_path, "SELECT value FROM metadata WHERE key='schema_version'", 15));
 
   CHECK(create_v3_database(failed_v4_path));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V4", "1", 1) == 0);
@@ -770,7 +792,7 @@ static bool run_test(void) {
     fprintf(stderr, "Migration v4 (%d): %s\n", (int)v4_result, error);
   }
   CHECK(v4_result == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 14);
+  CHECK(lardon3d_project_db_schema_version(database) == 15);
   CHECK(lardon3d_project_db_load_task(database, 9, &task) == LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_load_artifact(database, "legacy-artifact", &loaded_artifact) ==
         LARDON3D_PROJECT_DB_OK);
@@ -809,24 +831,24 @@ static bool run_test(void) {
     fprintf(stderr, "Nouvelle tentative migration v7 (%d): %s\n", (int)retry_v7, error);
   }
   CHECK(retry_v7 == LARDON3D_PROJECT_DB_OK &&
-        lardon3d_project_db_schema_version(database) == 14);
+        lardon3d_project_db_schema_version(database) == 15);
   lardon3d_project_db_close(database);
   database = NULL;
 
   CHECK(create_v5_database(direct_v5_path));
   CHECK(query_integer(direct_v5_path, "SELECT value FROM metadata WHERE key='schema_version'", 5));
   CHECK(lardon3d_project_db_open(direct_v5_path, &database, error) == LARDON3D_PROJECT_DB_OK &&
-        lardon3d_project_db_schema_version(database) == 14);
+        lardon3d_project_db_schema_version(database) == 15);
   lardon3d_project_db_close(database);
   database = NULL;
 
   CHECK(create_v7_database(v8_path));
   CHECK(query_integer(v8_path, "SELECT value FROM metadata WHERE key='schema_version'", 7));
   CHECK(lardon3d_project_db_open(v8_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 14);
+  CHECK(lardon3d_project_db_schema_version(database) == 15);
   lardon3d_project_db_close(database);
   database = NULL;
-  CHECK(query_integer(v8_path, "SELECT value FROM metadata WHERE key='schema_version'", 14));
+  CHECK(query_integer(v8_path, "SELECT value FROM metadata WHERE key='schema_version'", 15));
 
   CHECK(create_v7_database(failed_v8_path));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V8", "1", 1) == 0);
@@ -837,7 +859,7 @@ static bool run_test(void) {
                       "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
                       "name='candidate_pairs'", 0));
   CHECK(lardon3d_project_db_open(failed_v8_path, &database, error) == LARDON3D_PROJECT_DB_OK &&
-        lardon3d_project_db_schema_version(database) == 14);
+        lardon3d_project_db_schema_version(database) == 15);
   lardon3d_project_db_close(database);
   database = NULL;
 
@@ -852,10 +874,10 @@ static bool run_test(void) {
                       "name='matcher_tasks'",
                       0));
   CHECK(lardon3d_project_db_open(v10_path, &database, error) == LARDON3D_PROJECT_DB_OK &&
-        lardon3d_project_db_schema_version(database) == 14);
+        lardon3d_project_db_schema_version(database) == 15);
   lardon3d_project_db_close(database);
   database = NULL;
-  CHECK(query_integer(v10_path, "SELECT value FROM metadata WHERE key='schema_version'", 14));
+  CHECK(query_integer(v10_path, "SELECT value FROM metadata WHERE key='schema_version'", 15));
   CHECK(query_integer(v10_path,
                       "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
                       "name='matcher_tasks'",
@@ -878,7 +900,7 @@ static bool run_test(void) {
                       1));
   CHECK(lardon3d_project_db_open(failed_v11_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 14);
+  CHECK(lardon3d_project_db_schema_version(database) == 15);
   lardon3d_project_db_close(database);
   database = NULL;
 
@@ -889,14 +911,33 @@ static bool run_test(void) {
                       "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
                       "name='track_sets'", 0));
   CHECK(lardon3d_project_db_open(v13_path, &database, error) == LARDON3D_PROJECT_DB_OK &&
-        lardon3d_project_db_schema_version(database) == 14);
+        lardon3d_project_db_schema_version(database) == 15);
   lardon3d_project_db_close(database);
   database = NULL;
   CHECK(query_integer(v13_path,
-                      "SELECT value FROM metadata WHERE key='schema_version'", 14));
+                      "SELECT value FROM metadata WHERE key='schema_version'", 15));
   CHECK(query_integer(v13_path,
                       "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
                       "name='track_sets'", 1));
+
+  CHECK(create_v14_database(true_v14_path));
+  CHECK(query_integer(true_v14_path,
+                      "SELECT value FROM metadata WHERE key='schema_version'", 14));
+  CHECK(query_integer(true_v14_path,
+                      "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+                      "name='track_builder_tasks'", 0));
+  Lardon3DProjectDbResult true_v14_result =
+      lardon3d_project_db_open(true_v14_path, &database, error);
+  if (true_v14_result != LARDON3D_PROJECT_DB_OK) {
+    fprintf(stderr, "true v14 upgrade: %d %s path=%s\n", true_v14_result, error, true_v14_path);
+  }
+  CHECK(true_v14_result == LARDON3D_PROJECT_DB_OK &&
+        lardon3d_project_db_schema_version(database) == 15);
+  lardon3d_project_db_close(database);
+  database = NULL;
+  CHECK(query_integer(true_v14_path,
+                      "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+                      "name='track_builder_tasks'", 1));
 
   CHECK(create_v13_database(failed_v14_path));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V14", "1", 1) == 0);
@@ -910,7 +951,22 @@ static bool run_test(void) {
                       "name='track_sets'", 0));
   CHECK(lardon3d_project_db_open(failed_v14_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK &&
-        lardon3d_project_db_schema_version(database) == 14);
+        lardon3d_project_db_schema_version(database) == 15);
+  lardon3d_project_db_close(database);
+  database = NULL;
+
+  CHECK(create_v13_database(failed_v15_path));
+  CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V15", "1", 1) == 0);
+  CHECK(lardon3d_project_db_open(failed_v15_path, &database, error) ==
+        LARDON3D_PROJECT_DB_IO_ERROR);
+  CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V15") == 0);
+  CHECK(query_integer(failed_v15_path,
+                      "SELECT value FROM metadata WHERE key='schema_version'", 13));
+  CHECK(query_integer(failed_v15_path,
+                      "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+                      "name='track_builder_tasks'", 0));
+  CHECK(lardon3d_project_db_open(failed_v15_path, &database, error) ==
+        LARDON3D_PROJECT_DB_OK && lardon3d_project_db_schema_version(database) == 15);
   lardon3d_project_db_close(database);
   database = NULL;
 
@@ -1313,6 +1369,8 @@ static bool run_test(void) {
   CHECK(unlink(failed_v11_path) == 0);
   CHECK(unlink(v13_path) == 0);
   CHECK(unlink(failed_v14_path) == 0);
+  CHECK(unlink(true_v14_path) == 0);
+  CHECK(unlink(failed_v15_path) == 0);
   CHECK(rmdir(directory) == 0);
   return true;
 }

@@ -1,6 +1,8 @@
 # Base de données projet Lardon3D
 
-> Version courante : **v14**. La migration transactionnelle v13→v14 ajoute
+> Version courante : **v15**. La migration transactionnelle v14→v15 ajoute
+> `track_builder_tasks` pour le payload durable explicite du Task Builder. La
+> migration transactionnelle v13→v14 ajoute
 > les tables `track_sets`, `tracks` et `track_observations` pour le Track
 > Model v1. La migration v12→v13 ajoute uniquement `geometric_verifier_tasks`
 > pour la tâche durable. La migration v11→v12 ajoute le modèle immutable
@@ -548,23 +550,43 @@ tests. L'API C (`create_track_set`, `load_track_set`, `find_track_set`,
 est exposée et implémentée. Les limites réelles restent l'absence de Track
 Builder algorithmique, de tâche dédiée et de triangulation.
 
+## Schéma v15 — payload durable Track Builder
+
+La migration v14→v15 ajoute uniquement `track_builder_tasks`. Elle ne modifie
+aucune table du Track Model et ne change aucune identité scientifique. La ligne
+référence un fichier de scope atomiquement publié sous
+`.lardon3d/checkpoints/<task_id>.scope` et conserve sa taille, son SHA-256,
+son format, le sélecteur exact, le fingerprint Builder, `gvr_count` et
+`input_scope_hash`. Le fichier contient `L3DTSCP1`, une version explicite, le
+nombre d'IDs et des uint64 little-endian triés et uniques. Le contenu est
+rejoué depuis le début après interruption ; aucun curseur ne peut perdre des
+arêtes transitoires.
+
+La reconstruction vérifie format, taille, checksum, bornes, tri, unicité,
+sélecteur, fingerprint et L3DTSIS1 avant de créer un callback neuf. Une
+corruption rend la tâche inexécutable sans créer de Track Set. Les tests
+couvrent une vraie base v14, migration, rollback injecté, retry,
+fermeture/réouverture et payload corrompu.
+
 ## Ouverture et migrations
 
-Une DB vide reçoit la chaîne de schémas jusqu'à v14 dans une transaction
+Une DB vide reçoit la chaîne de schémas jusqu'à v15 dans une transaction
 `BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
 `task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
 `NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
 artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1
-à v13 sont migrées séquentiellement vers v14.
+à v14 sont migrées séquentiellement vers v15.
 Une v10 publiée est validée comme telle avant que v10→v11 crée
 `matcher_tasks` ; son absence n'est donc pas une corruption. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
 interne de migration applique uniquement la chaîne séquentielle connue jusqu'à
-v14 ; une valeur hors de 1..14 est refusée. La failure injectée v12 rollbacke
+v15 ; une valeur hors de 1..15 est refusée. La failure injectée v12 rollbacke
 la table, l'index et le changement de version, laissant une vraie v11 utilisable.
 La failure injectée v13 conserve une vraie v12 sans `geometric_verifier_tasks` ;
 un retry applique ensuite v12→v13. La failure injectée v14 conserve une vraie
-v13 sans `track_sets` ; un retry applique ensuite v13→v14.
+v13 sans `track_sets` ; un retry applique ensuite v13→v14. La failure injectée
+v15 conserve une vraie v14 sans `track_builder_tasks` ; un retry applique
+ensuite v14→v15.
 
 Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
 
@@ -701,8 +723,8 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v14 et migrations séquentielles
-v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14, identité projet, transactions
+**IMPLEMENTED** — SQLite système, schéma v15 et migrations séquentielles
+v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14→v15, identité projet, transactions
 tâche+checkpoint, pagination de reprise et artefacts génériques.
 
 **IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,
@@ -732,6 +754,9 @@ cataloguées », pas « images migrées ».
 (unicité d'identité de reuse, CASCADE, observation unique par set) et
 tests de migration/failure validés. Le schéma complet et les invariants
 sont documentés dans `tracks.md`.
+
+**IMPLEMENTED** — Track Builder v1 durable : table `track_builder_tasks`, scope
+asset atomique, payload v1 validé, migration v14→v15 et rollback/retry testés.
 
 **IMPLEMENTED** — API C Track Model v1 : header `project_db.h` et
 source `project_db.c` exposent `create_track_set`, `load_track_set`,

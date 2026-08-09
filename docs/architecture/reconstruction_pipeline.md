@@ -123,7 +123,7 @@ USAC/MAGSAC avec configuration, seed et fingerprint déterministes.
 | **Persistance** | Les tracks sont persistés entre les sessions de traitement. Un track ne peut être détruit que par une action explicite de l'utilisateur. |
 
 **Statut :** PARTIAL — le Track Model v1 (persistance) est implémenté dans
-Project DB v14 (`track_sets`, `tracks`, `track_observations`). Le Track
+Project DB v15 (`track_sets`, `tracks`, `track_observations`). Le Track
 Builder, la triangulation et le Sparse SfM restent PLANNED.
 
 ---

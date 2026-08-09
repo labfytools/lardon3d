@@ -123,6 +123,11 @@ le plafond : 1, 2, 4, 8, puis les paliers supérieurs utiles aux autres kinds.
   réservation ajoute un slot GPU et 640 Kio. Sur UMA ces 640 Kio sont aussi
   débités du budget RAM. Sans GPU/backend, l'estimation reste CPU-only afin que
   le fallback portable ne soit jamais refusé artificiellement.
+- `track_builder.run` réserve un worker CPU, aucun GPU et aucun fan-out GVR.
+  L'estimation est `4 MiB + raw_inlier_edges * (48 + 2*160)` avec facteur 2
+  sous 400000 arêtes et facteur 8 au-delà, après vérification d'overflow. Le
+  facteur élevé protège la transition mémoire observée à grande échelle ; le
+  Governor reste l'unique propriétaire de l'admission et de la pression.
 
 ## Limites actuelles
 

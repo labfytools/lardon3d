@@ -157,8 +157,10 @@ executable(
         'src/geometric_verifier.cpp',
         'src/track_builder.cpp',
         'src/track_builder_project.cpp',
+        'src/track_builder_task.cpp',
     ] + matcher_backend_sources,
     include_directories: include_directories('include'),
+    c_args: ['-DLARDON3D_TRACK_BUILDER_TASK_AVAILABLE'],
     dependencies: [ncursesw, threads, sqlite3, openssl, opencv, opencv_geometry]
         + matcher_backend_dependencies,
 )
@@ -848,14 +850,23 @@ track_builder_project_test = executable(
         'tests/test_track_builder_project.cpp',
         'src/track_builder.cpp',
         'src/track_builder_project.cpp',
+        'src/track_builder_task.cpp',
         'src/project_db.c',
+        'src/app_state.c',
         'src/task.c',
+        'src/task_kind_registry.c',
+        'src/task_checkpoint.c',
+        'src/task_queue.c',
+        'src/hardware_profile.c',
         'src/resource_governor.c',
         'src/resource_snapshot.c',
         'src/match_file.c',
     ],
     include_directories: include_directories('include'),
-    cpp_args: ['-DLARDON3D_TRACK_BUILDER_PROJECT_TESTING'],
+    cpp_args: [
+        '-DLARDON3D_TRACK_BUILDER_PROJECT_TESTING',
+        '-DLARDON3D_TRACK_BUILDER_TASK_TESTING',
+    ],
     dependencies: [threads, sqlite3, openssl],
 )
 test('track-builder-project', track_builder_project_test, timeout: 60)

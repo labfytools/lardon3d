@@ -261,8 +261,9 @@ VERIFIED ou REJECTED est retournée avant toute lecture Feature/Match et sans ap
 contrainte concurrente déclenche un unique `find` de l'identité, jamais un overwrite ou une
 récursion. Changer un paramètre scientifique produit un autre fingerprint et un autre résultat.
 
-Les tests E2E utilisent le vrai Project DB (migré v13→v14 à l'ouverture), deux Feature Files à 8192 points, des Match Files
-hashés, le vrai MAGSAC et le Model v1. VERIFIED est rechargé après close/reopen avec modèle et
+Les tests E2E utilisent le vrai Project DB (migré séquentiellement jusqu'à v15 à
+l'ouverture), deux Feature Files à 8192 points, des Match Files hashés, le vrai
+MAGSAC et le Model v1. VERIFIED est rechargé après close/reopen avec modèle et
 masque bit-identiques ; REJECTED conserve son support et est également réutilisé.
 
 ## Production algorithm

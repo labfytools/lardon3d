@@ -9,7 +9,7 @@
 #include <lardon3d/task.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 14,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 15,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -157,6 +157,22 @@ typedef struct {
   uint32_t canonicalization_version;
   unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
 } Lardon3DProjectDbGeometricVerifierTask;
+
+typedef struct {
+  uint64_t task_id;
+  char builder_kind[LARDON3D_PROJECT_DB_KIND_CAPACITY];
+  uint32_t builder_version;
+  unsigned char builder_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  int verifier_kind;
+  uint32_t verifier_version;
+  unsigned char verifier_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  unsigned char input_scope_hash[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  uint64_t gvr_count;
+  char scope_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+  uint64_t scope_size_bytes;
+  unsigned char scope_sha256[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  uint32_t scope_format_version;
+} Lardon3DProjectDbTrackBuilderTask;
 
 typedef struct {
   uint64_t match_result_id;
@@ -579,6 +595,13 @@ Lardon3DProjectDbResult lardon3d_project_db_record_geometric_verifier_task(
 Lardon3DProjectDbResult lardon3d_project_db_load_geometric_verifier_task(
     Lardon3DProjectDb *database, uint64_t task_id,
     Lardon3DProjectDbGeometricVerifierTask *parameters);
+Lardon3DProjectDbResult lardon3d_project_db_record_track_builder_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *kind, uint32_t version, const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbTrackBuilderTask *parameters, int64_t updated_at);
+Lardon3DProjectDbResult lardon3d_project_db_load_track_builder_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbTrackBuilderTask *parameters);
 
 Lardon3DProjectDbResult lardon3d_project_db_create_match_result(
     Lardon3DProjectDb *database, uint64_t candidate_pair_id, uint64_t feature_set_id_a,

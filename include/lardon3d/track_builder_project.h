@@ -48,6 +48,8 @@ Lardon3DTrackBuilderProjectStatus lardon3d_track_builder_build_project(
 /* Test-only phase seam; never present in the production header/API. */
 void lardon3d_track_builder_project_test_before_revalidation(
     Lardon3DProjectDb *database, const uint64_t *gvr_ids, size_t gvr_count);
+void lardon3d_track_builder_project_test_before_publication(
+    const Lardon3DTrackBuilderProjectRequest *request);
 #endif
 
 #ifdef __cplusplus

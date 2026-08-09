@@ -17,7 +17,8 @@ poses, calculate 3D reprojection, or optimise cameras.
 
 The following are **FROZEN** and are consumed without reinterpretation:
 
-- Track Model v1 and Project DB v14.
+- Track Model v1 and the Project DB v14 scientific tables (retained unchanged
+  by the Gate D v15 runtime migration).
 - Observation identity `(feature_set_id, feature_index)`.
 - One observation per image, minimum two observations per Track, and no
   persistent rejected Track state.
@@ -364,19 +365,18 @@ reuses the complete set. Existing immutable upstream data is untouched.
 scope hash and a new Track Set identity; the old set remains valid. No delta
 Builder or checkpoint graph persistence is introduced here.
 
-## Future Task boundary
+## Task boundary (Gate D)
 
-A future Task, likely named `track_builder.run`, treats one complete Track Set
-as its scientific unit. It may page GVR resolution and pause at safe input or
-compute boundaries, but publication occurs only after complete canonical
-output and final scope validation. A cancelled or failed run publishes no
-incomplete set. The exact Task kind is not implemented or persisted by Gate A.
+A durable `track_builder.run` v1 treats one complete Track Set as its scientific
+unit. It replays the explicit scope after recovery and pauses/cancels only at
+safe boundaries; publication occurs only after complete canonical output and
+final scope validation. A cancelled or failed run publishes no incomplete set.
 
-## Future Resource Governor integration
+## Resource Governor integration (Gate D)
 
-The future Task estimates bounded graph memory and CPU, obtains reservations
-before callbacks, and may reduce batches or pause under pressure. Batch size,
-thread count, Governor state, PSI, swap and throttling may affect throughput
+The Task estimates bounded graph memory and CPU, obtains reservations before
+callbacks and obeys Governor pressure. Batch size, thread count, Governor state,
+PSI, swap and throttling may affect throughput
 only; they must not affect logical edges, conflict decisions or output order.
 
 ## Vulkan
@@ -425,13 +425,14 @@ Future performance runs should cover 10k, 100k and 1M edges with low-conflict,
 high-conflict, tiny-track, huge-component, chain and star distributions.
 Measure wall time, CPU, RSS peak, bytes/node, bytes/edge and throughput.
 
-## Explicitly out of scope
+## Explicitly out of scope for the scientific Builder
 
 Triangulation, camera pose estimation, Sparse SfM, Essential matrix, Bundle
 Adjustment, reprojection optimisation, 3D points, co-visibility matrices,
 dense reconstruction, Vulkan Builder implementation, persistent edge
-provenance, Track Model schema changes, Project DB v15, Track Builder Task
-implementation and incremental optimisation implementation.
+provenance, Track Model schema changes and incremental optimisation
+implementation. The durable Task Builder runtime is a separate Gate D layer;
+it does not alter this scientific contract.
 
 ## Open questions
 
@@ -500,7 +501,9 @@ Track Builder adds no new external dependency and does not introduce a second
 internal SHA-256 helper. Its fingerprint vector remains
 `e1f1fae479bcf82001a5b33dda331195617b8751668e46a6cf1eecf2d125df31`.
 
-The 1M benchmark's `973752 KiB` is a process high-water RSS measurement. The
+The historical isolated Gate B 1M benchmark's `973752 KiB` is a process
+high-water RSS measurement; it is not the Gate C/D project integration
+measurement. The
 synthetic caller retains 136,000,136 bytes of observations and 16,000,000
 bytes of pointer edges while the core retains its 136,000,136-byte canonical
 metadata table, 16,000,000-byte normalized edges, DSU/component temporaries
@@ -537,15 +540,16 @@ same explicit GVR IDs, status, selector, parent chain and scope count/hash are
 revalidated. Any missing, rejected, mismatched or corrupt selected input aborts
 the whole build; no partial Track Set is published. New matching GVRs are not
 discovered or included. The Track Model API owns timestamps, validation,
-atomicity and late exact-identity reuse. Project DB remains v14; Task and
-Resource Governor orchestration are not part of Gate C.
+atomicity and late exact-identity reuse. Gate C itself uses the v14 scientific
+baseline; Gate D adds only the v15 durable task payload.
 
 The implementation does not add a selector discovery API: callers that need
 discovery must enumerate and freeze their own explicit list in a separate
 operation.
 
-DB orchestration: **GATE C IMPLEMENTED**. Task: **NOT_IMPLEMENTED**. Resource
-Governor: **NOT_IMPLEMENTED**. Project DB remains v14 and unchanged.
+DB orchestration: **GATE C IMPLEMENTED**. Task: **GATE D IMPLEMENTED**.
+Resource Governor integration: **GATE D IMPLEMENTED**. Project DB v15 adds only
+the durable task payload; Track Model tables remain unchanged.
 
 ## Gate C closure evidence (current worktree)
 
@@ -565,3 +569,80 @@ API and C27 belongs to the future concurrency gate.
 Gate C status: **PASS**. Gate A: **PASS**. Gate B: **PASS**. Gate D:
 **NOT_IMPLEMENTED**. Gate E: **NOT_DONE**. Track Builder v1 is not marked
 fully frozen by this document; the future runtime gates remain separate.
+
+## Gate D — durable runtime contract
+
+This section was implemented and validated as a **DECISION**. It does not
+change Track Model v1, Gate B, or Gate C.
+
+### Durable task identity and payload
+
+The task kind is `track_builder.run`, version 1. One durable task owns one
+explicit, immutable GVR scope. Its scientific identity is exactly the Gate C
+tuple: `track_builder` kind/version/fingerprint, verifier selector, sorted
+unique GVR IDs, `gvr_count`, and `L3DTSIS1`. Task ID, state, checkpoint phase,
+pause/cancel flags, retry count, timestamps, reservation and Governor state are
+runtime metadata and never enter Track Set identity.
+
+The generic checkpoint v1 cannot carry a bounded, reconstructible arbitrary GVR
+list: it stores only the task snapshot. A Gate D payload therefore requires a
+new Project DB v15 task row plus an external atomic scope asset. The row stores
+the task ID, payload format version, scope path, byte size and SHA-256, exact
+selector, builder identity, scope hash and count. The scope asset stores field-
+by-field little-endian uint64 GVR IDs with explicit magic/version/count/size and
+checksum. No native struct dump, SQL text list or arbitrary small ID limit is
+allowed. A v14 database remains readable and is upgraded transactionally only
+when this payload is actually implemented.
+
+### Recovery and publication
+
+The task is persisted before enqueue. Recovery validates the task row, scope
+asset, sortedness, uniqueness, selector, builder fingerprint, count and
+L3DTSIS1 before reconstructing a fresh callback. Prepublication graph state is
+transient; recovery replays the complete explicit scope from the beginning.
+The durable order is: task payload → exact reuse → bounded resolution → Gate B
+compute → selected-input revalidation → atomic Track Set publication → terminal
+task checkpoint. A crash after publication but before terminal checkpoint is
+resolved by exact Gate C reuse, never by a second publication.
+
+### Pause, cancellation and identity collision
+
+Pause and cancellation are cooperative at task boundaries and between bounded
+GVR units. Gate B is non-preemptible: an active invocation finishes, then pause
+or cancellation is observed before publication. Prepublication cancellation
+publishes no Track Set; a committed publication remains valid even if a late
+cancellation is requested. A deterministic test seam will exercise the Gate C
+late-identity collision: an exact identity conflict is re-looked-up and reused;
+an unrelated constraint remains an error.
+
+### Resource and queue contract
+
+The existing Task Runtime, bounded FIFO queue and Resource Governor remain the
+owners of lifecycle, backpressure, admission, reservations, pressure and
+hysteresis. Track Builder adds no thresholds, queue or worker pool. It uses one
+conservative CPU worker and no GPU. A preflight estimate uses checked arithmetic
+over selected GVR `inlier_count` metadata:
+
+`fixed_graph_bytes + raw_inlier_edges * bytes_per_edge +
+2 * raw_inlier_edges * bytes_per_observation`, multiplied by a conservative
+twofold allocator/headroom margin through 400,000 raw edges and an eightfold
+margin above the 400,000-edge admission transition. This is an
+admission upper bound, not a scientific quantity or an exact RSS promise.
+
+Match Files remain one-at-a-time and descriptors remain unloaded. YELLOW/RED behavior is decided
+only by the Governor; swap is recovery capacity, not a work budget. UMA system
+RAM remains shared desktop/iGPU headroom.
+
+### Gate D evidence
+
+The validated runtime covers registry, payload corruption, migration, direct-vs-task
+parity, replay, crash-before/after-publication, pause/resume, cancellation,
+C27 identity collision, zero-track, selected-input deletion, bounded queue and
+Governor GREEN/YELLOW/RED tests. Fresh child-process calibration at 253952,
+352256, 393216, 401408, 450560, 507904 and 516096 raw edges measured 32932,
+37240, 40056, 39888–40220, 41880, 44952 and 45368 KiB respectively. The
+apparent 1,079,972 KiB result was contaminated cumulative RUSAGE from the
+persistent shell that launched direct runs; it was not Track Builder memory.
+A normal 250k hardware run completed in 0.368 seconds with 33,228 KiB peak RSS,
+MemAvailable loss of 14,108 KiB, no swap delta and zero PSI averages. Gate D
+is **PASS**; Gate E remains responsible for final full-suite freeze.

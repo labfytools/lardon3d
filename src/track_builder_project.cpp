@@ -320,9 +320,37 @@ extern "C" Lardon3DTrackBuilderProjectStatus lardon3d_track_builder_build_projec
     }
     Lardon3DProjectDbTrackSet published{};
     identity.track_count = core.track_count;
+#ifdef LARDON3D_TRACK_BUILDER_PROJECT_TESTING
+    lardon3d_track_builder_project_test_before_publication(request);
+    Lardon3DProjectDbTrackSet raced_before_publish{};
+    if (lardon3d_project_db_find_track_set(request->database, &identity,
+                                           &raced_before_publish) == LARDON3D_PROJECT_DB_OK) {
+      lardon3d_track_builder_result_free(&core);
+      result->track_set_id = raced_before_publish.track_set_id;
+      result->gvr_count = raced_before_publish.gvr_count;
+      result->track_count = raced_before_publish.track_count;
+      result->raw_inlier_edge_count = edges.size();
+      result->core_observation_count = observations.size();
+      result->reused = true;
+      return LARDON3D_TRACK_BUILDER_PROJECT_OK;
+    }
+#endif
     db = lardon3d_project_db_create_track_set(request->database, &identity,
                                               publish.data(), publish.size(), &published);
     lardon3d_track_builder_result_free(&core);
+    if (db == LARDON3D_PROJECT_DB_CONSTRAINT) {
+      Lardon3DProjectDbTrackSet raced{};
+      db = lardon3d_project_db_find_track_set(request->database, &identity, &raced);
+      if (db == LARDON3D_PROJECT_DB_OK) {
+        result->track_set_id = raced.track_set_id;
+        result->gvr_count = raced.gvr_count;
+        result->track_count = raced.track_count;
+        result->raw_inlier_edge_count = edges.size();
+        result->core_observation_count = observations.size();
+        result->reused = true;
+        return LARDON3D_TRACK_BUILDER_PROJECT_OK;
+      }
+    }
     if (db != LARDON3D_PROJECT_DB_OK) return map_db(db);
     result->track_set_id = published.track_set_id;
     result->gvr_count = published.gvr_count;

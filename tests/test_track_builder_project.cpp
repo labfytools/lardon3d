@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <chrono>
 #include <fcntl.h>
@@ -14,6 +15,11 @@
 extern "C" {
 #include <lardon3d/match_file.h>
 #include <lardon3d/project_db.h>
+#include <lardon3d/hardware_profile.h>
+#include <lardon3d/resource_governor.h>
+#include <lardon3d/task_queue.h>
+#include <lardon3d/task_checkpoint.h>
+#include <lardon3d/track_builder_task.h>
 #include <lardon3d/track_builder_project.h>
 }
 
@@ -27,6 +33,7 @@ bool g_delete_before_revalidation = false;
 std::string g_insert_db;
 uint64_t g_insert_match_id = 0;
 bool g_insert_during_build = false;
+bool g_publication_race = false;
 
 void check(bool value, const char *expression, int line) {
   if (!value) {
@@ -78,6 +85,8 @@ struct Fixture {
     CHECK(mkdtemp(name) != nullptr);
     directory = name;
     db_path = directory + "/project.db";
+    CHECK(mkdir((directory + "/.lardon3d").c_str(), 0700) == 0);
+    CHECK(mkdir((directory + "/.lardon3d/checkpoints").c_str(), 0700) == 0);
     char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY]{};
     CHECK(lardon3d_project_db_open(db_path.c_str(), &db, error) == LARDON3D_PROJECT_DB_OK);
     Lardon3DProjectDbScanSet scanset{};
@@ -602,30 +611,333 @@ void run_partial_input_failure() {
   std::puts("PARTIAL INPUT: PASS");
 }
 
-void run_resource_case() {
+void run_resource_case(size_t gvr_count = 13) {
   Fixture fixture(8192);
+  const bool profile = std::getenv("LARDON3D_RESOURCE_PROFILE") != nullptr;
+  auto report_rss = [profile](const char *stage) {
+    if (!profile) return;
+    struct rusage usage{};
+    CHECK(getrusage(RUSAGE_SELF, &usage) == 0);
+    std::printf("RESOURCE_STAGE=%s RSS_KIB=%ld\n", stage, usage.ru_maxrss);
+  };
+  report_rss("fixture-open");
   std::vector<Lardon3DMatchFileEntry> entries;
   std::vector<unsigned char> mask(1024, 0xff);
   entries.reserve(8192);
   for (uint32_t i = 0; i < 8192; ++i) entries.push_back({i, i, 0.1F});
   std::vector<uint64_t> ids;
-  for (size_t i = 0; i < 13; ++i) ids.push_back(fixture.add_gvr(0, 1, entries, mask));
+  for (size_t i = 0; i < gvr_count; ++i) ids.push_back(fixture.add_gvr(0, 1, entries, mask));
+  report_rss("fixture-built");
   auto request = fixture.request(ids.data(), ids.size());
   Lardon3DTrackBuilderProjectResult result{};
   auto started = std::chrono::steady_clock::now();
+  report_rss("before-build");
+  uint64_t expected_raw = static_cast<uint64_t>(gvr_count) * 8192ULL;
   CHECK(lardon3d_track_builder_build_project(&request, &result) ==
-        LARDON3D_TRACK_BUILDER_PROJECT_OK && result.raw_inlier_edge_count == 106496 &&
+        LARDON3D_TRACK_BUILDER_PROJECT_OK && result.raw_inlier_edge_count == expected_raw &&
         result.core_observation_count == 16384 && result.track_count == 8192);
+  report_rss("after-build");
   auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started);
   struct rusage usage{};
   CHECK(getrusage(RUSAGE_SELF, &usage) == 0);
-  std::printf("RESOURCE GVR=%zu RAW=%llu INLIERS=%llu FEATURES=3 OBS=%llu TRACKS=%llu\n",
+  uint64_t predicted = 4ULL * 1024ULL * 1024ULL +
+                       result.raw_inlier_edge_count * (48ULL + 2ULL * 160ULL);
+  predicted *= result.raw_inlier_edge_count > 400000ULL ? 8ULL : 2ULL;
+  std::printf("RESOURCE GVR=%zu RAW=%llu INLIERS=%llu FEATURES=3 OBS=%llu TRACKS=%llu "
+              "PREDICTED_RESERVATION=%llu\n",
               ids.size(), static_cast<unsigned long long>(result.raw_inlier_edge_count),
               static_cast<unsigned long long>(result.raw_inlier_edge_count),
               static_cast<unsigned long long>(result.core_observation_count),
-              static_cast<unsigned long long>(result.track_count));
+              static_cast<unsigned long long>(result.track_count),
+              static_cast<unsigned long long>(predicted));
   std::printf("RESOURCE DURATION_SECONDS=%.3f PEAK_RSS_KIB=%ld MAX_MATCH_FILES_LIVE=1\n",
               elapsed.count(), usage.ru_maxrss);
+}
+
+void run_durable_task_case() {
+  Fixture direct_fixture;
+  auto direct_first = direct_fixture.add_gvr(0, 1, {{0, 0, 0.1F}}, {0x01});
+  auto direct_second = direct_fixture.add_gvr(1, 2, {{0, 0, 0.1F}}, {0x01});
+  uint64_t direct_ids[] = {direct_first, direct_second};
+  auto direct_request = direct_fixture.request(direct_ids, 2);
+  Lardon3DTrackBuilderProjectResult direct_result{};
+  CHECK(lardon3d_track_builder_build_project(&direct_request, &direct_result) ==
+        LARDON3D_TRACK_BUILDER_PROJECT_OK && direct_result.track_count == 1);
+  assert_track(direct_fixture.db, direct_result.track_set_id, direct_fixture.feature[0],
+               direct_fixture.feature[1], direct_fixture.feature[2]);
+
+  Fixture fixture;
+  auto first = fixture.add_gvr(0, 1, {{0, 0, 0.1F}}, {0x01});
+  auto second = fixture.add_gvr(1, 2, {{0, 0, 0.1F}}, {0x01});
+  uint64_t ids[] = {first, second};
+  Lardon3DHardwareProfile profile{};
+  char hardware_error[128]{};
+  CHECK(lardon3d_hardware_profile_detect(&profile, hardware_error, sizeof(hardware_error)));
+  Lardon3DResourcePolicy policy{};
+  CHECK(lardon3d_resource_policy_default(&profile, &policy));
+  Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(&profile, &policy);
+  CHECK(governor != nullptr);
+  Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 2);
+  CHECK(queue != nullptr);
+  Lardon3DAppState state{};
+  lardon3d_app_state_init(&state);
+  state.project_loaded = true;
+  state.project_db = fixture.db;
+  state.resource_governor = governor;
+  state.task_queue = queue;
+  std::snprintf(state.project_path, sizeof(state.project_path), "%s", fixture.directory.c_str());
+  Lardon3DTrackBuilderTaskConfiguration configuration = {
+      state.project_path, fixture.db, kVerifier, kVersion, g_verifier, ids, 2};
+  Lardon3DTaskKindDescriptor descriptor = {
+      LARDON3D_TRACK_BUILDER_TASK_KIND, LARDON3D_TRACK_BUILDER_TASK_KIND_VERSION,
+      lardon3d_track_builder_task_reconstruct};
+  Lardon3DTaskKindRegistry registry{};
+  const Lardon3DTaskKindDescriptor *found_descriptor = nullptr;
+  CHECK(lardon3d_task_kind_registry_init(&registry, &descriptor, 1) &&
+        lardon3d_task_kind_registry_lookup(
+            &registry, LARDON3D_TRACK_BUILDER_TASK_KIND,
+            LARDON3D_TRACK_BUILDER_TASK_KIND_VERSION, &found_descriptor) ==
+            LARDON3D_TASK_KIND_OK && found_descriptor == &descriptor);
+  uint64_t task_id = 0;
+  CHECK(lardon3d_project_enqueue_track_builder_task(&state, &configuration, &task_id));
+  Lardon3DTaskSnapshot snapshot{};
+  for (size_t attempt = 0; attempt < 200; ++attempt) {
+    CHECK(lardon3d_task_queue_get(queue, task_id, &snapshot));
+    if (snapshot.state == TASK_COMPLETED || snapshot.state == TASK_FAILED ||
+        snapshot.state == TASK_CANCELLED)
+      break;
+    usleep(10000);
+  }
+  CHECK(snapshot.state == TASK_COMPLETED && track_set_count(fixture.db_path) == 1);
+  Lardon3DProjectDbTrackSet task_sets[1]{};
+  size_t task_set_count_value = 0;
+  CHECK(lardon3d_project_db_list_track_sets(fixture.db, 0, task_sets, 1,
+                                            &task_set_count_value) ==
+            LARDON3D_PROJECT_DB_OK &&
+        task_set_count_value == 1 && task_sets[0].track_count == direct_result.track_count);
+  assert_track(fixture.db, task_sets[0].track_set_id, fixture.feature[0], fixture.feature[1],
+               fixture.feature[2]);
+  CHECK(lardon3d_task_queue_remove(queue, task_id));
+  lardon3d_task_queue_destroy(queue);
+  lardon3d_resource_governor_destroy(governor);
+  Lardon3DProjectDbTrackBuilderTask durable{};
+  CHECK(lardon3d_project_db_load_track_builder_task(fixture.db, task_id, &durable) ==
+        LARDON3D_PROJECT_DB_OK && durable.gvr_count == 2 && durable.scope_format_version == 1);
+  Lardon3DTaskDurableSnapshot durable_snapshot{};
+  uint32_t checkpoint_version = 0;
+  CHECK(lardon3d_task_checkpoint_load(
+            (fixture.directory + "/.lardon3d/checkpoints/" + std::to_string(task_id) + ".chk")
+                .c_str(),
+            &durable_snapshot, &checkpoint_version) == LARDON3D_TASK_CHECKPOINT_OK &&
+        checkpoint_version == 1 && durable_snapshot.id == task_id);
+  Lardon3DHardwareProfile reopened_profile{};
+  CHECK(lardon3d_hardware_profile_detect(&reopened_profile, hardware_error,
+                                         sizeof(hardware_error)));
+  CHECK(lardon3d_resource_policy_default(&reopened_profile, &policy));
+  Lardon3DResourceGovernor *reopened_governor =
+      lardon3d_resource_governor_create(&reopened_profile, &policy);
+  CHECK(reopened_governor != nullptr);
+  Lardon3DTaskReconstructionContext runtime = {
+      fixture.directory.c_str(), fixture.db, reopened_governor, nullptr};
+  Lardon3DTaskKindBinding binding{};
+  CHECK(lardon3d_track_builder_task_reconstruct(&durable_snapshot, &runtime, &binding) &&
+        binding.callback != nullptr && binding.userdata_destroy != nullptr);
+  Lardon3DTask *restored = lardon3d_task_restore_typed(
+      &durable_snapshot, LARDON3D_TRACK_BUILDER_TASK_KIND,
+      LARDON3D_TRACK_BUILDER_TASK_KIND_VERSION, binding.callback, binding.userdata,
+      binding.userdata_destroy);
+  CHECK(restored != nullptr);
+  lardon3d_task_destroy(restored);
+  lardon3d_resource_governor_destroy(reopened_governor);
+  std::puts("GATE D TASK: PASS (durable enqueue, execution, publication)");
+}
+
+void run_late_identity_race_case() {
+  Fixture fixture;
+  auto gvr = fixture.add_gvr(0, 1, {{0, 0, 0.1F}}, {0x01});
+  uint64_t ids[] = {gvr};
+  auto request = fixture.request(ids, 1);
+  g_publication_race = true;
+  Lardon3DTrackBuilderProjectResult result{};
+  auto status = lardon3d_track_builder_build_project(&request, &result);
+  std::fprintf(stderr, "C27 status=%d reused=%d sets=%llu\n", status, result.reused,
+               static_cast<unsigned long long>(track_set_count(fixture.db_path)));
+  CHECK(status ==
+        LARDON3D_TRACK_BUILDER_PROJECT_OK && result.reused && result.track_count == 1 &&
+        track_set_count(fixture.db_path) == 1);
+  std::puts("C27: PASS (deterministic exact-identity collision/reuse)");
+}
+
+void run_crash_recovery_case() {
+  Fixture fixture;
+  auto first = fixture.add_gvr(0, 1, {{0, 0, 0.1F}}, {0x01});
+  auto second = fixture.add_gvr(1, 2, {{0, 0, 0.1F}}, {0x01});
+  uint64_t ids[] = {first, second};
+  Lardon3DHardwareProfile profile{};
+  char error[128]{};
+  CHECK(lardon3d_hardware_profile_detect(&profile, error, sizeof(error)));
+  Lardon3DResourcePolicy policy{};
+  CHECK(lardon3d_resource_policy_default(&profile, &policy));
+  Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(&profile, &policy);
+  CHECK(governor != nullptr);
+  Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 2);
+  CHECK(queue != nullptr);
+  Lardon3DAppState state{};
+  lardon3d_app_state_init(&state);
+  state.project_loaded = true;
+  state.project_db = fixture.db;
+  state.resource_governor = governor;
+  state.task_queue = queue;
+  std::snprintf(state.project_path, sizeof(state.project_path), "%s", fixture.directory.c_str());
+  Lardon3DTrackBuilderTaskConfiguration configuration = {
+      state.project_path, fixture.db, kVerifier, kVersion, g_verifier, ids, 2};
+  uint64_t task_id = 0;
+  setenv("LARDON3D_TRACK_BUILDER_TEST_SKIP_FINISHED", "1", 1);
+  CHECK(lardon3d_project_enqueue_track_builder_task(&state, &configuration, &task_id));
+  Lardon3DTaskSnapshot snapshot{};
+  for (size_t attempt = 0; attempt < 200; ++attempt) {
+    CHECK(lardon3d_task_queue_get(queue, task_id, &snapshot));
+    if (snapshot.state == TASK_COMPLETED) break;
+    usleep(10000);
+  }
+  CHECK(snapshot.state == TASK_COMPLETED && track_set_count(fixture.db_path) == 1);
+  CHECK(lardon3d_task_queue_remove(queue, task_id));
+  lardon3d_task_queue_destroy(queue);
+  lardon3d_resource_governor_destroy(governor);
+  CHECK(unsetenv("LARDON3D_TRACK_BUILDER_TEST_SKIP_FINISHED") == 0);
+  lardon3d_project_db_close(fixture.db);
+  fixture.db = nullptr;
+  CHECK(lardon3d_project_db_open(fixture.db_path.c_str(), &fixture.db, error) ==
+        LARDON3D_PROJECT_DB_OK);
+  Lardon3DTaskDurableSnapshot durable_snapshot{};
+  uint32_t version = 0;
+  CHECK(lardon3d_task_checkpoint_load(
+            (fixture.directory + "/.lardon3d/checkpoints/" + std::to_string(task_id) + ".chk")
+                .c_str(),
+            &durable_snapshot, &version) == LARDON3D_TASK_CHECKPOINT_OK &&
+        durable_snapshot.id == task_id && durable_snapshot.saved_state == TASK_PENDING);
+  CHECK(lardon3d_hardware_profile_detect(&profile, error, sizeof(error)));
+  CHECK(lardon3d_resource_policy_default(&profile, &policy));
+  governor = lardon3d_resource_governor_create(&profile, &policy);
+  queue = lardon3d_task_queue_create(governor, 2);
+  CHECK(governor != nullptr && queue != nullptr);
+  Lardon3DTaskReconstructionContext runtime = {
+      fixture.directory.c_str(), fixture.db, governor, nullptr};
+  Lardon3DTaskKindBinding binding{};
+  CHECK(lardon3d_track_builder_task_reconstruct(&durable_snapshot, &runtime, &binding));
+  Lardon3DTask *restored = lardon3d_task_restore_typed(
+      &durable_snapshot, LARDON3D_TRACK_BUILDER_TASK_KIND,
+      LARDON3D_TRACK_BUILDER_TASK_KIND_VERSION, binding.callback, binding.userdata,
+      binding.userdata_destroy);
+  CHECK(restored != nullptr && lardon3d_task_queue_add(queue, restored, nullptr));
+  for (size_t attempt = 0; attempt < 200; ++attempt) {
+    CHECK(lardon3d_task_queue_get(queue, task_id, &snapshot));
+    if (snapshot.state == TASK_COMPLETED) break;
+    usleep(10000);
+  }
+  CHECK(snapshot.state == TASK_COMPLETED && track_set_count(fixture.db_path) == 1);
+  CHECK(lardon3d_task_queue_remove(queue, task_id));
+  lardon3d_task_queue_destroy(queue);
+  lardon3d_resource_governor_destroy(governor);
+  execute_sql(fixture.db_path,
+              ("UPDATE track_builder_tasks SET scope_size_bytes=1 WHERE task_id=" +
+               std::to_string(task_id))
+                  .c_str());
+  Lardon3DProjectDbTrackBuilderTask corrupt_payload{};
+  CHECK(lardon3d_project_db_load_track_builder_task(fixture.db, task_id,
+                                                     &corrupt_payload) ==
+        LARDON3D_PROJECT_DB_OK);
+  Lardon3DTaskKindBinding corrupt_binding{};
+  Lardon3DResourceGovernor *corrupt_governor =
+      lardon3d_resource_governor_create(&profile, &policy);
+  CHECK(corrupt_governor != nullptr);
+  Lardon3DTaskReconstructionContext corrupt_runtime = {
+      fixture.directory.c_str(), fixture.db, corrupt_governor, nullptr};
+  CHECK(!lardon3d_track_builder_task_reconstruct(&durable_snapshot, &corrupt_runtime,
+                                                 &corrupt_binding));
+  lardon3d_resource_governor_destroy(corrupt_governor);
+  std::puts("CRASH AFTER PUBLICATION: PASS (replay exact reuse, no duplicate set)");
+}
+
+void run_pause_cancel_case() {
+  auto make_state = [](Fixture &fixture, Lardon3DResourceGovernor **governor,
+                       Lardon3DTaskQueue **queue, Lardon3DAppState *state) {
+    Lardon3DHardwareProfile profile{};
+    char error[128]{};
+    CHECK(lardon3d_hardware_profile_detect(&profile, error, sizeof(error)));
+    Lardon3DResourcePolicy policy{};
+    CHECK(lardon3d_resource_policy_default(&profile, &policy));
+    *governor = lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(*governor != nullptr);
+    *queue = lardon3d_task_queue_create(*governor, 2);
+    CHECK(*queue != nullptr);
+    lardon3d_app_state_init(state);
+    state->project_loaded = true;
+    state->project_db = fixture.db;
+    state->resource_governor = *governor;
+    state->task_queue = *queue;
+    std::snprintf(state->project_path, sizeof(state->project_path), "%s",
+                  fixture.directory.c_str());
+  };
+
+  Fixture paused_fixture;
+  auto paused_gvr = paused_fixture.add_gvr(0, 1, {{0, 0, 0.1F}}, {0x01});
+  uint64_t paused_ids[] = {paused_gvr};
+  Lardon3DResourceGovernor *paused_governor = nullptr;
+  Lardon3DTaskQueue *paused_queue = nullptr;
+  Lardon3DAppState paused_state{};
+  make_state(paused_fixture, &paused_governor, &paused_queue, &paused_state);
+  Lardon3DTrackBuilderTaskConfiguration paused_configuration = {
+      paused_state.project_path, paused_fixture.db, kVerifier, kVersion, g_verifier,
+      paused_ids, 1};
+  uint64_t paused_id = 0;
+  Lardon3DTask *paused_task = lardon3d_project_create_track_builder_task(
+      &paused_state, &paused_configuration, &paused_id);
+  CHECK(paused_task != nullptr && lardon3d_task_pause(paused_task) &&
+        lardon3d_task_queue_add(paused_queue, paused_task, nullptr));
+  usleep(20000);
+  Lardon3DTaskSnapshot paused_snapshot{};
+  CHECK(lardon3d_task_queue_get(paused_queue, paused_id, &paused_snapshot) &&
+        paused_snapshot.state == TASK_PAUSED && track_set_count(paused_fixture.db_path) == 0);
+  CHECK(lardon3d_task_queue_resume(paused_queue, paused_id));
+  for (size_t attempt = 0; attempt < 200; ++attempt) {
+    CHECK(lardon3d_task_queue_get(paused_queue, paused_id, &paused_snapshot));
+    if (paused_snapshot.state == TASK_COMPLETED) break;
+    usleep(10000);
+  }
+  CHECK(paused_snapshot.state == TASK_COMPLETED && track_set_count(paused_fixture.db_path) == 1);
+  CHECK(lardon3d_task_queue_remove(paused_queue, paused_id));
+  lardon3d_task_queue_destroy(paused_queue);
+  lardon3d_resource_governor_destroy(paused_governor);
+
+  Fixture cancelled_fixture;
+  auto cancelled_gvr = cancelled_fixture.add_gvr(0, 1, {{0, 0, 0.1F}}, {0x01});
+  uint64_t cancelled_ids[] = {cancelled_gvr};
+  Lardon3DResourceGovernor *cancelled_governor = nullptr;
+  Lardon3DTaskQueue *cancelled_queue = nullptr;
+  Lardon3DAppState cancelled_state{};
+  make_state(cancelled_fixture, &cancelled_governor, &cancelled_queue, &cancelled_state);
+  Lardon3DTrackBuilderTaskConfiguration cancelled_configuration = {
+      cancelled_state.project_path, cancelled_fixture.db, kVerifier, kVersion, g_verifier,
+      cancelled_ids, 1};
+  uint64_t cancelled_id = 0;
+  Lardon3DTask *cancelled_task = lardon3d_project_create_track_builder_task(
+      &cancelled_state, &cancelled_configuration, &cancelled_id);
+  CHECK(cancelled_task != nullptr);
+  lardon3d_task_request_cancel(cancelled_task);
+  CHECK(lardon3d_task_queue_add(cancelled_queue, cancelled_task, nullptr));
+  Lardon3DTaskSnapshot cancelled_snapshot{};
+  for (size_t attempt = 0; attempt < 200; ++attempt) {
+    CHECK(lardon3d_task_queue_get(cancelled_queue, cancelled_id, &cancelled_snapshot));
+    if (cancelled_snapshot.state == TASK_CANCELLED) break;
+    usleep(10000);
+  }
+  CHECK(cancelled_snapshot.state == TASK_CANCELLED &&
+        track_set_count(cancelled_fixture.db_path) == 0);
+  CHECK(lardon3d_task_queue_remove(cancelled_queue, cancelled_id));
+  lardon3d_task_queue_destroy(cancelled_queue);
+  lardon3d_resource_governor_destroy(cancelled_governor);
+  std::puts("PAUSE/CANCEL: PASS");
 }
 
 } // namespace
@@ -666,9 +978,29 @@ extern "C" void lardon3d_track_builder_project_test_before_revalidation(
   CHECK(sqlite3_close(connection) == SQLITE_OK);
   g_delete_before_revalidation = false;
 }
+
+extern "C" void lardon3d_track_builder_project_test_before_publication(
+    const Lardon3DTrackBuilderProjectRequest *request) {
+  if (!g_publication_race) return;
+  g_publication_race = false;
+  Lardon3DTrackBuilderProjectResult result{};
+  CHECK(lardon3d_track_builder_build_project(request, &result) ==
+        LARDON3D_TRACK_BUILDER_PROJECT_OK && !result.reused);
+}
 #endif
 
 int main() {
+  if (std::getenv("LARDON3D_RESOURCE_CALIBRATION_ONLY")) {
+    const char *scale = std::getenv("LARDON3D_RESOURCE_SCALE");
+    if (scale) {
+      run_resource_case(static_cast<size_t>(std::strtoull(scale, nullptr, 10)));
+    } else {
+      run_resource_case(13);
+      run_resource_case(31);
+      run_resource_case(62);
+    }
+    return 0;
+  }
   Lardon3DTrackBuilderProjectResult result{};
   Lardon3DTrackBuilderProjectRequest invalid{};
   CHECK(lardon3d_track_builder_build_project(&invalid, &result) ==
@@ -683,6 +1015,10 @@ int main() {
   run_scope_snapshot_case();
   run_partial_input_failure();
   run_resource_case();
-  std::puts("C01-C27 integration harness: PASS (C26 N/A; C27 deferred to Gate D)");
+  run_durable_task_case();
+  run_late_identity_race_case();
+  run_pause_cancel_case();
+  run_crash_recovery_case();
+  std::puts("C01-C27 integration harness: PASS (C26 N/A; C27 Gate D closed)");
   return 0;
 }

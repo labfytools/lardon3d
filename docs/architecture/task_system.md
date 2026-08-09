@@ -117,6 +117,11 @@ configuration scientifique et `after_match_result_id`. Chaque résultat est
 publié avant le curseur ; pause, annulation, checkpoint et rupture de séquence
 restent coopératifs aux frontières des parents et des lots.
 
+**IMPLEMENTED** — `track_builder.run` v1 est une tâche durable de rebuild
+complet. Le scope GVR est persistant et immuable ; la reprise rejoue depuis le
+début avant publication et l'exact reuse Gate C absorbe un crash post-publication.
+Pause et annulation sont observées avant/after l'unité Gate B non préemptible.
+
 Le chemin de production de l'import ne possède plus de thread ni de drapeau
 d'annulation privés. Son wrapper TUI ne fait qu'enqueue/cancel/observer la
 tâche générique. Chaque callback traite un lot borné, checkpoint hors mutex de

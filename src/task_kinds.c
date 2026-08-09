@@ -5,6 +5,9 @@
 #include <lardon3d/matcher_task.h>
 #include <lardon3d/sift_task.h>
 #include <lardon3d/visual_index_task.h>
+#ifdef LARDON3D_TRACK_BUILDER_TASK_AVAILABLE
+#include <lardon3d/track_builder_task.h>
+#endif
 #include <lardon3d/task_kind_registry.h>
 
 const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_production(void) {
@@ -48,7 +51,15 @@ const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_production(void) {
           .kind = LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND,
           .kind_version = LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND_VERSION,
           .reconstruct = lardon3d_geometric_verifier_task_reconstruct,
-      }};
+      },
+ #ifdef LARDON3D_TRACK_BUILDER_TASK_AVAILABLE
+      {
+           .kind = LARDON3D_TRACK_BUILDER_TASK_KIND,
+           .kind_version = LARDON3D_TRACK_BUILDER_TASK_KIND_VERSION,
+           .reconstruct = lardon3d_track_builder_task_reconstruct,
+      },
+#endif
+      };
   static const Lardon3DTaskKindRegistry registry = {
       .descriptors = descriptors,
       .count = sizeof(descriptors) / sizeof(descriptors[0]),
