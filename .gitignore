@@ -2,8 +2,9 @@
 /build-*/
 compile_commands.json
 .cache/
-.opencode/
 *.spv
 *.log
 *.core
 core
+
+/.opencode/
