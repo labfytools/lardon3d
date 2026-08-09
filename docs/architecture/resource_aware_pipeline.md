@@ -64,6 +64,11 @@ backend ORB top-2 de production possède un contexte lazy réutilisable, 640 Kio
 de buffers bornés et un fallback CPU exact. Le CPU reste le fallback portable
 si Vulkan est absent, incompatible ou désactivé pour la session.
 
+La feasibility SIFT/RootSIFT a borné son prototype Vulkan à 8,125 Mio de
+payload lazy, mais n'a pas franchi la Gate de production. Le Governor ne réserve
+donc aucun slot ni budget GPU pour SIFT/RootSIFT ; leur estimation CPU publiée
+reste inchangée.
+
 ## Profil interactif 8845HS mesuré
 
 - budget CPU Lardon3D : 12 threads logiques, 4 réservés au desktop ;

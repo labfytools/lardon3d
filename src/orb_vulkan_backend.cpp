@@ -19,6 +19,10 @@
 #include <vulkan/vulkan.h>
 
 #include "orb_top2_spv.h"
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+#include "sift_top2_spv.h"
+#include "sift_top2_fp64_spv.h"
+#endif
 
 namespace {
 
@@ -30,6 +34,10 @@ static_assert(kDescriptorBufferBytes * 2 + kOutputBufferBytes ==
               LARDON3D_ORB_VULKAN_PERMANENT_BUFFER_BYTES);
 constexpr uint64_t kDefaultVulkanWorkThreshold = 768ULL * 768ULL;
 constexpr uint32_t kDefaultWorkgroupSize = 32;
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+constexpr VkDeviceSize kSiftDescriptorBufferBytes =
+    static_cast<VkDeviceSize>(LARDON3D_FEATURE_MAX_FEATURES) * 128 * sizeof(float);
+#endif
 
 enum class BackendState {
   kUninitialized,
@@ -52,6 +60,15 @@ struct RawTop2 {
   uint32_t second_index;
   uint32_t second_distance;
 };
+
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+struct RawSiftTop2 {
+  uint32_t best_index;
+  float best_squared_distance;
+  uint32_t second_index;
+  float second_squared_distance;
+};
+#endif
 
 static uint64_t elapsed_ns(std::chrono::steady_clock::time_point start) {
   auto elapsed = std::chrono::steady_clock::now() - start;
@@ -106,18 +123,32 @@ struct Lardon3DOrbVulkanBackend {
   bool dedicated_compute_queue = false;
   VkPhysicalDeviceProperties properties{};
   VkPhysicalDeviceMemoryProperties memory_properties{};
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  VkPhysicalDeviceFeatures features{};
+#endif
   VkCommandPool command_pool = VK_NULL_HANDLE;
   VkCommandBuffer command_buffer = VK_NULL_HANDLE;
   VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
   VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
   VkPipeline pipeline = VK_NULL_HANDLE;
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  VkPipeline sift_pipeline = VK_NULL_HANDLE;
+#endif
   VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
   VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  VkDescriptorSet sift_descriptor_set = VK_NULL_HANDLE;
+#endif
   VkQueryPool query_pool = VK_NULL_HANDLE;
   bool timestamps_available = false;
   Buffer descriptors_a;
   Buffer descriptors_b;
   Buffer output;
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  Buffer sift_descriptors_a;
+  Buffer sift_descriptors_b;
+  Buffer sift_output;
+#endif
   uint32_t workgroup_size = kDefaultWorkgroupSize;
   uint64_t initialization_ns = 0;
   uint64_t last_dispatch_ns = 0;
@@ -152,12 +183,22 @@ static void destroy_vulkan(Lardon3DOrbVulkanBackend *backend) {
   destroy_buffer(backend, &backend->descriptors_a);
   destroy_buffer(backend, &backend->descriptors_b);
   destroy_buffer(backend, &backend->output);
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  destroy_buffer(backend, &backend->sift_descriptors_a);
+  destroy_buffer(backend, &backend->sift_descriptors_b);
+  destroy_buffer(backend, &backend->sift_output);
+#endif
   if (backend->query_pool != VK_NULL_HANDLE) {
     vkDestroyQueryPool(backend->device, backend->query_pool, nullptr);
   }
   if (backend->pipeline != VK_NULL_HANDLE) {
     vkDestroyPipeline(backend->device, backend->pipeline, nullptr);
   }
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  if (backend->sift_pipeline != VK_NULL_HANDLE) {
+    vkDestroyPipeline(backend->device, backend->sift_pipeline, nullptr);
+  }
+#endif
   if (backend->pipeline_layout != VK_NULL_HANDLE) {
     vkDestroyPipelineLayout(backend->device, backend->pipeline_layout, nullptr);
   }
@@ -185,8 +226,14 @@ static void destroy_vulkan(Lardon3DOrbVulkanBackend *backend) {
   backend->descriptor_set_layout = VK_NULL_HANDLE;
   backend->pipeline_layout = VK_NULL_HANDLE;
   backend->pipeline = VK_NULL_HANDLE;
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  backend->sift_pipeline = VK_NULL_HANDLE;
+#endif
   backend->descriptor_pool = VK_NULL_HANDLE;
   backend->descriptor_set = VK_NULL_HANDLE;
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  backend->sift_descriptor_set = VK_NULL_HANDLE;
+#endif
   backend->query_pool = VK_NULL_HANDLE;
   backend->timestamps_available = false;
 }
@@ -296,6 +343,9 @@ static bool select_device(Lardon3DOrbVulkanBackend *backend) {
   vkGetPhysicalDeviceProperties(backend->physical_device, &backend->properties);
   vkGetPhysicalDeviceMemoryProperties(backend->physical_device,
                                       &backend->memory_properties);
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  vkGetPhysicalDeviceFeatures(backend->physical_device, &backend->features);
+#endif
   backend->workgroup_size = configured_workgroup_size();
   return backend->workgroup_size <=
              backend->properties.limits.maxComputeWorkGroupInvocations &&
@@ -314,6 +364,11 @@ static bool create_device_and_commands(Lardon3DOrbVulkanBackend *backend) {
   device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
   device_info.queueCreateInfoCount = 1;
   device_info.pQueueCreateInfos = &queue_info;
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  VkPhysicalDeviceFeatures enabled_features{};
+  enabled_features.shaderFloat64 = backend->features.shaderFloat64;
+  device_info.pEnabledFeatures = &enabled_features;
+#endif
   if (vkCreateDevice(backend->physical_device, &device_info, nullptr,
                      &backend->device) != VK_SUCCESS) {
     return false;
@@ -339,6 +394,41 @@ static bool create_device_and_commands(Lardon3DOrbVulkanBackend *backend) {
   }
   return true;
 }
+
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+static bool create_shader_pipeline(Lardon3DOrbVulkanBackend *backend,
+                                   const uint32_t *code, size_t code_size,
+                                   VkPipeline *pipeline) {
+  VkShaderModuleCreateInfo shader_info{};
+  shader_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  shader_info.codeSize = code_size;
+  shader_info.pCode = code;
+  VkShaderModule shader = VK_NULL_HANDLE;
+  if (vkCreateShaderModule(backend->device, &shader_info, nullptr, &shader) != VK_SUCCESS) {
+    return false;
+  }
+  VkSpecializationMapEntry workgroup_entry{0, 0, sizeof(uint32_t)};
+  VkSpecializationInfo specialization{};
+  specialization.mapEntryCount = 1;
+  specialization.pMapEntries = &workgroup_entry;
+  specialization.dataSize = sizeof(backend->workgroup_size);
+  specialization.pData = &backend->workgroup_size;
+  VkPipelineShaderStageCreateInfo stage{};
+  stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  stage.module = shader;
+  stage.pName = "main";
+  stage.pSpecializationInfo = &specialization;
+  VkComputePipelineCreateInfo pipeline_info{};
+  pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  pipeline_info.stage = stage;
+  pipeline_info.layout = backend->pipeline_layout;
+  VkResult result = vkCreateComputePipelines(backend->device, VK_NULL_HANDLE, 1,
+                                             &pipeline_info, nullptr, pipeline);
+  vkDestroyShaderModule(backend->device, shader, nullptr);
+  return result == VK_SUCCESS;
+}
+#endif
 
 static bool create_pipeline(Lardon3DOrbVulkanBackend *backend) {
   VkDescriptorSetLayoutBinding bindings[3]{};
@@ -468,10 +558,18 @@ static bool create_buffer(Lardon3DOrbVulkanBackend *backend, VkDeviceSize size,
 static bool create_buffers_and_descriptors(Lardon3DOrbVulkanBackend *backend) {
   VkDescriptorPoolSize pool_size{};
   pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  pool_size.descriptorCount = 6;
+#else
   pool_size.descriptorCount = 3;
+#endif
   VkDescriptorPoolCreateInfo pool_info{};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+  pool_info.maxSets = 2;
+#else
   pool_info.maxSets = 1;
+#endif
   pool_info.poolSizeCount = 1;
   pool_info.pPoolSizes = &pool_size;
   if (vkCreateDescriptorPool(backend->device, &pool_info, nullptr,
@@ -527,6 +625,54 @@ static bool create_buffers_and_descriptors(Lardon3DOrbVulkanBackend *backend) {
   }
   return true;
 }
+
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+static bool create_sift_resources_locked(Lardon3DOrbVulkanBackend *backend) {
+  if (backend->sift_pipeline != VK_NULL_HANDLE) {
+    return true;
+  }
+  const char *fp64 = std::getenv("LARDON3D_VULKAN_SIFT_FP64");
+  bool use_fp64 = fp64 && std::strcmp(fp64, "1") == 0;
+  const uint32_t *code = use_fp64 ? lardon3d_sift_top2_fp64_spv
+                                  : lardon3d_sift_top2_spv;
+  size_t code_size = use_fp64 ? lardon3d_sift_top2_fp64_spv_size
+                              : lardon3d_sift_top2_spv_size;
+  if (!create_shader_pipeline(backend, code, code_size,
+                              &backend->sift_pipeline)) {
+    return false;
+  }
+  VkDescriptorSetAllocateInfo set_info{};
+  set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  set_info.descriptorPool = backend->descriptor_pool;
+  set_info.descriptorSetCount = 1;
+  set_info.pSetLayouts = &backend->descriptor_set_layout;
+  if (vkAllocateDescriptorSets(backend->device, &set_info,
+                               &backend->sift_descriptor_set) != VK_SUCCESS ||
+      !create_buffer(backend, kSiftDescriptorBufferBytes,
+                     &backend->sift_descriptors_a) ||
+      !create_buffer(backend, kSiftDescriptorBufferBytes,
+                     &backend->sift_descriptors_b) ||
+      !create_buffer(backend, kOutputBufferBytes, &backend->sift_output)) {
+    return false;
+  }
+  VkDescriptorBufferInfo buffer_info[3] = {
+      {backend->sift_descriptors_a.buffer, 0, backend->sift_descriptors_a.size},
+      {backend->sift_descriptors_b.buffer, 0, backend->sift_descriptors_b.size},
+      {backend->sift_output.buffer, 0, backend->sift_output.size},
+  };
+  VkWriteDescriptorSet writes[3]{};
+  for (uint32_t index = 0; index < 3; ++index) {
+    writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[index].dstSet = backend->sift_descriptor_set;
+    writes[index].dstBinding = index;
+    writes[index].descriptorCount = 1;
+    writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[index].pBufferInfo = &buffer_info[index];
+  }
+  vkUpdateDescriptorSets(backend->device, 3, writes, 0, nullptr);
+  return true;
+}
+#endif
 
 static bool initialize_locked(Lardon3DOrbVulkanBackend *backend) {
   if (backend->state == BackendState::kAvailable) {
@@ -586,6 +732,63 @@ static bool synchronize_host_read(Lardon3DOrbVulkanBackend *backend,
   range.size = VK_WHOLE_SIZE;
   return vkInvalidateMappedMemoryRanges(backend->device, 1, &range) == VK_SUCCESS;
 }
+
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+static VkResult record_and_submit_sift(Lardon3DOrbVulkanBackend *backend,
+                                  VkPipeline pipeline,
+                                  VkDescriptorSet descriptor_set,
+                                  uint32_t count_a, uint32_t count_b) {
+  VkResult result = vkResetCommandBuffer(backend->command_buffer, 0);
+  if (result != VK_SUCCESS) {
+    return result;
+  }
+  VkCommandBufferBeginInfo begin_info{};
+  begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  result = vkBeginCommandBuffer(backend->command_buffer, &begin_info);
+  if (result != VK_SUCCESS) {
+    return result;
+  }
+  if (backend->timestamps_available) {
+    vkCmdResetQueryPool(backend->command_buffer, backend->query_pool, 0, 2);
+    vkCmdWriteTimestamp(backend->command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        backend->query_pool, 0);
+  }
+  vkCmdBindPipeline(backend->command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline);
+  vkCmdBindDescriptorSets(backend->command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          backend->pipeline_layout, 0, 1,
+                          &descriptor_set, 0, nullptr);
+  uint32_t counts[2] = {count_a, count_b};
+  vkCmdPushConstants(backend->command_buffer, backend->pipeline_layout,
+                     VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(counts), counts);
+  vkCmdDispatch(backend->command_buffer, count_a, 1, 1);
+  VkMemoryBarrier barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+  vkCmdPipelineBarrier(backend->command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                       VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                       nullptr);
+  if (backend->timestamps_available) {
+    vkCmdWriteTimestamp(backend->command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                        backend->query_pool, 1);
+  }
+  result = vkEndCommandBuffer(backend->command_buffer);
+  if (result != VK_SUCCESS) {
+    return result;
+  }
+  VkSubmitInfo submit_info{};
+  submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit_info.commandBufferCount = 1;
+  submit_info.pCommandBuffers = &backend->command_buffer;
+  result = vkQueueSubmit(backend->queue, 1, &submit_info, VK_NULL_HANDLE);
+  if (result != VK_SUCCESS) {
+    return result;
+  }
+  return vkQueueWaitIdle(backend->queue);
+}
+#endif
 
 static VkResult record_and_submit(Lardon3DOrbVulkanBackend *backend,
                                   uint32_t count_a, uint32_t count_b) {
@@ -751,6 +954,74 @@ extern "C" Lardon3DOrbVulkanResult lardon3d_orb_vulkan_top2(
   return LARDON3D_ORB_VULKAN_OK;
 }
 
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+extern "C" Lardon3DOrbVulkanResult lardon3d_sift_vulkan_top2(
+    Lardon3DOrbVulkanBackend *backend, const float *descriptors_a,
+    uint32_t feature_count_a, const float *descriptors_b,
+    uint32_t feature_count_b, Lardon3DSiftTop2 *output, size_t output_capacity) {
+  if (!backend || feature_count_a > LARDON3D_FEATURE_MAX_FEATURES ||
+      feature_count_b > LARDON3D_FEATURE_MAX_FEATURES ||
+      (feature_count_a > 0 && (!descriptors_a || !output ||
+                              output_capacity < feature_count_a)) ||
+      (feature_count_b > 0 && !descriptors_b)) {
+    return LARDON3D_ORB_VULKAN_INVALID_ARGUMENT;
+  }
+  if (feature_count_a == 0) {
+    return LARDON3D_ORB_VULKAN_OK;
+  }
+  if (feature_count_b == 0) {
+    for (uint32_t index = 0; index < feature_count_a; ++index) {
+      output[index] = Lardon3DSiftTop2{};
+    }
+    return LARDON3D_ORB_VULKAN_OK;
+  }
+
+  std::lock_guard<std::mutex> lock(backend->mutex);
+  if (!initialize_locked(backend)) {
+    return LARDON3D_ORB_VULKAN_UNAVAILABLE;
+  }
+  if (!create_sift_resources_locked(backend)) {
+    return fail_session_locked(backend);
+  }
+  VkDeviceSize bytes_a = static_cast<VkDeviceSize>(feature_count_a) * 128 *
+                         sizeof(float);
+  VkDeviceSize bytes_b = static_cast<VkDeviceSize>(feature_count_b) * 128 *
+                         sizeof(float);
+  std::memcpy(backend->sift_descriptors_a.mapping, descriptors_a,
+              static_cast<size_t>(bytes_a));
+  std::memcpy(backend->sift_descriptors_b.mapping, descriptors_b,
+              static_cast<size_t>(bytes_b));
+  if (!synchronize_host_write(backend, backend->sift_descriptors_a, bytes_a) ||
+      !synchronize_host_write(backend, backend->sift_descriptors_b, bytes_b)) {
+    return fail_session_locked(backend);
+  }
+
+  auto start = std::chrono::steady_clock::now();
+  VkResult dispatch_result = record_and_submit_sift(
+      backend, backend->sift_pipeline, backend->sift_descriptor_set,
+      feature_count_a, feature_count_b);
+  backend->last_dispatch_ns = elapsed_ns(start);
+  if (dispatch_result != VK_SUCCESS ||
+      !synchronize_host_read(backend, backend->sift_output)) {
+    return fail_session_locked(backend);
+  }
+  read_gpu_time(backend);
+
+  const RawSiftTop2 *raw =
+      static_cast<const RawSiftTop2 *>(backend->sift_output.mapping);
+  uint32_t neighbors = std::min(feature_count_b, 2U);
+  for (uint32_t index = 0; index < feature_count_a; ++index) {
+    output[index].neighbor_count = neighbors;
+    output[index].best_index = raw[index].best_index;
+    output[index].best_squared_distance = raw[index].best_squared_distance;
+    output[index].second_index = neighbors == 2 ? raw[index].second_index : 0;
+    output[index].second_squared_distance =
+        neighbors == 2 ? raw[index].second_squared_distance : 0.0F;
+  }
+  return LARDON3D_ORB_VULKAN_OK;
+}
+#endif
+
 extern "C" bool lardon3d_orb_vulkan_backend_info(
     Lardon3DOrbVulkanBackend *backend, Lardon3DOrbVulkanInfo *info) {
   if (!backend || !info) {
@@ -806,6 +1077,24 @@ extern "C" Lardon3DOrbVulkanResult lardon3d_orb_vulkan_top2(
   }
   return LARDON3D_ORB_VULKAN_UNAVAILABLE;
 }
+
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+extern "C" Lardon3DOrbVulkanResult lardon3d_sift_vulkan_top2(
+    Lardon3DOrbVulkanBackend *backend, const float *, uint32_t feature_count_a,
+    const float *, uint32_t feature_count_b, Lardon3DSiftTop2 *output,
+    size_t output_capacity) {
+  if (!backend || (feature_count_a > 0 && (!output || output_capacity < feature_count_a))) {
+    return LARDON3D_ORB_VULKAN_INVALID_ARGUMENT;
+  }
+  if (feature_count_a == 0 || feature_count_b == 0) {
+    for (uint32_t index = 0; index < feature_count_a; ++index) {
+      output[index] = Lardon3DSiftTop2{};
+    }
+    return LARDON3D_ORB_VULKAN_OK;
+  }
+  return LARDON3D_ORB_VULKAN_UNAVAILABLE;
+}
+#endif
 
 extern "C" bool lardon3d_orb_vulkan_backend_info(
     Lardon3DOrbVulkanBackend *backend, Lardon3DOrbVulkanInfo *info) {

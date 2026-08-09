@@ -15,14 +15,17 @@ def main() -> int:
 
     words = struct.unpack(f"<{len(source) // 4}I", source)
     output = pathlib.Path(sys.argv[2])
+    stem = output.stem
+    symbol = f"lardon3d_{stem}"
+    guard = f"LARDON3D_{stem.upper()}_H"
     lines = [
-        "#ifndef LARDON3D_ORB_TOP2_SPV_H",
-        "#define LARDON3D_ORB_TOP2_SPV_H",
+        f"#ifndef {guard}",
+        f"#define {guard}",
         "",
         "#include <stddef.h>",
         "#include <stdint.h>",
         "",
-        "static const uint32_t lardon3d_orb_top2_spv[] = {",
+        f"static const uint32_t {symbol}[] = {{",
     ]
     for start in range(0, len(words), 6):
         chunk = ", ".join(f"0x{word:08x}U" for word in words[start : start + 6])
@@ -30,8 +33,8 @@ def main() -> int:
     lines.extend(
         [
             "};",
-            "static const size_t lardon3d_orb_top2_spv_size =",
-            "    sizeof(lardon3d_orb_top2_spv);",
+            f"static const size_t {symbol}_size =",
+            f"    sizeof({symbol});",
             "",
             "#endif",
             "",

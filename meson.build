@@ -66,7 +66,42 @@ if matcher_vulkan_enabled
         output: 'orb_top2_spv.h',
         command: [python, files('tools/embed_spirv.py'), '@INPUT@', '@OUTPUT@'],
     )
+    sift_top2_spv = custom_target(
+        'sift-top2-spv',
+        input: 'shaders/sift_top2.comp',
+        output: 'sift_top2.spv',
+        command: [glslc, '-fshader-stage=compute', '@INPUT@', '-o', '@OUTPUT@'],
+    )
+    sift_top2_header = custom_target(
+        'sift-top2-header',
+        input: sift_top2_spv,
+        output: 'sift_top2_spv.h',
+        command: [python, files('tools/embed_spirv.py'), '@INPUT@', '@OUTPUT@'],
+    )
+    sift_top2_fp64_spv = custom_target(
+        'sift-top2-fp64-spv',
+        input: 'shaders/sift_top2.comp',
+        output: 'sift_top2_fp64.spv',
+        command: [
+            glslc,
+            '-DLARDON3D_SIFT_FP64=1',
+            '-fshader-stage=compute',
+            '@INPUT@',
+            '-o',
+            '@OUTPUT@',
+        ],
+    )
+    sift_top2_fp64_header = custom_target(
+        'sift-top2-fp64-header',
+        input: sift_top2_fp64_spv,
+        output: 'sift_top2_fp64_spv.h',
+        command: [python, files('tools/embed_spirv.py'), '@INPUT@', '@OUTPUT@'],
+    )
     matcher_backend_sources += [orb_top2_header]
+    sift_feasibility_sources = matcher_backend_sources + [
+        sift_top2_header,
+        sift_top2_fp64_header,
+    ]
     matcher_backend_dependencies += [vulkan]
 endif
 
@@ -639,10 +674,34 @@ if matcher_vulkan_enabled
          env: opencv_test_environment)
 
     executable(
+        'test-sift-vulkan-feasibility',
+        sources: [
+            'tests/test_sift_vulkan_feasibility.cpp',
+            'src/match_file.c',
+        ] + sift_feasibility_sources,
+        cpp_args: ['-DLARDON3D_SIFT_VULKAN_FEASIBILITY'],
+        build_by_default: false,
+        include_directories: include_directories('include'),
+        dependencies: [threads, openssl, opencv_benchmark]
+            + matcher_backend_dependencies,
+    )
+
+    executable(
         'benchmark-orb-vulkan',
         sources: [
             'tests/benchmark_orb_vulkan.cpp',
         ] + matcher_backend_sources,
+        include_directories: include_directories('include'),
+        dependencies: [opencv] + matcher_backend_dependencies,
+    )
+
+    executable(
+        'benchmark-sift-vulkan',
+        sources: [
+            'tests/benchmark_sift_vulkan.cpp',
+        ] + sift_feasibility_sources,
+        cpp_args: ['-DLARDON3D_SIFT_VULKAN_FEASIBILITY'],
+        build_by_default: false,
         include_directories: include_directories('include'),
         dependencies: [opencv] + matcher_backend_dependencies,
     )

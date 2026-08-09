@@ -27,7 +27,7 @@ Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais "ensemble
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v7** : tâches, catalogue, Feature Store multi-type et support intra-image
+- **Project Database v11** : tâches, catalogue, Feature Store, matching et tâches Matcher durables
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
 - **Recovery projet** : reprise automatique sélective et bornée des imports récupérables
 - **Task Queue** : file FIFO avec sélection adaptative et backpressure
@@ -154,7 +154,8 @@ Lardon3D est en développement actif. La persistance des tâches, le catalogue,
 le Feature Store multipasse, le Visual Index ORB, Candidate Pair Generator
 et Matcher v1 sont implémentés. Le runtime Feature + Matcher emploie des tâches
 durables, de petits lots, le Resource Governor interactif et un hot path Vulkan
-ORB exact avec fallback CPU. DAG générique,
+ORB exact avec fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ;
+ces deux matchers restent sur OpenCV L2. DAG générique,
 vérification géométrique, SfM et viewer restent des tickets séparés planifiés.
 
 ## Licence

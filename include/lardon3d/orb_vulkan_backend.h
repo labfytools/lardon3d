@@ -23,6 +23,16 @@ typedef struct {
   uint32_t second_distance;
 } Lardon3DOrbTop2;
 
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+typedef struct {
+  uint32_t neighbor_count;
+  uint32_t best_index;
+  float best_squared_distance;
+  uint32_t second_index;
+  float second_squared_distance;
+} Lardon3DSiftTop2;
+#endif
+
 typedef enum {
   LARDON3D_ORB_VULKAN_OK = 0,
   LARDON3D_ORB_VULKAN_UNAVAILABLE,
@@ -52,6 +62,13 @@ Lardon3DOrbVulkanResult lardon3d_orb_vulkan_top2(
     Lardon3DOrbVulkanBackend *backend, const unsigned char *descriptors_a,
     uint32_t feature_count_a, const unsigned char *descriptors_b,
     uint32_t feature_count_b, Lardon3DOrbTop2 *output, size_t output_capacity);
+
+#ifdef LARDON3D_SIFT_VULKAN_FEASIBILITY
+Lardon3DOrbVulkanResult lardon3d_sift_vulkan_top2(
+    Lardon3DOrbVulkanBackend *backend, const float *descriptors_a,
+    uint32_t feature_count_a, const float *descriptors_b,
+    uint32_t feature_count_b, Lardon3DSiftTop2 *output, size_t output_capacity);
+#endif
 
 bool lardon3d_orb_vulkan_backend_info(Lardon3DOrbVulkanBackend *backend,
                                       Lardon3DOrbVulkanInfo *info);

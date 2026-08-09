@@ -1,0 +1,117 @@
+#version 450
+
+#ifdef LARDON3D_SIFT_FP64
+#extension GL_ARB_gpu_shader_fp64 : require
+#define Metric double
+#else
+#define Metric float
+#endif
+
+layout(local_size_x_id = 0) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer DescriptorsA {
+  float descriptors_a[];
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer DescriptorsB {
+  float descriptors_b[];
+};
+
+struct Top2 {
+  uint best_index;
+  float best_squared_distance;
+  uint second_index;
+  float second_squared_distance;
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer Top2Output {
+  Top2 top2[];
+};
+
+layout(push_constant) uniform Counts {
+  uint count_a;
+  uint count_b;
+} counts;
+
+shared uint local_best_index[256];
+shared Metric local_best_distance[256];
+shared uint local_second_index[256];
+shared Metric local_second_distance[256];
+
+bool before(Metric left_distance, uint left_index,
+            Metric right_distance, uint right_index) {
+  return left_distance < right_distance ||
+         (left_distance == right_distance && left_index < right_index);
+}
+
+void insert_candidate(inout uint best_index, inout Metric best_distance,
+                      inout uint second_index, inout Metric second_distance,
+                      uint candidate_index, Metric candidate_distance) {
+  if (candidate_index == 0xffffffffu) {
+    return;
+  }
+  if (before(candidate_distance, candidate_index, best_distance, best_index)) {
+    second_index = best_index;
+    second_distance = best_distance;
+    best_index = candidate_index;
+    best_distance = candidate_distance;
+    return;
+  }
+  if (candidate_index != best_index &&
+      before(candidate_distance, candidate_index,
+             second_distance, second_index)) {
+    second_index = candidate_index;
+    second_distance = candidate_distance;
+  }
+}
+
+void main() {
+  uint query_index = gl_WorkGroupID.x;
+  uint lane = gl_LocalInvocationID.x;
+  if (query_index >= counts.count_a) {
+    return;
+  }
+
+  uint best_index = 0xffffffffu;
+  Metric best_distance = Metric(1.0) / Metric(0.0);
+  uint second_index = 0xffffffffu;
+  Metric second_distance = Metric(1.0) / Metric(0.0);
+
+  for (uint train_index = lane; train_index < counts.count_b;
+       train_index += gl_WorkGroupSize.x) {
+    Metric distance = Metric(0.0);
+    for (uint component = 0; component < 128; ++component) {
+      Metric difference =
+          Metric(descriptors_a[query_index * 128 + component]) -
+          Metric(descriptors_b[train_index * 128 + component]);
+      distance += difference * difference;
+    }
+    insert_candidate(best_index, best_distance, second_index, second_distance,
+                     train_index, distance);
+  }
+
+  local_best_index[lane] = best_index;
+  local_best_distance[lane] = best_distance;
+  local_second_index[lane] = second_index;
+  local_second_distance[lane] = second_distance;
+  barrier();
+
+  // A single lane merges the bounded local results in lane order. This makes
+  // the reduction and its tie-break independent of subgroup scheduling.
+  if (lane == 0) {
+    best_index = 0xffffffffu;
+    best_distance = Metric(1.0) / Metric(0.0);
+    second_index = 0xffffffffu;
+    second_distance = Metric(1.0) / Metric(0.0);
+    for (uint source = 0; source < gl_WorkGroupSize.x; ++source) {
+      insert_candidate(best_index, best_distance, second_index, second_distance,
+                       local_best_index[source], local_best_distance[source]);
+      insert_candidate(best_index, best_distance, second_index, second_distance,
+                       local_second_index[source], local_second_distance[source]);
+    }
+    top2[query_index].best_index = best_index;
+    top2[query_index].best_squared_distance = float(best_distance);
+    top2[query_index].second_index = second_index;
+    top2[query_index].second_squared_distance = float(second_distance);
+  }
+}

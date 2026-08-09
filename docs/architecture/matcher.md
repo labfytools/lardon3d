@@ -77,8 +77,11 @@ Le Match File complet est sérialisé dans un buffer heap borné à 98336 octets
 écrit par un unique `write_exact`, puis synchronisé une fois. Les mesures locales
 restent dans `.opencode/work/current_ticket.md`, pas dans ce contrat canonique.
 À 8192 features, le coût CPU dominant reste l'évaluation exacte des distances
-dans `cv::BFMatcher::knnMatch`. ORB peut remplacer ce seul hot path par Vulkan ;
-SIFT et RootSIFT restent intégralement sur BFMatcher CPU.
+dans `cv::BFMatcher::knnMatch`. ORB peut remplacer ce seul hot path par Vulkan.
+Une feasibility réelle a rejeté Vulkan pour SIFT et RootSIFT : leur accumulation
+flottante ne garantit pas le top-2 OpenCV sur les égalités adversariales et le
+gain n'est présent que sur les grandes paires carrées. Ils restent intégralement
+sur BFMatcher CPU.
 
 `matcher.run` v1 orchestre le Matcher sans connaître son backend interne. La
 tâche persiste uniquement la configuration, l'identité des Feature Sets à

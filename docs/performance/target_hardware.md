@@ -70,6 +70,25 @@ de parité couvrent exactement le top-2 jusqu'à 8192, le Match File complet et 
 fallback CPU. Ces nombres décrivent la machine mesurée et ne sont pas un contrat
 portable de latence.
 
+## Feasibility Vulkan SIFT / RootSIFT
+
+Sur le même RADV PHOENIX, `shaderFloat64`, les timestamps compute, un subgroup
+de 64 lanes et les workgroups jusqu'à 1024 invocations sont disponibles. La
+meilleure variante SIFT FP32 utilise 64 lanes. Après fermeture d'une lecture
+vidéo et retour à un PSI avg10 nul, cinq campagnes donnent à 8192² : SIFT
+115,030 ms CPU contre 75,243 ms total potentiel (1,53×), et RootSIFT
+117,484 ms contre 74,744 ms (1,57×). À 4096², les gains totaux tombent à 1,14×
+et 1,11×. Les quatre paires asymétriques testées perdent face au CPU. FP64
+atteint environ 271 ms à 8192².
+
+La campagne numérique trouve une divergence top-2 sur des sommes égales
+adversariales pour FP32 comme FP64, des distances et Match Files différents,
+mais aucune divergence Lowe sur le corpus testé. Le backend devrait donc porter
+une identité scientifique propre et ne pourrait pas employer le fallback CPU
+transparent d'ORB. Cette complexité n'est pas justifiée par le profil de
+performance : SIFT et RootSIFT Vulkan sont rejetés pour Lardon3D v1 sur cette
+cible, OpenCV reste la référence production.
+
 Un run soutenu de 5000 dispatchs mixtes 1024/4096/8192/4096 a traité environ
 1232 paires/s en 4,06 s. Le processus de benchmark complet a culminé à environ
 202 Mio RSS ; les compteurs `pswpin` et `pswpout` sont restés à zéro. Après le

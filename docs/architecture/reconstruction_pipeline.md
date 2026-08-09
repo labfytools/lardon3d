@@ -92,7 +92,7 @@ Index, persistance, canonicalisation, idempotence et tâche durable.
 
 | Aspect | Description |
 |--------|-------------|
-| **Matcher v1** | ORB/Hamming exact CPU ou Vulkan, SIFT/RootSIFT L2 CPU, KNN k=2 et Lowe, sans vérification géométrique. |
+| **Matcher v1** | ORB CPU/Vulkan ; SIFT/RootSIFT L2 CPU (Vulkan rejeté) ; k=2 + Lowe ; sans géométrie. |
 | **Persistance** | Match Result NO_MATCH/MATCHED et Match File content-addressed validé. |
 | **Orchestration** | `matcher.run` traite les Candidate Pairs par pages et lots durables de 1/2/4/8. |
 
@@ -228,8 +228,9 @@ Image Catalog (B) ──► Feature Store (C)
 
 ## Statut du pipeline
 
-Import, Image Catalog, Feature Extraction, Feature Store, Visual Index et
-Candidate Pair sont **IMPLEMENTED**. Matching, Tracks et SfM sont **PLANNED**.
+Import, Image Catalog, Feature Extraction, Feature Store, Visual Index,
+Candidate Pair et Matching v1 sont **IMPLEMENTED**. Geometric Verification,
+Tracks et SfM sont **PLANNED**.
 
 Ce document décrit la vision architecturale cible du pipeline de
 reconstruction. Les modules listés ici ne sont pas tous implémentés.

@@ -1,4 +1,15 @@
-# Backend Vulkan ORB v1
+# Backends Vulkan du Matcher
+
+## Statut
+
+- ORB Vulkan v1 : production, gelé ;
+- SIFT Vulkan : rejeté après feasibility sur Radeon 780M ;
+- RootSIFT Vulkan : rejeté après feasibility sur Radeon 780M.
+
+Le rejet SIFT/RootSIFT ne modifie ni leur contrat CPU, ni leur identité
+persistante. Ils restent sur OpenCV BFMatcher L2.
+
+## Backend Vulkan ORB v1
 
 ## Frontière de correction
 
@@ -66,3 +77,43 @@ lorsque l'outil est présent. Sans cette chaîne,
 le même code compile avec un stub indisponible et tous les Matchers restent CPU.
 L'option Meson `-Dvulkan_orb=disabled` force ce build CPU-only ; `auto` est le
 défaut portable et `enabled` exige explicitement le loader et `glslc`.
+
+## Feasibility SIFT et RootSIFT rejetée
+
+Le prototype, compilé uniquement dans les exécutables de faisabilité, partage
+le contexte ORB et utilise un workgroup par query. Les
+lanes parcourent des tranches fixes des candidats B, accumulent 128 différences
+carrées et la lane 0 fusionne les top-2 locaux dans l'ordre total
+`(distance carrée, train_idx)`. La sortie reste O(A) et aucune matrice A×B
+n'existe. Les buffers F32 maximaux représentent 4 Mio par entrée et 128 Kio de
+sortie, soit 8,125 Mio de payload lazy en plus des 640 Kio ORB.
+
+Sur 24 160 requêtes SIFT et 24 161 requêtes RootSIFT contrôlées, y compris
+des descriptors produits par OpenCV SIFT et les frontières `nextafter` autour
+de Lowe 0,7, aucune divergence Lowe n'a été observée. Ce résultat de corpus
+n'est pas une garantie universelle. FP32 ne reproduit pas les distances bit à
+bit et un corpus d'égalités adversariales démontre
+une divergence d'indices reproductible : OpenCV choisit `(0, 1)` et FP32
+Vulkan `(7, 14)`. FP64 choisit `(0, 128)` et ne restaure donc pas le contrat
+OpenCV. Le recalcul CPU des distances des deux candidats ne peut corriger une
+mauvaise sélection d'indices. Cent répétitions ont produit les mêmes octets GPU
+sur cette Radeon 780M et cette pile RADV ; aucune garantie cross-GPU ou
+cross-driver n'en est déduite.
+
+Le meilleur workgroup mesuré est 64 pour les grandes paires carrées. Après
+fermeture d'une lecture vidéo susceptible d'avoir perturbé la première campagne,
+cinq campagnes contrôlées confirment à 8192² un total médian de 75,243 ms contre
+115,030 ms CPU pour SIFT (1,53×), et 74,744 ms contre 117,484 ms pour RootSIFT
+(1,57×). À 4096², les gains ne sont que 1,14× et 1,11×. Le recalcul CPU par
+`cv::norm` ne reproduit pas BFMatcher bit à bit. Les
+quatre formes asymétriques 256×8192, 1024×4096, 4096×1024 et 8192×256 restent
+toutes plus lentes que le CPU. FP64 mesure environ 271 ms à 8192², soit environ
+0,44× le CPU. Le gain FP32 ne compense pas une identité backend obligatoire,
+une politique de fallback durable distincte et une sélection plus complexe.
+
+Ce rejet concerne Lardon3D v1 sur la cible mesurée, pas Vulkan ou SIFT en
+général. Conclusion : aucune Gate B, aucun sélecteur, aucun fallback SIFT Vulkan, aucune
+modification du fingerprint et aucune migration DB. CPU OpenCV demeure le seul
+backend SIFT/RootSIFT de production. Le shader et ses tests restent des preuves
+reproductibles ; ils ne sont ni exposés par l'API normale, ni embarqués dans les
+binaires de production.
