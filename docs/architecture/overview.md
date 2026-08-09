@@ -111,6 +111,23 @@ peine d'être试探ées ? » sans validation géométrique.
 
 **Statut :** IMPLEMENTED
 
+### Match Result
+Persistance d'un calcul descriptor-level réussi entre deux Feature Sets
+liés à une Candidate Pair. Identité déterministe par
+`(candidate_pair_id, feature_set_id_a, feature_set_id_b, matcher_kind, matcher_version, parameter_fingerprint)`.
+Validation d'appartenance Feature Set → image. Les correspondances vivent dans
+le Match Store v1 content-addressed; les échecs restent dans le Task Runtime.
+
+**Statut :** IMPLEMENTED
+
+### Matcher
+Matching de descripteurs entre deux Feature Sets via BFMatcher OpenCV
+(ORB Hamming, SIFT/RootSIFT L2) avec Lowe ratio test. Produit un
+Match File content-addressed et un Match Result dans Project DB.
+Déterministe, idempotent, borné.
+
+**Statut :** IMPLEMENTED
+
 ## Résultats et publication live
 
 Les traitements fonctionnent par séquences adaptatives : lire un lot borné,

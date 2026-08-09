@@ -1,0 +1,53 @@
+# Lardon3D — règles Goose
+
+Lardon3D est un moteur persistant et incrémental de reconstruction 3D.
+
+## Principe prioritaire
+
+La documentation canonique est la mémoire durable du projet et est plus
+importante que les rapports temporaires d'agents.
+
+Pour toute tranche substantielle:
+
+audit docs
+→ contrat/invariants
+→ documentation
+→ implémentation
+→ tests ciblés
+→ vérification doc/code
+→ tranche suivante
+
+Une modification de comportement, architecture, persistance, migration,
+fingerprint, invalidation, recovery, concurrence ou bornes sans documentation
+alignée rend la tranche PARTIAL.
+
+## Discipline
+
+- Lire AGENTS.md avant tout travail substantiel.
+- Ne jamais commit, push ou stage.
+- Ne jamais utiliser git add -A.
+- Ne jamais annuler ou écraser des modifications existantes de l'utilisateur.
+- scan3d/** est hors périmètre.
+- .git/** est hors périmètre.
+- Pas de sudo ni gestionnaire de paquets.
+- Pas de commandes destructives.
+- Pas de refactor opportuniste.
+- Code lisible: cible ~100 colonnes, maximum 120.
+- Tests ciblés pendant le développement.
+- Suite complète uniquement au gate final sauf nécessité démontrée.
+
+## Multi-agent
+
+Utiliser les rôles:
+- lardon-read: audit ciblé
+- lardon-diagnose: cause inconnue
+- lardon-build: implémentation
+- lardon-tests: validation indépendante
+- lardon-docs: documentation
+- lardon-architect: décision architecturale réelle
+- lardon-concurrency: vraie question de concurrence
+- lardon-review: review finale unique
+
+Ne pas déléguer par réflexe.
+Ne pas faire refaire par le parent le travail d'un subagent.
+Ne pas lancer plusieurs écrivains concurrents sur les mêmes fichiers.

@@ -59,6 +59,7 @@ executable(
         'src/image_catalog_persistent.c',
         'src/feature_extractor_opencv.cpp',
         'src/feature_store.c',
+        'src/feature_extractor_opencv.cpp',
         'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/visual_index.c',
         'src/visual_index_task.c',
@@ -75,6 +76,8 @@ executable(
         'src/resource_governor.c',
         'src/resource_snapshot.c',
         'src/hardware_profile.c',
+        'src/match_file.c',
+        'src/matcher.cpp',
     ],
     include_directories: include_directories('include'),
     dependencies: [ncursesw, threads, sqlite3, openssl, opencv],
@@ -389,6 +392,22 @@ project_db_test = executable(
 
 test('project-db', project_db_test, timeout: 30)
 
+match_result_test = executable(
+    'test-match-result',
+    sources: [
+        'tests/test_match_result.c',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl],
+)
+
+test('match-result', match_result_test, timeout: 30)
+
 project_test = executable(
     'test-project',
     sources: [
@@ -517,3 +536,65 @@ resource_reservation_test = executable(
 )
 
 test('resource-reservation', resource_reservation_test, timeout: 60)
+
+matcher_test = executable(
+    'test-matcher',
+    sources: [
+        'tests/test_matcher.c',
+        'src/match_file.c',
+        'src/matcher.cpp',
+        'src/feature_store.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+        'src/image_catalog_persistent.c',
+        'src/app_state.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv],
+)
+
+test('matcher', matcher_test, timeout: 60)
+
+matcher_e2e_test = executable(
+    'test-matcher-e2e',
+    sources: [
+        'tests/test_matcher_e2e.c',
+        'src/match_file.c',
+        'src/matcher.cpp',
+        'src/feature_store.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+        'src/image_catalog_persistent.c',
+        'src/app_state.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv],
+)
+
+test('matcher-e2e', matcher_e2e_test, timeout: 60)
+
+executable(
+    'benchmark-matcher',
+    sources: [
+        'tests/benchmark_matcher.cpp',
+        'src/match_file.c',
+        'src/matcher.cpp',
+        'src/feature_store.c',
+        'src/feature_extractor_opencv.cpp',
+        'src/project_db.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+        'src/image_catalog_persistent.c',
+        'src/app_state.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv],
+)

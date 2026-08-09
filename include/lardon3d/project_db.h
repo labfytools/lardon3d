@@ -9,7 +9,7 @@
 #include <lardon3d/task.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 9,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 10,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -17,6 +17,7 @@ enum {
   LARDON3D_PROJECT_DB_RECOVERY_PAGE_MAX = 256,
   LARDON3D_PROJECT_DB_CATALOG_PAGE_MAX = 256,
   LARDON3D_PROJECT_DB_CANDIDATE_PAIR_PAGE_MAX = 256,
+  LARDON3D_PROJECT_DB_MATCH_RESULT_PAGE_MAX = 256,
   LARDON3D_PROJECT_DB_SCANSET_NAME_CAPACITY = 256,
   LARDON3D_PROJECT_DB_IMAGE_NAME_CAPACITY = 256,
   LARDON3D_PROJECT_DB_SHA256_SIZE = 32,
@@ -130,10 +131,32 @@ typedef struct {
   int64_t created_at;
 } Lardon3DProjectDbCandidatePair;
 
+typedef struct {
+  uint64_t match_result_id;
+  uint64_t candidate_pair_id;
+  uint64_t feature_set_id_a;
+  uint64_t feature_set_id_b;
+  char matcher_kind[LARDON3D_PROJECT_DB_KIND_CAPACITY];
+  uint32_t matcher_version;
+  unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  int result_status;
+  uint32_t match_count;
+  bool has_match_asset;
+  unsigned char match_asset_sha256[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  char match_asset_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+  uint64_t match_asset_size_bytes;
+  int64_t created_at;
+} Lardon3DProjectDbMatchResult;
+
 typedef enum {
   LARDON3D_PROJECT_DB_IMAGE_REGISTERED = 0,
   LARDON3D_PROJECT_DB_IMAGE_ALREADY_PRESENT
 } Lardon3DProjectDbImageRegisterStatus;
+
+enum {
+  LARDON3D_MATCH_RESULT_STATUS_NO_MATCH = 0,
+  LARDON3D_MATCH_RESULT_STATUS_MATCHED = 1,
+};
 
 typedef enum {
   LARDON3D_DB_FEATURE_ASSET_DURABLE = 0,
@@ -440,5 +463,30 @@ Lardon3DProjectDbResult lardon3d_project_db_record_candidate_pair_generate_task(
 Lardon3DProjectDbResult lardon3d_project_db_load_candidate_pair_generate_task(
     Lardon3DProjectDb *database, uint64_t task_id,
     Lardon3DProjectDbCandidatePairGenerateTask *parameters);
+
+Lardon3DProjectDbResult lardon3d_project_db_create_match_result(
+    Lardon3DProjectDb *database, uint64_t candidate_pair_id, uint64_t feature_set_id_a,
+    uint64_t feature_set_id_b, const char *matcher_kind, uint32_t matcher_version,
+    const unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE], int result_status,
+    uint32_t match_count,
+    const unsigned char *match_asset_sha256, const char *match_asset_path,
+    uint64_t match_asset_size_bytes, int64_t created_at,
+    Lardon3DProjectDbMatchResult *result);
+Lardon3DProjectDbResult lardon3d_project_db_load_match_result(
+    Lardon3DProjectDb *database, uint64_t match_result_id, Lardon3DProjectDbMatchResult *result);
+Lardon3DProjectDbResult lardon3d_project_db_repair_match_result(
+    Lardon3DProjectDb *database, uint64_t match_result_id, int result_status,
+    uint32_t match_count, const unsigned char *match_asset_sha256,
+    const char *match_asset_path, uint64_t match_asset_size_bytes,
+    Lardon3DProjectDbMatchResult *result);
+Lardon3DProjectDbResult lardon3d_project_db_find_match_result(
+    Lardon3DProjectDb *database, uint64_t candidate_pair_id,
+    uint64_t feature_set_id_a, uint64_t feature_set_id_b,
+    const char *matcher_kind, uint32_t matcher_version,
+    const unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE],
+    Lardon3DProjectDbMatchResult *result);
+Lardon3DProjectDbResult lardon3d_project_db_list_match_results(
+    Lardon3DProjectDb *database, uint64_t after_match_result_id,
+    Lardon3DProjectDbMatchResult *results, size_t capacity, size_t *count);
 
 #endif

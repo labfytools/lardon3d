@@ -115,7 +115,10 @@ l'extraction après import et planification multi-image/DAG.
 
 **IMPLEMENTED** — Visual Index v1 consomme ce reader sans changer le format.
 
-**PLANNED** — paires candidates, matching, vérification géométrique, tracks et SfM.
+**IMPLEMENTED** — paires candidates, Matcher v1 et Match Store v1 consomment
+les Feature Sets persistés.
+
+**PLANNED** — vérification géométrique, tracks et SfM.
 
 ## Extension v2 multi-descriptor
 

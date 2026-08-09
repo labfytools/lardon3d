@@ -1,9 +1,10 @@
 # Base de données projet Lardon3D
 
-> Version courante : **v9**. La migration transactionnelle v8→v9 ajoute
-> la table `candidate_pair_generate_tasks` pour la tâche durable Candidate
-> Pair. La migration v7→v8 ajoute la table `candidate_pairs` pour le
-> sous-système Candidate Pair.
+> Version courante : **v10**. La migration transactionnelle v9→v10 ajoute
+> la table `match_results` pour le Match Result Model. La migration v8→v9
+> ajoute la table `candidate_pair_generate_tasks` pour la tâche durable
+> Candidate Pair. La migration v7→v8 ajoute la table `candidate_pairs` pour
+> le sous-système Candidate Pair.
 > Les migrations historiques restent ordonnées et les faults d'injection
 > vérifient le rollback.
 
@@ -305,6 +306,66 @@ CREATE TABLE candidate_pair_generate_tasks(
 - `lardon3d_project_db_record_candidate_pair_generate_task()` — UPSERT checkpoint
 - `lardon3d_project_db_load_candidate_pair_generate_task()` — SELECT par task_id
 
+## Schéma v10 implémenté
+
+La migration v9→v10 ajoute la table `match_results` pour le Match Result
+Model :
+
+```sql
+CREATE TABLE match_results(
+    match_result_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(match_result_id>0),
+    candidate_pair_id INTEGER NOT NULL
+        REFERENCES candidate_pairs(candidate_pair_id),
+    feature_set_id_a INTEGER NOT NULL
+        REFERENCES feature_sets(feature_set_id),
+    feature_set_id_b INTEGER NOT NULL
+        REFERENCES feature_sets(feature_set_id),
+    matcher_kind TEXT NOT NULL
+        CHECK(length(matcher_kind)>0 AND length(matcher_kind)<=64),
+    matcher_version INTEGER NOT NULL CHECK(matcher_version>0),
+    parameter_fingerprint BLOB NOT NULL
+        CHECK(length(parameter_fingerprint)=32),
+    result_status INTEGER NOT NULL CHECK(result_status IN (0,1)),
+    match_count INTEGER NOT NULL CHECK(match_count>=0 AND match_count<=8192),
+    match_asset_sha256 BLOB CHECK(match_asset_sha256 IS NULL OR
+        length(match_asset_sha256)=32),
+    match_asset_path TEXT CHECK(match_asset_path IS NULL OR
+        length(match_asset_path)>0),
+    match_asset_size_bytes INTEGER CHECK(match_asset_size_bytes IS NULL OR
+        match_asset_size_bytes>0),
+    created_at INTEGER NOT NULL CHECK(created_at>=0),
+    CHECK((result_status=0 AND match_count=0 AND match_asset_sha256 IS NULL
+           AND match_asset_path IS NULL AND match_asset_size_bytes IS NULL)
+       OR (result_status=1 AND match_count>0 AND match_asset_sha256 IS NOT NULL
+           AND match_asset_path IS NOT NULL AND match_asset_size_bytes IS NOT NULL)),
+    UNIQUE(candidate_pair_id, feature_set_id_a, feature_set_id_b,
+           matcher_kind, matcher_version, parameter_fingerprint)
+);
+CREATE INDEX match_results_candidate_pair_idx
+    ON match_results(candidate_pair_id);
+CREATE INDEX match_results_feature_set_a_idx
+    ON match_results(feature_set_id_a);
+CREATE INDEX match_results_feature_set_b_idx
+    ON match_results(feature_set_id_b);
+```
+
+**Invariants** :
+- `UNIQUE(candidate_pair_id, feature_set_id_a, feature_set_id_b, matcher_kind, matcher_version, parameter_fingerprint)` : identité déterministe 6 parties
+- `candidate_pair_id` référence `candidate_pairs(candidate_pair_id)` avec l'action par défaut (NO ACTION)
+- `feature_set_id_a` et `feature_set_id_b` référencent `feature_sets(feature_set_id)`
+- `feature_set_id_a` appartient à `image_id_a` de la Candidate Pair, `feature_set_id_b` appartient à `image_id_b` (validé par l'API create)
+- `NO_MATCH` impose `match_count=0` et aucun asset
+- `MATCHED` impose `match_count>0` et SHA/path/taille complets
+- les échecs d'exécution restent dans le Task Runtime et ne créent pas de ligne
+- `matcher_kind` borné à 64 caractères
+- `parameter_fingerprint` exactement 32 octets (SHA-256)
+
+**API** :
+- `lardon3d_project_db_create_match_result()` — INSERT avec validation des contraintes
+- `lardon3d_project_db_load_match_result()` — SELECT par ID
+- `lardon3d_project_db_find_match_result()` — SELECT par (candidate_pair_id, feature_set_id_a, feature_set_id_b, matcher_kind, matcher_version, parameter_fingerprint)
+- `lardon3d_project_db_list_match_results()` — SELECT paginé ORDER BY id
+
 ## Ouverture et migrations
 
 Une DB vide reçoit directement le schéma v7 dans une transaction
@@ -452,7 +513,7 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v9 et migrations v1→v2→v3→v4→v5→v6→v7→v8→v9, identité
+**IMPLEMENTED** — SQLite système, schéma v10 et migrations v1→v2→v3→v4→v5→v6→v7→v8→v9→v10, identité
 projet, transactions tâche+checkpoint, pagination de reprise et artefacts
 génériques.
 

@@ -107,6 +107,9 @@ Acquisitions
 - [Feature Store](docs/architecture/feature_store.md)
 - [Precision Feature Pipeline v1A](docs/architecture/precision_feature_pipeline.md)
 - [Visual Index](docs/architecture/visual_index.md)
+- [Candidate Pair](docs/architecture/candidate_pair.md)
+- [Match Result](docs/architecture/match_result.md)
+- [Matcher](docs/architecture/matcher.md)
 - [Viewer](docs/architecture/viewer.md)
 - [Revue des fondations](docs/architecture/foundation_review.md)
 
@@ -145,9 +148,9 @@ Pour les changements sensibles à la mémoire ou à la concurrence, ajouter ASan
 ## Statut
 
 Lardon3D est en développement actif. La persistance des tâches, le catalogue,
-le Feature Store multipasse et le Visual Index ORB sont implémentés. Candidate
-Pair Generator, matching, DAG générique, SfM et viewer restent des tickets
-séparés planifiés.
+le Feature Store multipasse, le Visual Index ORB, Candidate Pair Generator
+et Matcher v1 sont implémentés. DAG générique, vérification géométrique,
+SfM et viewer restent des tickets séparés planifiés.
 
 ## Licence
 

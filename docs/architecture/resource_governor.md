@@ -94,6 +94,11 @@ Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU, IO).
   réelle du lot ; `peak_memory_bytes == 0` signifie « mesure inconnue ».
   Chaque séquence interroge le Visual Index pour jusqu'à 64 Feature Sets et
   persiste les paires candidates avec idempotence.
+- Le Matcher v1 possède un working set contrôlé inférieur à environ 10 Mio au
+  maximum SIFT/RootSIFT (8 Mio de descripteurs contigus, KNN `k=2`, sorties et
+  fichier bornés), hors scratch interne OpenCV. Il n'est pas encore exposé comme
+  task kind autonome; sa future orchestration devra réserver CPU+IO et cette
+  estimation via ce Governor, sans budget parallèle.
 
 ## Limites actuelles
 

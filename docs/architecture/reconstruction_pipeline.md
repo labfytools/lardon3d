@@ -79,7 +79,7 @@ updates incrémentales et query top-K bornée. Le générateur de paires reste p
 |--------|-------------|
 | **Sources de paires candidates** | (1) Visual index : paires visuellement proches. (2) Proximité temporelle. (3) Scan set commun. (4) Géométrie approximative (si GPS/IMU disponible). |
 | **Matching coûteux limité** | Le nombre de paires soumises au matching géométrique (étape F) doit être borné. Le candidate generator filtre et classe pour ne garder que les paires les plus prometteuses. |
-| **Persistance** | Les paires candidates sont persistées dans la table `candidate_pairs` (Project DB v9). Ordre canonique : `image_id_a < image_id_b`. Self-pairs interdits. Unicité garantie. |
+| **Persistance** | Les paires candidates sont persistées dans la table `candidate_pairs` (Project DB v10). Ordre canonique : `image_id_a < image_id_b`. Self-pairs interdits. Unicité garantie. |
 | **Déterminisme** | Pour mêmes entrées et configuration, le générateur produit les mêmes paires dans le même ordre. |
 | **Idempotence** | L'exécution répétée ne crée pas de doublons. |
 
