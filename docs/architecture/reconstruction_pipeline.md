@@ -126,6 +126,12 @@ USAC/MAGSAC avec configuration, seed et fingerprint déterministes.
 implémenté dans Project DB v15 (`track_sets`, `tracks`, `track_observations` et
 le payload de tâche). La triangulation et le Sparse SfM restent PLANNED.
 
+**Sparse SfM Gate A : PASS.** Le contrat géométrique, la stratégie
+incremental, la triangulation candidate, le gauge, les conventions de pose,
+les limites BA et l'enveloppe matérielle sont documentés dans
+`architecture/sparse_sfm.md`. La production Sparse SfM reste
+**NOT_IMPLEMENTED** jusqu'aux Gates B–G.
+
 ---
 
 ### H. Reconstruction incrémentale

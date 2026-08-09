@@ -1,0 +1,385 @@
+# Sparse SfM / Triangulation — Gate A
+
+## Status and boundary
+
+**GATE A — DECISION after contract and probe study.** This document defines the
+scientific and architectural contract for the future Sparse SfM layer. It does
+not implement a solver, change Track Model v1, change Track Builder v1, add a
+Project DB v16, or add a Task Kind. `FACT`, `CANDIDATE`, `DECISION` and `FROZEN`
+remain explicit: the upstream Track Model and Track Builder are FROZEN; the
+choices below are Gate A decisions for the next implementation gates, not a
+claim that Sparse SfM is implemented.
+
+## Scope
+
+Sparse SfM consumes exactly one immutable, complete Track Set. It estimates a
+set of camera poses and sparse 3D landmarks from coherent 2D observations. It
+does not alter the Track Set, Match Results, GVRs or Feature Store. It does not
+perform dense matching, meshing, texturing, metric alignment or bundle
+adjustment in Gate A.
+
+The input is one explicit Track Set identity, never “the latest Track Set” or
+an enumeration of mutable project state. A disconnected image graph is
+reconstructed as independent components, each with its own similarity gauge;
+no metric or spatial relation between disconnected components is invented.
+
+## Terminology and input contract
+
+- **Image**: an acquisition with immutable pixel dimensions and an `image_id`.
+- **Calibration**: the immutable intrinsic model assigned to one image or an
+  explicit calibration group.
+- **Pose**: the rigid transform relating world coordinates to one camera frame.
+- **Track**: the frozen coherent set of 2D observations from Track Model v1.
+- **Landmark**: a Sparse SfM-owned 3D estimate derived from zero or one Track;
+  it is never stored in Track Model v1.
+- **Observation coordinate**: the Feature File keypoint `x,y`, not a descriptor
+  vector and not a coordinate inferred from a feature index.
+
+The Feature Store v1/v2 Feature File is the canonical coordinate source. Its
+keypoint records contain binary32 `x,y`, decoded image width/height, and use a
+top-left origin with +x right and +y down. A Gate B reader must page keypoint
+records by index; it must not load descriptors merely to obtain coordinates.
+
+Input validation requires the Track Set to be complete and loadable, every
+referenced Feature Set and Feature File to validate, every calibration to be
+present and finite, and every observation index to remain within its Feature
+Set. A corrupt upstream object is a runtime/input error, not an SfM outlier.
+
+## Camera and calibration decision
+
+### v1 supported calibration
+
+**DECISION: known calibration only.** Sparse SfM v1 accepts an immutable
+calibration for every input image. Unknown, partially known and shared-focal
+estimation are rejected until a later model gate. EXIF focal data is advisory
+input for constructing a calibration, never an implicit scientific fallback.
+
+This is deliberate for phone imagery: autofocus, digital crops, orientation,
+rescaling and device variation make “all images share one perfect K” unsafe.
+The calibration owner is therefore an explicit per-image or calibration-group
+input whose membership and parameters are part of the reconstruction identity.
+
+### Pinhole model
+
+The v1 camera model is pinhole with binary64:
+
+```text
+K = [ fx  0  cx ]
+    [  0 fy  cy ]
+    [  0  0  1  ]
+```
+
+Skew is fixed to zero. `fx > 0`, `fy > 0`, `0 <= cx < width`, and
+`0 <= cy < height`. The supported distortion candidate is OpenCV-compatible
+radial `k1,k2` plus tangential `p1,p2`; all four values are either supplied as
+an immutable calibrated model or the model is explicitly zero-distortion.
+Higher radial coefficients, rational models and thin-prism terms are not v1.
+The exact distortion model and values are scientific identity fields.
+
+### Coordinates and pose
+
+Pixel coordinates are continuous binary64 coordinates with origin at the
+top-left pixel corner, +x right and +y down. Pixel centers therefore have the
+usual half-pixel interpretation supplied by the Feature File convention. A
+calibrated point is undistorted first, then normalized:
+
+```text
+xn = (u_undistorted - cx) / fx
+yn = (v_undistorted - cy) / fy
+ray_camera = normalize([xn, yn, 1])
+```
+
+The camera frame is right-handed with x right, y down and z forward. The world
+frame is also right-handed but is otherwise a gauge choice. Pose is
+**world-to-camera**:
+
+```text
+Xc = R_cw * Xw + t_cw
+Cw = -transpose(R_cw) * t_cw
+```
+
+The public/persisted representation is a row-major binary64 rotation matrix
+plus binary64 translation. Solver-private angle-axis or quaternion variables
+are permitted later. A persisted quaternion is not required, so the `q/-q`
+sign ambiguity is avoided. Rendering/FreeCAD coordinate transforms are
+downstream export concerns and do not change this scientific convention.
+
+### Gauge and scale
+
+Monocular reconstruction has a seven-degree-of-freedom similarity ambiguity.
+For each connected reconstruction component, the deterministic seed camera is
+the lowest canonical image ID in the selected seed pair. Its pose is fixed to
+`R=I,t=0`. The second seed camera's translation direction is selected by the
+deterministic essential decomposition and its norm is fixed to one arbitrary
+world unit. The remaining gauge is thereby fixed to a unit seed baseline.
+
+This unit is not metres, millimetres or any physical scale. Metric scale,
+absolute orientation and georeferencing require a future explicit alignment
+stage using control distances, markers or surveyed points. No fake millimetres
+are inferred from focal pixels, image resolution or baseline normalization.
+
+## Reconstruction strategy
+
+**DECISION: incremental SfM with bounded local refinement and optional final
+global refinement.** It matches the expected sequential vehicle/phone capture,
+allows unregistered images to remain visible as a scientific result, and keeps
+the active problem bounded. Global-only rotation/translation averaging would
+add a larger initialization and robustness surface without a current project
+requirement. A hybrid strategy is rejected for v1 complexity.
+
+### Seed selection and relative pose
+
+The seed is selected from the Track Set/covisibility graph, not raw Match
+Results. Candidate pairs require at least the later configured minimum of
+valid shared Tracks, non-degenerate essential geometry, positive-depth support
+and measurable parallax. Candidates are sorted by a deterministic tuple:
+
+```text
+(-shared_track_count, -robust_parallax_score, image_id_a, image_id_b)
+```
+
+The numerical thresholds are Gate B parameter candidates and must be
+fingerprinted when frozen; this tuple is the ordering policy, not a descriptor
+score. Pure rotation, near-zero baseline, planar ambiguity and insufficient
+cheirality reject a seed rather than inventing a scale.
+
+Known intrinsics convert the upstream Fundamental relation into normalized
+coordinates and an Essential candidate. Relative pose uses deterministic
+essential decomposition with all four hypotheses tested by cheirality and
+triangulation support. An F matrix is never treated as an E matrix.
+
+### Registration
+
+After the seed, an unregistered image is eligible when it has enough
+Track-to-landmark correspondences to registered cameras. It is selected by
+descending visible landmark count, then spatial-distribution score, then image
+ID. Pose estimation uses a deterministic robust PnP candidate with fixed
+binary64 validation, explicit iteration/confidence parameters and a local seed;
+global OpenCV RNG state is forbidden. An image that cannot register remains
+`UNREGISTERED` in the future SfM result and does not make the whole result a
+runtime failure. Retry is bounded to deterministic graph-growth rounds; no
+infinite retry loop exists.
+
+### Components
+
+Every connected image component is processed independently. A component with
+fewer than two registered cameras has no valid 3D reconstruction. Components
+with two valid cameras are allowed. Each accepted component carries its own
+unit-baseline gauge and component ID; combining components requires a future
+metric/alignment stage.
+
+## Triangulation decision
+
+**DECISION: normalized-coordinate linear DLT initialization followed by
+multi-view binary64 reprojection refinement when the acceptance checks pass.**
+For a Track, all currently registered observations are used in a bounded linear
+system; the result is dehomogenized only when finite and well-conditioned. A
+small deterministic nonlinear point-only refinement may follow. The solver does
+not mutate the Track and does not split it in v1.
+
+Accepted points require finite coordinates, positive depth in the required
+observing cameras, a non-degenerate condition estimate, and reprojection
+residuals within the frozen later threshold. Low parallax, planar/collinear
+ill-conditioning, behind-camera points, non-finite values and excessive
+reprojection error reject the landmark while leaving the source Track intact.
+No arbitrary “best descriptor” or Match score is used. Pair quality is based
+only on geometry; multi-view Tracks use all valid observations rather than a
+random pair. Robust observation dropping is deferred: v1 rejects the landmark
+as a whole, so Track identity and observation ownership remain simple.
+
+## Bundle Adjustment decision
+
+**DECISION: BA is required for a useful final reconstruction but is not part of
+the first pure-geometry gate.** The later BA gate will use a block-sparse
+camera/landmark problem with binary64 poses and points, fixed or explicitly
+fingerprinted calibration variables, and a robust loss whose kind/scale belong
+to scientific identity. Dense camera×landmark Jacobians are forbidden.
+
+Ceres is not available in the current host pkg-config environment and is not a
+Lardon3D production dependency. It is a **NEW_CANDIDATE**, not silently added.
+Its sparse Schur solvers and block structure make it the leading BA study
+candidate; Eigen is host-available, while SuiteSparse is not detected. A later
+gate must prove license, reproducibility, thread behavior, memory scaling and
+fallback before adding Ceres. OpenCV remains appropriate for small relative
+pose/PnP/triangulation primitives, not as an implicit BA architecture.
+
+The first BA implementation should be local-window BA after registration,
+followed by at most one explicitly admitted global BA at finalization. No two
+heavy global BAs run concurrently. Global BA is allowed to be deferred by the
+Resource Governor. The trigger, window selection, robust loss, convergence and
+thread policy are configuration fields, not runtime identity.
+
+## Determinism and scientific identity
+
+Canonical order is: component image IDs, seed tuple, registration candidates,
+Track IDs, observation positions, and output landmarks by `(component_id,
+track_id)`. No unordered container iteration, wall-clock value, queue position,
+RAM state or task ID may affect science. Binary64 is the default for geometry,
+residuals and persisted values; all accepted values must be finite.
+
+The candidate reconstruction identity is:
+
+```text
+(input_track_set_identity,
+ calibration_scope_identity,
+ sfm_kind="incremental",
+ sfm_version,
+ parameter_fingerprint)
+```
+
+Runtime task IDs, worker count, Governor state, pause timing and resource
+observations are excluded. Any output-changing threshold, camera model,
+initialization policy, triangulation policy, PnP policy, BA policy, precision or
+loss parameter belongs in the future fingerprint.
+
+Exact byte identity is not promised for a future multi-threaded floating-point
+solver until measured. The v1 target is deterministic ordering and numerical
+reproducibility within documented tolerances; single-threaded reductions are
+the initial reference.
+
+## Future persistence and API candidates
+
+No Project DB v16 is created in Gate A. A later model gate may define immutable
+entities such as `sparse_reconstructions`, registered camera poses, landmarks,
+and landmark observations. The reconstruction must reference exactly one Track
+Set and calibration identity, publish atomically, and never expose half-solved
+cameras or points. Upstream Track Set deletion policy requires an explicit
+future ownership decision; silent CASCADE of a published reconstruction is not
+assumed.
+
+The future public boundary remains C17-safe and solver-independent. Candidate
+opaque APIs accept immutable Track Set/calibration inputs and return owned
+opaque result pages with explicit free functions. No `cv::Mat`, Eigen, Ceres,
+STL, callback or C++ exception crosses the boundary. Numeric kernels operate on
+pure in-memory structures and never open SQLite or query the Governor.
+
+## Resource envelope
+
+Let `C` be registered cameras, `T` Tracks, `P` active landmarks, `O`
+observations and `E_covis` sparse image-graph edges. The architecture requires
+`O(C + T + P + O + E_covis)` memory for graph/index structures plus the solver
+working set. It forbids a dense `C×P`, `C×C` or co-visibility matrix. Track
+length has no arbitrary 256 cap; long Tracks are iterated through checked
+bounded storage.
+
+Triangulation/registration are light CPU units and can be batched. Local BA is
+bounded by an active camera/landmark window and needs a Governor reservation.
+Global BA is one heavy job at a time, with explicit admission and a conservative
+thread cap. Future reservation inputs are `C`, `P`, `O`, active window size,
+solver mode and calibration-variable count. The existing Resource Governor
+owns RAM/PSI/swap policy; Sparse SfM adds no thresholds. Swap is never normal
+working memory, and UMA RAM must preserve several GiB of desktop/iGPU headroom.
+
+## Hardware and probe study
+
+Gate A preflight measured 16 logical CPUs, `MemTotal=15597716 KiB`,
+`MemAvailable=8245288 KiB` at the study point, an 8 GiB swapfile, a 6 GiB
+zram device, and zero current memory/IO PSI average. The host is the Ryzen 7
+8845HS/Radeon 780M UMA target described by the performance document.
+
+The project already links OpenCV 5.0.0. Eigen 5.0.1 and Ceres 3.12.0 are
+available through host pkg-config but are not current production dependencies;
+SuiteSparse/BLAS/LAPACK availability is host capability only. TBB 2023.1 is
+present through the existing OpenCV stack. No package, system setting, swap
+device or GPU mode was changed.
+
+Gate A probes use deterministic synthetic camera arcs, controlled noise and
+degenerate planar/pure-rotation cases. Every RSS probe is a separate normal
+optimized child process; fixture arrays, solver structures and peak RSS are
+reported separately. Thread probes are limited to 1/2/4/8 threads and stop if
+MemAvailable, swap, PSI or desktop responsiveness becomes unhealthy. No
+production Sparse SfM code is created by this gate.
+
+## Future gate plan
+
+- **Gate B — Sparse Reconstruction Model:** immutable in-memory model, result
+  states, calibration ownership and candidate persistence contract; no DB v16
+  until this contract is reviewed.
+- **Gate C — Geometry primitives:** normalized camera model, relative pose,
+  deterministic seed, triangulation and PnP with synthetic ground truth.
+- **Gate D — Incremental core:** registration ordering, components,
+  unregistered-image policy and deterministic reconstruction output.
+- **Gate E — BA integration:** sparse BA candidate, robust loss, local/global
+  policy, numerical reproducibility and solver dependency decision.
+- **Gate F — Project orchestration:** explicit Track Set/calibration input,
+  atomic publication and durable runtime integration.
+- **Gate G — Resource/freeze:** Governor admission, sustained hardware safety,
+  recovery, full validation and final freeze.
+
+## Algorithm comparison and Gate A evidence
+
+### Incremental SfM
+
+Seed/order risk is controlled by deterministic policy. It is robust for
+sequential capture, has canonical queues and seeds, moderate complexity, and
+sparse `C,T,O` scaling with local BA. **SELECTED v1.**
+
+### Global SfM
+
+Global averaging can spread weak geometry. It is sensitive to disconnected or
+weak-baseline graphs, needs several global tie policies, and requires a larger
+sparse solve. **Rejected for v1.**
+
+### Hybrid
+
+Hybrid design combines both failure surfaces, is hard to specify minimally and
+harder to reproduce. **Rejected for v1.**
+
+Triangulation candidates:
+
+- Midpoint/ray only: fragile with noise and awkward beyond two views. Rejected.
+- Linear normalized DLT: good initialization with explicit checks and all
+  registered observations. **Selected initialization.**
+- DLT plus point-only refinement: better residual with bounded per-point work
+  and fixed termination. **Selected v1 candidate.**
+
+| BA candidate | Sparse support | Dependency status | Decision |
+|---|---|---|---|
+| Dense normal equations | Prohibited for serious `C×P` problems | No | Rejected |
+| OpenCV generic optimization | Not a sparse BA contract | Present, wrong abstraction | Rejected |
+| Ceres sparse Schur | Appropriate block structure | New candidate dependency | **Later-gate candidate** |
+
+### Synthetic geometry probe
+
+The normal OpenCV 5.0.0 installation was exercised in a fresh Python process on
+100 deterministic points, binary64 K (`fx=fy=800`, `cx=640`, `cy=480`), a one-unit
+baseline and a four-degree rotation. `recoverPose` retained 100 inliers with
+zero measured rotation error and translation direction absolute dot product
+`0.997564`; two-view DLT triangulation had median position error
+`2.73e-15`; iterative PnP retained 100 inliers with camera-center error
+`9.02e-8` and zero measured rotation error. This validates the candidate
+primitive boundary, not production SfM correctness.
+
+The same probe deliberately tested pure rotation and planar points. OpenCV can
+still return an Essential matrix with 100 nominal inliers in both cases; this
+is why `findEssentialMat` success is not an acceptance criterion. Seed
+selection must apply parallax, conditioning, cheirality and model-ambiguity
+checks before accepting a component.
+
+### Dependency and hardware evidence
+
+The project already links OpenCV 5.0.0. Host probes found Eigen 5.0.1, BLAS
+3.12.0, LAPACK 3.12.0 and TBB 2023.1 as host capabilities or transitive
+facilities rather than current Lardon3D production dependencies. Ceres and
+SuiteSparse are not available through the current host pkg-config environment;
+Ceres remains a new dependency candidate, not an installed fact. No new
+dependency is added by Gate A. The measured machine has 16 logical CPUs,
+`MemTotal=15597716 KiB`, `MemAvailable=8245288 KiB` at preflight, an 8 GiB
+swapfile, 6 GiB zram and zero memory/IO PSI averages at the probe start. A
+single heavy BA and a future solver thread cap of 4 are the conservative
+resource candidates; these are not yet Governor settings.
+
+## Gate A unresolved boundaries
+
+The following remain deliberately deferred to later gates rather than hidden:
+exact numeric parallax/reprojection thresholds, Ceres licensing/dependency
+adoption, robust-loss scale, local-window selection, BA convergence criteria,
+metric alignment, persistent reconstruction schema and durable SfM checkpoints.
+Their semantic ownership is decided here; their final numeric values require
+the synthetic ground-truth and sparse-solver gates.
+
+## Out of scope
+
+No production Sparse SfM, triangulator, camera solver, BA, Project DB v16,
+metric alignment, control-point scale, dense/MVS, mesh, texturing, Vulkan SfM,
+GPU BA, network/distributed scheduling or UI workflow is implemented here.

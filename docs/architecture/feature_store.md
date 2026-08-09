@@ -118,7 +118,9 @@ l'extraction après import et planification multi-image/DAG.
 **IMPLEMENTED** — paires candidates, Matcher v1 et Match Store v1 consomment
 les Feature Sets persistés.
 
-**PLANNED** — vérification géométrique, tracks et SfM.
+**IMPLEMENTED** — vérification géométrique et tracks. **Sparse SfM Gate A
+PASS**, production Sparse SfM remains **NOT_IMPLEMENTED** until its later
+implementation gates.
 
 ## Extension v2 multi-descriptor
 

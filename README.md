@@ -118,6 +118,7 @@ Acquisitions
 - [Geometric Verification](docs/architecture/geometric_verification.md)
 - [Geometric Verifier](docs/architecture/geometric_verifier.md)
 - [Track Model](docs/architecture/tracks.md)
+- [Sparse SfM / Triangulation — Gate A](docs/architecture/sparse_sfm.md)
 - [Backend Vulkan ORB](docs/architecture/vulkan_matcher.md)
 - [Viewer](docs/architecture/viewer.md)
 - [Revue des fondations](docs/architecture/foundation_review.md)
