@@ -1,0 +1,22 @@
+CompileFlags:
+  CompilationDatabase: build
+
+---
+If:
+  PathMatch: '.*\.(cpp|cc|cxx)$'
+CompileFlags:
+  Remove:
+    - '-std=*'
+  Add:
+    - '-std=c++17'
+  Compiler: clang++
+
+---
+If:
+  PathMatch: '.*\.c$'
+CompileFlags:
+  Remove:
+    - '-std=*'
+  Add:
+    - '-std=c17'
+  Compiler: clang

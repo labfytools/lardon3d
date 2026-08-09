@@ -14,6 +14,7 @@ permission:
     "rg *": allow
     "git diff*": allow
   task: deny
+disable: true
 ---
 
 Audite mutex, conditions, transitions, wakeups, destruction, réservations,

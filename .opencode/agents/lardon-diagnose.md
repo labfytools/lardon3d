@@ -19,6 +19,7 @@ permission:
     "git log*": allow
     "meson test *": allow
   task: deny
+disable: true
 ---
 
 # Lardon Diagnose

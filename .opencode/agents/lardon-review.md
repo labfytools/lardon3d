@@ -15,6 +15,7 @@ permission:
     "git diff*": allow
     "git status*": allow
   task: deny
+disable: true
 ---
 
 Relis uniquement le diff de production déjà validé.

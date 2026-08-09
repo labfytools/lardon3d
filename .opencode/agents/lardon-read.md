@@ -17,6 +17,7 @@ permission:
     "git diff*": allow
     "git status*": allow
   task: deny
+disable: true
 ---
 
 Lis uniquement le périmètre demandé. Tu peux découvrir un chemin avec `glob`,

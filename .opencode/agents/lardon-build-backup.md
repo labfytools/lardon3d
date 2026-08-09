@@ -13,6 +13,7 @@ permission:
     ".git/**": deny
     "scan3d/**": deny
   task: deny
+disable: true
 ---
 
 Interviens uniquement après deux échecs identiques du build principal. Reprends

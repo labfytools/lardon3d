@@ -14,6 +14,7 @@ permission:
     "rg *": allow
     "git diff*": allow
   task: deny
+disable: true
 ---
 
 Analyse seulement les fichiers, API et décisions transmis ou directement

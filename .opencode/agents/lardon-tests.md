@@ -19,6 +19,7 @@ permission:
     "git diff --check*": allow
     "git status*": allow
   task: deny
+disable: true
 ---
 
 N'exécute jamais deux validations lourdes en parallèle. Ordre : test ciblé,

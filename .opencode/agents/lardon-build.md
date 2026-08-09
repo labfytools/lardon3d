@@ -14,6 +14,7 @@ permission:
     ".git/**": deny
     "scan3d/**": deny
   task: deny
+disable: true
 ---
 
 # Lardon Build

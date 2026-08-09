@@ -1,14 +1,29 @@
 ---
 description: Orchestre les tickets Lardon3D longs par phases durables
-temperature: 0.1
-maxSteps: 200
 mode: primary
 model: opencode-go/gpt-5.6-luna
-disable: false
+temperature: 0.1
+maxSteps: 200
 permission:
-  "*": allow
-  task: deny
-  external_directory: deny
+  read: allow
+  glob: allow
+  grep: allow
+  edit:
+    "*": allow
+    ".git": deny
+    ".git/**": deny
+    "scan3d/**": deny
+  task:
+    "*": deny
+    "lardon-read": allow
+    "lardon-diagnose": allow
+    "lardon-architect": allow
+    "lardon-build": allow
+    "lardon-build-backup": allow
+    "lardon-tests": allow
+    "lardon-concurrency": allow
+    "lardon-review": allow
+    "lardon-docs": allow
 ---
 
 # Lardon Orchestrator

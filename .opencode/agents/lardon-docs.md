@@ -18,6 +18,7 @@ permission:
     "rg *": allow
     "git diff*": allow
   task: deny
+disable: true
 ---
 
 Documente seulement l'état réellement validé. Mets à jour les documents
