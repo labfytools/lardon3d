@@ -2,9 +2,11 @@
 
 ## Status
 
-**GATE A — PASS.** This document is the scientific and algorithmic contract
-for the future Track Builder. It specifies no implementation, migration or
-Task. `FACT`, `DECISION` and `FROZEN` are intentionally distinguished below.
+**GATE A — PASS. GATE B — PASS. GATE C — PASS. GATE D — PASS. GATE E — PASS.**
+This document is the frozen scientific and algorithmic contract for Track
+Builder v1. `FACT`, `DECISION` and `FROZEN` remain distinguished below. Runtime
+freeze is limited to the Track Builder v1 task contract; generic Task Runtime
+and Resource Governor evolution remains separate.
 
 ## Scope
 
@@ -561,14 +563,14 @@ different-scope identity and late matching-GVR exclusion. The test-only phase
 seam is compiled only into the Gate C test executable.
 
 Normal and AddressSanitizer/UndefinedBehaviorSanitizer targeted runs pass for
-the core and project executables. The 106,496-edge synthetic resource case
-completed in 0.281 seconds with a 26,564 KiB process high-water RSS and one
-Match File live at a time. C26 has no clean fault injection in the frozen DB
-API and C27 belongs to the future concurrency gate.
+the core and project executables. The historical 106,496-edge synthetic
+resource case completed in 0.281 seconds with a 26,564 KiB fresh-process RSS
+and one Match File live at a time. C26 has no clean fault injection in the
+frozen DB API; C27 was closed by Gate D.
 
-Gate C status: **PASS**. Gate A: **PASS**. Gate B: **PASS**. Gate D:
-**NOT_IMPLEMENTED**. Gate E: **NOT_DONE**. Track Builder v1 is not marked
-fully frozen by this document; the future runtime gates remain separate.
+Gate C status: **PASS**. Gate D status: **PASS**. Gate E status: **PASS**.
+Track Builder v1 is **FROZEN** by this Gate E closure. Future scientific changes
+require a new Builder version and explicit identity decision.
 
 ## Gate D — durable runtime contract
 
@@ -591,8 +593,7 @@ the task ID, payload format version, scope path, byte size and SHA-256, exact
 selector, builder identity, scope hash and count. The scope asset stores field-
 by-field little-endian uint64 GVR IDs with explicit magic/version/count/size and
 checksum. No native struct dump, SQL text list or arbitrary small ID limit is
-allowed. A v14 database remains readable and is upgraded transactionally only
-when this payload is actually implemented.
+allowed. A v14 database remains readable and is upgraded transactionally to v15.
 
 ### Recovery and publication
 
@@ -611,7 +612,7 @@ Pause and cancellation are cooperative at task boundaries and between bounded
 GVR units. Gate B is non-preemptible: an active invocation finishes, then pause
 or cancellation is observed before publication. Prepublication cancellation
 publishes no Track Set; a committed publication remains valid even if a late
-cancellation is requested. A deterministic test seam will exercise the Gate C
+cancellation is requested. A deterministic test seam exercised the Gate C
 late-identity collision: an exact identity conflict is re-looked-up and reused;
 an unrelated constraint remains an error.
 
@@ -645,4 +646,4 @@ apparent 1,079,972 KiB result was contaminated cumulative RUSAGE from the
 persistent shell that launched direct runs; it was not Track Builder memory.
 A normal 250k hardware run completed in 0.368 seconds with 33,228 KiB peak RSS,
 MemAvailable loss of 14,108 KiB, no swap delta and zero PSI averages. Gate D
-is **PASS**; Gate E remains responsible for final full-suite freeze.
+is **PASS**; Gate E final validation and freeze are complete.

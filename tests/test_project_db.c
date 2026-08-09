@@ -207,18 +207,34 @@ static bool create_v13_database(const char *path) {
 }
 
 static bool create_v14_database(const char *path) {
-  Lardon3DProjectDb *database = NULL;
-  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
-  if (lardon3d_project_db_open(path, &database, error) != LARDON3D_PROJECT_DB_OK) return false;
-  lardon3d_project_db_close(database);
+  if (!create_v13_database(path)) return false;
   sqlite3 *connection = NULL;
   if (sqlite3_open(path, &connection) != SQLITE_OK) return false;
-  bool ok = sqlite3_exec(connection,
-                         "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
-                         "DROP TABLE track_builder_tasks;"
-                         "UPDATE metadata SET value=14 WHERE key='schema_version';"
-                         "COMMIT;PRAGMA foreign_keys=ON;",
-                         NULL, NULL, NULL) == SQLITE_OK;
+  static const char sql[] =
+      "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "CREATE TABLE track_sets(track_set_id INTEGER PRIMARY KEY AUTOINCREMENT "
+      "CHECK(track_set_id>0),builder_kind TEXT NOT NULL CHECK(length(builder_kind)>0 AND "
+      "length(builder_kind)<=64),builder_version INTEGER NOT NULL CHECK(builder_version>0),"
+      "parameter_fingerprint BLOB NOT NULL CHECK(length(parameter_fingerprint)=32),"
+      "verifier_kind INTEGER NOT NULL CHECK(verifier_kind>0),verifier_version INTEGER NOT NULL "
+      "CHECK(verifier_version>0),verifier_fingerprint BLOB NOT NULL CHECK(length(verifier_fingerprint)=32),"
+      "input_scope_hash BLOB NOT NULL CHECK(length(input_scope_hash)=32),gvr_count INTEGER NOT NULL "
+      "CHECK(gvr_count>=1),track_count INTEGER NOT NULL CHECK(track_count>=0),created_at INTEGER NOT NULL "
+      "CHECK(created_at>=0),UNIQUE(builder_kind,builder_version,parameter_fingerprint,verifier_kind,"
+      "verifier_version,verifier_fingerprint,input_scope_hash));"
+      "CREATE TABLE tracks(track_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(track_id>0),"
+      "track_set_id INTEGER NOT NULL REFERENCES track_sets(track_set_id) ON DELETE CASCADE,"
+      "observation_count INTEGER NOT NULL CHECK(observation_count>=2));"
+      "CREATE INDEX tracks_set_idx ON tracks(track_set_id,track_id);"
+      "CREATE TABLE track_observations(track_set_id INTEGER NOT NULL,track_id INTEGER NOT NULL "
+      "REFERENCES tracks(track_id) ON DELETE CASCADE,feature_set_id INTEGER NOT NULL "
+      "REFERENCES feature_sets(feature_set_id),feature_index INTEGER NOT NULL CHECK(feature_index>=0),"
+      "position_in_track INTEGER NOT NULL CHECK(position_in_track>=0),PRIMARY KEY(track_set_id,feature_set_id,"
+      "feature_index),UNIQUE(track_id,position_in_track));"
+      "CREATE INDEX track_observations_lookup_idx ON track_observations(feature_set_id,feature_index,"
+      "track_set_id);UPDATE metadata SET value=14 WHERE key='schema_version';COMMIT;"
+      "PRAGMA foreign_keys=ON;";
+  bool ok = sqlite3_exec(connection, sql, NULL, NULL, NULL) == SQLITE_OK;
   return sqlite3_close(connection) == SQLITE_OK && ok;
 }
 

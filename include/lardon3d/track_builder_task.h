@@ -10,6 +10,10 @@
 #include <lardon3d/task_kind_registry.h>
 #include <lardon3d/track_builder_project.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define LARDON3D_TRACK_BUILDER_TASK_KIND "track_builder.run"
 
 enum {
@@ -39,5 +43,9 @@ bool lardon3d_project_enqueue_track_builder_task(
 bool lardon3d_track_builder_task_reconstruct(
     const Lardon3DTaskDurableSnapshot *snapshot, void *context,
     Lardon3DTaskKindBinding *binding);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

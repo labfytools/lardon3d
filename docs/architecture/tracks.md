@@ -7,7 +7,8 @@ géométriquement vérifiées en structures multi-view cohérentes. Il stocke de
 ensembles d'observations 2D liées à un même point physique supposé. Il ne
 calcule rien, ne triangule pas, ne contient aucune coordonnée 3D et ne résout
 aucun conflit. Le Track Builder, la triangulation, le Sparse SfM et le Bundle
-Adjustment sont des étapes ultérieures séparées.
+Adjustment sont des étapes séparées ; Gate E a gelé le Builder v1 sans
+implémenter ces étapes 3D.
 
 ## Track definition
 
@@ -22,12 +23,12 @@ triangulation appartient à une étape ultérieure.
 La chaîne scientifique correcte est :
 
 ```text
-Matcher → Match Result → Geometric Verification → Track Builder (futur)
+Matcher → Match Result → Geometric Verification → Track Builder v1
 → Track Model → Sparse SfM (futur)
 ```
 
-Le Matcher ne produit pas les Tracks. Le Track Builder futur les
-assemblera à partir des Geometric Verification Results.
+Le Matcher ne produit pas les Tracks. Le Track Builder v1 les assemble à partir
+des Geometric Verification Results.
 
 ## Observation identity
 
@@ -140,7 +141,7 @@ différents. Le reuse est donc scoped à une seule DB projet.
 
 1. **Minimum structurel** : un Track contient au moins 2 observations.
    Une seule observation ne constitue aucune relation multi-view. Le futur
-   Track Builder, la triangulation ou le Sparse SfM pourront appliquer des
+   Track Builder v1, la triangulation ou le Sparse SfM pourront appliquer des
    critères plus stricts. Le Model ne fixe pas de plafond de reconstruction.
 
 2. **One observation per image** : un Track ne contient pas deux observations
@@ -258,7 +259,7 @@ Track Set supprime ses tracks et observations.
 - cohérent avec tous les résultats publiés existants (Feature Sets, Match
   Results, GVRs) qui sont immutables après publication.
 
-Le Track Builder futur construira en mémoire, puis publiera un set complet
+Le Track Builder v1 construit en mémoire, puis publie un set complet
 dans une transaction. Aucun track n'est visible avant que le set entier soit
 validé.
 
@@ -405,7 +406,8 @@ track individuel) n'est pas persistée. Les raisons :
   disponibles ;
 - une table `track_set_sources` volumineuse complexifie la DB sans bénéfice
   immédiat ;
-- le Track Builder futur pourra l'ajouter dans une migration ultérieure.
+- une future version du Track Builder pourra l'ajouter dans une migration
+  ultérieure.
 
 ## Invalidation
 
@@ -437,8 +439,8 @@ et de toutes ses observations.
 - le `created_at` du set est le timestamp de la transaction ;
 - le `track_count` et `gvr_count` sont validés contre les INSERTs réels.
 
-Le Track Builder futur utilisera le Task Runtime pour le checkpoint/reprise
-et le Resource Governor pour l'admission. Le Model ne contient aucune
+Le Track Builder v1 utilise le Task Runtime pour le checkpoint/reprise et le
+Resource Governor pour l'admission. Le Model ne contient aucune
 logique d'exécution.
 
 ## Resource bounds
@@ -511,13 +513,14 @@ transactionnel.
 ## Track rejected state
 
 Le Model v1 ne persiste pas d'état Track rejected. Le Model représente des
-Tracks structurellement valides (≥ 2 observations, cohérents). Le futur
-Track Builder décidera quels candidats publier. Les candidats non publiés
-n'existent pas dans le Model.
+Tracks structurellement valides (≥ 2 observations, cohérents). Le Track Builder
+v1 décide quels candidats publier. Les candidats non publiés n'existent pas dans
+le Model ; cette séparation reste la frontière scientifique figée.
 
 ## Versioning
 
-Project DB schema version future décrira le stockage Track. `builder_version`
-et `verifier_version` décrivent indépendamment les contrats scientifiques.
+Project DB v14 introduced the Track storage and v15 adds only durable Track
+Builder task payload persistence. `builder_version` et `verifier_version`
+décrivent indépendamment les contrats scientifiques.
 Changer un algorithme n'impose une migration DB que si la représentation
 persistante change.

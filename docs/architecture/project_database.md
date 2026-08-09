@@ -547,8 +547,8 @@ CREATE INDEX track_observations_lookup_idx
 **Statut** : les tables sont créées par la migration et validées par les
 tests. L'API C (`create_track_set`, `load_track_set`, `find_track_set`,
 `list_track_sets`, `load_track`, `list_tracks`, `find_track_by_observation`)
-est exposée et implémentée. Les limites réelles restent l'absence de Track
-Builder algorithmique, de tâche dédiée et de triangulation.
+est exposée et implémentée. Le Track Builder algorithmique et sa tâche durable
+sont implémentés par les Gates A–E ; la triangulation reste hors périmètre.
 
 ## Schéma v15 — payload durable Track Builder
 
