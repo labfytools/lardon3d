@@ -50,6 +50,14 @@ run_test(void)
         CHECK(snapshot.io_pressure_avg10 >= 0.0);
         CHECK(snapshot.io_pressure_avg10 <= 100.0);
     }
+    if (snapshot.cpu_pressure_known) {
+        CHECK(snapshot.cpu_pressure_avg10 >= 0.0);
+        CHECK(snapshot.cpu_pressure_avg10 <= 100.0);
+    }
+    if (snapshot.memory_pressure_known) {
+        CHECK(snapshot.memory_pressure_avg10 >= 0.0);
+        CHECK(snapshot.memory_pressure_avg10 <= 100.0);
+    }
     return true;
 }
 

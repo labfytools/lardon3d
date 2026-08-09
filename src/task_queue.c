@@ -40,7 +40,6 @@ terminal_state(Lardon3DTaskState state)
 static void
 unlink_pending(Lardon3DTaskQueue *queue, TaskNode *previous, TaskNode *node)
 {
-    bool was_full = queue->pending_count >= queue->capacity;
     if (previous) {
         previous->next_pending = node->next_pending;
     } else {
@@ -51,9 +50,10 @@ unlink_pending(Lardon3DTaskQueue *queue, TaskNode *previous, TaskNode *node)
     }
     node->next_pending = NULL;
     --queue->pending_count;
-    if (was_full) {
-        (void)pthread_cond_signal(&queue->not_full);
-    }
+    /* Chaque retrait libère une place. Plusieurs producteurs peuvent dormir
+     * pendant que le worker retire plusieurs tâches avant qu'ils reprennent
+     * le mutex ; chacun de ces retraits doit donc produire un réveil. */
+    (void)pthread_cond_signal(&queue->not_full);
 }
 
 /* Parcourt la file d'attente et sélectionne la première tâche admissible.

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <opencv2/core.hpp>
 #include <string>
 #include <vector>
 
@@ -109,7 +110,8 @@ static bool publish(Lardon3DAppState *state, uint64_t image_id, const char *kind
 }
 
 static bool benchmark_case(const char *kind, Lardon3DMatcherKind matcher_kind,
-                           Lardon3DFeatureDescriptorType type, uint32_t count) {
+                           Lardon3DFeatureDescriptorType type, uint32_t count,
+                           int repetitions) {
   char root_template[] = "/tmp/lardon3d-matcher-bench-XXXXXX";
   char *root = mkdtemp(root_template);
   if (!root) return false;
@@ -137,17 +139,18 @@ static bool benchmark_case(const char *kind, Lardon3DMatcherKind matcher_kind,
                  db, image_a.image_id, image_b.image_id, 1, &pair) == LARDON3D_PROJECT_DB_OK;
   std::vector<Sample> samples;
   Lardon3DMatcherParams params = {matcher_kind, lardon3d_matcher_default_ratio(matcher_kind)};
-  for (int repetition = 0; ok && repetition < 3; ++repetition) {
+  for (int repetition = 0; ok && repetition <= repetitions; ++repetition) {
     Lardon3DMatcherStats stats;
     params.ratio_threshold = lardon3d_matcher_default_ratio(matcher_kind) -
-                             (float)repetition * 0.01F;
+                             (float)repetition * 0.001F;
     Lardon3DProjectDbMatchResult result;
     ok = lardon3d_matcher_match_and_publish_profiled(
              root, db, &pair, &set_a, &set_b, &params, &result, &stats) == LARDON3D_MATCHER_OK;
-    samples.push_back({stats.feature_open_ns, stats.descriptor_read_ns, stats.knn_ns,
-                       stats.filter_ns, stats.canonicalize_ns, stats.serialize_ns,
-                       stats.sha256_ns, stats.publication_ns, stats.database_ns,
-                       stats.total_ns});
+    if (repetition > 0)
+      samples.push_back({stats.feature_open_ns, stats.descriptor_read_ns, stats.knn_ns,
+                         stats.filter_ns, stats.canonicalize_ns, stats.serialize_ns,
+                         stats.sha256_ns, stats.publication_ns, stats.database_ns,
+                         stats.total_ns});
   }
   if (ok) {
     std::vector<uint64_t> values;
@@ -184,17 +187,38 @@ static bool benchmark_case(const char *kind, Lardon3DMatcherKind matcher_kind,
   return ok;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+  int repetitions = argc > 3 ? atoi(argv[3]) : 7;
+  int threads = argc > 4 ? atoi(argv[4]) : cv::getNumThreads();
+  if (repetitions < 1 || threads < 1) return EXIT_FAILURE;
+  cv::setNumThreads(threads);
   printf("kind,count,open_ms,read_ms,knn_ms,filter_ms,canonicalize_ms,serialize_ms,"
          "sha_ms,publish_ms,db_ms,total_ms\n");
+  if (argc > 2) {
+    uint32_t count = (uint32_t)strtoul(argv[2], nullptr, 10);
+    if (strcmp(argv[1], "orb") == 0)
+      return benchmark_case("orb", LARDON3D_MATCHER_ORB_BF,
+                            LARDON3D_FEATURE_DESCRIPTOR_U8, count, repetitions)
+                 ? EXIT_SUCCESS
+                 : EXIT_FAILURE;
+    if (strcmp(argv[1], "sift") == 0 || strcmp(argv[1], "rootsift") == 0) {
+      bool rootsift = strcmp(argv[1], "rootsift") == 0;
+      return benchmark_case(argv[1], rootsift ? LARDON3D_MATCHER_ROOTSIFT_BF
+                                              : LARDON3D_MATCHER_SIFT_BF,
+                            LARDON3D_FEATURE_DESCRIPTOR_F32, count, repetitions)
+                 ? EXIT_SUCCESS
+                 : EXIT_FAILURE;
+    }
+    return EXIT_FAILURE;
+  }
   const uint32_t sizes[] = {64, 256, 1024, 4096, 8192};
   for (uint32_t count : sizes) {
     if (!benchmark_case("orb", LARDON3D_MATCHER_ORB_BF,
-                        LARDON3D_FEATURE_DESCRIPTOR_U8, count) ||
+                        LARDON3D_FEATURE_DESCRIPTOR_U8, count, repetitions) ||
         !benchmark_case("sift", LARDON3D_MATCHER_SIFT_BF,
-                        LARDON3D_FEATURE_DESCRIPTOR_F32, count) ||
+                        LARDON3D_FEATURE_DESCRIPTOR_F32, count, repetitions) ||
         !benchmark_case("rootsift", LARDON3D_MATCHER_ROOTSIFT_BF,
-                        LARDON3D_FEATURE_DESCRIPTOR_F32, count))
+                        LARDON3D_FEATURE_DESCRIPTOR_F32, count, repetitions))
       return EXIT_FAILURE;
   }
   return EXIT_SUCCESS;

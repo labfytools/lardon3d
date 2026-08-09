@@ -98,18 +98,38 @@ capture_load(Lardon3DResourceSnapshot *snapshot)
     ) == 3;
 }
 
-static void
-capture_io_pressure(Lardon3DResourceSnapshot *snapshot)
+static bool
+capture_pressure(const char *path, double *average)
 {
     char buffer[512];
-    if (!read_file("/proc/pressure/io", buffer, sizeof(buffer))) {
-        return;
+    if (!read_file(path, buffer, sizeof(buffer))) {
+        return false;
     }
-    double average;
-    if (sscanf(buffer, "some avg10=%lf", &average) == 1 && average >= 0.0) {
-        snapshot->io_pressure_known = true;
-        snapshot->io_pressure_avg10 = average;
+    return sscanf(buffer, "some avg10=%lf", average) == 1
+        && *average >= 0.0 && *average <= 100.0;
+}
+
+static bool
+vmstat_counter(const char *buffer, const char *key, uint64_t *value)
+{
+    const char *line = buffer;
+    size_t key_length = strlen(key);
+    while (*line) {
+        if (strncmp(line, key, key_length) == 0 && line[key_length] == ' ') {
+            errno = 0;
+            char *end;
+            unsigned long long parsed = strtoull(line + key_length + 1, &end, 10);
+            if (errno == 0 && end != line + key_length + 1) {
+                *value = (uint64_t)parsed;
+                return true;
+            }
+            return false;
+        }
+        const char *newline = strchr(line, '\n');
+        if (!newline) break;
+        line = newline + 1;
     }
+    return false;
 }
 
 static void
@@ -186,7 +206,17 @@ lardon3d_resource_snapshot_capture(
         set_error(error_message, error_message_size, "Instantané système impossible.");
         return false;
     }
-    capture_io_pressure(snapshot);
+    snapshot->cpu_pressure_known = capture_pressure(
+        "/proc/pressure/cpu", &snapshot->cpu_pressure_avg10);
+    snapshot->memory_pressure_known = capture_pressure(
+        "/proc/pressure/memory", &snapshot->memory_pressure_avg10);
+    snapshot->io_pressure_known = capture_pressure(
+        "/proc/pressure/io", &snapshot->io_pressure_avg10);
+    if (read_file("/proc/vmstat", buffer, sizeof(buffer))) {
+        snapshot->swap_activity_known = vmstat_counter(
+            buffer, "pswpin", &snapshot->swap_pages_in)
+            && vmstat_counter(buffer, "pswpout", &snapshot->swap_pages_out);
+    }
     capture_gpu_memory(profile, snapshot);
     return true;
 }

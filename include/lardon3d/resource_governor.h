@@ -18,13 +18,22 @@ typedef struct Lardon3DResourceReservation Lardon3DResourceReservation;
 
 typedef struct {
     uint64_t system_memory_reserve_bytes;
+    uint64_t emergency_memory_floor_bytes;
     uint64_t gpu_memory_reserve_bytes;
     unsigned int system_cpu_reserve;
     double maximum_cpu_load_ratio;
+    double maximum_cpu_pressure_avg10;
+    double maximum_memory_pressure_avg10;
     double maximum_io_pressure_avg10;
     unsigned int gpu_slot_capacity;
     unsigned int io_slot_capacity;
 } Lardon3DResourcePolicy;
+
+typedef enum {
+    LARDON3D_RESOURCE_PRESSURE_GREEN = 0,
+    LARDON3D_RESOURCE_PRESSURE_YELLOW,
+    LARDON3D_RESOURCE_PRESSURE_RED
+} Lardon3DResourcePressure;
 
 typedef enum {
     LARDON3D_RESOURCE_TASK_GENERAL = 0,
@@ -186,6 +195,9 @@ bool lardon3d_resource_governor_wait_for_change(
 );
 const char *lardon3d_resource_decision_name(
     Lardon3DResourceDecisionKind kind
+);
+Lardon3DResourcePressure lardon3d_resource_governor_pressure(
+    Lardon3DResourceGovernor *governor
 );
 /* Enregistre les métriques d'un lot terminé pour l'adaptation dynamique
  * de la taille des lots futurs. batch_size est le nombre d'éléments dont le

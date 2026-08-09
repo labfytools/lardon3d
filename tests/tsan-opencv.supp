@@ -4,3 +4,4 @@
 # all other libraries remain fully checked.
 race:libopencv_features.so
 race:libopencv_core.so
+race:libtbb.so

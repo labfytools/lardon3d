@@ -9,7 +9,26 @@ OpenCV peut employer son parallélisme interne ; aucun état global n'est modifi
 
 ## Responsabilité
 
-Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU, IO). Il arbitre les ressources disponibles et calcule les lots adaptatifs pour chaque tâche.
+Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU,
+IO). Il arbitre les ressources disponibles et calcule les lots adaptatifs pour
+chaque tâche.
+
+Le profil interactif par défaut conserve un quart de la RAM détectée et un
+quart des threads logiques pour le système hôte. Sur 16 Gio/16 threads, cela
+donne environ 3,8 Gio et 4 threads de headroom. Une nouvelle admission attend
+également lorsque PSI CPU `some avg10` atteint 20 %, ou PSI mémoire 1 %. Ces
+signaux n'interrompent jamais le petit job déjà réservé.
+
+La soft floor vaut un quart et la hard floor un huitième de la RAM détectée. La
+soft floor place le Governor au minimum en YELLOW ; la hard floor le place
+immédiatement en RED. Le premier delta swap entre deux snapshots produit
+YELLOW. Un second delta consécutif produit RED. Le premier snapshot ne constitue
+qu'une baseline et n'est jamais interprété comme une activité récente.
+
+La récupération interdit `RED → GREEN` : trois observations saines produisent
+RED vers YELLOW, puis trois autres YELLOW vers GREEN. Le plafond reste 1 pendant
+ces phases. Une fois GREEN, chaque groupe de trois observations saines double
+le plafond : 1, 2, 4, 8, puis les paliers supérieurs utiles aux autres kinds.
 
 ## API principale
 
@@ -34,6 +53,7 @@ Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU, IO).
 - `lardon3d_resource_governor_record_batch()` - Enregistrer les métriques d'un lot
 - `lardon3d_resource_governor_generation()` - Obtenir la génération actuelle
 - `lardon3d_resource_governor_wait_for_change()` - Attendre un changement
+- `lardon3d_resource_governor_pressure()` - Lire GREEN, YELLOW ou RED
 
 ## Invariants
 
@@ -94,11 +114,15 @@ Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU, IO).
   réelle du lot ; `peak_memory_bytes == 0` signifie « mesure inconnue ».
   Chaque séquence interroge le Visual Index pour jusqu'à 64 Feature Sets et
   persiste les paires candidates avec idempotence.
-- Le Matcher v1 possède un working set contrôlé inférieur à environ 10 Mio au
+- `matcher.run` réserve douze threads CPU, un slot IO et un working set
+  contrôlé inférieur à environ 10 Mio au
   maximum SIFT/RootSIFT (8 Mio de descripteurs contigus, KNN `k=2`, sorties et
-  fichier bornés), hors scratch interne OpenCV. Il n'est pas encore exposé comme
-  task kind autonome; sa future orchestration devra réserver CPU+IO et cette
-  estimation via ce Governor, sans budget parallèle.
+  fichier bornés), hors scratch interne OpenCV. Ses lots sont bornés à 1, 2, 4
+  ou 8 Candidate Pairs et chaque paire libère ses buffers avant la suivante.
+  Quand le profil détecte un GPU et que le runtime possède le backend ORB, la
+  réservation ajoute un slot GPU et 640 Kio. Sur UMA ces 640 Kio sont aussi
+  débités du budget RAM. Sans GPU/backend, l'estimation reste CPU-only afin que
+  le fallback portable ne soit jamais refusé artificiellement.
 
 ## Limites actuelles
 

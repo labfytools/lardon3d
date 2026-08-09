@@ -18,8 +18,15 @@ typedef struct {
     double cpu_load_1m;
     double cpu_load_5m;
     double cpu_load_15m;
+    bool cpu_pressure_known;
+    double cpu_pressure_avg10;
+    bool memory_pressure_known;
+    double memory_pressure_avg10;
     bool io_pressure_known;
     double io_pressure_avg10;
+    bool swap_activity_known;
+    uint64_t swap_pages_in;
+    uint64_t swap_pages_out;
 } Lardon3DResourceSnapshot;
 
 bool lardon3d_resource_snapshot_capture(

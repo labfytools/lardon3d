@@ -10,6 +10,7 @@ typedef struct Lardon3DImageView Lardon3DImageView;
 typedef struct Lardon3DTaskQueue Lardon3DTaskQueue;
 typedef struct Lardon3DResourceGovernor Lardon3DResourceGovernor;
 typedef struct Lardon3DProjectDb Lardon3DProjectDb;
+typedef struct Lardon3DOrbVulkanBackend Lardon3DOrbVulkanBackend;
 
 typedef enum {
     LARDON3D_SCREEN_HOME = 0,
@@ -35,6 +36,7 @@ typedef struct {
     Lardon3DHardwareProfile hardware_profile;
     Lardon3DResourceGovernor *resource_governor;
     Lardon3DProjectDb *project_db;
+    Lardon3DOrbVulkanBackend *orb_vulkan_backend;
     size_t recovery_inspected;
     size_t recovery_resumed;
     size_t recovery_skipped;

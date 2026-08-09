@@ -64,4 +64,8 @@ depuis `image_id` et ses paramètres bornés.
 + scanset_filter + exclude_same_asset` depuis `candidate_pair_generate_tasks`
 et reconstruit un contexte boundé.
 
-**PLANNED** — kinds de matching et reconstruction.
+**IMPLEMENTED** — `matcher.run`, version 1, recharge la configuration Matcher,
+l'identité Feature Set et le curseur `after_candidate_pair_id`. Il traite une
+Candidate Pair atomique à la fois dans des lots bornés à huit, checkpoint le
+curseur et repasse par le Governor entre les lots. La table durable
+`matcher_tasks` est introduite par Project DB v11, après le Match Result v10.

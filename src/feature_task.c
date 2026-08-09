@@ -279,8 +279,12 @@ lardon3d_project_create_feature_extract_task(Lardon3DAppState *state, uint64_t i
   snprintf(durable.extractor_kind, sizeof(durable.extractor_kind), "%s",
            LARDON3D_FEATURE_EXTRACTOR_KIND);
   lardon3d_feature_extractor_parameter_fingerprint(parameters, durable.parameter_fingerprint);
-  Lardon3DTaskReconstructionContext runtime = {state->project_path, state->project_db,
-                                               state->resource_governor};
+  Lardon3DTaskReconstructionContext runtime = {
+      .project_path = state->project_path,
+      .project_db = state->project_db,
+      .resource_governor = state->resource_governor,
+      .orb_vulkan_backend = state->orb_vulkan_backend,
+  };
   Lardon3DFeatureTaskContext *context = make_context(&runtime, &durable);
   if (!context) {
     return NULL;
@@ -289,7 +293,8 @@ lardon3d_project_create_feature_extract_task(Lardon3DAppState *state, uint64_t i
                                        .memory_bytes_per_item = 512ULL * 1024 * 1024,
                                        .minimum_batch_size = 1,
                                        .maximum_batch_size = 1,
-                                       .desired_cpu_threads = 1,
+                                       .desired_cpu_threads =
+                                           lardon3d_feature_opencv_thread_count(),
                                        .desired_io_slots = 1,
                                        .task_class = LARDON3D_RESOURCE_TASK_CPU};
   Lardon3DTask *task = lardon3d_task_create_typed("Extraction de features", &estimate,

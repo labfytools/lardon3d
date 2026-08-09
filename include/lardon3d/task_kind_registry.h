@@ -8,6 +8,7 @@
 
 typedef struct Lardon3DProjectDb Lardon3DProjectDb;
 typedef struct Lardon3DResourceGovernor Lardon3DResourceGovernor;
+typedef struct Lardon3DOrbVulkanBackend Lardon3DOrbVulkanBackend;
 
 enum {
   LARDON3D_TASK_KIND_REGISTRY_MAX = 64,
@@ -39,6 +40,7 @@ typedef struct {
   const char *project_path;
   Lardon3DProjectDb *project_db;
   Lardon3DResourceGovernor *resource_governor;
+  Lardon3DOrbVulkanBackend *orb_vulkan_backend;
 } Lardon3DTaskReconstructionContext;
 
 typedef enum {

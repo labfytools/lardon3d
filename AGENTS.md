@@ -63,6 +63,24 @@ disponible. Ne jamais annoncer une vérification non exécutée.
 - Éviter le code-golf et garder des fonctions confortables à relire dans Neovim.
 - Commenter les invariants non évidents plutôt que paraphraser le code.
 
+## Lisibilité du code
+
+Ces règles s'appliquent aussi bien au code du dépôt qu'au code temporaire
+créé pour les benchmarks, diagnostics, expérimentations ou probes matériels.
+
+- Viser environ 100 colonnes par ligne.
+- Limite absolue : 120 colonnes.
+- Ne pas compresser plusieurs instructions logiques sur une même ligne.
+- Aucun code-golf, même pour un prototype.
+- Les fichiers temporaires C, C++, GLSL et les scripts doivent rester
+  lisibles et auditables.
+- Découper les grosses fonctions en responsabilités claires lorsque cela
+  améliore la compréhension.
+- Les benchmarks et prototypes doivent pouvoir être relus et débogués
+  facilement.
+- Un reformatage ne doit jamais modifier le comportement.
+- Ces règles s'appliquent également aux fichiers créés sous `/tmp`.
+
 ## Long run OpenCode
 
 - `.opencode/work/current_ticket.md` est la mémoire durable du ticket et doit

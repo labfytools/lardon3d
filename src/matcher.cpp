@@ -210,6 +210,26 @@ static bool accept_knn_match(const std::vector<cv::DMatch> &knn, float threshold
     return true;
 }
 
+static bool accept_orb_top2(const Lardon3DOrbTop2 &top2, uint32_t query_index,
+                            float threshold, MatchEntry *entry) {
+    if (!entry || top2.neighbor_count == 0 || top2.neighbor_count > 2 ||
+        !std::isfinite(threshold) || threshold <= 0.0F || threshold >= 1.0F) {
+        return false;
+    }
+    if (top2.neighbor_count == 2 &&
+        (top2.second_distance == 0 ||
+         !(static_cast<float>(top2.best_distance) <
+           threshold * static_cast<float>(top2.second_distance)))) {
+        return false;
+    }
+    *entry = {
+        static_cast<int>(query_index),
+        static_cast<int>(top2.best_index),
+        static_cast<float>(top2.best_distance),
+    };
+    return true;
+}
+
 static bool operator<(const MatchEntry &a, const MatchEntry &b) {
     if (a.query_idx != b.query_idx) {
         return a.query_idx < b.query_idx;
@@ -272,6 +292,7 @@ static Lardon3DMatcherResult matcher_run_impl(
     const Lardon3DProjectDbFeatureSet *feature_set_b,
     const Lardon3DMatcherParams *params,
     const char *match_file_path,
+    Lardon3DOrbVulkanBackend *backend,
     Lardon3DMatcherStats *stats) {
     if (stats) {
         memset(stats, 0, sizeof(*stats));
@@ -347,22 +368,51 @@ static Lardon3DMatcherResult matcher_run_impl(
             result = LARDON3D_MATCHER_IO_ERROR;
         } else {
             stats->descriptor_read_ns = elapsed_ns(phase_start);
-            cv::Mat mat_a((int)feature_set_a->feature_count, 32, CV_8UC1, desc_a.data());
-            cv::Mat mat_b((int)feature_set_b->feature_count, 32, CV_8UC1, desc_b.data());
-            cv::BFMatcher matcher(cv::NORM_HAMMING, false);
-            std::vector<std::vector<cv::DMatch>> matches;
-            phase_start = std::chrono::steady_clock::now();
-            matcher.knnMatch(mat_a, mat_b, matches, LARDON3D_MATCHER_KNN_K);
-            stats->knn_ns = elapsed_ns(phase_start);
-            stats->knn_query_count = (uint32_t)matches.size();
-            phase_start = std::chrono::steady_clock::now();
-            for (size_t i = 0; i < matches.size(); ++i) {
-                const auto &knn = matches[i];
-                MatchEntry entry;
-                if (accept_knn_match(knn, params->ratio_threshold, &entry))
-                    filtered_matches.push_back(entry);
+            bool completed = false;
+            if (backend && lardon3d_orb_vulkan_should_use(
+                               feature_set_a->feature_count,
+                               feature_set_b->feature_count)) {
+                std::vector<Lardon3DOrbTop2> top2(feature_set_a->feature_count);
+                phase_start = std::chrono::steady_clock::now();
+                Lardon3DOrbVulkanResult vulkan_result = lardon3d_orb_vulkan_top2(
+                    backend, desc_a.data(), feature_set_a->feature_count,
+                    desc_b.data(), feature_set_b->feature_count, top2.data(), top2.size());
+                stats->knn_ns = elapsed_ns(phase_start);
+                if (vulkan_result == LARDON3D_ORB_VULKAN_OK) {
+                    stats->used_vulkan = true;
+                    stats->knn_query_count = feature_set_a->feature_count;
+                    phase_start = std::chrono::steady_clock::now();
+                    for (uint32_t index = 0; index < feature_set_a->feature_count; ++index) {
+                        MatchEntry entry;
+                        if (accept_orb_top2(top2[index], index, params->ratio_threshold,
+                                            &entry)) {
+                            filtered_matches.push_back(entry);
+                        }
+                    }
+                    stats->filter_ns = elapsed_ns(phase_start);
+                    completed = true;
+                } else {
+                    stats->vulkan_fallback = true;
+                }
             }
-            stats->filter_ns = elapsed_ns(phase_start);
+            if (!completed) {
+                cv::Mat mat_a((int)feature_set_a->feature_count, 32, CV_8UC1, desc_a.data());
+                cv::Mat mat_b((int)feature_set_b->feature_count, 32, CV_8UC1, desc_b.data());
+                cv::BFMatcher matcher(cv::NORM_HAMMING, false);
+                std::vector<std::vector<cv::DMatch>> matches;
+                phase_start = std::chrono::steady_clock::now();
+                matcher.knnMatch(mat_a, mat_b, matches, LARDON3D_MATCHER_KNN_K);
+                stats->knn_ns = elapsed_ns(phase_start);
+                stats->knn_query_count = (uint32_t)matches.size();
+                phase_start = std::chrono::steady_clock::now();
+                for (const auto &knn : matches) {
+                    MatchEntry entry;
+                    if (accept_knn_match(knn, params->ratio_threshold, &entry)) {
+                        filtered_matches.push_back(entry);
+                    }
+                }
+                stats->filter_ns = elapsed_ns(phase_start);
+            }
         }
     } else {
         std::vector<float> desc_a, desc_b;
@@ -454,9 +504,21 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_run(
     const Lardon3DMatcherParams *params,
     const char *match_file_path,
     Lardon3DMatcherStats *stats) {
+    return lardon3d_matcher_run_with_backend(
+        project_path, feature_set_a, feature_set_b, params, match_file_path, nullptr, stats);
+}
+
+extern "C" Lardon3DMatcherResult lardon3d_matcher_run_with_backend(
+    const char *project_path,
+    const Lardon3DProjectDbFeatureSet *feature_set_a,
+    const Lardon3DProjectDbFeatureSet *feature_set_b,
+    const Lardon3DMatcherParams *params,
+    const char *match_file_path,
+    Lardon3DOrbVulkanBackend *backend,
+    Lardon3DMatcherStats *stats) {
     try {
         return matcher_run_impl(project_path, feature_set_a, feature_set_b, params,
-                                match_file_path, stats);
+                                match_file_path, backend, stats);
     } catch (const cv::Exception &) {
         return LARDON3D_MATCHER_FAILED;
     } catch (const std::bad_alloc &) {
@@ -471,6 +533,21 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_profiled(
     const Lardon3DProjectDbFeatureSet *feature_set_a,
     const Lardon3DProjectDbFeatureSet *feature_set_b,
     const Lardon3DMatcherParams *params,
+    Lardon3DProjectDbMatchResult *result,
+    Lardon3DMatcherStats *profile) {
+    return lardon3d_matcher_match_and_publish_with_backend(
+        project_path, database, pair, feature_set_a, feature_set_b, params, nullptr,
+        result, profile);
+}
+
+extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_with_backend(
+    const char *project_path,
+    Lardon3DProjectDb *database,
+    const Lardon3DProjectDbCandidatePair *pair,
+    const Lardon3DProjectDbFeatureSet *feature_set_a,
+    const Lardon3DProjectDbFeatureSet *feature_set_b,
+    const Lardon3DMatcherParams *params,
+    Lardon3DOrbVulkanBackend *backend,
     Lardon3DProjectDbMatchResult *result,
     Lardon3DMatcherStats *profile) {
     auto total_start = std::chrono::steady_clock::now();
@@ -548,8 +625,8 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_profiled(
     }
 
     Lardon3DMatcherStats stats;
-    Lardon3DMatcherResult run_result = lardon3d_matcher_run(
-        project_path, feature_set_a, feature_set_b, params, tmp_path, &stats);
+    Lardon3DMatcherResult run_result = lardon3d_matcher_run_with_backend(
+        project_path, feature_set_a, feature_set_b, params, tmp_path, backend, &stats);
     if (run_result != LARDON3D_MATCHER_OK) {
         unlink(tmp_path);
         return run_result;
@@ -573,9 +650,9 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_profiled(
                   feature_set_b->feature_set_id, matcher_kind, LARDON3D_MATCHER_VERSION, fp,
                   LARDON3D_MATCH_RESULT_STATUS_NO_MATCH, 0, NULL, NULL, 0, now, result);
         if (db_result == LARDON3D_PROJECT_DB_CONSTRAINT) {
-            return lardon3d_matcher_match_and_publish_profiled(
-                project_path, database, pair, feature_set_a, feature_set_b, params, result,
-                profile);
+            return lardon3d_matcher_match_and_publish_with_backend(
+                project_path, database, pair, feature_set_a, feature_set_b, params, backend,
+                result, profile);
         }
         if (profile) {
             profile->database_ns = elapsed_ns(database_start);
@@ -668,8 +745,9 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_profiled(
               LARDON3D_MATCH_RESULT_STATUS_MATCHED, stats.match_count, file_hash, relative,
               (uint64_t)file_size, now, result);
     if (db_result == LARDON3D_PROJECT_DB_CONSTRAINT) {
-        return lardon3d_matcher_match_and_publish_profiled(
-            project_path, database, pair, feature_set_a, feature_set_b, params, result, profile);
+        return lardon3d_matcher_match_and_publish_with_backend(
+            project_path, database, pair, feature_set_a, feature_set_b, params, backend,
+            result, profile);
     }
     if (db_result != LARDON3D_PROJECT_DB_OK) {
         return LARDON3D_MATCHER_FAILED;

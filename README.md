@@ -100,6 +100,7 @@ Acquisitions
 - [Registry des types de tâches](docs/architecture/task_kind_registry.md)
 - [File de tâches](docs/architecture/task_queue.md)
 - [Resource Governor](docs/architecture/resource_governor.md)
+- [Pipeline sensible aux ressources](docs/architecture/resource_aware_pipeline.md)
 - [Intégration Scheduler ↔ Governor](docs/architecture/scheduler_resource_integration.md)
 - [Pipeline de reconstruction](docs/architecture/reconstruction_pipeline.md)
 - [Persistance](docs/architecture/persistence.md)
@@ -110,6 +111,7 @@ Acquisitions
 - [Candidate Pair](docs/architecture/candidate_pair.md)
 - [Match Result](docs/architecture/match_result.md)
 - [Matcher](docs/architecture/matcher.md)
+- [Backend Vulkan ORB](docs/architecture/vulkan_matcher.md)
 - [Viewer](docs/architecture/viewer.md)
 - [Revue des fondations](docs/architecture/foundation_review.md)
 
@@ -124,6 +126,7 @@ Acquisitions
 - [Build](docs/development/build.md)
 - [Tests](docs/development/testing.md)
 - [Concurrence](docs/development/concurrency.md)
+- [Profil de performance de la machine cible](docs/performance/target_hardware.md)
 - [OpenCode long run](docs/development/opencode_long_run.md)
 
 ### Roadmap
@@ -149,8 +152,10 @@ Pour les changements sensibles à la mémoire ou à la concurrence, ajouter ASan
 
 Lardon3D est en développement actif. La persistance des tâches, le catalogue,
 le Feature Store multipasse, le Visual Index ORB, Candidate Pair Generator
-et Matcher v1 sont implémentés. DAG générique, vérification géométrique,
-SfM et viewer restent des tickets séparés planifiés.
+et Matcher v1 sont implémentés. Le runtime Feature + Matcher emploie des tâches
+durables, de petits lots, le Resource Governor interactif et un hot path Vulkan
+ORB exact avec fallback CPU. DAG générique,
+vérification géométrique, SfM et viewer restent des tickets séparés planifiés.
 
 ## Licence
 

@@ -11,6 +11,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <openssl/evp.h>
+
 #include <lardon3d/app_state.h>
 #include <lardon3d/feature_store.h>
 #include <lardon3d/matcher.h>
@@ -176,6 +178,128 @@ static bool read_result_asset(const Fixture *fixture, const Lardon3DProjectDbFea
   (void)close(fd);
   return read_result == LARDON3D_MATCH_FILE_OK;
 }
+
+static bool files_equal(const char *path_a, const char *path_b) {
+  int fd_a = open(path_a, O_RDONLY | O_CLOEXEC);
+  int fd_b = open(path_b, O_RDONLY | O_CLOEXEC);
+  if (fd_a < 0 || fd_b < 0) {
+    if (fd_a >= 0) (void)close(fd_a);
+    if (fd_b >= 0) (void)close(fd_b);
+    return false;
+  }
+  unsigned char a[4096];
+  unsigned char b[4096];
+  bool equal = true;
+  for (;;) {
+    ssize_t read_a = read(fd_a, a, sizeof(a));
+    ssize_t read_b = read(fd_b, b, sizeof(b));
+    if (read_a < 0 || read_b < 0 || read_a != read_b ||
+        (read_a > 0 && memcmp(a, b, (size_t)read_a) != 0)) {
+      equal = false;
+      break;
+    }
+    if (read_a == 0) break;
+  }
+  if (close(fd_a) != 0 || close(fd_b) != 0) equal = false;
+  return equal;
+}
+
+static bool file_sha256(const char *path, unsigned char output[32]) {
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  EVP_MD_CTX *context = EVP_MD_CTX_new();
+  if (fd < 0 || !context) {
+    if (fd >= 0) (void)close(fd);
+    EVP_MD_CTX_free(context);
+    return false;
+  }
+  bool ok = EVP_DigestInit_ex(context, EVP_sha256(), NULL) == 1;
+  unsigned char buffer[4096];
+  while (ok) {
+    ssize_t count = read(fd, buffer, sizeof(buffer));
+    if (count < 0) {
+      ok = false;
+    } else if (count == 0) {
+      break;
+    } else {
+      ok = EVP_DigestUpdate(context, buffer, (size_t)count) == 1;
+    }
+  }
+  unsigned int length = 0;
+  ok = ok && EVP_DigestFinal_ex(context, output, &length) == 1 && length == 32;
+  EVP_MD_CTX_free(context);
+  return close(fd) == 0 && ok;
+}
+
+static uint32_t deterministic_random(uint32_t *state) {
+  *state = *state * 1664525U + 1013904223U;
+  return *state;
+}
+
+#ifdef LARDON3D_MATCHER_E2E_VULKAN
+static bool test_cpu_vulkan_match_file_parity(void) {
+  const uint32_t feature_count = 768;
+  const size_t bytes = (size_t)feature_count * 32;
+  Fixture fixture;
+  CHECK(fixture_open(&fixture));
+  unsigned char *descriptors = malloc(bytes);
+  CHECK(descriptors != NULL);
+  uint32_t random_state = 0x12345678U;
+  for (size_t index = 0; index < bytes; ++index) {
+    descriptors[index] = (unsigned char)(deterministic_random(&random_state) >> 24);
+  }
+  Lardon3DProjectDbFeatureSet set_a, set_b;
+  CHECK(publish_features(&fixture, fixture.image_a.image_id, "orb",
+                         LARDON3D_FEATURE_DESCRIPTOR_U8, descriptors, feature_count, 31,
+                         &set_a));
+  CHECK(publish_features(&fixture, fixture.image_b.image_id, "orb",
+                         LARDON3D_FEATURE_DESCRIPTOR_U8, descriptors, feature_count, 32,
+                         &set_b));
+  free(descriptors);
+
+  char cpu_path[PATH_MAX];
+  char vulkan_path[PATH_MAX];
+  char fallback_path[PATH_MAX];
+  CHECK(join_path(cpu_path, fixture.root, "cpu.match"));
+  CHECK(join_path(vulkan_path, fixture.root, "vulkan.match"));
+  CHECK(join_path(fallback_path, fixture.root, "fallback.match"));
+  Lardon3DMatcherParams params = {LARDON3D_MATCHER_ORB_BF, 0.75F};
+  Lardon3DMatcherStats cpu_stats;
+  Lardon3DMatcherStats vulkan_stats;
+  CHECK(lardon3d_matcher_run(fixture.root, &set_a, &set_b, &params, cpu_path,
+                             &cpu_stats) == LARDON3D_MATCHER_OK);
+  Lardon3DOrbVulkanBackend *backend = lardon3d_orb_vulkan_backend_create();
+  CHECK(backend != NULL);
+  CHECK(lardon3d_matcher_run_with_backend(fixture.root, &set_a, &set_b, &params,
+                                          vulkan_path, backend, &vulkan_stats) ==
+        LARDON3D_MATCHER_OK);
+  CHECK(vulkan_stats.used_vulkan && !vulkan_stats.vulkan_fallback);
+  CHECK(cpu_stats.match_count == vulkan_stats.match_count);
+  CHECK(files_equal(cpu_path, vulkan_path));
+  unsigned char cpu_sha[32];
+  unsigned char vulkan_sha[32];
+  CHECK(file_sha256(cpu_path, cpu_sha));
+  CHECK(file_sha256(vulkan_path, vulkan_sha));
+  CHECK(memcmp(cpu_sha, vulkan_sha, sizeof(cpu_sha)) == 0);
+  lardon3d_orb_vulkan_backend_destroy(backend);
+
+  CHECK(setenv("LARDON3D_VULKAN_DISABLE", "1", 1) == 0);
+  backend = lardon3d_orb_vulkan_backend_create();
+  CHECK(backend != NULL);
+  Lardon3DMatcherStats fallback_stats;
+  CHECK(lardon3d_matcher_run_with_backend(fixture.root, &set_a, &set_b, &params,
+                                          fallback_path, backend, &fallback_stats) ==
+        LARDON3D_MATCHER_OK);
+  CHECK(fallback_stats.vulkan_fallback && !fallback_stats.used_vulkan);
+  CHECK(files_equal(cpu_path, fallback_path));
+  lardon3d_orb_vulkan_backend_destroy(backend);
+  CHECK(unsetenv("LARDON3D_VULKAN_DISABLE") == 0);
+  CHECK(unlink(cpu_path) == 0);
+  CHECK(unlink(vulkan_path) == 0);
+  CHECK(unlink(fallback_path) == 0);
+  CHECK(fixture_close(&fixture));
+  return true;
+}
+#endif
 
 static bool run_kind_e2e(const char *kind, Lardon3DMatcherKind matcher_kind,
                          Lardon3DFeatureDescriptorType type) {
@@ -377,6 +501,9 @@ static bool run_tests(void) {
                      LARDON3D_FEATURE_DESCRIPTOR_F32));
   CHECK(test_ratio_single_neighbor_and_no_match());
   CHECK(test_kind_and_ownership_rejection());
+#ifdef LARDON3D_MATCHER_E2E_VULKAN
+  CHECK(test_cpu_vulkan_match_file_parity());
+#endif
   return true;
 }
 

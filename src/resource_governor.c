@@ -38,6 +38,15 @@ struct Lardon3DResourceGovernor {
     size_t batch_metrics_count[LARDON3D_RESOURCE_TASK_MIXED + 1];
     size_t batch_metrics_head[LARDON3D_RESOURCE_TASK_MIXED + 1];
     size_t active_count;
+    bool swap_baseline_known;
+    uint64_t last_swap_pages_in;
+    uint64_t last_swap_pages_out;
+    unsigned int pressure_streak;
+    unsigned int recovery_streak;
+    unsigned int slow_start_streak;
+    size_t slow_start_limit;
+    bool slow_start_active;
+    Lardon3DResourcePressure pressure;
     Lardon3DResourceReservation *active;
     Lardon3DResourceReservation *released;
 };
@@ -60,9 +69,15 @@ valid_policy(
 {
     return valid_profile(profile) && policy
         && policy->system_memory_reserve_bytes < profile->memory_total_bytes
+        && policy->emergency_memory_floor_bytes
+            <= policy->system_memory_reserve_bytes
         && policy->system_cpu_reserve < profile->logical_cpu_count
         && policy->maximum_cpu_load_ratio > 0.0
         && policy->maximum_cpu_load_ratio <= 1.0
+        && policy->maximum_cpu_pressure_avg10 >= 0.0
+        && policy->maximum_cpu_pressure_avg10 <= 100.0
+        && policy->maximum_memory_pressure_avg10 >= 0.0
+        && policy->maximum_memory_pressure_avg10 <= 100.0
         && policy->maximum_io_pressure_avg10 >= 0.0
         && policy->maximum_io_pressure_avg10 <= 100.0
         && policy->io_slot_capacity > 0
@@ -79,6 +94,12 @@ valid_snapshot(
 )
 {
     return snapshot && snapshot->cpu_load_1m >= 0.0
+        && (!snapshot->cpu_pressure_known
+            || (snapshot->cpu_pressure_avg10 >= 0.0
+                && snapshot->cpu_pressure_avg10 <= 100.0))
+        && (!snapshot->memory_pressure_known
+            || (snapshot->memory_pressure_avg10 >= 0.0
+                && snapshot->memory_pressure_avg10 <= 100.0))
         && (!snapshot->io_pressure_known
             || (snapshot->io_pressure_avg10 >= 0.0
                 && snapshot->io_pressure_avg10 <= 100.0))
@@ -278,13 +299,20 @@ lardon3d_resource_policy_default(
     if (!valid_profile(profile) || !policy) {
         return false;
     }
+    unsigned int cpu_reserve = profile->logical_cpu_count / 4;
+    if (cpu_reserve == 0 && profile->logical_cpu_count > 2) {
+        cpu_reserve = 1;
+    }
     *policy = (Lardon3DResourcePolicy) {
-        .system_memory_reserve_bytes = profile->memory_total_bytes / 8,
+        .system_memory_reserve_bytes = profile->memory_total_bytes / 4,
+        .emergency_memory_floor_bytes = profile->memory_total_bytes / 8,
         .gpu_memory_reserve_bytes = profile->gpu_memory_known
             ? profile->gpu_memory_total_bytes / 8
             : 0,
-        .system_cpu_reserve = profile->logical_cpu_count > 2 ? 1 : 0,
+        .system_cpu_reserve = cpu_reserve,
         .maximum_cpu_load_ratio = 0.90,
+        .maximum_cpu_pressure_avg10 = 20.0,
+        .maximum_memory_pressure_avg10 = 1.0,
         .maximum_io_pressure_avg10 = 80.0,
         .gpu_slot_capacity = profile->gpu_available ? 1 : 0,
         .io_slot_capacity = 1,
@@ -332,6 +360,8 @@ lardon3d_resource_governor_create(
     governor->profile = *profile;
     governor->policy = *policy;
     governor->next_reservation_id = 1;
+    governor->slow_start_limit = SIZE_MAX;
+    governor->pressure = LARDON3D_RESOURCE_PRESSURE_GREEN;
     return governor;
 }
 
@@ -542,6 +572,93 @@ evaluate_locked(
         set_decision(decision, LARDON3D_RESOURCE_REJECT, 0, 0, 0, 0, "Estimation de ressources invalide.");
         return;
     }
+    bool swap_changed = false;
+    if (snapshot->swap_activity_known) {
+        if (governor->swap_baseline_known) {
+            swap_changed = snapshot->swap_pages_in > governor->last_swap_pages_in
+                || snapshot->swap_pages_out > governor->last_swap_pages_out;
+        }
+        governor->last_swap_pages_in = snapshot->swap_pages_in;
+        governor->last_swap_pages_out = snapshot->swap_pages_out;
+        governor->swap_baseline_known = true;
+    }
+    bool hard_memory_pressure = governor->policy.emergency_memory_floor_bytes > 0
+        && snapshot->memory_available_bytes
+            <= governor->policy.emergency_memory_floor_bytes;
+    bool soft_memory_pressure = governor->policy.system_memory_reserve_bytes > 0
+        && snapshot->memory_available_bytes
+            <= governor->policy.system_memory_reserve_bytes;
+    bool psi_pressure = (governor->policy.maximum_cpu_pressure_avg10 > 0.0
+            && snapshot->cpu_pressure_known
+            && snapshot->cpu_pressure_avg10
+                >= governor->policy.maximum_cpu_pressure_avg10)
+        || (governor->policy.maximum_memory_pressure_avg10 > 0.0
+            && snapshot->memory_pressure_known
+            && snapshot->memory_pressure_avg10
+                >= governor->policy.maximum_memory_pressure_avg10)
+        || (governor->policy.maximum_io_pressure_avg10 > 0.0
+            && snapshot->io_pressure_known
+            && snapshot->io_pressure_avg10
+                >= governor->policy.maximum_io_pressure_avg10);
+    bool pressure_signal = soft_memory_pressure || psi_pressure || swap_changed;
+
+    if (hard_memory_pressure) {
+        governor->pressure = LARDON3D_RESOURCE_PRESSURE_RED;
+        governor->pressure_streak = 0;
+        governor->recovery_streak = 0;
+        governor->slow_start_streak = 0;
+        governor->slow_start_limit = 1;
+        governor->slow_start_active = true;
+    } else if (pressure_signal) {
+        governor->recovery_streak = 0;
+        governor->slow_start_streak = 0;
+        ++governor->pressure_streak;
+        if (governor->pressure == LARDON3D_RESOURCE_PRESSURE_RED
+            || governor->pressure_streak >= 2) {
+            governor->pressure = LARDON3D_RESOURCE_PRESSURE_RED;
+            governor->slow_start_limit = 1;
+            governor->slow_start_active = true;
+        } else {
+            governor->pressure = LARDON3D_RESOURCE_PRESSURE_YELLOW;
+        }
+    } else {
+        governor->pressure_streak = 0;
+        if (governor->pressure == LARDON3D_RESOURCE_PRESSURE_RED) {
+            ++governor->recovery_streak;
+            if (governor->recovery_streak >= 3) {
+                governor->pressure = LARDON3D_RESOURCE_PRESSURE_YELLOW;
+                governor->recovery_streak = 0;
+            }
+        } else if (governor->pressure == LARDON3D_RESOURCE_PRESSURE_YELLOW) {
+            if (!governor->slow_start_active) {
+                governor->slow_start_active = true;
+                governor->slow_start_limit = 1;
+                governor->slow_start_streak = 0;
+            }
+            ++governor->recovery_streak;
+            if (governor->recovery_streak >= 3) {
+                governor->pressure = LARDON3D_RESOURCE_PRESSURE_GREEN;
+                governor->recovery_streak = 0;
+                governor->slow_start_streak = 0;
+            }
+        } else if (governor->slow_start_active) {
+            ++governor->slow_start_streak;
+            if (governor->slow_start_streak >= 3) {
+                governor->slow_start_streak = 0;
+                if (governor->slow_start_limit > SIZE_MAX / 2) {
+                    governor->slow_start_limit = SIZE_MAX;
+                    governor->slow_start_active = false;
+                } else {
+                    governor->slow_start_limit *= 2;
+                }
+            }
+        }
+    }
+    if (governor->pressure == LARDON3D_RESOURCE_PRESSURE_RED) {
+        set_decision(decision, LARDON3D_RESOURCE_WAIT, 0, 0, 0, 0,
+            "Pression mémoire ou swap persistante.");
+        return;
+    }
     if ((estimate->desired_gpu_slots > 0
             || estimate->gpu_memory_fixed_bytes > 0
             || estimate->gpu_memory_bytes_per_item > 0)
@@ -594,6 +711,22 @@ evaluate_locked(
         set_decision(decision, LARDON3D_RESOURCE_WAIT, 0, 0, 0, 0, "Charge CPU trop élevée.");
         return;
     }
+    if (governor->policy.maximum_cpu_pressure_avg10 > 0.0
+        && snapshot->cpu_pressure_known
+        && snapshot->cpu_pressure_avg10
+            >= governor->policy.maximum_cpu_pressure_avg10) {
+        set_decision(decision, LARDON3D_RESOURCE_WAIT, 0, 0, 0, 0,
+            "Pression CPU trop élevée.");
+        return;
+    }
+    if (governor->policy.maximum_memory_pressure_avg10 > 0.0
+        && snapshot->memory_pressure_known
+        && snapshot->memory_pressure_avg10
+            >= governor->policy.maximum_memory_pressure_avg10) {
+        set_decision(decision, LARDON3D_RESOURCE_WAIT, 0, 0, 0, 0,
+            "Pression mémoire trop élevée.");
+        return;
+    }
     if (estimate->desired_io_slots > 0 && snapshot->io_pressure_known
         && snapshot->io_pressure_avg10
             >= governor->policy.maximum_io_pressure_avg10) {
@@ -640,9 +773,27 @@ evaluate_locked(
     if (adapted_maximum < estimate->minimum_batch_size) {
         adapted_maximum = estimate->minimum_batch_size;
     }
+    if (governor->slow_start_active) {
+        adapted_maximum = minimum_size(adapted_maximum, governor->slow_start_limit);
+    }
+    if (governor->pressure == LARDON3D_RESOURCE_PRESSURE_YELLOW
+        && adapted_maximum > estimate->minimum_batch_size) {
+        adapted_maximum /= 2;
+        if (adapted_maximum < estimate->minimum_batch_size) {
+            adapted_maximum = estimate->minimum_batch_size;
+        }
+    }
     batch = minimum_size(batch, adapted_maximum);
     if (batch < estimate->minimum_batch_size) {
-        set_decision(decision, LARDON3D_RESOURCE_WAIT, 0, 0, 0, 0, "Ressources déjà réservées ou temporairement insuffisantes.");
+        set_decision(
+            decision,
+            LARDON3D_RESOURCE_WAIT,
+            0,
+            0,
+            0,
+            0,
+            "Ressources déjà réservées ou temporairement insuffisantes."
+        );
         return;
     }
     if (available.cpu_available == 0
@@ -1016,4 +1167,16 @@ lardon3d_resource_decision_name(Lardon3DResourceDecisionKind kind)
     default:
         return "Inconnue";
     }
+}
+
+Lardon3DResourcePressure
+lardon3d_resource_governor_pressure(Lardon3DResourceGovernor *governor)
+{
+    if (!governor) {
+        return LARDON3D_RESOURCE_PRESSURE_RED;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    Lardon3DResourcePressure pressure = governor->pressure;
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return pressure;
 }

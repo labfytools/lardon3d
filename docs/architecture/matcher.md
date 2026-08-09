@@ -76,13 +76,30 @@ matérialisée.
 Le Match File complet est sérialisé dans un buffer heap borné à 98336 octets et
 écrit par un unique `write_exact`, puis synchronisé une fois. Les mesures locales
 restent dans `.opencode/work/current_ticket.md`, pas dans ce contrat canonique.
-À 8192 features, le coût dominant mesuré reste l'évaluation exacte des
-distances dans `cv::BFMatcher::knnMatch`; v1 ne remplace pas OpenCV ni BFMatcher.
+À 8192 features, le coût CPU dominant reste l'évaluation exacte des distances
+dans `cv::BFMatcher::knnMatch`. ORB peut remplacer ce seul hot path par Vulkan ;
+SIFT et RootSIFT restent intégralement sur BFMatcher CPU.
 
-Le Matcher n'est pas encore un task kind autonome. Lorsqu'il est orchestré par
-une tâche, celle-ci doit utiliser l'unique Resource Governor existant avec une
-estimation couvrant ce working set; aucune seconde logique de budget n'est
-introduite ici.
+`matcher.run` v1 orchestre le Matcher sans connaître son backend interne. La
+tâche persiste uniquement la configuration, l'identité des Feature Sets à
+sélectionner et un curseur Candidate Pair. Une paire est atomique et publiée
+immédiatement. Les lots 1/2/4/8 sont séparés par checkpoint et
+`task_sequence_break()`. La tâche utilise l'unique Resource Governor avec une
+estimation couvrant ce working set ; aucune seconde logique de budget n'est
+introduite. Sa ligne durable `matcher_tasks` appartient au schéma Project DB
+v11 ; le Match Result reste le contrat publié en v10.
+
+### Backend Vulkan ORB
+
+La frontière évaluée remplace uniquement KNN Hamming par un compute top-2 : un
+thread GPU par feature A parcourt B, conserve deux indices/distances et applique
+le tie-break du plus petit index. Elle ne matérialise jamais A×B. Lowe,
+canonicalisation et persistance restent communs. Sur Radeon 780M, la parité
+top-2 avec OpenCV est exacte et le gain warm est supérieur à 90 % à 4096/8192.
+Le backend de production conserve exactement cette frontière. Sa parité entière
+permet au CPU et à Vulkan de partager l'identité persistante. La sélection est
+une politique runtime ; le CPU reste le fallback portable. Le contrat détaillé
+est décrit dans [vulkan_matcher.md](vulkan_matcher.md).
 
 ## Déterminisme et fingerprint
 

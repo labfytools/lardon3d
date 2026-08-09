@@ -105,6 +105,12 @@ candidates avec idempotence, checkpoint après chaque lot et repasse par le
 Governor via `sequence_break`. La reprise est idempotente avec le curseur
 `after_feature_set_id` rechargé depuis la DB.
 
+**IMPLEMENTED** — `matcher.run` traite une Candidate Pair atomique à la fois,
+par lots adaptatifs de 1, 2, 4 ou 8. Il persiste le curseur
+`after_candidate_pair_id`, checkpoint après publication de chaque lot et
+effectue une rupture de séquence avant le suivant. Une paire repassée après un
+crash est réutilisée par son Match Result.
+
 Le chemin de production de l'import ne possède plus de thread ni de drapeau
 d'annulation privés. Son wrapper TUI ne fait qu'enqueue/cancel/observer la
 tâche générique. Chaque callback traite un lot borné, checkpoint hors mutex de

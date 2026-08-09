@@ -68,6 +68,10 @@ typedef enum {
   LARDON3D_FEATURE_EXTRACT_ERROR
 } Lardon3DFeatureExtractResult;
 
+/* Configuration OpenCV process-wide. À appeler avant le démarrage des workers. */
+bool lardon3d_feature_opencv_configure_threads(unsigned int threads);
+unsigned int lardon3d_feature_opencv_thread_count(void);
+
 bool lardon3d_feature_extractor_parameters_valid(
     const Lardon3DFeatureExtractorParameters *parameters);
 void lardon3d_feature_extractor_parameter_fingerprint(

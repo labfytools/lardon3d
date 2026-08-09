@@ -176,8 +176,12 @@ Lardon3DTask *lardon3d_project_create_visual_index_update_task(
       .visual_index_id = visual_index_id,
       .after_feature_set_id = 0,
   };
-  Lardon3DTaskReconstructionContext runtime = {state->project_path, state->project_db,
-                                               state->resource_governor};
+  Lardon3DTaskReconstructionContext runtime = {
+      .project_path = state->project_path,
+      .project_db = state->project_db,
+      .resource_governor = state->resource_governor,
+      .orb_vulkan_backend = state->orb_vulkan_backend,
+  };
   VisualIndexTaskContext *context = make_context(&runtime, &parameters);
   if (!context) {
     return NULL;

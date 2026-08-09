@@ -70,6 +70,9 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_visual_index_upd
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_candidate_pair_generate_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbCandidatePairGenerateTask *parameters);
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_matcher_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbMatcherTask *parameters);
 Lardon3DProjectDbResult lardon3d_project_list_recoverable(Lardon3DAppState *state,
                                                           const Lardon3DTaskKindRegistry *registry,
                                                           uint64_t after_task_id,

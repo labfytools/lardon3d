@@ -234,8 +234,12 @@ Lardon3DTask *lardon3d_project_create_sift_extract_task(
   snprintf(durable.extractor_kind, sizeof(durable.extractor_kind), "%s",
            parameters->rootsift ? LARDON3D_ROOTSIFT_EXTRACTOR_KIND : LARDON3D_SIFT_EXTRACTOR_KIND);
   lardon3d_sift_extractor_parameter_fingerprint(parameters, durable.parameter_fingerprint);
-  Lardon3DTaskReconstructionContext runtime = {state->project_path, state->project_db,
-                                               state->resource_governor};
+  Lardon3DTaskReconstructionContext runtime = {
+      .project_path = state->project_path,
+      .project_db = state->project_db,
+      .resource_governor = state->resource_governor,
+      .orb_vulkan_backend = state->orb_vulkan_backend,
+  };
   SiftTaskContext *context = make_context(&runtime, &durable);
   if (!context) return NULL;
   Lardon3DResourceEstimate estimate = {.memory_fixed_bytes = 64ULL * 1024 * 1024,

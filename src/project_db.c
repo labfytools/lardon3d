@@ -226,6 +226,18 @@ static const char schema_match_result_v10[] =
     "CREATE INDEX match_results_feature_set_a_idx ON match_results(feature_set_id_a);"
     "CREATE INDEX match_results_feature_set_b_idx ON match_results(feature_set_id_b);";
 
+static const char schema_matcher_task_v11[] =
+    "CREATE TABLE matcher_tasks("
+    "task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,"
+    "after_candidate_pair_id INTEGER NOT NULL CHECK(after_candidate_pair_id>=0),"
+    "feature_extractor_kind TEXT NOT NULL CHECK(length(feature_extractor_kind)>0 AND "
+    "length(feature_extractor_kind)<65),"
+    "feature_extractor_version INTEGER NOT NULL CHECK(feature_extractor_version>0),"
+    "feature_parameter_fingerprint BLOB NOT NULL "
+    "CHECK(length(feature_parameter_fingerprint)=32),"
+    "matcher_kind INTEGER NOT NULL CHECK(matcher_kind BETWEEN 0 AND 2),"
+    "ratio_threshold REAL NOT NULL CHECK(ratio_threshold>0.0 AND ratio_threshold<1.0));";
+
 static void copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text) {
   if (destination) {
     (void)snprintf(destination, LARDON3D_PROJECT_DB_ERROR_CAPACITY, "%s", text ? text : "");
@@ -315,7 +327,7 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
   }
   if (from_version != 0 && from_version != 1 && from_version != 2 && from_version != 3 &&
       from_version != 4 && from_version != 5 && from_version != 6 && from_version != 7 &&
-      from_version != 8 && from_version != 9) {
+      from_version != 8 && from_version != 9 && from_version != 10) {
     return LARDON3D_PROJECT_DB_CORRUPT;
   }
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
@@ -541,6 +553,21 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
                        "finish schema v10 migration");
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version < 11) {
+    result = execute(database, schema_matcher_task_v11, "migrate schema v10 to v11");
+#ifdef LARDON3D_PROJECT_DB_TESTING
+    const char *forced_failure = getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V11");
+    if (result == LARDON3D_PROJECT_DB_OK && forced_failure && strcmp(forced_failure, "1") == 0) {
+      result = execute(database, "INSERT INTO missing_test_table VALUES(1)",
+                       "forced migration v11 failure");
+    }
+#endif
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database,
+                       "UPDATE metadata SET value=11 WHERE key='schema_version' AND value=10",
+                       "finish schema v11 migration");
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit migration");
   }
@@ -654,8 +681,11 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
                               "feature_support_groups",
                               "feature_support_members",
                               "candidate_pairs",
+                              "matcher_tasks",
                               "match_results"};
-    for (size_t index = 0; index < 17 && result == LARDON3D_PROJECT_DB_OK; ++index) {
+    for (size_t index = 0; index < sizeof(required) / sizeof(required[0]) &&
+                           result == LARDON3D_PROJECT_DB_OK;
+         ++index) {
       if (!table_exists(database->connection, required[index])) {
         copy_error(database->error, "Schéma v1 incomplet.");
         result = LARDON3D_PROJECT_DB_CORRUPT;
@@ -843,6 +873,7 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
                      const Lardon3DProjectDbSiftExtractTask *sift,
                      const Lardon3DProjectDbVisualIndexUpdateTask *visual,
                      const Lardon3DProjectDbCandidatePairGenerateTask *candidate_pair,
+                     const Lardon3DProjectDbMatcherTask *matcher,
                      int64_t updated_at) {
   bool typed = task_kind != NULL;
   if (!database || !valid_durable_task(snapshot, updated_at) ||
@@ -879,6 +910,13 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
         candidate_pair->top_k == 0 || candidate_pair->top_k > 256 ||
         candidate_pair->minimum_evidence_count > 1024 ||
         candidate_pair->scanset_filter < 0 || candidate_pair->scanset_filter > 2)) ||
+      (matcher &&
+       (!valid_task_id(matcher->task_id) || matcher->task_id != snapshot->id ||
+        matcher->after_candidate_pair_id > INT64_MAX ||
+        !lardon3d_task_kind_is_valid(matcher->feature_extractor_kind) ||
+        matcher->feature_extractor_version == 0 || matcher->matcher_kind < 0 ||
+        matcher->matcher_kind > 2 || !isfinite(matcher->ratio_threshold) ||
+        matcher->ratio_threshold <= 0.0F || matcher->ratio_threshold >= 1.0F)) ||
       (checkpoint && !valid_checkpoint(checkpoint))) {
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
@@ -1046,6 +1084,35 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
       }
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && matcher) {
+    result = prepare(
+        database,
+        "INSERT INTO matcher_tasks(task_id,after_candidate_pair_id,feature_extractor_kind,"
+        "feature_extractor_version,feature_parameter_fingerprint,matcher_kind,ratio_threshold) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(task_id) DO UPDATE SET "
+        "after_candidate_pair_id=excluded.after_candidate_pair_id WHERE "
+        "matcher_tasks.feature_extractor_kind=excluded.feature_extractor_kind AND "
+        "matcher_tasks.feature_extractor_version=excluded.feature_extractor_version AND "
+        "matcher_tasks.feature_parameter_fingerprint=excluded.feature_parameter_fingerprint AND "
+        "matcher_tasks.matcher_kind=excluded.matcher_kind AND "
+        "matcher_tasks.ratio_threshold=excluded.ratio_threshold",
+        &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      sqlite3_bind_int64(statement, 1, (sqlite3_int64)matcher->task_id);
+      sqlite3_bind_int64(statement, 2, (sqlite3_int64)matcher->after_candidate_pair_id);
+      sqlite3_bind_text(statement, 3, matcher->feature_extractor_kind, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(statement, 4, matcher->feature_extractor_version);
+      sqlite3_bind_blob(statement, 5, matcher->feature_parameter_fingerprint, 32,
+                        SQLITE_TRANSIENT);
+      sqlite3_bind_int(statement, 6, matcher->matcher_kind);
+      sqlite3_bind_double(statement, 7, matcher->ratio_threshold);
+      result = step_done(database, statement, "upsert matcher task");
+      if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1) {
+        copy_error(database->error, "Configuration Matcher de tâche immuable.");
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+      }
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK && sift) {
     result = prepare(
         database,
@@ -1115,7 +1182,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_task(
     Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot, const char *task_kind,
     uint32_t task_kind_version, const Lardon3DProjectDbCheckpoint *checkpoint, int64_t updated_at) {
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              NULL, NULL, NULL, NULL, updated_at);
+                              NULL, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_image_import_task(
@@ -1126,7 +1193,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_image_import_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint,
-                              source_path, scanset_id, NULL, NULL, NULL, NULL, updated_at);
+                              source_path, scanset_id, NULL, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_task(
@@ -1137,7 +1204,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              parameters, NULL, NULL, NULL, updated_at);
+                              parameters, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_sift_extract_task(
@@ -1147,7 +1214,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_sift_extract_task(
     const Lardon3DProjectDbSiftExtractTask *parameters, int64_t updated_at) {
   if (!parameters) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              NULL, parameters, NULL, NULL, updated_at);
+                              NULL, parameters, NULL, NULL, NULL, updated_at);
 }
 
 static bool read_task(sqlite3_stmt *statement, Lardon3DProjectDbTask *task) {
@@ -3129,7 +3196,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_visual_index_update_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
-                              NULL, parameters, NULL, updated_at);
+                              NULL, parameters, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_load_visual_index_update_task(
@@ -3176,7 +3243,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_candidate_pair_generate_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
-                              NULL, NULL, parameters, updated_at);
+                              NULL, NULL, parameters, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_load_candidate_pair_generate_task(
@@ -3216,6 +3283,64 @@ Lardon3DProjectDbResult lardon3d_project_db_load_candidate_pair_generate_task(
       parameters->minimum_evidence_count = (uint32_t)evidence;
       parameters->scanset_filter = filter_val;
       parameters->exclude_same_asset = same_asset != 0;
+    }
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_record_matcher_task(
+    Lardon3DProjectDb *db, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *kind, uint32_t version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbMatcherTask *parameters, int64_t updated_at) {
+  if (!snapshot || !parameters || parameters->task_id != snapshot->id) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
+                              NULL, NULL, NULL, parameters, updated_at);
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_matcher_task(
+    Lardon3DProjectDb *db, uint64_t task_id,
+    Lardon3DProjectDbMatcherTask *parameters) {
+  if (!db || !valid_task_id(task_id) || !parameters) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(parameters, 0, sizeof(*parameters));
+  (void)pthread_mutex_lock(&db->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      db,
+      "SELECT after_candidate_pair_id,feature_extractor_kind,feature_extractor_version,"
+      "feature_parameter_fingerprint,matcher_kind,ratio_threshold FROM matcher_tasks "
+      "WHERE task_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    int code = sqlite3_step(statement);
+    sqlite3_int64 after = sqlite3_column_int64(statement, 0);
+    sqlite3_int64 extractor_version = sqlite3_column_int64(statement, 2);
+    int matcher_kind = sqlite3_column_int(statement, 4);
+    double ratio = sqlite3_column_double(statement, 5);
+    if (code == SQLITE_DONE) {
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    } else if (code != SQLITE_ROW || after < 0 || extractor_version <= 0 ||
+               extractor_version > UINT32_MAX || matcher_kind < 0 || matcher_kind > 2 ||
+               !isfinite(ratio) || ratio <= 0.0 || ratio >= 1.0 ||
+               sqlite3_column_bytes(statement, 3) != LARDON3D_PROJECT_DB_SHA256_SIZE ||
+               !copy_column(statement, 1, parameters->feature_extractor_kind,
+                            sizeof(parameters->feature_extractor_kind))) {
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    } else {
+      parameters->task_id = task_id;
+      parameters->after_candidate_pair_id = (uint64_t)after;
+      parameters->feature_extractor_version = (uint32_t)extractor_version;
+      memcpy(parameters->feature_parameter_fingerprint,
+             sqlite3_column_blob(statement, 3), LARDON3D_PROJECT_DB_SHA256_SIZE);
+      parameters->matcher_kind = matcher_kind;
+      parameters->ratio_threshold = (float)ratio;
     }
     sqlite3_finalize(statement);
   }

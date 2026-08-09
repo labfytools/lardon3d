@@ -1,0 +1,63 @@
+#version 450
+
+layout(local_size_x_id = 0) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer DescriptorsA {
+  uint descriptors_a[];
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer DescriptorsB {
+  uint descriptors_b[];
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer Top2Output {
+  uvec4 top2[];
+};
+
+layout(push_constant) uniform Counts {
+  uint count_a;
+  uint count_b;
+} counts;
+
+void main() {
+  uint query_index = gl_GlobalInvocationID.x;
+  if (query_index >= counts.count_a) {
+    return;
+  }
+
+  uint best_index = 0xffffffffu;
+  uint best_distance = 0xffffffffu;
+  uint second_index = 0xffffffffu;
+  uint second_distance = 0xffffffffu;
+
+  for (uint train_index = 0; train_index < counts.count_b; ++train_index) {
+    uint distance = 0;
+    for (uint word = 0; word < 8; ++word) {
+      uint a = descriptors_a[query_index * 8 + word];
+      uint b = descriptors_b[train_index * 8 + word];
+      distance += bitCount(a ^ b);
+    }
+
+    // train_index increases monotonically, so keeping the first equal distance
+    // implements the required smallest-index tie-break without another comparison.
+    if (distance < best_distance) {
+      second_index = best_index;
+      second_distance = best_distance;
+      best_index = train_index;
+      best_distance = distance;
+      continue;
+    }
+
+    if (distance < second_distance) {
+      second_index = train_index;
+      second_distance = distance;
+    }
+  }
+
+  top2[query_index] = uvec4(
+      best_index,
+      best_distance,
+      second_index,
+      second_distance
+  );
+}

@@ -84,13 +84,18 @@ run_test(void)
     };
     Lardon3DResourcePolicy policy;
     CHECK(lardon3d_resource_policy_default(&profile, &policy));
-    CHECK(policy.system_memory_reserve_bytes == GIBIBYTES(2));
-    CHECK(policy.system_cpu_reserve == 1);
+    CHECK(policy.system_memory_reserve_bytes == GIBIBYTES(4));
+    CHECK(policy.emergency_memory_floor_bytes == GIBIBYTES(2));
+    CHECK(policy.system_cpu_reserve == 4);
+    CHECK(policy.maximum_cpu_pressure_avg10 == 20.0);
+    CHECK(policy.maximum_memory_pressure_avg10 == 1.0);
     policy = (Lardon3DResourcePolicy) {
         .system_memory_reserve_bytes = GIBIBYTES(2),
         .gpu_memory_reserve_bytes = 0,
         .system_cpu_reserve = 1,
         .maximum_cpu_load_ratio = 0.90,
+        .maximum_cpu_pressure_avg10 = 20.0,
+        .maximum_memory_pressure_avg10 = 1.0,
         .maximum_io_pressure_avg10 = 80.0,
         .io_slot_capacity = 8,
     };
@@ -121,6 +126,54 @@ run_test(void)
     CHECK(decision.batch_size == 8);
     CHECK(decision.cpu_threads == 15);
     CHECK(decision.reason[0]);
+
+    snapshot.swap_activity_known = true;
+    snapshot.swap_pages_in = 100;
+    snapshot.swap_pages_out = 200;
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(lardon3d_resource_governor_pressure(governor) ==
+          LARDON3D_RESOURCE_PRESSURE_GREEN);
+    snapshot.swap_pages_out = 201;
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_REDUCE_BATCH);
+    CHECK(decision.batch_size == 4);
+    CHECK(lardon3d_resource_governor_pressure(governor) ==
+          LARDON3D_RESOURCE_PRESSURE_YELLOW);
+    snapshot.swap_pages_out = 202;
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_WAIT);
+    CHECK(lardon3d_resource_governor_pressure(governor) ==
+          LARDON3D_RESOURCE_PRESSURE_RED);
+    for (unsigned int observation = 0; observation < 2; ++observation) {
+        CHECK(lardon3d_resource_governor_decide(
+            governor, &snapshot, &request, &decision));
+        CHECK(decision.kind == LARDON3D_RESOURCE_WAIT);
+        CHECK(lardon3d_resource_governor_pressure(governor) ==
+              LARDON3D_RESOURCE_PRESSURE_RED);
+    }
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_WAIT);
+    CHECK(lardon3d_resource_governor_pressure(governor) ==
+          LARDON3D_RESOURCE_PRESSURE_YELLOW);
+    request.minimum_batch_size = 1;
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_REDUCE_BATCH);
+    CHECK(decision.batch_size == 1);
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(decision.batch_size == 1);
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(lardon3d_resource_governor_pressure(governor) ==
+          LARDON3D_RESOURCE_PRESSURE_GREEN);
+    CHECK(decision.batch_size == 1);
+    for (size_t expected = 2; expected <= 8; expected *= 2) {
+        for (unsigned int observation = 0; observation < 3; ++observation) {
+            CHECK(lardon3d_resource_governor_decide(
+                governor, &snapshot, &request, &decision));
+        }
+        CHECK(decision.batch_size == expected);
+    }
+    request.minimum_batch_size = 2;
+    snapshot.swap_activity_known = false;
     Lardon3DResourceSnapshot invalid_snapshot = snapshot;
     invalid_snapshot.cpu_load_1m = -1.0;
     CHECK(!lardon3d_resource_governor_decide(
@@ -143,12 +196,28 @@ run_test(void)
     CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
     CHECK(decision.kind == LARDON3D_RESOURCE_WAIT);
     snapshot.cpu_load_1m = 2.0;
+    snapshot.cpu_pressure_known = true;
+    snapshot.cpu_pressure_avg10 = 21.0;
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_WAIT);
+    snapshot.cpu_pressure_avg10 = 0.0;
+    snapshot.memory_pressure_known = true;
+    snapshot.memory_pressure_avg10 = 1.5;
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_WAIT);
+    snapshot.memory_pressure_avg10 = 0.0;
     snapshot.io_pressure_known = true;
     snapshot.io_pressure_avg10 = 90.0;
     request.io_intensive = true;
     CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
     CHECK(decision.kind == LARDON3D_RESOURCE_WAIT);
 
+    lardon3d_resource_governor_destroy(governor);
+    governor = lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(governor);
+    snapshot.cpu_pressure_known = false;
+    snapshot.memory_pressure_known = false;
+    snapshot.io_pressure_known = false;
     request.io_intensive = false;
     request.memory_bytes_per_item = GIBIBYTES(8);
     CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
@@ -157,6 +226,54 @@ run_test(void)
     request.gpu_memory_bytes_per_item = MEBIBYTES(512);
     CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
     CHECK(decision.kind == LARDON3D_RESOURCE_REJECT);
+    lardon3d_resource_governor_destroy(governor);
+
+    policy.emergency_memory_floor_bytes = GIBIBYTES(1);
+    governor = lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(governor);
+    request = (Lardon3DResourceRequest) {
+        .minimum_batch_size = 1,
+        .preferred_batch_size = 8,
+        .requested_cpu_threads = 1,
+    };
+    snapshot = (Lardon3DResourceSnapshot) {
+        .memory_available_bytes = GIBIBYTES(2),
+        .cpu_load_1m = 0.0,
+        .swap_activity_known = true,
+        .swap_pages_in = 10,
+        .swap_pages_out = 10,
+    };
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(lardon3d_resource_governor_pressure(governor) ==
+          LARDON3D_RESOURCE_PRESSURE_YELLOW);
+    snapshot.memory_available_bytes = GIBIBYTES(1);
+    ++snapshot.swap_pages_out;
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(decision.kind == LARDON3D_RESOURCE_WAIT);
+    CHECK(lardon3d_resource_governor_pressure(governor) ==
+          LARDON3D_RESOURCE_PRESSURE_RED);
+    lardon3d_resource_governor_destroy(governor);
+
+    governor = lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(governor);
+    snapshot.memory_available_bytes = GIBIBYTES(10);
+    snapshot.swap_activity_known = true;
+    snapshot.swap_pages_in = 50;
+    snapshot.swap_pages_out = 75;
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(lardon3d_resource_governor_pressure(governor) ==
+          LARDON3D_RESOURCE_PRESSURE_GREEN);
+    ++snapshot.swap_pages_in;
+    CHECK(lardon3d_resource_governor_decide(governor, &snapshot, &request, &decision));
+    CHECK(lardon3d_resource_governor_pressure(governor) ==
+          LARDON3D_RESOURCE_PRESSURE_YELLOW);
+    for (unsigned int observation = 0; observation < 3; ++observation) {
+        CHECK(lardon3d_resource_governor_decide(
+            governor, &snapshot, &request, &decision));
+    }
+    CHECK(lardon3d_resource_governor_pressure(governor) ==
+          LARDON3D_RESOURCE_PRESSURE_GREEN);
+    CHECK(decision.batch_size == 1);
     lardon3d_resource_governor_destroy(governor);
 
     profile.gpu_available = true;

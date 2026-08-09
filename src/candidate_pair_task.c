@@ -268,8 +268,11 @@ Lardon3DTask *lardon3d_project_create_candidate_pair_generate_task(
         .exclude_same_asset = query_options->exclude_same_asset,
     };
     Lardon3DTaskReconstructionContext runtime = {
-        state->project_path, state->project_db,
-        state->resource_governor};
+        .project_path = state->project_path,
+        .project_db = state->project_db,
+        .resource_governor = state->resource_governor,
+        .orb_vulkan_backend = state->orb_vulkan_backend,
+    };
     Lardon3DCandidatePairTaskContext *context =
         make_context(&runtime, &parameters);
     if (!context) return NULL;

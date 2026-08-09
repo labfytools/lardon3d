@@ -9,7 +9,7 @@
 #include <lardon3d/task.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 10,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 11,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -130,6 +130,16 @@ typedef struct {
   uint64_t image_id_b;
   int64_t created_at;
 } Lardon3DProjectDbCandidatePair;
+
+typedef struct {
+  uint64_t task_id;
+  uint64_t after_candidate_pair_id;
+  char feature_extractor_kind[LARDON3D_PROJECT_DB_KIND_CAPACITY];
+  uint32_t feature_extractor_version;
+  unsigned char feature_parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  int matcher_kind;
+  float ratio_threshold;
+} Lardon3DProjectDbMatcherTask;
 
 typedef struct {
   uint64_t match_result_id;
@@ -463,6 +473,14 @@ Lardon3DProjectDbResult lardon3d_project_db_record_candidate_pair_generate_task(
 Lardon3DProjectDbResult lardon3d_project_db_load_candidate_pair_generate_task(
     Lardon3DProjectDb *database, uint64_t task_id,
     Lardon3DProjectDbCandidatePairGenerateTask *parameters);
+Lardon3DProjectDbResult lardon3d_project_db_record_matcher_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbMatcherTask *parameters, int64_t updated_at);
+Lardon3DProjectDbResult lardon3d_project_db_load_matcher_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbMatcherTask *parameters);
 
 Lardon3DProjectDbResult lardon3d_project_db_create_match_result(
     Lardon3DProjectDb *database, uint64_t candidate_pair_id, uint64_t feature_set_id_a,

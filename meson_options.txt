@@ -1,0 +1,6 @@
+option(
+    'vulkan_orb',
+    type: 'feature',
+    value: 'auto',
+    description: 'Build the optional Vulkan ORB matcher backend',
+)

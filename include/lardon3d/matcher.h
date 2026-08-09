@@ -3,6 +3,7 @@
 
 #include <lardon3d/feature_store.h>
 #include <lardon3d/match_file.h>
+#include <lardon3d/orb_vulkan_backend.h>
 #include <lardon3d/project_db.h>
 
 #ifdef __cplusplus
@@ -40,6 +41,8 @@ typedef struct {
     uint64_t publication_ns;
     uint64_t database_ns;
     uint64_t total_ns;
+    bool used_vulkan;
+    bool vulkan_fallback;
 } Lardon3DMatcherStats;
 
 typedef enum {
@@ -65,6 +68,15 @@ Lardon3DMatcherResult lardon3d_matcher_run(
     const char *match_file_path,
     Lardon3DMatcherStats *stats);
 
+Lardon3DMatcherResult lardon3d_matcher_run_with_backend(
+    const char *project_path,
+    const Lardon3DProjectDbFeatureSet *feature_set_a,
+    const Lardon3DProjectDbFeatureSet *feature_set_b,
+    const Lardon3DMatcherParams *params,
+    const char *match_file_path,
+    Lardon3DOrbVulkanBackend *backend,
+    Lardon3DMatcherStats *stats);
+
 Lardon3DMatcherResult lardon3d_matcher_match_and_publish(
     const char *project_path,
     Lardon3DProjectDb *database,
@@ -81,6 +93,17 @@ Lardon3DMatcherResult lardon3d_matcher_match_and_publish_profiled(
     const Lardon3DProjectDbFeatureSet *feature_set_a,
     const Lardon3DProjectDbFeatureSet *feature_set_b,
     const Lardon3DMatcherParams *params,
+    Lardon3DProjectDbMatchResult *result,
+    Lardon3DMatcherStats *stats);
+
+Lardon3DMatcherResult lardon3d_matcher_match_and_publish_with_backend(
+    const char *project_path,
+    Lardon3DProjectDb *database,
+    const Lardon3DProjectDbCandidatePair *pair,
+    const Lardon3DProjectDbFeatureSet *feature_set_a,
+    const Lardon3DProjectDbFeatureSet *feature_set_b,
+    const Lardon3DMatcherParams *params,
+    Lardon3DOrbVulkanBackend *backend,
     Lardon3DProjectDbMatchResult *result,
     Lardon3DMatcherStats *stats);
 

@@ -37,6 +37,39 @@ opencv_benchmark = dependency(
     modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d', 'opencv_imgproc'],
 )
 
+vulkan_orb = get_option('vulkan_orb')
+vulkan = dependency('vulkan', required: vulkan_orb)
+glslc = find_program('glslc', required: vulkan_orb)
+python = find_program('python3', required: true)
+matcher_vulkan_enabled = vulkan_orb.allowed() and vulkan.found() and glslc.found()
+matcher_vulkan_configuration = configuration_data()
+matcher_vulkan_configuration.set10('LARDON3D_HAVE_VULKAN', matcher_vulkan_enabled)
+matcher_vulkan_config = configure_file(
+    output: 'matcher_vulkan_config.h',
+    configuration: matcher_vulkan_configuration,
+)
+matcher_backend_sources = [
+    'src/orb_vulkan_backend.cpp',
+    matcher_vulkan_config,
+]
+matcher_backend_dependencies = []
+if matcher_vulkan_enabled
+    orb_top2_spv = custom_target(
+        'orb-top2-spv',
+        input: 'shaders/orb_top2.comp',
+        output: 'orb_top2.spv',
+        command: [glslc, '-fshader-stage=compute', '@INPUT@', '-o', '@OUTPUT@'],
+    )
+    orb_top2_header = custom_target(
+        'orb-top2-header',
+        input: orb_top2_spv,
+        output: 'orb_top2_spv.h',
+        command: [python, files('tools/embed_spirv.py'), '@INPUT@', '@OUTPUT@'],
+    )
+    matcher_backend_sources += [orb_top2_header]
+    matcher_backend_dependencies += [vulkan]
+endif
+
 opencv_test_environment = environment()
 if get_option('b_sanitize').contains('thread')
     opencv_test_environment.set(
@@ -65,6 +98,7 @@ executable(
         'src/visual_index_task.c',
         'src/candidate_pair_gen.c',
         'src/candidate_pair_task.c',
+        'src/matcher_task.c',
         'src/image_view.c',
         'src/project.c',
         'src/project_db.c',
@@ -78,9 +112,10 @@ executable(
         'src/hardware_profile.c',
         'src/match_file.c',
         'src/matcher.cpp',
-    ],
+    ] + matcher_backend_sources,
     include_directories: include_directories('include'),
-    dependencies: [ncursesw, threads, sqlite3, openssl, opencv],
+    dependencies: [ncursesw, threads, sqlite3, openssl, opencv]
+        + matcher_backend_dependencies,
 )
 
 import_test = executable(
@@ -114,6 +149,7 @@ import_task_test = executable(
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
         'src/task_kinds.c',
+        'src/matcher_task.c', 'src/matcher.cpp', 'src/match_file.c',
         'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/feature_store.c',
         'src/visual_index.c',
@@ -126,14 +162,14 @@ import_task_test = executable(
         'src/image_catalog.c',
         'src/image_catalog_persistent.c',
         'src/image_view.c',
-    ],
+    ] + matcher_backend_sources,
     c_args: [
         '-DLARDON3D_IMPORT_TASK_TESTING',
         '-DLARDON3D_PROJECT_DB_TESTING',
         '-DLARDON3D_CHECKPOINT_TESTING',
     ],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3, openssl, opencv],
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
 
 test('import-task', import_task_test, timeout: 30)
@@ -252,7 +288,8 @@ candidate_pair_task_test = executable(
         'tests/test_candidate_pair_task.c', 'src/app_state.c',
         'src/project.c', 'src/project_db.c', 'src/task.c',
         'src/task_checkpoint.c', 'src/task_kind_registry.c',
-        'src/task_kinds.c', 'src/task_queue.c', 'src/import.c',
+        'src/task_kinds.c', 'src/matcher_task.c', 'src/matcher.cpp',
+        'src/match_file.c', 'src/task_queue.c', 'src/import.c',
         'src/import_task.c', 'src/image_catalog.c',
         'src/image_catalog_persistent.c', 'src/image_view.c',
         'src/feature_task.c', 'src/sift_task.c',
@@ -261,7 +298,7 @@ candidate_pair_task_test = executable(
         'src/candidate_pair_gen.c', 'src/candidate_pair_task.c',
         'src/feature_extractor_opencv.cpp',
         'src/resource_governor.c', 'src/resource_snapshot.c',
-    ],
+    ] + matcher_backend_sources,
     c_args: [
         '-DLARDON3D_PROJECT_DB_TESTING',
         '-DLARDON3D_CANDIDATE_PAIR_TASK_TESTING',
@@ -269,10 +306,35 @@ candidate_pair_task_test = executable(
         '-DLARDON3D_FEATURE_TASK_TESTING',
     ],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3, openssl, opencv],
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
 test('candidate-pair-task', candidate_pair_task_test, timeout: 60,
      env: opencv_test_environment)
+
+matcher_task_test = executable(
+    'test-matcher-task',
+    sources: [
+        'tests/test_matcher_task.c', 'src/app_state.c', 'src/project.c',
+        'src/project_db.c', 'src/task.c', 'src/task_checkpoint.c',
+        'src/task_kind_registry.c', 'src/task_kinds.c', 'src/task_queue.c',
+        'src/matcher_task.c', 'src/matcher.cpp', 'src/match_file.c',
+        'src/feature_store.c', 'src/resource_governor.c',
+        'src/resource_snapshot.c', 'src/hardware_profile.c',
+        'src/import.c', 'src/import_task.c', 'src/image_catalog.c',
+        'src/image_catalog_persistent.c', 'src/image_view.c',
+        'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
+        'src/feature_extractor_opencv.cpp', 'src/visual_index.c',
+        'src/visual_index_task.c', 'src/candidate_pair_gen.c',
+        'src/candidate_pair_task.c',
+    ] + matcher_backend_sources,
+    c_args: [
+        '-DLARDON3D_PROJECT_DB_TESTING',
+        '-DLARDON3D_MATCHER_TASK_TESTING',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
+)
+test('matcher-task', matcher_task_test, timeout: 60, env: opencv_test_environment)
 
 feature_task_test = executable(
     'test-feature-task',
@@ -280,6 +342,7 @@ feature_task_test = executable(
         'tests/test_feature_task.c', 'src/app_state.c', 'src/project.c',
         'src/project_db.c', 'src/task.c', 'src/task_checkpoint.c',
         'src/task_kind_registry.c', 'src/task_kinds.c', 'src/task_queue.c',
+        'src/matcher_task.c', 'src/matcher.cpp', 'src/match_file.c',
         'src/import.c', 'src/import_task.c', 'src/image_catalog.c',
         'src/image_catalog_persistent.c', 'src/image_view.c',
         'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
@@ -288,13 +351,13 @@ feature_task_test = executable(
         'src/candidate_pair_gen.c', 'src/candidate_pair_task.c',
         'src/feature_extractor_opencv.cpp', 'src/resource_governor.c',
         'src/resource_snapshot.c',
-    ],
+    ] + matcher_backend_sources,
     c_args: [
         '-DLARDON3D_PROJECT_DB_TESTING', '-DLARDON3D_FEATURE_TASK_TESTING',
         '-DLARDON3D_VISUAL_INDEX_TASK_TESTING',
     ],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3, openssl, opencv],
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
 test('feature-task', feature_task_test, timeout: 60, env: opencv_test_environment)
 
@@ -312,7 +375,8 @@ precision_consolidation_test = executable(
         'tests/test_precision_consolidation.c', 'src/app_state.c',
         'src/project.c', 'src/project_db.c', 'src/task.c',
         'src/task_checkpoint.c', 'src/task_kind_registry.c',
-        'src/task_kinds.c', 'src/task_queue.c', 'src/import.c',
+        'src/task_kinds.c', 'src/matcher_task.c', 'src/matcher.cpp',
+        'src/match_file.c', 'src/task_queue.c', 'src/import.c',
         'src/import_task.c', 'src/image_catalog.c',
         'src/image_catalog_persistent.c', 'src/image_view.c',
         'src/feature_task.c', 'src/sift_task.c',
@@ -321,14 +385,14 @@ precision_consolidation_test = executable(
         'src/candidate_pair_gen.c', 'src/candidate_pair_task.c',
         'src/feature_extractor_opencv.cpp',
         'src/resource_governor.c', 'src/resource_snapshot.c',
-    ],
+    ] + matcher_backend_sources,
     c_args: [
         '-DLARDON3D_PROJECT_DB_TESTING',
         '-DLARDON3D_FEATURE_TASK_TESTING',
         '-DLARDON3D_VISUAL_INDEX_TASK_TESTING',
     ],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3, openssl, opencv],
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
 test('precision-consolidation', precision_consolidation_test,
      timeout: 120, env: opencv_test_environment)
@@ -419,6 +483,7 @@ project_test = executable(
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
         'src/task_kinds.c',
+        'src/matcher_task.c', 'src/matcher.cpp', 'src/match_file.c',
         'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/feature_store.c',
         'src/visual_index.c',
@@ -433,13 +498,13 @@ project_test = executable(
         'src/image_view.c',
         'src/resource_governor.c',
         'src/resource_snapshot.c',
-    ],
+    ] + matcher_backend_sources,
     c_args: [
         '-DLARDON3D_PROJECT_DB_TESTING',
         '-DLARDON3D_CHECKPOINT_TESTING',
     ],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3, openssl, opencv],
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
 
 test('project', project_test, timeout: 30)
@@ -551,13 +616,37 @@ matcher_test = executable(
         'src/resource_snapshot.c',
         'src/image_catalog_persistent.c',
         'src/app_state.c',
-    ],
+    ] + matcher_backend_sources,
     c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3, openssl, opencv],
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
 
 test('matcher', matcher_test, timeout: 60)
+
+if matcher_vulkan_enabled
+    orb_vulkan_backend_test = executable(
+        'test-orb-vulkan-backend',
+        sources: [
+            'tests/test_orb_vulkan_backend.cpp',
+        ] + matcher_backend_sources,
+        cpp_args: ['-DLARDON3D_ORB_VULKAN_TESTING'],
+        include_directories: include_directories('include'),
+        dependencies: [threads, opencv] + matcher_backend_dependencies,
+    )
+
+    test('orb-vulkan-backend', orb_vulkan_backend_test, timeout: 120,
+         env: opencv_test_environment)
+
+    executable(
+        'benchmark-orb-vulkan',
+        sources: [
+            'tests/benchmark_orb_vulkan.cpp',
+        ] + matcher_backend_sources,
+        include_directories: include_directories('include'),
+        dependencies: [opencv] + matcher_backend_dependencies,
+    )
+endif
 
 matcher_e2e_test = executable(
     'test-matcher-e2e',
@@ -573,9 +662,10 @@ matcher_e2e_test = executable(
         'src/resource_snapshot.c',
         'src/image_catalog_persistent.c',
         'src/app_state.c',
-    ],
+    ] + matcher_backend_sources,
+    c_args: matcher_vulkan_enabled ? ['-DLARDON3D_MATCHER_E2E_VULKAN'] : [],
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3, openssl, opencv],
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
 
 test('matcher-e2e', matcher_e2e_test, timeout: 60)
@@ -594,7 +684,7 @@ executable(
         'src/resource_snapshot.c',
         'src/image_catalog_persistent.c',
         'src/app_state.c',
-    ],
+    ] + matcher_backend_sources,
     include_directories: include_directories('include'),
-    dependencies: [threads, sqlite3, openssl, opencv],
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )

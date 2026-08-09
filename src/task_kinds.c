@@ -1,6 +1,7 @@
 #include <lardon3d/candidate_pair_task.h>
 #include <lardon3d/feature_task.h>
 #include <lardon3d/import_task.h>
+#include <lardon3d/matcher_task.h>
 #include <lardon3d/sift_task.h>
 #include <lardon3d/visual_index_task.h>
 #include <lardon3d/task_kind_registry.h>
@@ -36,6 +37,11 @@ const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_production(void) {
           .kind = LARDON3D_CANDIDATE_PAIR_GENERATE_TASK_KIND,
           .kind_version = LARDON3D_CANDIDATE_PAIR_GENERATE_TASK_KIND_VERSION,
           .reconstruct = lardon3d_candidate_pair_generate_reconstruct,
+      },
+      {
+          .kind = LARDON3D_MATCHER_TASK_KIND,
+          .kind_version = LARDON3D_MATCHER_TASK_KIND_VERSION,
+          .reconstruct = lardon3d_matcher_task_reconstruct,
       }};
   static const Lardon3DTaskKindRegistry registry = {
       .descriptors = descriptors,

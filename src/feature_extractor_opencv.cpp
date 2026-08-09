@@ -16,6 +16,19 @@ extern "C" {
 #include <lardon3d/feature_extractor.h>
 }
 
+extern "C" bool lardon3d_feature_opencv_configure_threads(unsigned int threads) {
+  if (threads == 0 || threads > static_cast<unsigned int>(std::numeric_limits<int>::max())) {
+    return false;
+  }
+  cv::setNumThreads(static_cast<int>(threads));
+  return cv::getNumThreads() == static_cast<int>(threads);
+}
+
+extern "C" unsigned int lardon3d_feature_opencv_thread_count(void) {
+  int threads = cv::getNumThreads();
+  return threads > 0 ? static_cast<unsigned int>(threads) : 1U;
+}
+
 extern "C" bool
 lardon3d_feature_extractor_parameters_valid(const Lardon3DFeatureExtractorParameters *parameters) {
   return parameters && parameters->max_features > 0 &&

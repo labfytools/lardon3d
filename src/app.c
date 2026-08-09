@@ -3,8 +3,10 @@
 
 #include <lardon3d/app.h>
 #include <lardon3d/app_state.h>
+#include <lardon3d/feature_extractor.h>
 #include <lardon3d/image_catalog.h>
 #include <lardon3d/image_view.h>
+#include <lardon3d/orb_vulkan_backend.h>
 #include <lardon3d/project.h>
 #include <lardon3d/resource_governor.h>
 #include <lardon3d/task_queue.h>
@@ -29,6 +31,10 @@ lardon3d_app_run(void)
         || !lardon3d_resource_policy_default(
             &state.hardware_profile,
             &resource_policy
+        )
+        || !lardon3d_feature_opencv_configure_threads(
+            state.hardware_profile.logical_cpu_count
+                - resource_policy.system_cpu_reserve
         )) {
         return EXIT_FAILURE;
     }
@@ -39,14 +45,21 @@ lardon3d_app_run(void)
     if (!state.resource_governor) {
         return EXIT_FAILURE;
     }
+    state.orb_vulkan_backend = lardon3d_orb_vulkan_backend_create();
+    if (!state.orb_vulkan_backend) {
+        lardon3d_resource_governor_destroy(state.resource_governor);
+        return EXIT_FAILURE;
+    }
     state.task_queue = lardon3d_task_queue_create(state.resource_governor, 64);
     if (!state.task_queue) {
+        lardon3d_orb_vulkan_backend_destroy(state.orb_vulkan_backend);
         lardon3d_resource_governor_destroy(state.resource_governor);
         return EXIT_FAILURE;
     }
 
     if (!lardon3d_tui_init()) {
         lardon3d_task_queue_destroy(state.task_queue);
+        lardon3d_orb_vulkan_backend_destroy(state.orb_vulkan_backend);
         lardon3d_resource_governor_destroy(state.resource_governor);
         return EXIT_FAILURE;
     }
@@ -58,6 +71,7 @@ lardon3d_app_run(void)
     if (state.project_loaded) {
         lardon3d_project_close(&state);
     }
+    lardon3d_orb_vulkan_backend_destroy(state.orb_vulkan_backend);
     lardon3d_resource_governor_destroy(state.resource_governor);
 
     return success ? EXIT_SUCCESS : EXIT_FAILURE;

@@ -56,7 +56,7 @@ content-addressed. Les états Feature/Matching/Reconstruction restent planifiés
 **Extension v1A :** ORB reste la passe coarse et l'unique entrée du Visual
 Index ORB-LSH. SIFT/RootSIFT F32×128 sont des passes précises indépendantes,
 suivies d'une consolidation spatiale intra-image qui ne mélange jamais les
-descriptors. Candidate Pair Generator et matching restent planifiés.
+descriptors.
 
 ---
 
@@ -79,24 +79,27 @@ updates incrémentales et query top-K bornée. Le générateur de paires reste p
 |--------|-------------|
 | **Sources de paires candidates** | (1) Visual index : paires visuellement proches. (2) Proximité temporelle. (3) Scan set commun. (4) Géométrie approximative (si GPS/IMU disponible). |
 | **Matching coûteux limité** | Le nombre de paires soumises au matching géométrique (étape F) doit être borné. Le candidate generator filtre et classe pour ne garder que les paires les plus prometteuses. |
-| **Persistance** | Les paires candidates sont persistées dans la table `candidate_pairs` (Project DB v10). Ordre canonique : `image_id_a < image_id_b`. Self-pairs interdits. Unicité garantie. |
+| **Persistance** | Les paires candidates sont persistées dans la table `candidate_pairs` (Project DB v8). Ordre canonique : `image_id_a < image_id_b`. Self-pairs interdits. Unicité garantie. |
 | **Déterminisme** | Pour mêmes entrées et configuration, le générateur produit les mêmes paires dans le même ordre. |
 | **Idempotence** | L'exécution répétée ne crée pas de doublons. |
 
-**Statut :** IMPLEMENTED v1 — génération single-source depuis Visual Index,
-persistance, canonicalisation et idempotence. La génération batch projet
-et l'intégration tâche durable restent planifiées.
+**Statut :** IMPLEMENTED v1 — génération single-source et batch depuis Visual
+Index, persistance, canonicalisation, idempotence et tâche durable.
 
 ---
 
-### F. Matching et vérification géométrique
+### F. Matching de descripteurs
 
 | Aspect | Description |
 |--------|-------------|
-| **Distinction des étapes** | (1) *Feature matching* : appariement brut des descripteurs entre deux images. (2) *Geometric verification* : estimation de la transformation rigide (RANSAC ou équivalent) et validation de la compatibilité épipolaire. |
-| **Validation ou rejet** | Une paire validée produit une *edge* dans le graphe de visibilité. Une paire rejetée est marquée comme telle pour éviter les retraitements inutiles. |
+| **Matcher v1** | ORB/Hamming exact CPU ou Vulkan, SIFT/RootSIFT L2 CPU, KNN k=2 et Lowe, sans vérification géométrique. |
+| **Persistance** | Match Result NO_MATCH/MATCHED et Match File content-addressed validé. |
+| **Orchestration** | `matcher.run` traite les Candidate Pairs par pages et lots durables de 1/2/4/8. |
 
-**Statut :** PLANNED — aucune implémentation existante.
+**Statut :** IMPLEMENTED v1 — Matcher, Match Store, reprise idempotente et Task
+durable. La vérification géométrique reste l'étape suivante, non commencée.
+Le Match Result appartient à Project DB v10 et la tâche durable `matcher.run`
+à Project DB v11.
 
 ---
 

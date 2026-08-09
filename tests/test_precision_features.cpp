@@ -166,6 +166,10 @@ static cv::Mat affine_homography(const cv::Mat &affine) {
 }
 
 int main() {
+  unsigned int original_threads = lardon3d_feature_opencv_thread_count();
+  CHECK(lardon3d_feature_opencv_configure_threads(2));
+  CHECK(lardon3d_feature_opencv_thread_count() == 2);
+  CHECK(lardon3d_feature_opencv_configure_threads(original_threads));
   Lardon3DSiftExtractorParameters valid_parameters = lardon3d_sift_precision_classic_v1(false);
   CHECK(lardon3d_sift_extractor_parameters_valid(&valid_parameters));
   Lardon3DSiftExtractorParameters invalid_parameters = valid_parameters;

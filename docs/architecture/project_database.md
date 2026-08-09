@@ -1,7 +1,8 @@
 # Base de données projet Lardon3D
 
-> Version courante : **v10**. La migration transactionnelle v9→v10 ajoute
-> la table `match_results` pour le Match Result Model. La migration v8→v9
+> Version courante : **v11**. La migration transactionnelle v10→v11 ajoute
+> `matcher_tasks` pour la tâche Matcher durable. La version v10 publiée ajoute
+> uniquement `match_results` pour le Match Result Model. La migration v8→v9
 > ajoute la table `candidate_pair_generate_tasks` pour la tâche durable
 > Candidate Pair. La migration v7→v8 ajoute la table `candidate_pairs` pour
 > le sous-système Candidate Pair.
@@ -306,10 +307,37 @@ CREATE TABLE candidate_pair_generate_tasks(
 - `lardon3d_project_db_record_candidate_pair_generate_task()` — UPSERT checkpoint
 - `lardon3d_project_db_load_candidate_pair_generate_task()` — SELECT par task_id
 
-## Schéma v10 implémenté
+## Schéma v10 publié
 
-La migration v9→v10 ajoute la table `match_results` pour le Match Result
-Model :
+La migration v9→v10 ajoute uniquement `match_results` pour le Match Result
+Model. Son schéma et ses invariants restent inchangés.
+
+## Schéma v11 implémenté
+
+La migration v10→v11 ajoute `matcher_tasks`. Cette table conserve uniquement
+la configuration immutable et le curseur durable :
+
+```sql
+CREATE TABLE matcher_tasks(
+    task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+    after_candidate_pair_id INTEGER NOT NULL
+        CHECK(after_candidate_pair_id>=0),
+    feature_extractor_kind TEXT NOT NULL,
+    feature_extractor_version INTEGER NOT NULL
+        CHECK(feature_extractor_version>0),
+    feature_parameter_fingerprint BLOB NOT NULL
+        CHECK(length(feature_parameter_fingerprint)=32),
+    matcher_kind INTEGER NOT NULL CHECK(matcher_kind BETWEEN 0 AND 2),
+    ratio_threshold REAL NOT NULL
+        CHECK(ratio_threshold>0.0 AND ratio_threshold<1.0)
+);
+```
+
+Le curseur est le dernier `candidate_pair_id` checkpointé. Il n'implique ni
+continuité des IDs ni liste persistée de Candidate Pairs. La configuration ne
+peut pas changer lors d'un UPSERT ; seul le curseur avance.
+
+Le Match Result ci-dessous reste le contrat publié de v10 :
 
 ```sql
 CREATE TABLE match_results(
@@ -365,18 +393,22 @@ CREATE INDEX match_results_feature_set_b_idx
 - `lardon3d_project_db_load_match_result()` — SELECT par ID
 - `lardon3d_project_db_find_match_result()` — SELECT par (candidate_pair_id, feature_set_id_a, feature_set_id_b, matcher_kind, matcher_version, parameter_fingerprint)
 - `lardon3d_project_db_list_match_results()` — SELECT paginé ORDER BY id
+- `lardon3d_project_db_record_matcher_task()` — UPSERT configuration/curseur
+- `lardon3d_project_db_load_matcher_task()` — SELECT par task_id
 
 ## Ouverture et migrations
 
-Une DB vide reçoit directement le schéma v7 dans une transaction
+Une DB vide reçoit la chaîne de schémas jusqu'à v11 dans une transaction
 `BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
 `task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
 `NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
 artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1,
-v2, v3, v4, v5 et v6 sont migrées séquentiellement vers v7. Une version future est refusée et une DB contenant
+v2, v3, v4, v5, v6, v7, v8, v9 et v10 sont migrées séquentiellement vers v11.
+Une v10 publiée est validée comme telle avant que v10→v11 crée
+`matcher_tasks` ; son absence n'est donc pas une corruption. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
 interne de migration applique uniquement la chaîne séquentielle connue jusqu'à
-v7 ; une valeur hors de 1..7 est refusée.
+v11 ; une valeur hors de 1..11 est refusée.
 
 Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
 
@@ -513,9 +545,9 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v10 et migrations v1→v2→v3→v4→v5→v6→v7→v8→v9→v10, identité
-projet, transactions tâche+checkpoint, pagination de reprise et artefacts
-génériques.
+**IMPLEMENTED** — SQLite système, schéma v11 et migrations séquentielles
+v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11, identité projet, transactions
+tâche+checkpoint, pagination de reprise et artefacts génériques.
 
 **IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,
 publication de checkpoints par le projet et inventaire de reprise validé.
