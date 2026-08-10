@@ -781,6 +781,9 @@ validation, migration v15→v16 et comparateur fresh/migrated validés par Gate 
 Le modèle de persistance est gelé pour v1 ; le solveur numérique reste hors de
 Project DB v16.
 
+Gate C ajoute uniquement des primitives numériques pures hors Project DB; aucune
+table, migration ou identité v16 supplémentaire n'est introduite.
+
 **IMPLEMENTED** — API C Track Model v1 : header `project_db.h` et
 source `project_db.c` exposent `create_track_set`, `load_track_set`,
 `find_track_set`, `list_track_sets`, `load_track`, `list_tracks`,

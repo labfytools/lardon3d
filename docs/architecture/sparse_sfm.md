@@ -383,6 +383,60 @@ metric alignment, persistent reconstruction schema and durable SfM checkpoints.
 Their semantic ownership is decided here; their final numeric values require
 the synthetic ground-truth and sparse-solver gates.
 
+## Gate C — pure calibrated geometry
+
+**GATE C — PASS.** Pure calibrated geometry primitives, synthetic ground truth,
+degeneracy rejection, determinism, normal suite and ASan/UBSan validation are
+complete. Incremental orchestration, BA and persistent geometry integration
+remain later gates.
+
+Gate C keeps geometry outside Project DB and exposes a C17-safe, synchronous
+pure-primitive boundary. Inputs are binary64 calibrated pixels, fixed
+world-to-camera poses, and caller-owned correspondence arrays; no primitive
+opens SQLite, reads Feature Files, loads images or invokes the Task Runtime.
+The v1 candidate uses OpenCV 5.0.0 `calib3d` operations with every scientific
+parameter supplied by an explicit configuration structure. Public outputs use
+row-major binary64 `R_cw` and `t_cw`; relative translation has unit norm and no
+metric interpretation.
+
+The candidate contract requires deterministic caller ordering, finite inputs,
+explicit robust-estimator thresholds/confidence/iteration limits and a local
+seed. Essential hypotheses are accepted only after explicit positive-depth
+support, rotation validation, parallax and reprojection checks. Pure rotation,
+low parallax, weak conditioning and non-finite results are failures. Two-view
+and multi-view points use normalized-coordinate linear DLT followed by bounded
+point-only binary64 refinement; PnP returns world-to-camera pose with explicit
+cheirality and inlier diagnostics. The tested v1 parameter set is frozen by the
+Gate C ground-truth and degeneracy evidence; future orchestration may choose
+other explicitly fingerprinted configurations.
+
+### Gate C tested threshold set
+
+The pure API has no hidden defaults; callers provide all acceptance settings.
+The Gate C reference matrix uses the following reproducible set:
+
+| Parameter | Value | Unit/purpose |
+|---|---:|---|
+| Relative robust threshold | 1.0 px clean; 1.5 px matrix | pixel residual |
+| Relative confidence | 0.999 | RANSAC confidence |
+| Relative iterations | 1000 clean; 1500 matrix | iterations |
+| Relative minimum inliers | 6 clean; 24 matrix | correspondences |
+| Relative minimum ratio | 0.75 clean; 0.5 matrix | fraction |
+| Minimum parallax | `1e-4` rad | seed geometry |
+| Minimum cheirality ratio | 0.5 | positive depth |
+| PnP threshold | 1.0 px clean; 1.5 px matrix | pixel residual |
+| PnP confidence | 0.999 | RANSAC confidence |
+| PnP iterations | 1000 | iterations |
+| PnP minimum inliers | 6 clean; 12 matrix | correspondences |
+| PnP minimum ratio | 0.75 clean; 0.5 matrix | fraction |
+| Point refinement tolerance | `1e-12` | normalized residual |
+| Point refinement iterations | 30 | iterations |
+
+Degeneracy checks use finite values, positive depth, rotation SO(3) residual
+`1e-6`, depth epsilon `1e-9`, homogeneous scale epsilon `1e-12`, and
+collinearity covariance determinant `1e-10`. These are pure-geometry
+parameters and do not alter Project DB identity.
+
 ## Out of scope
 
 No production Sparse SfM, triangulator, camera solver, BA, Project DB v16,

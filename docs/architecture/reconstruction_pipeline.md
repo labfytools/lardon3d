@@ -124,15 +124,17 @@ USAC/MAGSAC avec configuration, seed et fingerprint déterministes.
 
 **Statut :** COMPLETED/FROZEN — le Track Builder v1 direct et durable est
 implémenté dans Project DB v15 (`track_sets`, `tracks`, `track_observations` et
-le payload de tâche). La triangulation et le solveur Sparse SfM restent PLANNED;
-le modèle de persistance Sparse SfM v16 est gelé après Gate B.
+le payload de tâche). Les primitives de géométrie calibrée Gate C sont
+implémentées; le solveur incrémental complet et l'orchestration restent PLANNED.
+Le modèle de persistance Sparse SfM v16 est gelé après Gate B.
 
 **Sparse SfM Gate A : PASS.** Le contrat géométrique, la stratégie
 incremental, la triangulation candidate, le gauge, les conventions de pose,
 les limites BA et l'enveloppe matérielle sont documentés dans
 `architecture/sparse_sfm.md`. Le solveur Sparse SfM reste
-**NOT_IMPLEMENTED** jusqu'aux Gates B3–G; sa
-persistance v16 et ses lecteurs bornés sont implémentés en B2.
+**NOT_IMPLEMENTED** jusqu'aux Gates D–G; ses primitives pures calibrées sont
+implémentées en Gate C, tandis que sa persistance v16 et ses lecteurs bornés
+restent ceux de B2.
 
 ---
 
