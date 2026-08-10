@@ -119,5 +119,10 @@ orphelins.
 **IMPLEMENTED** — Feature Store et Visual Index peuvent relier visuellement
 des images de ScanSets différents sans dépendre de leur nom ou ordre.
 
-**PLANNED** — paires candidates, matching, tracks, SfM, MVS et relations
-géométriques entre ScanSets.
+**IMPLEMENTED** — paires candidates, matching, vérification géométrique et
+Track Model / Track Builder v1 peuvent consommer le catalogue et ses assets.
+Les primitives géométriques Sparse SfM sont implémentées par Gate C.
+
+**PLANNED** — solveur Sparse SfM complet, MVS et relations géométriques entre
+ScanSets. La vérification/scrub des assets et la réconciliation globale restent
+également NOT_YET_WIRED.

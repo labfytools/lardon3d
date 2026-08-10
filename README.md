@@ -29,7 +29,7 @@ persistante, enrichissable et versionnable.
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v14** : résultats géométriques, tâche Geometric Verifier durable et Track Model v1
+- **Project Database v16** : résultats géométriques, Track Model v1 et persistance Sparse SfM
 - **Geometric Verification Model v1** : identité, masque d'inliers et modèle 3×3 persistants
 - **Geometric Verifier v1** : Fundamental USAC/MAGSAC, reprise et lots resource-aware
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
@@ -121,6 +121,7 @@ Acquisitions
 - [Sparse SfM / Triangulation — Gate A](docs/architecture/sparse_sfm.md)
 - [Backend Vulkan ORB](docs/architecture/vulkan_matcher.md)
 - [Viewer](docs/architecture/viewer.md)
+- [Resource Boundary — No New Resource Subsystem](docs/architecture/resource_boundary.md)
 - [Revue des fondations](docs/architecture/foundation_review.md)
 
 ### Concepts
@@ -164,8 +165,10 @@ Matcher v1, Geometric Verification Model v1 et Geometric Verifier Fundamental v1
 sont implémentés. Le runtime Feature + Matcher + Verifier emploie des tâches durables,
 de petits lots, le Resource Governor interactif et un hot path Vulkan ORB exact avec
 fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ; ces deux matchers
-restent sur OpenCV L2. DAG générique, Tracks, SfM et viewer restent des tickets
-séparés planifiés.
+restent sur OpenCV L2. Track Model/Builder et les primitives géométriques Sparse
+SfM sont implémentés ; le solveur Sparse SfM complet, le DAG, le viewer et les
+étapes denses restent des tickets séparés planifiés. Le Resource Governor ne
+constitue pas un Resource System générique : voir la décision d’architecture.
 
 ## Licence
 

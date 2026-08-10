@@ -4,7 +4,7 @@
 
 - **IMPLEMENTED v1A** : ORB coarse stable, SIFT/RootSIFT OpenCV 5, Feature File
   v2 F32×128, grille/coverage, tâches récupérables et consolidation intra-image.
-- **PLANNED** : Candidate Pair Generator et matching précis.
+- **IMPLEMENTED** : Candidate Pair Generator, matching précis et vérification géométrique.
 - **PLANNED / BLOCKED** : ALIKED, en attente de provenance modèle et d'un export
   ONNX reproductible validé contre un oracle upstream.
 
@@ -47,11 +47,12 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 ### Phase 4 : Pipeline avancé
 - ✅ Feature Store v1/v2, ORB, SIFT/RootSIFT et consolidation intra-image
 - ✅ Visual Index v1 segmenté et persistant
-- 📋 Candidate Pair Generator
-- 📋 Matching et vérification géométrique
-- 📋 Tracks et SfM
+- ✅ Candidate Pair Generator
+- ✅ Matching et vérification géométrique
+- ✅ Track Model / Track Builder v1
+- 🔄 Sparse SfM : primitives géométriques Gate C implémentées ; solveur complet planifié
 
-### Phase 5 : Reconstruction
+### Phase 5 : Reconstruction (PLANNED)
 - 📋 Reconstruction incrémentale
 - 📋 MVS / dense
 - 📋 Mesh
