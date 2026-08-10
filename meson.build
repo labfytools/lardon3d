@@ -145,6 +145,7 @@ executable(
         'src/project.c',
         'src/project_db.c', 'src/project_db_sparse_sfm.c',
         'src/sparse_sfm_geometry.cpp',
+        'src/sparse_sfm_incremental.cpp',
         'src/task.c',
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
@@ -532,6 +533,28 @@ sparse_sfm_geometry_test = executable(
 )
 
 test('sparse-sfm-geometry', sparse_sfm_geometry_test, timeout: 60)
+
+sparse_sfm_incremental_test = executable(
+    'test-sparse-sfm-incremental',
+    sources: [
+        'tests/test_sparse_sfm_incremental.cpp',
+        'src/sparse_sfm_geometry.cpp', 'src/sparse_sfm_incremental.cpp',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [opencv_geometry],
+)
+
+test('sparse-sfm-incremental', sparse_sfm_incremental_test, timeout: 60)
+
+executable(
+    'benchmark-sparse-sfm-incremental',
+    sources: [
+        'tests/benchmark_sparse_sfm_incremental.cpp',
+        'src/sparse_sfm_geometry.cpp', 'src/sparse_sfm_incremental.cpp',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [opencv_geometry],
+)
 
 sparse_sfm_resource_test = executable(
     'test-sparse-sfm-resource',

@@ -252,9 +252,10 @@ Image Catalog (B) ──► Feature Store (C)
 ## Statut du pipeline
 
 Import, Image Catalog, Feature Extraction, Feature Store, Visual Index,
-Candidate Pair, Matching v1 et Geometric Verification Model v1 sont
-**IMPLEMENTED**. Geometric Verifier,
-Tracks et SfM sont **PLANNED**.
+Candidate Pair, Matching v1, Geometric Verification, Track Model/Builder v1
+and Sparse SfM Gate C geometry are **IMPLEMENTED**. The synchronous in-memory
+incremental Sparse SfM Gate D core is **IMPLEMENTED / PASS**. BA,
+orchestration, MVS, mesh, texturing and viewer remain **PLANNED**.
 
 Ce document décrit la vision architecturale cible du pipeline de
 reconstruction. Les modules listés ici ne sont pas tous implémentés.

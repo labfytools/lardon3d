@@ -437,6 +437,159 @@ Degeneracy checks use finite values, positive depth, rotation SO(3) residual
 collinearity covariance determinant `1e-10`. These are pure-geometry
 parameters and do not alter Project DB identity.
 
+## Gate D — incremental Sparse SfM core
+
+**GATE D — PASS.** Gate D is the first executable link
+between the immutable Track/Calibration contracts and the Gate C primitives.
+The reference implementation is synchronous, deterministic, CPU-only,
+in-memory, bounded and independent of Project DB, Task Runtime, Resource
+Governor and persistence publication.
+
+### Inputs
+
+Gate D consumes exactly one immutable Track Set, one immutable calibration
+scope, finite calibration values for participating images, bounded keypoint
+coordinates addressed by `(feature_set_id, feature_index)`, and explicit
+fingerprinted parameters. The Track Set is never mutated.
+
+### Algorithm
+
+The core sorts image and Track identities, builds sparse connected components,
+orders seed candidates by shared Track count and image IDs, and tries a bounded
+number of seeds. Each candidate uses the Gate C relative-pose, cheirality,
+parallax and two-view triangulation contracts. A valid seed establishes a
+component-local unit gauge.
+
+Unregistered images are then ordered by visible accepted-landmark count and
+image ID. Gate C calibrated PnP registers at most one selected image per
+bounded round. Failed registration leaves the image explicitly unregistered.
+New landmarks use all currently registered observations, Gate C multi-view DLT
+and bounded point-only refinement. A landmark is accepted or rejected as a
+whole; Track observations are never dropped or rewritten.
+
+After each successful camera registration, an existing landmark whose Track
+has gained registered observations is reconsidered in canonical image-ID
+order. Gate C multi-view triangulation and point refinement use the complete
+eligible observation set. The replacement is published in memory only after
+finite-value, positive-depth and reprojection validation; otherwise the prior
+valid landmark and its observations remain unchanged.
+
+The Gate D reference bounds are 4096 input images, 250,000 Tracks, 1,000,000
+observations, 32 seed candidates, 32 registration rounds and 4096 new
+landmarks per growth round. The defaults use 1.5 px relative-pose/PnP robust
+thresholds, a 2.0 px landmark reprojection threshold, 0.5 minimum inlier
+ratios, `1e-4` rad minimum parallax, 6 minimum seed/PnP inliers and 30
+point-refinement iterations. These are Gate D policy defaults; changing them
+changes the explicit parameter configuration.
+
+### Output and failure semantics
+
+The in-memory result contains deterministic components, registered cameras,
+accepted landmarks, landmark observations, reprojection diagnostics and
+explicit unregistered images. Results are `COMPLETE`, `PARTIAL` or `FAILED`.
+Invalid input fails before computation. A rejected seed, camera or landmark
+does not corrupt an accepted model. No partial result is persisted.
+
+Growth stops immediately when a complete registration round cannot register
+an image. It also stops exactly at the configured registration-round bound.
+Both paths retain valid cameras and landmarks, list every remaining image as
+unregistered and produce `PARTIAL` when usable geometry exists.
+
+Components with fewer than two registered cameras are not valid 3D components.
+Disconnected valid components retain independent unit gauges and are never
+globally aligned by Gate D.
+
+### Gate D limits
+
+Gate D does not implement BA, persistence adapters, Task Runtime, checkpoints,
+Governor integration, a Resource System, GPU execution, dense reconstruction,
+metric alignment, viewer integration or any Project DB change. BA remains the
+later Gate E; project/task orchestration remains Gate F; resource/freeze
+integration remains Gate G.
+
+### Canonical Gate D functional matrix
+
+This table freezes the complete numbered validation contract. Evidence is the
+minimum dedicated observation required; an earlier rejection never substitutes
+for the named path.
+
+| Case | Purpose | Required path and evidence | Expected result |
+|---|---|---|---|
+| 01 Minimal two-view | Smallest valid reconstruction | One seed, two cameras, finite landmarks | `COMPLETE` |
+| 02 Deterministic seed | Canonical seed identity | Same selected pair and pose on repeat | `COMPLETE` |
+| 03 Multiple seed candidates | Candidate ordering | Multiple eligible pairs, canonical first pair | `COMPLETE` |
+| 04 Rejected first seed / later seed | Seed fallback | At least two attempts, later pair selected | `COMPLETE` |
+| 05 Camera-addition order | Registration ordering | Highest support then image ID, one per round | `COMPLETE` |
+| 06 Clean PnP | Nominal registration | PnP attempted and succeeds with clean support | `COMPLETE` |
+| 07 Noisy PnP | Bounded noise | PnP succeeds with finite pose | `COMPLETE` |
+| 08 Deterministic PnP outliers | Robust registration | Stable inlier count and pose | `COMPLETE` |
+| 09 Failed PnP | Registration rejection | Failure counted and image listed | `PARTIAL` |
+| 10 Insufficient PnP support | Eligibility bound | Solver not called and image listed | `PARTIAL` |
+| 11 Low-parallax rejection | Seed guard | Gate C low-parallax/degenerate status | `FAILED` |
+| 12 Pure rotation | Translation degeneracy | Relative pose rejected, no camera | `FAILED` |
+| 13 Planar degeneracy | Ambiguous seed | Gate C degeneracy, no camera | `FAILED` |
+| 14 Far scene | Finite distant geometry | Seed and finite landmarks accepted | `COMPLETE` |
+| 15 Disconnected graph | Component discovery | Valid component plus explicit singleton | `PARTIAL` |
+| 16 Multiple valid components | Isolation | Two reconstructed components | `COMPLETE` |
+| 17 Independent gauges | Per-component gauge | Each seed camera is identity | `COMPLETE` |
+| 18 Unregistered images | Explicit output | Remaining image and component key listed | `PARTIAL` |
+| 19 Behind-camera landmark | Cheirality | Exact Gate C status and distinct counter | `COMPLETE` model |
+| 20 High reprojection error | Residual policy | Finite triangulation then residual rejection | `COMPLETE` model |
+| 21 Failed triangulation | Geometry failure | Finite input calls triangulation and fails | `COMPLETE` model |
+| 22 Repeated observations | Track coherence | Duplicate image or feature reference rejected | `INVALID_ARGUMENT` |
+| 23 Many-camera Track | Landmark lifecycle | One landmark, six ordered observations | `COMPLETE` |
+| 24 New landmark after registration | Incremental growth | Ineligible Track accepted after PnP | `COMPLETE` |
+| 25 Multi-view growth | All eligible views | New landmark uses at least three views | `COMPLETE` |
+| 26 Point refinement | Bounded refinement | Attempt and finite accepted point | `COMPLETE` |
+| 27 No-growth termination | Progress bound | One zero-progress round and diagnostic | `PARTIAL` |
+| 28 All-images termination | Natural completion | All images registered, no stop diagnostic | `COMPLETE` |
+| 29 Seed exhaustion | Candidate bound | Every available candidate attempted | `FAILED` |
+| 30 Registration-round exhaustion | Round bound | Exact rounds and remaining images | `PARTIAL` |
+| 31 Component ordering | Canonical components | Increasing component keys | success |
+| 32 Camera ordering | Canonical cameras | Increasing image IDs | success |
+| 33 Landmark ordering | Canonical landmarks | Increasing `(component_key, track_id)` | success |
+| 34 In-process repeatability | Local determinism | Complete scientific result equality | same status |
+| 35 Fresh-process repeatability | Process determinism | 20 runs emit one signature | same status |
+
+### Gate D validation responsibility
+
+`GATE_D_REQUIRED` covers pointer/count coherence, identities carried by this
+API, finite calibration/keypoints, feature-index bounds, Track observation
+coherence, geometry failures, atomic result ownership and cleanup. Store-level
+Feature Set/File existence is `UPSTREAM_RESPONSIBILITY`: Gate D receives
+flattened validated coordinates and never opens a store. Two separate Track
+objects with the same ID are `UNREPRESENTABLE_BY_API` because rows are grouped
+by `track_id`; duplicate image observations and feature references remain
+representable and are rejected. Allocation-failure injection is
+`NOT_APPLICABLE_WITH_PROOF`: no allocator injection boundary exists, production
+catches allocation failure at the C ABI, and global test allocator state would
+violate the architecture.
+
+| Condition | Classification |
+|---|---|
+| Null parameters, missing arrays, empty input | `GATE_D_REQUIRED` |
+| Zero Track/calibration/image/feature identity | `GATE_D_REQUIRED` |
+| Missing per-image calibration coverage | `GATE_D_REQUIRED` |
+| Zero/non-finite focal or distortion, invalid principal point | `GATE_D_REQUIRED` |
+| Invalid feature index or non-finite keypoint | `GATE_D_REQUIRED` |
+| Duplicate image/feature observation or singleton Track | `GATE_D_REQUIRED` |
+| Seed/PnP/landmark failures and update rollback | `GATE_D_REQUIRED` |
+| Missing Feature Set/File in persistent storage | `UPSTREAM_RESPONSIBILITY` |
+| Two distinct Track objects sharing one ID | `UNREPRESENTABLE_BY_API` |
+| Deterministic allocation-failure injection | `NOT_APPLICABLE_WITH_PROOF` |
+
+The caller retains all input allocations for the synchronous call. The result
+owns its arrays; `lardon3d_sparse_incremental_result_destroy()` releases them
+and accepts an empty result or null pointer. No C++ exception crosses the C17
+boundary.
+
+Count-limit validation uses structurally sufficient fixtures at a lowered
+explicit configured limit and proves `LIMIT-1`, `LIMIT`, and `LIMIT+1` without
+materializing the public hard maxima. Scientific scale is validated separately
+by the small, medium and large resource workloads. Policy tests prove exact
+seed-candidate, registration-round and new-landmark-per-round admission; no
+policy loop performs a `limit + 1` attempt.
+
 ## Out of scope
 
 No production Sparse SfM, triangulator, camera solver, BA, Project DB v16,
