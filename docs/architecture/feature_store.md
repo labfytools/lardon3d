@@ -119,7 +119,8 @@ l'extraction après import et planification multi-image/DAG.
 les Feature Sets persistés.
 
 **IMPLEMENTED** — vérification géométrique et tracks. **Sparse SfM Gate A
-PASS**, production Sparse SfM remains **NOT_IMPLEMENTED** until its later
+PASS**, the Sparse SfM v16 persistence model is **FROZEN** after Gate B;
+the numerical solver and reconstruction pipeline remain **PLANNED** until later
 implementation gates.
 
 ## Extension v2 multi-descriptor

@@ -106,3 +106,8 @@ une distribution de latence estimator-only.
 
 Le profil maximal explicite et les pools multi-workers restent hors périmètre.
 SIFT/RootSIFT et Feature Extraction Vulkan restent hors de ce contrat.
+
+La validation B3 du modèle Sparse SfM v16 a utilisé des processus frais, un
+fixture synthétique de 100 000 landmarks et 500 000 observations, cinq passes
+de paging sur 50 000 landmarks, et n'a observé ni OOM, ni swap storm, ni dérive
+RSS applicative. Cette preuve concerne la persistance bornée, pas le solveur.

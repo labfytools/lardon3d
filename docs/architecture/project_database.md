@@ -1,6 +1,8 @@
 # Base de données projet Lardon3D
 
-> Version courante : **v15**. La migration transactionnelle v14→v15 ajoute
+> Version courante : **v16**. La migration transactionnelle v15→v16 ajoute
+> le modèle persistant Sparse SfM (calibrations, scopes et reconstructions).
+> La migration transactionnelle v14→v15 ajoute
 > `track_builder_tasks` pour le payload durable explicite du Task Builder. La
 > migration transactionnelle v13→v14 ajoute
 > les tables `track_sets`, `tracks` et `track_observations` pour le Track
@@ -19,6 +21,21 @@
 
 La base de données projet stocke les métadonnées de reconstruction et les relations entre les
 entités. Elle est conçue pour être légère, persistante et permettre la reprise après interruption.
+
+## Sparse SfM Gate B (v16)
+
+Le modèle Sparse SfM v1 est publié atomiquement dans les tables
+`sparse_calibrations`, `sparse_calibration_scopes`,
+`sparse_calibration_scope_images`, `sparse_reconstructions`,
+`sparse_reconstruction_components`, `sparse_registered_images`,
+`sparse_landmarks` et `sparse_landmark_observations`. Les résultats sont
+immuables et les collections volumineuses sont lues par curseurs bornés ; la
+base ne charge jamais une reconstruction complète par défaut. Les coordonnées
+restent dans le repère arbitraire de chaque composant et les références
+d'observation ne dupliquent ni descripteurs ni coordonnées de pixels.
+Les relations de suppression disposent d'index enfants dédiés, notamment sur
+`calibration_id` dans les membres de scope et `calibration_scope_id` dans les
+reconstructions, afin que les vérifications FK restent indexées.
 
 ## Structure conceptuelle
 
@@ -757,6 +774,12 @@ sont documentés dans `tracks.md`.
 
 **IMPLEMENTED** — Track Builder v1 durable : table `track_builder_tasks`, scope
 asset atomique, payload v1 validé, migration v14→v15 et rollback/retry testés.
+
+**IMPLEMENTED** — Sparse SfM v1 persistant : modèle v16 immutable, publication
+atomique, composants déterministes, lecteurs bornés, corruption/lifecycle
+validation, migration v15→v16 et comparateur fresh/migrated validés par Gate B.
+Le modèle de persistance est gelé pour v1 ; le solveur numérique reste hors de
+Project DB v16.
 
 **IMPLEMENTED** — API C Track Model v1 : header `project_db.h` et
 source `project_db.c` exposent `create_track_set`, `load_track_set`,

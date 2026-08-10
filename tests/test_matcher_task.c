@@ -63,12 +63,12 @@ static bool query_integer(const char *path, const char *sql,
                           sqlite3_int64 expected) {
   sqlite3 *connection = NULL;
   sqlite3_stmt *statement = NULL;
-  bool success = sqlite3_open_v2(path, &connection, SQLITE_OPEN_READONLY,
-                                 NULL) == SQLITE_OK &&
-                 sqlite3_prepare_v2(connection, sql, -1, &statement, NULL) ==
-                     SQLITE_OK &&
-                 sqlite3_step(statement) == SQLITE_ROW &&
-                 sqlite3_column_int64(statement, 0) == expected;
+  bool success =
+      sqlite3_open_v2(path, &connection, SQLITE_OPEN_READONLY, NULL) ==
+          SQLITE_OK &&
+      sqlite3_prepare_v2(connection, sql, -1, &statement, NULL) == SQLITE_OK &&
+      sqlite3_step(statement) == SQLITE_ROW &&
+      sqlite3_column_int64(statement, 0) == expected;
   if (statement) {
     (void)sqlite3_finalize(statement);
   }
@@ -89,12 +89,20 @@ static bool downgrade_project_to_historical_v10(const char *database_path) {
   }
   static const char sql[] =
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE IF EXISTS sparse_landmark_observations;"
+      "DROP TABLE IF EXISTS sparse_landmarks;"
+      "DROP TABLE IF EXISTS sparse_registered_images;"
+      "DROP TABLE IF EXISTS sparse_reconstruction_components;"
+      "DROP TABLE IF EXISTS sparse_reconstructions;"
+      "DROP TABLE IF EXISTS sparse_calibration_scope_images;"
+      "DROP TABLE IF EXISTS sparse_calibration_scopes;"
+      "DROP TABLE IF EXISTS sparse_calibrations;"
       "DROP TABLE geometric_verifier_tasks;"
       "DROP TABLE geometric_verification_results;"
       "DROP TABLE matcher_tasks;"
       "DROP TABLE track_observations;"
       "DROP TABLE tracks;"
-                       "DROP TABLE track_sets;DROP TABLE track_builder_tasks;"
+      "DROP TABLE track_sets;DROP TABLE track_builder_tasks;"
       "UPDATE metadata SET value=10 WHERE key='schema_version';"
       "COMMIT;PRAGMA foreign_keys=ON;";
   bool success = sqlite3_exec(connection, sql, NULL, NULL, NULL) == SQLITE_OK;
@@ -346,20 +354,23 @@ static bool run_test(void) {
   CHECK(query_integer(database_path,
                       "SELECT value FROM metadata WHERE key='schema_version'",
                       10));
-  CHECK(query_integer(database_path,
-                      "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
-                      "name='match_results'",
-                      1));
-  CHECK(query_integer(database_path,
-                      "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
-                      "name='matcher_tasks'",
-                      0));
+  CHECK(
+      query_integer(database_path,
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+                    "name='match_results'",
+                    1));
+  CHECK(
+      query_integer(database_path,
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+                    "name='matcher_tasks'",
+                    0));
   CHECK(reopen_runtime(&fixture));
-  CHECK(lardon3d_project_db_schema_version(fixture.state.project_db) == 15);
-  CHECK(query_integer(database_path,
-                      "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
-                      "name='matcher_tasks'",
-                      1));
+  CHECK(lardon3d_project_db_schema_version(fixture.state.project_db) == 16);
+  CHECK(
+      query_integer(database_path,
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+                    "name='matcher_tasks'",
+                    1));
   const Lardon3DTaskKindRegistry *registry =
       lardon3d_task_kind_registry_production();
   const Lardon3DTaskKindDescriptor *descriptor = NULL;

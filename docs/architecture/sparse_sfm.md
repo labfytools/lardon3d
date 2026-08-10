@@ -3,12 +3,17 @@
 ## Status and boundary
 
 **GATE A — DECISION after contract and probe study.** This document defines the
-scientific and architectural contract for the future Sparse SfM layer. It does
-not implement a solver, change Track Model v1, change Track Builder v1, add a
-Project DB v16, or add a Task Kind. `FACT`, `CANDIDATE`, `DECISION` and `FROZEN`
-remain explicit: the upstream Track Model and Track Builder are FROZEN; the
-choices below are Gate A decisions for the next implementation gates, not a
-claim that Sparse SfM is implemented.
+scientific and architectural contract for the Sparse SfM layer. B2 implements
+the immutable v16 persistence model and its bounded readers; it does not
+implement a numerical solver, change Track Model v1, change Track Builder v1,
+or add a Task Kind. `FACT`, `CANDIDATE`, `DECISION` and `FROZEN` remain explicit:
+the upstream Track Model and Track Builder are FROZEN, while numerical Sparse
+SfM remains deferred to later gates.
+
+**GATE B — PASS.** The v16 persistence model, migration, corruption/lifecycle
+proofs, structural comparator, representative resource validation, normal
+suite and ASan/UBSan closure are complete. Numerical Sparse SfM remains
+deferred to Gate C and later gates.
 
 ## Scope
 
@@ -383,3 +388,140 @@ the synthetic ground-truth and sparse-solver gates.
 No production Sparse SfM, triangulator, camera solver, BA, Project DB v16,
 metric alignment, control-point scale, dense/MVS, mesh, texturing, Vulkan SfM,
 GPU BA, network/distributed scheduling or UI workflow is implemented here.
+
+## Gate B — model and persistence contract
+
+This section is the **DECISION** contract for the v16 SQL/API work.
+It preserves every Gate A decision and supplies only durable vocabulary; no
+numeric geometry is introduced.
+
+### Calibration definition and identity
+
+A calibration is an immutable known pinhole model with `width`, `height`,
+`fx`, `fy`, `cx`, `cy`, zero skew, `k1`, `k2`, `p1`, and `p2`, all binary64 and
+finite. `width` and `height` belong to scientific identity. A calibration's
+provenance is an explicit enum (`USER_EXPLICIT` or `IMPORTED_TRUSTED` in v1)
+plus a 32-byte provenance fingerprint supplied by the caller. EXIF is never a
+calibration origin. Two equal numeric models with different provenance
+fingerprints are distinct scientific calibrations because their trust scope is
+different; equal content and equal provenance are reused.
+
+The scientific calibration hash is SHA-256 over explicit little-endian fields:
+
+```text
+ASCII "L3D3DCP1" (8 bytes)
+format_version=1 (uint32)
+model_kind (uint32), model_version (uint32)
+width (uint32), height (uint32)
+fx, fy, cx, cy, k1, k2, p1, p2 (8 canonical binary64 values)
+provenance_kind (uint32), provenance_fingerprint (32 bytes)
+```
+
+NaN and infinities are rejected. Negative zero is canonicalized to positive
+zero before hashing and storage. No native struct, padding or locale text is
+serialized. SQLite row IDs remain DB-local references; the hash is the
+scientific calibration identity.
+
+### Calibration scope
+
+A scope is immutable and assigns exactly one calibration to each relevant
+image. Groups are allowed only when dimensions, crop/orientation coordinate
+frame, model/version, numeric parameters and provenance identity are equal;
+device or EXIF model names are insufficient. Scope identity is project-local
+and content-addressed by SHA-256 over:
+
+```text
+ASCII "L3D3DSC1" (8 bytes)
+format_version=1 (uint32)
+member_count (uint64)
+for members sorted by image_id:
+    image_id (uint64), calibration_hash (32 bytes)
+```
+
+The member count is consistency metadata and is also encoded in the digest.
+There is no latest-calibration lookup and no silent K rescaling. Feature File
+dimensions must match the calibration dimensions exactly.
+
+### Reconstruction identity and components
+
+The immutable reconstruction identity is:
+
+```text
+(track_set_id,
+ calibration_scope_id,
+ sfm_kind=INCREMENTAL,
+ sfm_version=1,
+ parameter_fingerprint[32])
+```
+
+`track_set_id` and `calibration_scope_id` are project-local immutable database
+references, consistent with the existing Track Model identity convention. The
+parameter fingerprint is required to be a 32-byte SHA-256 value but its final
+byte encoding remains a later geometry-gate decision. Runtime IDs, timestamps,
+worker count, resource state and metrics are excluded.
+
+Component identity is the minimum registered `image_id` in that component. It
+is deterministic, project-local, unique because an image belongs to at most one
+component, independent of DFS/hash order, and compact. A component always has
+at least one registered image. Its coordinates use an independent unit-baseline
+gauge and are never comparable to another component without later alignment.
+
+### Persisted model
+
+The minimum v16 model is:
+
+- `sparse_calibrations`: immutable calibration content and hash;
+- `sparse_calibration_scopes`: immutable scope hash/member count;
+- `sparse_calibration_scope_images`: one image-to-calibration assignment;
+- `sparse_reconstructions`: immutable identity and pixel reprojection metrics;
+- `sparse_reconstruction_components`: component key and counts;
+- `sparse_registered_images`: one world-to-camera pose per image;
+- `sparse_landmarks`: one component-local binary64 point per Track;
+- `sparse_landmark_observations`: minimal references to the upstream Feature Set
+  and feature index, without duplicated descriptors or x/y coordinates.
+
+Track ID is globally unique in the existing Track Model table, so one landmark
+per reconstruction is uniquely keyed by `(reconstruction_id, track_id)`;
+component key remains an attribute/consistency relation rather than redundant
+landmark identity. Landmark publication validates that the Track belongs to the
+reconstruction's exact Track Set and that every observation belongs to that
+Track and its component. Track splitting is impossible in v1.
+
+Observation references are persisted because future BA needs bounded indexed
+access from landmark to registered observations without repeatedly reopening
+Feature Files. Only `feature_set_id`, `feature_index` and canonical track
+position are stored; image ID and x/y remain derivable from immutable upstream
+models. This is a deliberate normalization/resource trade-off, not a second
+copy of Feature data.
+
+Persisted reprojection metrics use explicit pixel units and names:
+`reprojection_rmse_px` and `reprojection_median_px`. They are diagnostics, not
+identity. No metric scale or `_mm` field exists.
+
+### Constraints and publication
+
+Publication requires at least two registered images, one component and one
+landmark. A result with no usable geometry is rejected rather than represented
+by a meaningless empty scientific row. Two-camera reconstruction is valid.
+There are no READY/FAILED/PARTIAL scientific states: row existence means a
+complete immutable publication. A failed transaction leaves no visible row.
+
+SQL enforces one pose per image, one component per registered image, one
+landmark per Track, exact reconstruction uniqueness, scope member uniqueness,
+and child foreign keys. The API additionally validates Track Set ownership,
+component consistency, calibration coverage, finite values and rotation
+orthonormality/determinant. Rotation matrices are never repaired.
+
+The publication transaction inserts the reconstruction and all children using
+prepared statements in bounded loops. It contains no Feature File I/O, Track
+paging, solver work or Governor wait. Child pages use cursor order and bounded
+capacity (64 cameras, 64 landmarks, 64 observations); total scientific counts
+have no arbitrary cap beyond checked 64-bit/SQLite limits.
+
+### v16 migration intent
+
+Project DB v15 remains immutable. Gate B adds one transactional v15→v16
+migration containing only the eight Sparse SfM model tables and their required
+indexes. A true historical v15 fixture, injected rollback, retry, fresh-schema
+equivalence and close/reopen are mandatory. No Task, Governor, triangulation,
+PnP, BA, GPU or Project DB v17 is introduced.
