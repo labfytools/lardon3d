@@ -146,6 +146,7 @@ executable(
         'src/project_db.c', 'src/project_db_sparse_sfm.c',
         'src/sparse_sfm_geometry.cpp',
         'src/sparse_sfm_incremental.cpp',
+        'src/sparse_sfm_bundle_adjustment.cpp',
         'src/task.c',
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
@@ -545,6 +546,19 @@ sparse_sfm_incremental_test = executable(
 )
 
 test('sparse-sfm-incremental', sparse_sfm_incremental_test, timeout: 60)
+
+sparse_sfm_bundle_adjustment_test = executable(
+    'test-sparse-sfm-bundle-adjustment',
+    sources: [
+        'tests/test_sparse_sfm_bundle_adjustment.cpp',
+        'src/sparse_sfm_bundle_adjustment.cpp',
+    ],
+    cpp_args: ['-DLARDON3D_SPARSE_BUNDLE_ADJUSTMENT_TESTING'],
+    include_directories: include_directories('include'),
+)
+
+test('sparse-sfm-bundle-adjustment', sparse_sfm_bundle_adjustment_test,
+     timeout: 30)
 
 executable(
     'benchmark-sparse-sfm-incremental',
