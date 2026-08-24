@@ -125,8 +125,8 @@ are inferred from focal pixels, image resolution or baseline normalization.
 
 ## Reconstruction strategy
 
-**DECISION: incremental SfM with bounded local refinement and optional final
-global refinement.** It matches the expected sequential vehicle/phone capture,
+**DECISION: incremental SfM followed by final per-component refinement.** It
+matches the expected sequential vehicle/phone capture,
 allows unregistered images to remain visible as a scientific result, and keeps
 the active problem bounded. Global-only rotation/translation averaging would
 add a larger initialization and robustness surface without a current project
@@ -192,27 +192,285 @@ only on geometry; multi-view Tracks use all valid observations rather than a
 random pair. Robust observation dropping is deferred: v1 rejects the landmark
 as a whole, so Track identity and observation ownership remain simple.
 
-## Bundle Adjustment decision
+## Gate E v1 — Final Bundle Adjustment decision
 
-**DECISION: BA is required for a useful final reconstruction but is not part of
-the first pure-geometry gate.** The later BA gate will use a block-sparse
-camera/landmark problem with binary64 poses and points, fixed or explicitly
-fingerprinted calibration variables, and a robust loss whose kind/scale belong
-to scientific identity. Dense camera×landmark Jacobians are forbidden.
+**DECISION: Gate E v1 is a synchronous, independent final per-component Bundle
+Adjustment applied as post-processing to a copy of the immutable final Gate D
+result.** It consumes two caller-owned immutable views that must remain coherent
+for the complete call: that final Gate D result, and the same resolved
+observation/calibration view used to construct the scientific Gate D input. It
+never mutates either view, never creates constraints between disconnected
+components, preserves each component's independent gauge, and produces a
+distinct in-memory BA result.
 
-Ceres is not available in the current host pkg-config environment and is not a
-Lardon3D production dependency. It is a **NEW_CANDIDATE**, not silently added.
-Its sparse Schur solvers and block structure make it the leading BA study
-candidate; Eigen is host-available, while SuiteSparse is not detected. A later
-gate must prove license, reproducibility, thread behavior, memory scaling and
-fallback before adding Ceres. OpenCV remains appropriate for small relative
-pose/PnP/triangulation primitives, not as an implicit BA architecture.
+The Gate D result alone is authoritative for final components, registered
+cameras, initial poses, landmarks and the observations associated with each
+landmark. The second view only resolves an observation already published by
+Gate D. Its canonical key is `(feature_set_id, feature_index)`; resolution must
+return the matching `image_id`, source keypoint `x,y` and immutable calibration,
+and must also agree with the published Track and image identities. Missing,
+ambiguous, duplicate or inconsistent resolution is a Gate E input error. Gate E
+must not use array position, proximity or another heuristic fallback, add an
+observation, restore a rejected association or camera, or rerun incremental SfM.
 
-The first BA implementation should be local-window BA after registration,
-followed by at most one explicitly admitted global BA at finalization. No two
-heavy global BAs run concurrently. Global BA is allowed to be deferred by the
-Resource Governor. The trigger, window selection, robust loss, convergence and
-thread policy are configuration fields, not runtime identity.
+Source keypoint coordinates are the Feature File binary32 `x,y` in decoded-image
+pixels, with top-left origin, +x right and +y down. Gate E converts them to
+binary64 for computation; it does not treat them as already undistorted or
+normalized. Given `Xc = R_cw * Xw + t_cw`, define `xn = Xc.x / Xc.z`,
+`yn = Xc.y / Xc.z`, and `r2 = xn*xn + yn*yn`. The canonical OpenCV-compatible
+forward model is:
+
+```text
+radial = 1 + k1*r2 + k2*r2*r2
+xd = xn*radial + 2*p1*xn*yn + p2*(r2 + 2*xn*xn)
+yd = yn*radial + p1*(r2 + 2*yn*yn) + 2*p2*xn*yn
+u = fx*xd + cx
+v = fy*yd + cy
+residual = [u - observed_x, v - observed_y]
+```
+
+The residual is therefore binary64 in source pixels and uses the complete
+canonical calibration model. A private Gate D validation helper that omits
+distortion does not redefine this contract and is not a precedent for Gate E.
+The second immutable view is an explicit scientific input, not persistence,
+Project DB integration, a loader, resolver subsystem, cache, handle or Resource
+System.
+
+### Scientific and numerical contract
+
+Gate E processes every reconstructed Gate D component independently. It
+resolves the selected observations, copies the component poses and landmarks
+into a private working set, builds and solves one BA problem, validates the
+complete candidate, then either publishes that candidate in the distinct Gate
+E result or preserves the original Gate D component. No component constrains or
+influences another component.
+
+Gate E v1 optimizes only camera extrinsic rotations, camera centers and
+landmark positions. The known `fx`, `fy`, `cx`, `cy`, `k1`, `k2`, `p1`, `p2`,
+observations, Track membership, identities and observation/landmark
+associations are fixed and immutable. Future intrinsic optimization requires a
+separate scientific and identity decision.
+
+The public boundary remains solver-independent and world-to-camera. The private
+C++ adapter uses a unit quaternion for `R_cw`, with an appropriate quaternion
+manifold, and world camera center `Cw`:
+
+```text
+Xc = R_cw * (Xw - Cw)
+t_cw = -R_cw * Cw
+```
+
+Conversion to or from public rotation matrices canonicalizes quaternion sign,
+so `q` and `-q` cannot produce distinct observable representations. No Ceres
+type crosses the future C17 ABI.
+
+### Gate E gauge
+
+Gate E derives deterministic BA anchors from the final Gate D result and does
+not depend on historical seed IDs. In each component, the registered camera
+with the lowest `image_id` is the pose anchor; its complete initial Gate D
+rotation and camera center are fixed.
+
+Among the other registered cameras, the scale anchor is the camera whose
+binary64 Euclidean distance from the pose anchor is greatest. An exact distance
+tie selects the lowest `image_id`; no hidden tolerance participates. For
+`delta = C_scale - C_anchor`, the coordinate with greatest absolute value is
+the scale axis, with exact ties resolved X, then Y, then Z. That one initial
+Gate D coordinate of `C_scale` is fixed. Its other two center coordinates and
+its rotation remain variable. The fixed pose removes the six rigid degrees of
+freedom and the fixed nonzero scale coordinate removes the scale degree of
+freedom without fixing a second pose.
+
+The scale anchor is degenerate when:
+
+```text
+max(abs(delta.x), abs(delta.y), abs(delta.z)) <= 1e-9
+```
+
+Gate D fixes each valid component to a unit seed baseline, so `1e-9` world
+units is a numerically negligible separation in that scientific gauge. A
+component with no second valid camera or a degenerate scale anchor is not
+optimized; its Gate D data is retained with a gauge/degenerate diagnostic.
+
+### Objective and solver
+
+Every valid observation contributes the two-dimensional source-pixel residual
+defined above. Gate E uses binary64 throughout and minimizes their robustified
+sum with Huber loss and `delta = 2.0` source pixels. The Huber kind and scale are
+Gate E scientific policy, not Governor parameters, Resource parameters or a
+Gate E fingerprint. Non-finite poses, landmarks, projections, residuals or
+costs, and camera-frame depth invalid under the frozen camera invariants,
+reject the candidate.
+
+Gate E v1 selects the Ceres Solver 2.2.x API, CPU-only, with these explicit
+options:
+
+```text
+minimizer_type = TRUST_REGION
+trust_region_strategy_type = LEVENBERG_MARQUARDT
+linear_solver_type = ITERATIVE_SCHUR
+preconditioner_type = SCHUR_JACOBI
+num_threads = 1
+max_num_iterations = 50
+function_tolerance = 1e-6
+gradient_tolerance = 1e-10
+parameter_tolerance = 1e-8
+```
+
+Landmark parameter blocks form elimination group 0 in increasing canonical
+Track/landmark identity; camera blocks form group 1 in increasing `image_id`.
+Components, cameras, landmarks, observations and residual blocks are all built
+in canonical identity order. Automatic Ceres ordering is not used when the API
+accepts an explicit ordering.
+
+There is exactly one solver attempt per eligible component, with no automatic
+retry, wall-clock timeout or `max_solver_time`. Environment variables, hardware
+profiles, Tasks, schedulers and the Governor cannot change the single-thread
+reference. `ITERATIVE_SCHUR` with `SCHUR_JACOBI` provides the required
+block-sparse path without a functional SuiteSparse dependency; `SPARSE_SCHUR`,
+CUDA and GPU execution are not Gate E v1.
+
+### Eligibility, bounds and acceptance
+
+An eligible component has at least two registered cameras, at least one valid
+BA landmark, exactly resolved observations and calibrations, finite inputs, a
+valid gauge, overflow-safe dimensions and no manifest underconstraint after
+the anchors. Gate D already guarantees multi-view support for every published
+landmark, so Gate E introduces no separate support threshold.
+
+Gate E retains the identically-scoped Gate D bounds of at most 4096 registered
+cameras, 250,000 Tracks/landmarks and 1,000,000 observations. The Gate D
+landmarks-per-growth-round bound is not a Gate E bound. All allocation and
+dimension arithmetic is overflow-checked. The architecture is block-sparse;
+no dense camera-count × landmark-count allocation or Jacobian is permitted.
+
+Ceres `NO_CONVERGENCE` is rejection even if an intermediate candidate has
+lower cost. Only a termination classified as successful convergence by the
+private Ceres adapter is acceptable. The robust-cost comparison uses exactly:
+
+```text
+cost_tolerance = 1e-12 * max(1.0, abs(initial_robust_cost))
+final_robust_cost <= initial_robust_cost + cost_tolerance
+```
+
+This comparison tolerance absorbs insignificant binary64 noise and is not a
+Ceres convergence tolerance. A component is published only when its inputs are
+coherent and eligible, termination is accepted, all candidate poses,
+landmarks, required projections and robust costs are finite, both gauge anchors
+are strictly preserved in their contract representations, the cost condition
+holds, and no consumed frozen invariant is violated. Otherwise the original
+Gate D component is preserved exactly and accompanied by a rejection
+diagnostic. All optimization occurs on a private copy, so publication is atomic
+per component and requires no in-place rollback.
+
+### Result and diagnostics
+
+The future solver-independent Gate E result has these conceptual states:
+
+- `COMPLETE`: at least one component is eligible and every eligible component
+  is optimized and accepted;
+- `PARTIAL`: at least one component is accepted and at least one other eligible
+  component is rejected or fails;
+- `FAILED`: no eligible component produces an accepted BA result, including an
+  input with no eligible component.
+
+Ineligible and rejected components retain their Gate D data. Each component
+diagnostic contains at least component key, camera/landmark/observation counts,
+pose-anchor and scale-anchor `image_id`, scale axis X/Y/Z, initial and final
+robust cost, initial and final reprojection RMSE, iteration count, solver
+termination class, accepted/rejected state and rejection reason. It exposes no
+Ceres pointer or type.
+
+Diagnostic reprojection RMSE is non-robust:
+
+```text
+sqrt(sum(dx*dx + dy*dy) / observation_count)
+```
+
+Acceptance remains based on robust cost and all contract invariants. Raw RMSE
+is not required to improve universally in the presence of outliers.
+
+### Reproducibility
+
+For identical input, executable, build, dependency versions and machine with
+one solver thread, component order, anchors, parameter/residual ordering,
+states, accept/reject decisions and structural diagnostics are deterministic.
+Comparable binary64 geometric scalars satisfy:
+
+```text
+abs(a - b) <= 1e-12 * max(1.0, abs(a), abs(b))
+```
+
+Rotations are compared geometrically rather than by raw quaternion sign. If
+fresh-process tests in an identical environment cannot meet this tolerance,
+implementation stops for contract review; tests must not widen it silently.
+
+### Canonical Gate E validation matrix
+
+| Case | Contract evidence |
+|---|---|
+| E01 Null/invalid input | Safe rejection; no exception crosses C |
+| E02 Empty/non-eligible result | Deterministic `FAILED` with diagnostics |
+| E03 Clean synthetic component | Finite accepted result, gauge held, cost non-regression |
+| E04 Perturbed poses | Fixture-defined measurable improvement |
+| E05 Perturbed landmarks | Fixture-defined measurable improvement |
+| E06 Perturbed poses and landmarks | Convergence and fixture-defined improvement |
+| E07 Noise 0.5 px | Finite accepted result or contractually justified rejection |
+| E08 Noise 1.0 px | Finite accepted result or contractually justified rejection |
+| E09 Noise 2.0 px | Finite accepted result or contractually justified rejection |
+| E10 Outliers 10% | Huber active; finite result or clean rejection; no invariant violation |
+| E11 Outliers 20% | Huber active; finite result or clean rejection; no invariant violation |
+| E12 Outliers 40% | Huber active; finite result or clean rejection; no invariant violation |
+| E13 Disconnected components | Independent optimization and gauges |
+| E14 One success, one failure | Global `PARTIAL` |
+| E15 Pose anchor | Initial rotation and center strictly preserved |
+| E16 Scale anchor | Selected center coordinate strictly preserved |
+| E17 Deterministic anchors | Exact distance/ID and X/Y/Z ties; `1e-9` degeneracy boundary |
+| E18 Insufficient cameras | No solve; Gate D data retained |
+| E19 Underconstrained geometry | No solve; Gate D data retained |
+| E20 Non-finite input | Input rejection |
+| E21 Non-finite projection candidate | Atomic candidate rejection |
+| E22 Forced non-convergence | Private summary interpreter rejects `NO_CONVERGENCE` |
+| E23 Candidate regression | Cost condition prevents publication |
+| E24 Atomic rejection | Original component preserved exactly |
+| E25 Canonical ordering | Explicit groups and parameter/residual order |
+| E26 Same-process repeats | Structural equality and numeric tolerance |
+| E27 Fresh-process repeats | At least 20 processes in one identical environment |
+| E28 Ownership/destruction | Caller inputs retained; owned result safely destroyed |
+| E29 Null/repeated destroy | Required only if E1 adopts the existing null-safe convention |
+| E30 Allocation/overflow | Checked rejection before allocation |
+| E31 Maximum boundary guards | Exact documented limits without a giant solve where isolatable |
+| E32 Sparse architecture | No dense camera-count × landmark-count allocation |
+| E33 Calibration immutability | Before/after identical |
+| E34 Track/observation immutability | Before/after identical |
+| E35 Gate D immutability | Input unchanged after success and every failure path |
+
+E22 tests the private solver-summary-to-decision interpreter directly. It does
+not expose an iteration override, add a production behavior for testing or
+change `max_num_iterations = 50`. Synthetic ground-truth fixtures measure
+pre/post geometric error and robust cost. Fixtures intended to improve define
+their own scientifically measurable improvement; no universal pose or landmark
+threshold is invented.
+
+Local BA after registration is deferred. Gate D exposes no intermediate
+scientific seam or complete registration history, and an interleaved BA could
+change its subsequent growth. Introducing that policy requires a future
+explicit scientific seam/version architecture decision; Gate E v1 does not
+create or name such a version.
+
+Gate E v1 remains independent of Project DB, Task Runtime, the Resource
+Governor and any Resource System. It neither computes nor carries a parameter
+fingerprint, defines no persistent identity, and publishes nothing. Gate F
+retains project/task orchestration and persistence; Gate G retains Resource
+Governor integration and final resource validation.
+
+Ceres availability on a host must be distinguished from Lardon3D dependency
+declaration. Gate E selects the Ceres Solver 2.2.x API scientifically, but
+Lardon3D currently declares no production Ceres dependency in Meson. A future
+dependency slice must verify the used API, licensing, CPU-only construction and
+a build without required SuiteSparse or CUDA. Package discovery may use CMake;
+a pkg-config miss alone does not prove host unavailability, and an installed
+host package is not a declared Lardon3D dependency.
 
 ## Determinism and scientific identity
 
@@ -267,13 +525,13 @@ working set. It forbids a dense `C×P`, `C×C` or co-visibility matrix. Track
 length has no arbitrary 256 cap; long Tracks are iterated through checked
 bounded storage.
 
-Triangulation/registration are light CPU units and can be batched. Local BA is
-bounded by an active camera/landmark window and needs a Governor reservation.
-Global BA is one heavy job at a time, with explicit admission and a conservative
-thread cap. Future reservation inputs are `C`, `P`, `O`, active window size,
-solver mode and calibration-variable count. The existing Resource Governor
-owns RAM/PSI/swap policy; Sparse SfM adds no thresholds. Swap is never normal
-working memory, and UMA RAM must preserve several GiB of desktop/iGPU headroom.
+Triangulation/registration are light CPU units and can be batched. Gate E v1
+uses local scientific limits for its final per-component BA and does not query
+the Governor. Future Gate G admission may use `C`, `P`, `O`, solver mode and
+calibration-variable count without changing scientific results. The existing
+Resource Governor owns RAM/PSI/swap policy; Sparse SfM adds no system-pressure
+thresholds. Swap is never normal working memory, and UMA RAM must preserve
+several GiB of desktop/iGPU headroom.
 
 ## Hardware and probe study
 
@@ -282,11 +540,10 @@ Gate A preflight measured 16 logical CPUs, `MemTotal=15597716 KiB`,
 zram device, and zero current memory/IO PSI average. The host is the Ryzen 7
 8845HS/Radeon 780M UMA target described by the performance document.
 
-The project already links OpenCV 5.0.0. Eigen 5.0.1 and Ceres 3.12.0 are
-available through host pkg-config but are not current production dependencies;
-SuiteSparse/BLAS/LAPACK availability is host capability only. TBB 2023.1 is
-present through the existing OpenCV stack. No package, system setting, swap
-device or GPU mode was changed.
+The project already links OpenCV 5.0.0. Host-installed libraries and their
+pkg-config or CMake discovery metadata are capabilities, not Lardon3D
+production dependencies. Lardon3D currently declares no Ceres dependency in
+Meson. No package, system setting, swap device or GPU mode was changed.
 
 Gate A probes use deterministic synthetic camera arcs, controlled noise and
 degenerate planar/pure-rotation cases. Every RSS probe is a separate normal
@@ -304,8 +561,9 @@ production Sparse SfM code is created by this gate.
   deterministic seed, triangulation and PnP with synthetic ground truth.
 - **Gate D — Incremental core:** registration ordering, components,
   unregistered-image policy and deterministic reconstruction output.
-- **Gate E — BA integration:** sparse BA candidate, robust loss, local/global
-  policy, numerical reproducibility and solver dependency decision.
+- **Gate E — Final Bundle Adjustment:** synchronous final per-component BA on a
+  copy of the immutable Gate D result, with its scientific and numerical
+  contract frozen here; interleaved local BA is deferred.
 - **Gate F — Project orchestration:** explicit Track Set/calibration input,
   atomic publication and durable runtime integration.
 - **Gate G — Resource/freeze:** Governor admission, sustained hardware safety,
@@ -317,7 +575,7 @@ production Sparse SfM code is created by this gate.
 
 Seed/order risk is controlled by deterministic policy. It is robust for
 sequential capture, has canonical queues and seeds, moderate complexity, and
-sparse `C,T,O` scaling with local BA. **SELECTED v1.**
+sparse `C,T,O` scaling followed by final per-component BA. **SELECTED v1.**
 
 ### Global SfM
 
@@ -342,7 +600,7 @@ Triangulation candidates:
 |---|---|---|---|
 | Dense normal equations | Prohibited for serious `C×P` problems | No | Rejected |
 | OpenCV generic optimization | Not a sparse BA contract | Present, wrong abstraction | Rejected |
-| Ceres sparse Schur | Appropriate block structure | New candidate dependency | **Later-gate candidate** |
+| Ceres 2.2.x iterative Schur | Block-sparse | Scientific selection; not in Meson | **Selected Gate E v1** |
 
 ### Synthetic geometry probe
 
@@ -365,23 +623,23 @@ checks before accepting a component.
 
 The project already links OpenCV 5.0.0. Host probes found Eigen 5.0.1, BLAS
 3.12.0, LAPACK 3.12.0 and TBB 2023.1 as host capabilities or transitive
-facilities rather than current Lardon3D production dependencies. Ceres and
-SuiteSparse are not available through the current host pkg-config environment;
-Ceres remains a new dependency candidate, not an installed fact. No new
-dependency is added by Gate A. The measured machine has 16 logical CPUs,
+facilities rather than current Lardon3D production dependencies. Ceres may use
+CMake discovery, so pkg-config alone does not establish host availability.
+Ceres 2.2.x is the selected Gate E scientific API, but Lardon3D declares no
+production Ceres dependency yet. No new dependency is added by this contract
+slice. The measured machine has 16 logical CPUs,
 `MemTotal=15597716 KiB`, `MemAvailable=8245288 KiB` at preflight, an 8 GiB
-swapfile, 6 GiB zram and zero memory/IO PSI averages at the probe start. A
-single heavy BA and a future solver thread cap of 4 are the conservative
-resource candidates; these are not yet Governor settings.
+swapfile, 6 GiB zram and zero memory/IO PSI averages at the probe start. Gate E
+uses one solver thread; future Gate G resource admission cannot change that
+scientific setting.
 
 ## Gate A unresolved boundaries
 
-The following remain deliberately deferred to later gates rather than hidden:
-exact numeric parallax/reprojection thresholds, Ceres licensing/dependency
-adoption, robust-loss scale, local-window selection, BA convergence criteria,
-metric alignment, persistent reconstruction schema and durable SfM checkpoints.
-Their semantic ownership is decided here; their final numeric values require
-the synthetic ground-truth and sparse-solver gates.
+The following remain deliberately deferred rather than hidden: Ceres
+licensing/dependency integration, metric alignment, persistent orchestration
+and durable SfM checkpoints. Gate E freezes its own robust loss, convergence,
+ordering and acceptance policy here without introducing persistence or a
+fingerprint.
 
 ## Gate C — pure calibrated geometry
 
@@ -439,7 +697,7 @@ parameters and do not alter Project DB identity.
 
 ## Gate D — incremental Sparse SfM core
 
-**GATE D — PASS.** Gate D is the first executable link
+**GATE D — PASS / FROZEN.** Gate D is the first executable link
 between the immutable Track/Calibration contracts and the Gate C primitives.
 The reference implementation is synchronous, deterministic, CPU-only,
 in-memory, bounded and independent of Project DB, Task Runtime, Resource
