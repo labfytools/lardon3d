@@ -363,6 +363,42 @@ valid gauge, overflow-safe dimensions and no manifest underconstraint after
 the anchors. Gate D already guarantees multi-view support for every published
 landmark, so Gate E introduces no separate support threshold.
 
+For a component with a valid non-degenerate Gate E gauge, let `C` be its
+registered camera count, `P` its optimized landmark count and `O` its retained,
+resolved observation count. Camera intrinsics and distortion are fixed. The
+free tangent dimension is therefore:
+
+```text
+free_dof = 6*C + 3*P - 7
+scalar_residual_count = 2*O
+```
+
+The completely fixed pose anchor removes six degrees of freedom, and the fixed
+scale-anchor center coordinate removes one. Gate E v1 defines **manifest
+underconstraint** as at least one of these exact structural conditions:
+
+- **UC1:** `2*O < 6*C + 3*P - 7`, using overflow-checked integer arithmetic;
+- **UC2:** an optimized landmark is observed by fewer than two distinct
+  registered cameras;
+- **UC3:** an optimizable camera, including the scale anchor but excluding the
+  completely fixed pose anchor, observes fewer than three distinct landmarks;
+- **UC4:** the bipartite camera-landmark optimization graph is not one connected
+  component containing the pose anchor.
+
+E19 evaluates UC1--UC4 only after the existing structural validation and valid
+anchor selection. E18 remains the existing insufficient-camera case and is not
+redefined by E19. These conditions are necessary structural checks, not proof
+of full numerical rank. Gate E v1 performs no numerical rank estimate, SVD,
+singular-value or condition-number threshold, Jacobian/Hessian rank epsilon, or
+Ceres covariance/rank heuristic for E19. Geometry that passes UC1--UC4 can
+still be rejected by the existing projection, solver termination, finite-value,
+cost non-regression and atomic-publication contracts.
+
+UC1--UC4 are deterministic and solver-independent. Their implementation uses
+the existing canonical flat Gate E working set and temporary storage bounded by
+`O(C + P + O)` or better. It uses no hash-order dependency, dense `C * P`
+storage, materialized rank matrix or new Resource subsystem.
+
 Gate E retains the identically-scoped Gate D bounds of at most 4096 registered
 cameras, 250,000 Tracks/landmarks and 1,000,000 observations. The Gate D
 landmarks-per-growth-round bound is not a Gate E bound. All allocation and
@@ -398,6 +434,42 @@ The future solver-independent Gate E result has these conceptual states:
   component is rejected or fails;
 - `FAILED`: no eligible component produces an accepted BA result, including an
   input with no eligible component.
+
+`Lardon3DSparseBundleAdjustmentStatus` contains only these three scientific
+result states. In particular, `FAILED` is not an invalid-argument,
+out-of-memory or internal execution error.
+
+The future synchronous execution function returns the separate,
+solver-independent `Lardon3DSparseBundleAdjustmentExecutionStatus`:
+
+```text
+LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_OK
+LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INVALID_ARGUMENT
+LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_OUT_OF_MEMORY
+LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INTERNAL_ERROR
+```
+
+`EXECUTION_OK` means the public input was structurally valid, Gate E reached a
+complete scientific decision and produced the owned result. Its scientific
+status may be `COMPLETE`, `PARTIAL` or `FAILED`; `EXECUTION_OK` with scientific
+`FAILED` is valid and means that no eligible component was accepted.
+
+`EXECUTION_INVALID_ARGUMENT` covers a violated public input contract, including
+pointer/count, bounds, identity, finiteness, observation-resolution or
+Gate-D/result-view coherence failures. `EXECUTION_OUT_OF_MEMORY` covers an
+allocation failure, including `std::bad_alloc` caught at the C/C++ boundary,
+that prevents production of a complete scientific result.
+`EXECUTION_INTERNAL_ERROR` is reserved for an unexpected internal failure that
+prevents safe completion; it is not a component-rejection fallback. Normal
+component rejection for insufficient cameras, gauge degeneracy, manifest
+underconstraint, invalid candidate projection, solver `NO_CONVERGENCE` or
+`FAILURE`, a non-finite candidate or robust-cost regression contributes only to
+the scientific `COMPLETE`/`PARTIAL`/`FAILED` result.
+
+On every execution status other than `EXECUTION_OK`, the public result remains
+in its canonical zero state: all counts are zero, all owned array and diagnostic
+pointers are null, and destruction is safe. The execution function never
+publishes a partial owned result and then returns an execution error.
 
 Ineligible and rejected components retain their Gate D data. Each component
 diagnostic contains at least component key, camera/landmark/observation counts,
