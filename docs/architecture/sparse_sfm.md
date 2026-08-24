@@ -294,13 +294,38 @@ optimized; its Gate D data is retained with a gauge/degenerate diagnostic.
 
 ### Objective and solver
 
-Every valid observation contributes the two-dimensional source-pixel residual
-defined above. Gate E uses binary64 throughout and minimizes their robustified
-sum with Huber loss and `delta = 2.0` source pixels. The Huber kind and scale are
-Gate E scientific policy, not Governor parameters, Resource parameters or a
-Gate E fingerprint. Non-finite poses, landmarks, projections, residuals or
-costs, and camera-frame depth invalid under the frozen camera invariants,
-reject the candidate.
+Every valid observation contributes one two-dimensional source-pixel residual
+block `f_i = [dx, dy]`, where `dx = predicted_x - observed_x` and
+`dy = predicted_y - observed_y`. Gate E uses binary64 throughout. Define:
+
+```text
+s_i = dx*dx + dy*dy
+delta = 2.0
+delta2 = 4.0
+
+rho_delta(s) = s                         if s <= delta2
+rho_delta(s) = 2*delta*sqrt(s) - delta2 if s > delta2
+
+robust_cost = 0.5 * sum_i(rho_delta(s_i))
+```
+
+Thus, with `delta = 2.0` source pixels, the second branch is
+`4.0*sqrt(s) - 4.0`. The Huber loss applies once to the norm squared of the
+complete 2D observation, never independently to `dx` and `dy`; the factor
+`0.5` is contractual. Each observation must likewise be one 2D Ceres residual
+block, not two scalar blocks.
+
+Lardon3D computes initial and final robust costs independently of the solver
+using exactly this formula, and those values govern acceptance. Ceres summary
+costs may only diagnose or cross-check them. With the identical problem, a
+disagreement beyond the applicable numerical tolerance stops implementation
+for contract review; neither value silently replaces the other. Non-finite
+`dx`, `dy`, `s_i`, `rho_delta(s_i)`, accumulation, pose, landmark or projection,
+and camera-frame depth invalid under the frozen camera invariants, reject the
+candidate. No clamp or fallback is permitted.
+
+The Huber kind and scale are Gate E scientific policy, not Governor parameters,
+Resource parameters or a Gate E fingerprint.
 
 Gate E v1 selects the Ceres Solver 2.2.x API, CPU-only, with these explicit
 options:
