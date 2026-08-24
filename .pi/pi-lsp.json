@@ -1,0 +1,20 @@
+{
+  "clangd": {
+    "command": [
+      "clangd",
+      "--background-index",
+      "--clang-tidy"
+    ],
+    "extensions": [
+      ".c",
+      ".h",
+      ".cc",
+      ".cpp",
+      ".cxx",
+      ".hh",
+      ".hpp",
+      ".hxx"
+    ],
+    "pullDiagnosticsGraceMs": 5000
+  }
+}

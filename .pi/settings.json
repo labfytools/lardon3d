@@ -1,0 +1,42 @@
+{
+  "defaultProvider": "local-lardon",
+  "defaultModel": "lardon-local",
+  "defaultThinkingLevel": "off",
+  "enabledModels": [
+    "local-lardon/lardon-local"
+  ],
+  "packages": [
+    "npm:@narumitw/pi-usage@0.52.1",
+    {
+      "source": "npm:context-mode@1.0.169",
+      "extensions": [],
+      "skills": []
+    },
+    "npm:@narumitw/pi-lsp@0.49.5",
+    "npm:pi-hermes-memory@0.9.6",
+    {
+      "source": "npm:pi-subagents@0.56.0",
+      "skills": [],
+      "prompts": [],
+      "themes": []
+    },
+    {
+      "source": "npm:pi-mcp-adapter@2.27.0",
+      "skills": []
+    },
+    "./lardon-profiles.ts"
+  ],
+  "subagents": {
+    "defaultModel": "local-lardon/lardon-local",
+    "defaultThinking": "off",
+    "disableThinking": true,
+    "disableBuiltins": true,
+    "defaultExtensions": [],
+    "modelScope": {
+      "enforce": true,
+      "allow": [
+        "local-lardon/lardon-local"
+      ]
+    }
+  }
+}
