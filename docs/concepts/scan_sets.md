@@ -121,8 +121,9 @@ des images de ScanSets différents sans dépendre de leur nom ou ordre.
 
 **IMPLEMENTED** — paires candidates, matching, vérification géométrique et
 Track Model / Track Builder v1 peuvent consommer le catalogue et ses assets.
-Les primitives géométriques Sparse SfM sont implémentées par Gate C.
+Les primitives géométriques Sparse SfM Gate C et le noyau incrémental
+synchrone en mémoire Gate D sont **IMPLEMENTED / PASS**.
 
-**PLANNED** — solveur Sparse SfM complet, MVS et relations géométriques entre
-ScanSets. La vérification/scrub des assets et la réconciliation globale restent
-également NOT_YET_WIRED.
+**PLANNED** — BA, orchestration Sparse SfM, MVS et relations géométriques
+entre ScanSets. La vérification/scrub des assets et la réconciliation globale
+restent également NOT_YET_WIRED.

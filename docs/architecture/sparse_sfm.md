@@ -450,7 +450,8 @@ Governor and persistence publication.
 Gate D consumes exactly one immutable Track Set, one immutable calibration
 scope, finite calibration values for participating images, bounded keypoint
 coordinates addressed by `(feature_set_id, feature_index)`, and explicit
-fingerprinted parameters. The Track Set is never mutated.
+parameters immutable during execution. Gate D neither computes nor carries the
+future parameter fingerprint. The Track Set is never mutated.
 
 ### Algorithm
 
@@ -592,9 +593,9 @@ policy loop performs a `limit + 1` attempt.
 
 ## Out of scope
 
-No production Sparse SfM, triangulator, camera solver, BA, Project DB v16,
-metric alignment, control-point scale, dense/MVS, mesh, texturing, Vulkan SfM,
-GPU BA, network/distributed scheduling or UI workflow is implemented here.
+Beyond the Gate D incremental core, no BA, Project DB integration, metric
+alignment, control-point scale, dense/MVS, mesh, texturing, Vulkan SfM, GPU BA,
+network/distributed scheduling or UI workflow is implemented here.
 
 ## Gate B — model and persistence contract
 

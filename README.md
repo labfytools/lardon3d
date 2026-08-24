@@ -165,9 +165,10 @@ Matcher v1, Geometric Verification Model v1 et Geometric Verifier Fundamental v1
 sont implémentés. Le runtime Feature + Matcher + Verifier emploie des tâches durables,
 de petits lots, le Resource Governor interactif et un hot path Vulkan ORB exact avec
 fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ; ces deux matchers
-restent sur OpenCV L2. Track Model/Builder et les primitives géométriques Sparse
-SfM sont implémentés ; le solveur Sparse SfM complet, le DAG, le viewer et les
-étapes denses restent des tickets séparés planifiés. Le Resource Governor ne
+restent sur OpenCV L2. Track Model/Builder, les primitives géométriques Gate C
+et le noyau Sparse SfM incrémental Gate D sont implémentés ; BA, l'orchestration
+Sparse SfM, le DAG, le viewer et les étapes denses restent des tickets séparés
+planifiés. Le Resource Governor ne
 constitue pas un Resource System générique : voir la décision d’architecture.
 
 ## Licence

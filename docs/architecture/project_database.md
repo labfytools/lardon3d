@@ -798,5 +798,7 @@ orphelins et compaction Visual Index. Feature Store et Visual Index v1 sont impl
 Visual Index v1 borne un index à 256 segments de 16 memberships, soit 4096 Feature Sets;
 la couverture de 50 000 Feature Sets nécessitera la compaction ou une évolution v2.
 
-**PLANNED** — dépendances d'artefacts, graphe géométrique et
-reconstruction incrémentale.
+**PLANNED** — dépendances d'artefacts, graphe géométrique et orchestration
+projet/tâche de la reconstruction incrémentale. Le noyau Sparse SfM
+incrémental synchrone en mémoire Gate D est **IMPLEMENTED / PASS** hors
+Project DB v16.

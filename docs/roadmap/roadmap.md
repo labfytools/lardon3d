@@ -50,10 +50,11 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 - ✅ Candidate Pair Generator
 - ✅ Matching et vérification géométrique
 - ✅ Track Model / Track Builder v1
-- 🔄 Sparse SfM : primitives géométriques Gate C implémentées ; solveur complet planifié
+- ✅ Sparse SfM : primitives géométriques Gate C et noyau incrémental Gate D
+  implémentés
 
 ### Phase 5 : Reconstruction (PLANNED)
-- 📋 Reconstruction incrémentale
+- 📋 Orchestration de reconstruction incrémentale
 - 📋 MVS / dense
 - 📋 Mesh
 - 📋 Contraintes externes
