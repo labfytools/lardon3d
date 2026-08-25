@@ -79,3 +79,8 @@ générique v1 ne possède aucun payload propre au kind.
 depuis son payload Project DB v15 et son asset little-endian validé. Le callback
 réutilise l'orchestration Gate C et le reconstructeur refuse toute corruption,
 version, fingerprint, checksum, tri, unicité ou L3DTSIS1 incohérents.
+
+**PASS / FROZEN** — `sparse_sfm.run`, version 1, recharge le
+payload scientifique explicite Project DB v17, restaure l'estimation générique
+persistée et rejoue D puis E depuis les références Track Set/calibration. Le
+fingerprint F0 est recalculé ; le checkpoint générique v1 reste inchangé.

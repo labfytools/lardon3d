@@ -1,6 +1,45 @@
 # Base de données projet Lardon3D
 
-> Version courante : **v16**. La migration transactionnelle v15→v16 ajoute
+## Gate F — décision Project DB v17
+
+**PASS / FROZEN.** La migration historique v15→v16 et le
+modèle de reconstruction Sparse SfM v16 restent inchangés. Gate F fait avancer
+la tête de schéma à v17 par une migration strictement additive contenant une
+seule table métier de tâche : `sparse_sfm_tasks`.
+
+Cette table suit le modèle des autres Task Kinds durables : une ligne par
+`task_id`, clé primaire et clé étrangère vers `tasks(task_id)` avec suppression
+en cascade. Elle conserve les références immuables `track_set_id` et
+`calibration_scope_id`, `sfm_kind`, `sfm_version`, puis les 27 valeurs effectives
+de `Lardon3DSparseIncrementalParameters`, y compris les sous-structures
+relative-pose, PnP et refinement. Les entiers suivent leurs largeurs C
+canoniques ; les flottants finis sont stockés en SQLite `REAL` et doivent
+retrouver exactement leurs bits binary64 après fermeture/réouverture.
+
+Le Task Kind et sa version restent dans `tasks` et versionnent l'interprétation
+du payload. Le fingerprint F0 est dérivé au rechargement et n'est pas dupliqué.
+Le checkpoint générique v1 n'est pas modifié. L'écriture du résumé générique et
+du payload typé est une transaction unique ; une ligne absente, incompatible
+ou invalide interdit la reconstruction runtime sans appliquer de valeurs par
+défaut.
+
+Les quatre champs `uint64_t` de domaine complet — limites observations/Tracks
+et seeds déterministes relative-pose/PnP — sont chacun un BLOB de huit octets
+little-endian avec `CHECK(length(...)=8)`. L'API exige la classe BLOB et la
+longueur exacte au rechargement. Les métriques globales persistées restent les
+diagnostics Gate F calculés sur toutes les observations retenues du résultat
+Gate E final ; elles ne participent pas à l'identité.
+
+La publication Gate F est la projection durable du résultat scientifique
+complet : une composante est persistée si et seulement si ses nombres d'images
+enregistrées et de landmarks sont tous deux strictement positifs. Une
+composante dont le BA est rejeté mais dont la géométrie Gate D reste valide est
+persistée exactement ; seule une composante de graphe non reconstruite est
+omise. Les comptes et métriques globaux décrivent exclusivement la géométrie
+effectivement persistée. Aucun placeholder ni table diagnostique n'est ajouté.
+
+> Version courante : **v17**. La migration transactionnelle v16→v17 ajoute le
+> payload durable typé `sparse_sfm_tasks`. La migration transactionnelle v15→v16 ajoute
 > le modèle persistant Sparse SfM (calibrations, scopes et reconstructions).
 > La migration transactionnelle v14→v15 ajoute
 > `track_builder_tasks` pour le payload durable explicite du Task Builder. La

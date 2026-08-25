@@ -423,6 +423,30 @@ static const char schema_sparse_sfm_v16_b[] =
     "CREATE INDEX sparse_landmark_observations_page_idx ON "
     "sparse_landmark_observations(landmark_id,position_in_track);";
 
+static const char schema_sparse_sfm_task_v17[] =
+    "CREATE TABLE sparse_sfm_tasks("
+    "task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,"
+    "track_set_id INTEGER NOT NULL REFERENCES track_sets(track_set_id),"
+    "calibration_scope_id INTEGER NOT NULL REFERENCES sparse_calibration_scopes(scope_id),"
+    "sfm_kind INTEGER NOT NULL CHECK(sfm_kind=1),"
+    "sfm_version INTEGER NOT NULL CHECK(sfm_version=1),"
+    "minimum_seed_tracks INTEGER NOT NULL,minimum_seed_landmarks INTEGER NOT NULL,"
+    "minimum_pnp_correspondences INTEGER NOT NULL,maximum_seed_candidates INTEGER NOT NULL,"
+    "maximum_registration_rounds INTEGER NOT NULL,maximum_landmarks_per_round INTEGER NOT NULL,"
+    "maximum_images INTEGER NOT NULL,maximum_observations BLOB NOT NULL "
+    "CHECK(length(maximum_observations)=8),maximum_tracks BLOB NOT NULL "
+    "CHECK(length(maximum_tracks)=8),reprojection_threshold_px REAL NOT NULL,"
+    "minimum_track_parallax_rad REAL NOT NULL,relative_robust_threshold_px REAL NOT NULL,"
+    "relative_confidence REAL NOT NULL,relative_max_iterations INTEGER NOT NULL,"
+    "relative_minimum_inliers INTEGER NOT NULL,relative_minimum_inlier_ratio REAL NOT NULL,"
+    "relative_minimum_parallax_rad REAL NOT NULL,relative_minimum_cheirality_ratio REAL NOT NULL,"
+    "relative_deterministic_seed BLOB NOT NULL CHECK(length(relative_deterministic_seed)=8),"
+    "pnp_reprojection_threshold_px REAL NOT NULL,pnp_confidence REAL NOT NULL,"
+    "pnp_max_iterations INTEGER NOT NULL,pnp_minimum_inliers INTEGER NOT NULL,"
+    "pnp_minimum_inlier_ratio REAL NOT NULL,pnp_deterministic_seed BLOB NOT NULL "
+    "CHECK(length(pnp_deterministic_seed)=8),refinement_max_iterations INTEGER NOT NULL,"
+    "refinement_convergence_tolerance REAL NOT NULL);";
+
 static void copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text) {
   if (destination) {
     (void)snprintf(destination, LARDON3D_PROJECT_DB_ERROR_CAPACITY, "%s", text ? text : "");
@@ -839,6 +863,23 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
           "finish schema v16 migration");
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version < 17) {
+    result = execute(database, schema_sparse_sfm_task_v17,
+                     "migrate schema v16 to v17");
+#ifdef LARDON3D_PROJECT_DB_TESTING
+    if (result == LARDON3D_PROJECT_DB_OK &&
+        getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V17")) {
+      result = execute(database, "INSERT INTO missing_v17_test_table VALUES(1)",
+                       "forced migration v17 failure");
+    }
+#endif
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(
+          database,
+          "UPDATE metadata SET value=17 WHERE key='schema_version' AND value=16",
+          "finish schema v17 migration");
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit migration");
   }
@@ -1150,6 +1191,36 @@ static bool valid_durable_task(const Lardon3DTaskDurableSnapshot *snapshot, int6
          updated_at >= 0;
 }
 
+static bool valid_sparse_sfm_parameters(const Lardon3DSparseIncrementalParameters *p) {
+  return p && p->minimum_seed_tracks >= 2 && p->minimum_seed_landmarks > 0 &&
+         p->minimum_pnp_correspondences >= 4 && p->maximum_seed_candidates > 0 &&
+         p->maximum_registration_rounds > 0 && p->maximum_landmarks_per_round > 0 &&
+         p->maximum_images >= 2 && p->maximum_observations >= p->maximum_tracks &&
+         isfinite(p->reprojection_threshold_px) && p->reprojection_threshold_px > 0.0 &&
+         isfinite(p->minimum_track_parallax_rad) && p->minimum_track_parallax_rad >= 0.0 &&
+         isfinite(p->relative_pose.robust_threshold_px) &&
+         p->relative_pose.robust_threshold_px > 0.0 && isfinite(p->relative_pose.confidence) &&
+         p->relative_pose.confidence > 0.0 && p->relative_pose.confidence < 1.0 &&
+         p->relative_pose.max_iterations > 0 &&
+         p->relative_pose.minimum_inliers >= p->minimum_seed_tracks &&
+         isfinite(p->relative_pose.minimum_inlier_ratio) &&
+         p->relative_pose.minimum_inlier_ratio > 0.0 &&
+         p->relative_pose.minimum_inlier_ratio <= 1.0 &&
+         isfinite(p->relative_pose.minimum_parallax_rad) &&
+         p->relative_pose.minimum_parallax_rad >= 0.0 &&
+         isfinite(p->relative_pose.minimum_cheirality_ratio) &&
+         p->relative_pose.minimum_cheirality_ratio > 0.0 &&
+         p->relative_pose.minimum_cheirality_ratio <= 1.0 &&
+         isfinite(p->pnp.reprojection_threshold_px) && p->pnp.reprojection_threshold_px > 0.0 &&
+         isfinite(p->pnp.confidence) && p->pnp.confidence > 0.0 && p->pnp.confidence < 1.0 &&
+         p->pnp.max_iterations > 0 &&
+         p->pnp.minimum_inliers >= p->minimum_pnp_correspondences &&
+         isfinite(p->pnp.minimum_inlier_ratio) && p->pnp.minimum_inlier_ratio > 0.0 &&
+         p->pnp.minimum_inlier_ratio <= 1.0 && p->refinement.max_iterations > 0 &&
+         isfinite(p->refinement.convergence_tolerance) &&
+         p->refinement.convergence_tolerance > 0.0;
+}
+
 static Lardon3DProjectDbResult
 record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
                      const char *task_kind, uint32_t task_kind_version,
@@ -1160,6 +1231,7 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
                      const Lardon3DProjectDbCandidatePairGenerateTask *candidate_pair,
                      const Lardon3DProjectDbMatcherTask *matcher,
                      const Lardon3DProjectDbGeometricVerifierTask *geometric_verifier,
+                     const Lardon3DProjectDbSparseSfmTask *sparse_sfm,
                      int64_t updated_at) {
   bool typed = task_kind != NULL;
   if (!database || !valid_durable_task(snapshot, updated_at) ||
@@ -1220,6 +1292,12 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
         geometric_verifier->min_inlier_ratio > 1.0 ||
         geometric_verifier->seed_policy_version == 0 ||
         geometric_verifier->canonicalization_version == 0)) ||
+      (sparse_sfm &&
+       (!task_kind || strcmp(task_kind, "sparse_sfm.run") != 0 || task_kind_version != 1 ||
+        !valid_task_id(sparse_sfm->task_id) || sparse_sfm->task_id != snapshot->id ||
+        !valid_task_id(sparse_sfm->track_set_id) ||
+        !valid_task_id(sparse_sfm->calibration_scope_id) || sparse_sfm->sfm_kind != 1 ||
+        sparse_sfm->sfm_version != 1 || !valid_sparse_sfm_parameters(&sparse_sfm->parameters))) ||
       (checkpoint && !valid_checkpoint(checkpoint))) {
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
@@ -1489,6 +1567,103 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
       }
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && sparse_sfm) {
+    const Lardon3DSparseIncrementalParameters *p = &sparse_sfm->parameters;
+    unsigned char maximum_observations[8];
+    unsigned char maximum_tracks[8];
+    unsigned char relative_seed[8];
+    unsigned char pnp_seed[8];
+    for (unsigned int i = 0; i < 8; ++i) {
+      maximum_observations[i] = (unsigned char)(p->maximum_observations >> (8U * i));
+      maximum_tracks[i] = (unsigned char)(p->maximum_tracks >> (8U * i));
+      relative_seed[i] = (unsigned char)(p->relative_pose.deterministic_seed >> (8U * i));
+      pnp_seed[i] = (unsigned char)(p->pnp.deterministic_seed >> (8U * i));
+    }
+    result = prepare(
+        database,
+        "INSERT INTO sparse_sfm_tasks(task_id,track_set_id,calibration_scope_id,sfm_kind,"
+        "sfm_version,minimum_seed_tracks,minimum_seed_landmarks,minimum_pnp_correspondences,"
+        "maximum_seed_candidates,maximum_registration_rounds,maximum_landmarks_per_round,"
+        "maximum_images,maximum_observations,maximum_tracks,reprojection_threshold_px,"
+        "minimum_track_parallax_rad,relative_robust_threshold_px,relative_confidence,"
+        "relative_max_iterations,relative_minimum_inliers,relative_minimum_inlier_ratio,"
+        "relative_minimum_parallax_rad,relative_minimum_cheirality_ratio,"
+        "relative_deterministic_seed,pnp_reprojection_threshold_px,pnp_confidence,"
+        "pnp_max_iterations,pnp_minimum_inliers,pnp_minimum_inlier_ratio,"
+        "pnp_deterministic_seed,refinement_max_iterations,refinement_convergence_tolerance) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,"
+        "?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32) ON CONFLICT(task_id) DO "
+        "UPDATE SET track_set_id=excluded.track_set_id WHERE sparse_sfm_tasks.track_set_id="
+        "excluded.track_set_id AND sparse_sfm_tasks.calibration_scope_id="
+        "excluded.calibration_scope_id AND sparse_sfm_tasks.sfm_kind=excluded.sfm_kind AND "
+        "sparse_sfm_tasks.sfm_version=excluded.sfm_version AND sparse_sfm_tasks."
+        "minimum_seed_tracks=excluded.minimum_seed_tracks AND sparse_sfm_tasks."
+        "minimum_seed_landmarks=excluded.minimum_seed_landmarks AND sparse_sfm_tasks."
+        "minimum_pnp_correspondences=excluded.minimum_pnp_correspondences AND sparse_sfm_tasks."
+        "maximum_seed_candidates=excluded.maximum_seed_candidates AND sparse_sfm_tasks."
+        "maximum_registration_rounds=excluded.maximum_registration_rounds AND sparse_sfm_tasks."
+        "maximum_landmarks_per_round=excluded.maximum_landmarks_per_round AND sparse_sfm_tasks."
+        "maximum_images=excluded.maximum_images AND sparse_sfm_tasks.maximum_observations="
+        "excluded.maximum_observations AND sparse_sfm_tasks.maximum_tracks=excluded.maximum_tracks "
+        "AND sparse_sfm_tasks.reprojection_threshold_px=excluded.reprojection_threshold_px AND "
+        "sparse_sfm_tasks.minimum_track_parallax_rad=excluded.minimum_track_parallax_rad AND "
+        "sparse_sfm_tasks.relative_robust_threshold_px=excluded.relative_robust_threshold_px AND "
+        "sparse_sfm_tasks.relative_confidence=excluded.relative_confidence AND sparse_sfm_tasks."
+        "relative_max_iterations=excluded.relative_max_iterations AND sparse_sfm_tasks."
+        "relative_minimum_inliers=excluded.relative_minimum_inliers AND sparse_sfm_tasks."
+        "relative_minimum_inlier_ratio=excluded.relative_minimum_inlier_ratio AND sparse_sfm_tasks."
+        "relative_minimum_parallax_rad=excluded.relative_minimum_parallax_rad AND sparse_sfm_tasks."
+        "relative_minimum_cheirality_ratio=excluded.relative_minimum_cheirality_ratio AND "
+        "sparse_sfm_tasks.relative_deterministic_seed=excluded.relative_deterministic_seed AND "
+        "sparse_sfm_tasks.pnp_reprojection_threshold_px=excluded.pnp_reprojection_threshold_px AND "
+        "sparse_sfm_tasks.pnp_confidence=excluded.pnp_confidence AND sparse_sfm_tasks."
+        "pnp_max_iterations=excluded.pnp_max_iterations AND sparse_sfm_tasks."
+        "pnp_minimum_inliers=excluded.pnp_minimum_inliers AND sparse_sfm_tasks."
+        "pnp_minimum_inlier_ratio=excluded.pnp_minimum_inlier_ratio AND sparse_sfm_tasks."
+        "pnp_deterministic_seed=excluded.pnp_deterministic_seed AND sparse_sfm_tasks."
+        "refinement_max_iterations=excluded.refinement_max_iterations AND sparse_sfm_tasks."
+        "refinement_convergence_tolerance=excluded.refinement_convergence_tolerance",
+        &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      sqlite3_bind_int64(statement, 1, (sqlite3_int64)sparse_sfm->task_id);
+      sqlite3_bind_int64(statement, 2, (sqlite3_int64)sparse_sfm->track_set_id);
+      sqlite3_bind_int64(statement, 3, (sqlite3_int64)sparse_sfm->calibration_scope_id);
+      sqlite3_bind_int(statement, 4, (int)sparse_sfm->sfm_kind);
+      sqlite3_bind_int(statement, 5, (int)sparse_sfm->sfm_version);
+      sqlite3_bind_int64(statement, 6, p->minimum_seed_tracks);
+      sqlite3_bind_int64(statement, 7, p->minimum_seed_landmarks);
+      sqlite3_bind_int64(statement, 8, p->minimum_pnp_correspondences);
+      sqlite3_bind_int64(statement, 9, p->maximum_seed_candidates);
+      sqlite3_bind_int64(statement, 10, p->maximum_registration_rounds);
+      sqlite3_bind_int64(statement, 11, p->maximum_landmarks_per_round);
+      sqlite3_bind_int64(statement, 12, p->maximum_images);
+      sqlite3_bind_blob(statement, 13, maximum_observations, 8, SQLITE_TRANSIENT);
+      sqlite3_bind_blob(statement, 14, maximum_tracks, 8, SQLITE_TRANSIENT);
+      sqlite3_bind_double(statement, 15, p->reprojection_threshold_px);
+      sqlite3_bind_double(statement, 16, p->minimum_track_parallax_rad);
+      sqlite3_bind_double(statement, 17, p->relative_pose.robust_threshold_px);
+      sqlite3_bind_double(statement, 18, p->relative_pose.confidence);
+      sqlite3_bind_int64(statement, 19, p->relative_pose.max_iterations);
+      sqlite3_bind_int64(statement, 20, p->relative_pose.minimum_inliers);
+      sqlite3_bind_double(statement, 21, p->relative_pose.minimum_inlier_ratio);
+      sqlite3_bind_double(statement, 22, p->relative_pose.minimum_parallax_rad);
+      sqlite3_bind_double(statement, 23, p->relative_pose.minimum_cheirality_ratio);
+      sqlite3_bind_blob(statement, 24, relative_seed, 8, SQLITE_TRANSIENT);
+      sqlite3_bind_double(statement, 25, p->pnp.reprojection_threshold_px);
+      sqlite3_bind_double(statement, 26, p->pnp.confidence);
+      sqlite3_bind_int64(statement, 27, p->pnp.max_iterations);
+      sqlite3_bind_int64(statement, 28, p->pnp.minimum_inliers);
+      sqlite3_bind_double(statement, 29, p->pnp.minimum_inlier_ratio);
+      sqlite3_bind_blob(statement, 30, pnp_seed, 8, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(statement, 31, p->refinement.max_iterations);
+      sqlite3_bind_double(statement, 32, p->refinement.convergence_tolerance);
+      result = step_done(database, statement, "upsert sparse SfM task");
+      if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1) {
+        copy_error(database->error, "Payload Sparse SfM immuable.");
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+      }
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK && checkpoint) {
     result =
         prepare(database,
@@ -1521,7 +1696,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_task(
     Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot, const char *task_kind,
     uint32_t task_kind_version, const Lardon3DProjectDbCheckpoint *checkpoint, int64_t updated_at) {
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              NULL, NULL, NULL, NULL, NULL, NULL, updated_at);
+                              NULL, NULL, NULL, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_image_import_task(
@@ -1533,7 +1708,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_image_import_task(
   }
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint,
                               source_path, scanset_id, NULL, NULL, NULL, NULL, NULL, NULL,
-                              updated_at);
+                              NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_task(
@@ -1544,7 +1719,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              parameters, NULL, NULL, NULL, NULL, NULL, updated_at);
+                              parameters, NULL, NULL, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_sift_extract_task(
@@ -1554,7 +1729,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_sift_extract_task(
     const Lardon3DProjectDbSiftExtractTask *parameters, int64_t updated_at) {
   if (!parameters) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              NULL, parameters, NULL, NULL, NULL, NULL, updated_at);
+                              NULL, parameters, NULL, NULL, NULL, NULL, NULL, updated_at);
 }
 
 static bool read_task(sqlite3_stmt *statement, Lardon3DProjectDbTask *task) {
@@ -3536,7 +3711,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_visual_index_update_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
-                              NULL, parameters, NULL, NULL, NULL, updated_at);
+                              NULL, parameters, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_load_visual_index_update_task(
@@ -3583,7 +3758,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_candidate_pair_generate_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
-                              NULL, NULL, parameters, NULL, NULL, updated_at);
+                              NULL, NULL, parameters, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_load_candidate_pair_generate_task(
@@ -3639,7 +3814,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_matcher_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
-                              NULL, NULL, NULL, parameters, NULL, updated_at);
+                              NULL, NULL, NULL, parameters, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_load_matcher_task(
@@ -3697,7 +3872,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_geometric_verifier_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
-                              NULL, NULL, NULL, NULL, parameters, updated_at);
+                              NULL, NULL, NULL, NULL, parameters, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_load_geometric_verifier_task(
@@ -3769,7 +3944,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_track_builder_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   Lardon3DProjectDbResult result = record_task_internal(
-      db, snapshot, kind, version, checkpoint, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL,
+      db, snapshot, kind, version, checkpoint, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
       updated_at);
   if (result != LARDON3D_PROJECT_DB_OK) return result;
   (void)pthread_mutex_lock(&db->mutex);
@@ -3872,6 +4047,123 @@ Lardon3DProjectDbResult lardon3d_project_db_load_track_builder_task(
     sqlite3_finalize(statement);
   }
   (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_record_sparse_sfm_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *kind, uint32_t version, const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbSparseSfmTask *parameters, int64_t updated_at) {
+  if (!parameters) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  return record_task_internal(database, snapshot, kind, version, checkpoint, NULL, 0, NULL, NULL,
+                              NULL, NULL, NULL, NULL, parameters, updated_at);
+}
+
+static bool read_u64_blob(sqlite3_stmt *statement, int column, uint64_t *value) {
+  if (sqlite3_column_type(statement, column) != SQLITE_BLOB ||
+      sqlite3_column_bytes(statement, column) != 8) {
+    return false;
+  }
+  const unsigned char *bytes = sqlite3_column_blob(statement, column);
+  uint64_t decoded = 0;
+  for (unsigned int i = 0; i < 8; ++i) decoded |= (uint64_t)bytes[i] << (8U * i);
+  *value = decoded;
+  return true;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_sparse_sfm_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbSparseSfmTask *parameters) {
+  if (!database || !valid_task_id(task_id) || !parameters) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  memset(parameters, 0, sizeof(*parameters));
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT s.track_set_id,s.calibration_scope_id,s.sfm_kind,s.sfm_version,"
+      "s.minimum_seed_tracks,s.minimum_seed_landmarks,s.minimum_pnp_correspondences,"
+      "s.maximum_seed_candidates,s.maximum_registration_rounds,s.maximum_landmarks_per_round,"
+      "s.maximum_images,s.maximum_observations,s.maximum_tracks,s.reprojection_threshold_px,"
+      "s.minimum_track_parallax_rad,s.relative_robust_threshold_px,s.relative_confidence,"
+      "s.relative_max_iterations,s.relative_minimum_inliers,s.relative_minimum_inlier_ratio,"
+      "s.relative_minimum_parallax_rad,s.relative_minimum_cheirality_ratio,"
+      "s.relative_deterministic_seed,s.pnp_reprojection_threshold_px,s.pnp_confidence,"
+      "s.pnp_max_iterations,s.pnp_minimum_inliers,s.pnp_minimum_inlier_ratio,"
+      "s.pnp_deterministic_seed,s.refinement_max_iterations,s.refinement_convergence_tolerance,"
+      "t.task_kind,t.task_kind_version FROM sparse_sfm_tasks s JOIN tasks t ON t.task_id=s.task_id "
+      "WHERE s.task_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    int code = sqlite3_step(statement);
+    bool corrupt = code != SQLITE_ROW;
+    if (code == SQLITE_DONE) {
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    } else if (!corrupt) {
+      const char *kind = (const char *)sqlite3_column_text(statement, 31);
+      sqlite3_int64 ids[2] = {sqlite3_column_int64(statement, 0),
+                              sqlite3_column_int64(statement, 1)};
+      sqlite3_int64 integers[15];
+      const int integer_columns[15] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 17, 18, 25, 26, 29, 32};
+      for (size_t i = 0; i < 15; ++i) integers[i] = sqlite3_column_int64(statement,
+                                                                         integer_columns[i]);
+      double doubles[11];
+      const int double_columns[11] = {13, 14, 15, 16, 19, 20, 21, 23, 24, 27, 30};
+      for (size_t i = 0; i < 11; ++i) doubles[i] = sqlite3_column_double(statement,
+                                                                         double_columns[i]);
+      corrupt = ids[0] <= 0 || ids[1] <= 0 || !kind || strcmp(kind, "sparse_sfm.run") != 0 ||
+                integers[0] != 1 || integers[1] != 1 || integers[14] != 1;
+      for (size_t i = 2; i < 14; ++i) {
+        if (integers[i] <= 0 || integers[i] > UINT32_MAX) corrupt = true;
+      }
+      for (size_t i = 0; i < 11; ++i) {
+        if (sqlite3_column_type(statement, double_columns[i]) != SQLITE_FLOAT ||
+            !isfinite(doubles[i])) {
+          corrupt = true;
+        }
+      }
+      parameters->task_id = task_id;
+      parameters->track_set_id = (uint64_t)ids[0];
+      parameters->calibration_scope_id = (uint64_t)ids[1];
+      parameters->sfm_kind = (uint32_t)integers[0];
+      parameters->sfm_version = (uint32_t)integers[1];
+      Lardon3DSparseIncrementalParameters *p = &parameters->parameters;
+      p->minimum_seed_tracks = (uint32_t)integers[2];
+      p->minimum_seed_landmarks = (uint32_t)integers[3];
+      p->minimum_pnp_correspondences = (uint32_t)integers[4];
+      p->maximum_seed_candidates = (uint32_t)integers[5];
+      p->maximum_registration_rounds = (uint32_t)integers[6];
+      p->maximum_landmarks_per_round = (uint32_t)integers[7];
+      p->maximum_images = (uint32_t)integers[8];
+      corrupt |= !read_u64_blob(statement, 11, &p->maximum_observations);
+      corrupt |= !read_u64_blob(statement, 12, &p->maximum_tracks);
+      p->reprojection_threshold_px = doubles[0];
+      p->minimum_track_parallax_rad = doubles[1];
+      p->relative_pose.robust_threshold_px = doubles[2];
+      p->relative_pose.confidence = doubles[3];
+      p->relative_pose.max_iterations = (uint32_t)integers[9];
+      p->relative_pose.minimum_inliers = (uint32_t)integers[10];
+      p->relative_pose.minimum_inlier_ratio = doubles[4];
+      p->relative_pose.minimum_parallax_rad = doubles[5];
+      p->relative_pose.minimum_cheirality_ratio = doubles[6];
+      corrupt |= !read_u64_blob(statement, 22, &p->relative_pose.deterministic_seed);
+      p->pnp.reprojection_threshold_px = doubles[7];
+      p->pnp.confidence = doubles[8];
+      p->pnp.max_iterations = (uint32_t)integers[11];
+      p->pnp.minimum_inliers = (uint32_t)integers[12];
+      p->pnp.minimum_inlier_ratio = doubles[9];
+      corrupt |= !read_u64_blob(statement, 28, &p->pnp.deterministic_seed);
+      p->refinement.max_iterations = (uint32_t)integers[13];
+      p->refinement.convergence_tolerance = doubles[10];
+      if (corrupt || !valid_sparse_sfm_parameters(p)) result = LARDON3D_PROJECT_DB_CORRUPT;
+    } else {
+      result = sqlite_result(database, code, "read sparse SfM task");
+    }
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
   return result;
 }
 

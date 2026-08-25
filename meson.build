@@ -153,6 +153,8 @@ executable(
         'src/sparse_sfm_geometry.cpp',
         'src/sparse_sfm_incremental.cpp',
         'src/sparse_sfm_bundle_adjustment.cpp',
+        'src/sparse_sfm_gate_f.cpp',
+        'src/sparse_sfm_task.cpp',
         'src/task.c',
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
@@ -169,7 +171,10 @@ executable(
         'src/track_builder_task.cpp',
     ] + matcher_backend_sources,
     include_directories: include_directories('include'),
-    c_args: ['-DLARDON3D_TRACK_BUILDER_TASK_AVAILABLE'],
+    c_args: [
+        '-DLARDON3D_TRACK_BUILDER_TASK_AVAILABLE',
+        '-DLARDON3D_SPARSE_SFM_TASK_AVAILABLE',
+    ],
     dependencies: [ncursesw, threads, sqlite3, openssl, opencv, opencv_geometry, ceres]
         + matcher_backend_dependencies,
 )
@@ -917,6 +922,59 @@ geometric_verifier_task_test = executable(
 )
 test('geometric-verifier-task', geometric_verifier_task_test, timeout: 60,
      env: opencv_test_environment)
+
+sparse_sfm_gate_f_test = executable(
+    'test-sparse-sfm-gate-f',
+    sources: [
+        'tests/test_sparse_sfm_gate_f.cpp',
+        'src/sparse_sfm_gate_f.cpp',
+        'src/sparse_sfm_incremental.cpp',
+        'src/sparse_sfm_geometry.cpp',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [openssl, opencv_geometry],
+)
+test('sparse-sfm-gate-f', sparse_sfm_gate_f_test, timeout: 60)
+
+sparse_sfm_task_test = executable(
+    'test-sparse-sfm-task',
+    sources: [
+        'tests/test_sparse_sfm_task.cpp',
+        'src/sparse_sfm_task.cpp',
+        'src/sparse_sfm_gate_f.cpp',
+        'src/sparse_sfm_incremental.cpp',
+        'src/sparse_sfm_geometry.cpp',
+        'src/sparse_sfm_bundle_adjustment.cpp',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/feature_store.c', 'src/feature_extractor_opencv.cpp',
+        'src/app_state.c',
+        'src/task.c', 'src/task_checkpoint.c', 'src/task_kind_registry.c',
+        'src/task_queue.c',
+        'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    cpp_args: ['-DLARDON3D_SPARSE_SFM_TASK_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv, opencv_geometry, ceres],
+)
+test('sparse-sfm-task', sparse_sfm_task_test, timeout: 120)
+
+sparse_sfm_payload_test = executable(
+    'test-sparse-sfm-payload',
+    sources: [
+        'tests/test_sparse_sfm_payload.cpp',
+        'src/project_db.c',
+        'src/project_db_sparse_sfm.c',
+        'src/task.c',
+        'src/task_kind_registry.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+        'src/sparse_sfm_incremental.cpp',
+        'src/sparse_sfm_geometry.cpp',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv_geometry],
+)
+test('sparse-sfm-payload', sparse_sfm_payload_test, timeout: 60)
 
 track_builder_test = executable(
     'test-track-builder-core',

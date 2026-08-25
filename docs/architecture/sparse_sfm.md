@@ -198,7 +198,7 @@ as a whole, so Track identity and observation ownership remain simple.
 Bundle Adjustment implementation, E01--E35 matrix, normal suite, targeted
 ASan/UBSan with LeakSanitizer, full sequential ASan/UBSan suite and at least
 20 fresh-process E27 comparisons are validated. Gate F project orchestration
-and Gate G resource integration remain later gates.
+is now **PASS / FROZEN**; Gate G resource integration remains a later gate.
 
 **DECISION: Gate E v1 is a synchronous, independent final per-component Bundle
 Adjustment applied as post-processing to a copy of the immutable final Gate D
@@ -779,6 +779,185 @@ solver until measured. The v1 target is deterministic ordering and numerical
 reproducibility within documented tolerances; single-threaded reductions are
 the initial reference.
 
+### Gate F publication policy
+
+**FROZEN.** Gate F keeps the Gate E execution domain separate from the Gate E
+scientific result domain. `EXECUTION_OK` is the necessary and sufficient Gate E
+condition for publication eligibility. Under that execution status,
+`COMPLETE`, `PARTIAL` and `FAILED` are all valid complete in-memory Gate E
+results and are published atomically. A successful Project DB publication or
+exact-identity reuse makes the Task Runtime execution successful for all three
+scientific statuses.
+
+| Gate E execution | Scientific status | Publish | Runtime after DB success |
+|---|---|---|---|
+| `EXECUTION_OK` | `COMPLETE` | exact Gate E result | success |
+| `EXECUTION_OK` | `PARTIAL` | exact Gate E result | success |
+| `EXECUTION_OK` | `FAILED` | exact Gate E result | success |
+| `EXECUTION_INVALID_ARGUMENT` | none | no publication | failure |
+| `EXECUTION_OUT_OF_MEMORY` | none | no publication | failure |
+| `EXECUTION_INTERNAL_ERROR` | none | no publication | failure |
+
+Scientific `PARTIAL` describes a complete result in which accepted components
+contain validated optimized values and rejected components preserve their exact
+Gate D values. It never permits partial database visibility. Scientific
+`FAILED` means that no eligible component accepted Bundle Adjustment; under
+`EXECUTION_OK` it remains a valid complete Gate E result whose components
+preserve the Gate D values selected by Gate E.
+
+Gate F never publishes Gate D as a fallback after a Gate E execution error. It
+does not rerun Gate D or Gate E, retry automatically, reinterpret scientific
+status as a Task Runtime state, or require scientific `COMPLETE` for runtime
+success. A Project DB publication failure rolls back and fails the runtime
+execution. The scientific status is output diagnostic metadata, not part of
+the candidate identity or parameter fingerprint. Gate F uses an existing
+status carrier when one exists; the absence of a dedicated Project DB v16
+column does not require a migration or authorize reuse of an unrelated column.
+
+### Gate F resource-demand boundary
+
+**FROZEN.** Gate F materializes the immutable `Lardon3DResourceEstimate` needed
+to describe its task to the existing Task Runtime. The estimate is a pure
+function of durable task input shape and known implementation characteristics;
+it never depends on current RAM, swap, PSI, load, queue depth, task attempt or
+Governor state. Gate F submits through the existing queue and does not perform
+admission or reservation itself.
+
+The existing Governor owns admission and reservation policy. Future Gate G owns
+telemetry, adaptive tuning, pressure and swap/scratch policy, scheduling policy
+and estimate refinement. The estimate never enters the 372-byte parameter
+record, candidate identity, `sfm_version` or scientific decisions, and cannot
+change Gate D or Gate E parameters. This clarification preserves
+`NO_NEW_SUBSYSTEM` and the mandatory reservation invariant.
+
+### Gate F durable task payload
+
+**FROZEN.** Gate F advances the current Project Database schema head from v16
+to v17 with one strictly additive `sparse_sfm_tasks` table. The historical v16
+migration and its immutable reconstruction model remain unchanged. The new
+table follows the existing one-to-one typed-task pattern: its primary key is a
+foreign key to `tasks(task_id)` with cascade cleanup, and creation records the
+generic task snapshot and typed payload in one transaction.
+
+The payload stores the immutable Track Set reference, calibration-scope
+reference, Sparse SfM kind and version, and every one of the 27 effective
+scalars in `Lardon3DSparseIncrementalParameters`, using their existing fixed
+integer widths and exact finite SQLite binary64 values. The Task Kind version
+selects the payload interpretation. Reload never reapplies defaults and rejects
+a missing row, incompatible kind/version, invalid identity or invalid
+parameter. The generic checkpoint codec remains v1 and unchanged.
+
+The parameter fingerprint is not stored in `sparse_sfm_tasks`. Reconstruction
+loads and validates the effective fields, rebuilds the unchanged 372-byte F0
+record and recomputes SHA-256. Calibration values, Track observations,
+ResourceEstimate and runtime metadata are not duplicated in the typed payload.
+This is an additive Project DB/typed-Task extension, not a generic payload or
+persistence subsystem.
+
+### Gate F closure decisions
+
+**FROZEN.** The v1 declarative estimate uses the immutable pre-admission counts
+`I` (distinct participating images), `T` (Tracks) and `O` (Track observations):
+
+```text
+raw = 134217728 + I*65536 + T*2048 + O*512
+memory_fixed_bytes = raw rounded upward to a whole MiB
+```
+
+Every operation is checked `uint64_t` arithmetic; overflow rejects task
+creation before persistence. The remaining estimate is RAM-per-item 0, all GPU
+fields 0, minimum and maximum batch 1, one CPU thread, one IO slot and CPU task
+class. These conservative coefficients cover Gate D containers, adapters,
+camera/landmark state, Gate E copies, ordering/residual storage and Ceres
+working storage. They are operational, machine-state independent and excluded
+from scientific identity. A restored task uses its persisted generic estimate.
+
+The four full-domain `uint64_t` payload values (`maximum_observations`,
+`maximum_tracks` and both deterministic seeds) are individual exact eight-byte
+little-endian SQL BLOBs. Any other storage class or length is corrupt; there is
+no signed cast, text, REAL conversion or domain restriction. Their F0 encoding
+remains unchanged.
+
+Gate D `COMPLETE` and usable `PARTIAL` results proceed to Gate E. Gate D
+scientific `FAILED` fails the Task, invokes no Gate E and publishes nothing.
+Gate D invalid input or allocation failure likewise fails execution. A claimed
+usable result that violates frozen structure is an internal integration
+failure. Once Gate E is legitimately reached, every `EXECUTION_OK` scientific
+status remains publication-eligible.
+
+Gate F computes publication diagnostics from every retained observation of the
+exact final Gate E result. With source-pixel residual `dx,dy`, each observation
+contributes `s=dx*dx+dy*dy` and `e=sqrt(s)`. Global RMSE is
+`sqrt(sum(s)/N)`. Global median is the middle sorted `e`, or for even `N`,
+`lower + (upper-lower)/2`. Projection is the frozen Gate E distorted pinhole
+model, binary64, with strict minimum depth. Empty, non-finite or invalid
+projection input fails publication; no observation is skipped or clamped.
+Metrics are deterministic result diagnostics, never candidate identity.
+
+### Gate F durable reconstruction projection
+
+**FROZEN.** Gate F projects the complete Gate D/E scientific result onto the
+existing Project DB reconstruction model. A component belongs to the durable
+projection exactly when `registered_image_count > 0` and `landmark_count > 0`.
+Every such component is persisted with its exact final Gate E geometry. This
+includes a BA-rejected component whose valid Gate D geometry Gate E preserved.
+
+A non-reconstructed graph component failing either predicate remains an
+ephemeral scientific/orchestration diagnostic and has no Project DB component
+row. Gate F fabricates no camera, landmark or placeholder and does not fail an
+otherwise publishable reconstruction merely because such diagnostics exist.
+The projected result must still satisfy every top-level Project DB invariant;
+otherwise publication does not occur and the Task fails.
+
+Persisted component and geometry counts describe only this durable projection.
+Global reprojection metrics likewise include exactly the retained observations
+belonging to persisted geometry. Omission neither renumbers scientific
+component keys nor changes candidate identity. No persistent diagnostic table,
+sidecar, metadata blob or schema beyond v17 `sparse_sfm_tasks` is introduced.
+
+Gate F v1 is **PASS / FROZEN**. Gate D and Gate E remain **PASS / FROZEN**;
+Gate G remains open and planned.
+
+### Gate F validation closure
+
+**PASS / FROZEN.** Gate F freezes the F0 372-byte parameter record v1 and its
+SHA-256 digest, Project DB v17 typed payload, `sparse_sfm.run` version 1,
+pre-admission declarative estimate, governed Task Runtime execution, durable
+replay, deterministic D→E orchestration, exact candidate reuse and atomic
+reconstruction publication. Canonical gate progression:
+
+```text
+Gate A — PASS / FROZEN
+Gate B — PASS / FROZEN
+Gate C — PASS / FROZEN
+Gate D — PASS / FROZEN
+Gate E — PASS / FROZEN
+Gate F — PASS / FROZEN
+Gate G — OPEN / PLANNED
+```
+
+The five candidate-identity dimensions remain separate:
+
+```text
+(
+    input_track_set_identity,
+    calibration_scope_identity,
+    sfm_kind,
+    sfm_version,
+    parameter_fingerprint
+)
+```
+
+The F0 golden SHA-256 digest remains
+`e1c83e5b2036e49254a9426ddbace42b7831373bc896f27abdd2f61e302f9e8c`.
+Final validation completed with the normal suite at 41/41, targeted Gate F
+ASan/UBSan/LeakSanitizer at 4/4 with leak detection enabled, and the full
+sequential ASan/UBSan suite at 41/41. Fresh-process validation passed 20/20 for
+the Gate F contract and 20/20 for the production `sparse_sfm.run` task. The C17
+public-header probe and `git diff --check` passed. Final human diff review
+passed; no Gate F implementation work, validation work or human decision
+remains.
+
 ## Future persistence and API candidates
 
 No Project DB v16 is created in Gate A. A later model gate may define immutable
@@ -831,21 +1010,21 @@ reported separately. Thread probes are limited to 1/2/4/8 threads and stop if
 MemAvailable, swap, PSI or desktop responsiveness becomes unhealthy. No
 production Sparse SfM code is created by this gate.
 
-## Future gate plan
+## Gate decomposition
 
-- **Gate B — Sparse Reconstruction Model:** immutable in-memory model, result
+- **Gate B — PASS / FROZEN — Sparse Reconstruction Model:** immutable in-memory model, result
   states, calibration ownership and candidate persistence contract; no DB v16
   until this contract is reviewed.
-- **Gate C — Geometry primitives:** normalized camera model, relative pose,
+- **Gate C — PASS / FROZEN — Geometry primitives:** normalized camera model, relative pose,
   deterministic seed, triangulation and PnP with synthetic ground truth.
-- **Gate D — Incremental core:** registration ordering, components,
+- **Gate D — PASS / FROZEN — Incremental core:** registration ordering, components,
   unregistered-image policy and deterministic reconstruction output.
-- **Gate E — Final Bundle Adjustment:** synchronous final per-component BA on a
+- **Gate E — PASS / FROZEN — Final Bundle Adjustment:** synchronous final per-component BA on a
   copy of the immutable Gate D result, with its scientific and numerical
   contract frozen here; interleaved local BA is deferred.
-- **Gate F — Project orchestration:** explicit Track Set/calibration input,
+- **Gate F — PASS / FROZEN — Project orchestration:** explicit Track Set/calibration input,
   atomic publication and durable runtime integration.
-- **Gate G — Resource/freeze:** Governor admission, sustained hardware safety,
+- **Gate G — OPEN / PLANNED — Resource/freeze:** Governor admission, sustained hardware safety,
   recovery, full validation and final freeze.
 
 ## Algorithm comparison and Gate A evidence

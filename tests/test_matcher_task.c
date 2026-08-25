@@ -89,6 +89,7 @@ static bool downgrade_project_to_historical_v10(const char *database_path) {
   }
   static const char sql[] =
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE IF EXISTS sparse_sfm_tasks;"
       "DROP TABLE IF EXISTS sparse_landmark_observations;"
       "DROP TABLE IF EXISTS sparse_landmarks;"
       "DROP TABLE IF EXISTS sparse_registered_images;"
@@ -365,7 +366,7 @@ static bool run_test(void) {
                     "name='matcher_tasks'",
                     0));
   CHECK(reopen_runtime(&fixture));
-  CHECK(lardon3d_project_db_schema_version(fixture.state.project_db) == 16);
+  CHECK(lardon3d_project_db_schema_version(fixture.state.project_db) == 17);
   CHECK(
       query_integer(database_path,
                     "SELECT count(*) FROM sqlite_master WHERE type='table' AND "

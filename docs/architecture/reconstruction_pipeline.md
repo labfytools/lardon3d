@@ -127,7 +127,7 @@ implémenté dans Project DB v15 (`track_sets`, `tracks`, `track_observations` e
 le payload de tâche). Les primitives de géométrie calibrée Gate C sont
 implémentées et le noyau Sparse SfM incrémental Gate D est IMPLEMENTED / PASS ;
 le Bundle Adjustment final Gate E est PASS / FROZEN ; l'orchestration projet
-et tâche Gate F reste PLANNED.
+et tâche Gate F est PASS / FROZEN.
 Le modèle de persistance Sparse SfM v16 est gelé après Gate B.
 
 **Sparse SfM Gate A : PASS.** Le contrat géométrique, la stratégie
@@ -136,8 +136,9 @@ les limites BA et l'enveloppe matérielle sont documentés dans
 `architecture/sparse_sfm.md`. Ses primitives pures calibrées Gate C sont
 **IMPLEMENTED / PASS** et son noyau incrémental synchrone en mémoire Gate D est
 **IMPLEMENTED / PASS**. Le Bundle Adjustment final par composante Gate E est
-**PASS / FROZEN**. L'orchestration Gate F reste **PLANNED**, tandis que la
-persistance v16 et ses lecteurs bornés restent ceux de B2.
+**PASS / FROZEN**. L'orchestration Gate F est **PASS / FROZEN**. Le modèle de
+reconstruction v16 et ses lecteurs bornés restent ceux de B2 ; le payload de
+tâche Gate F est l'ajout v17.
 
 ---
 
@@ -258,8 +259,9 @@ Import, Image Catalog, Feature Extraction, Feature Store, Visual Index,
 Candidate Pair, Matching v1, Geometric Verification, Track Model/Builder v1
 and Sparse SfM Gate C geometry are **IMPLEMENTED**. The synchronous in-memory
 incremental Sparse SfM Gate D core is **IMPLEMENTED / PASS**, and final
-per-component Gate E BA is **PASS / FROZEN**. Gate F orchestration,
-Gate G Governor integration, MVS, mesh, texturing and viewer remain **PLANNED**.
+per-component Gate E BA is **PASS / FROZEN**. Gate F orchestration is
+**PASS / FROZEN**. Gate G Governor integration, MVS, mesh,
+texturing and viewer remain **PLANNED**.
 
 Ce document décrit la vision architecturale cible du pipeline de
 reconstruction. Les modules listés ici ne sont pas tous implémentés.

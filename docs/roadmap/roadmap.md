@@ -53,6 +53,7 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 - ✅ Sparse SfM : primitives géométriques Gate C et noyau incrémental Gate D
   implémentés
 - ✅ Sparse SfM Gate E : Bundle Adjustment final par composante PASS / FROZEN
+- ✅ Sparse SfM Gate F : orchestration durable et publication atomique PASS / FROZEN
 
 ### Phase 5 : Reconstruction (PLANNED)
 - 📋 Orchestration de reconstruction incrémentale

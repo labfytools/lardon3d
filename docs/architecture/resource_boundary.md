@@ -4,8 +4,9 @@
 
 **ACCEPTED** — architecture decision for the post-Gate C documentation freeze.
 
-Current gates: Gate A **PASS**, Gate B **PASS / FROZEN**, Gate C **PASS**.
-Project Database: **v16**.
+Current Sparse SfM gates A through F are **PASS / FROZEN**. Gate G remains
+open/planned.
+Project Database: current schema **v17**; historical v16 remains frozen.
 
 This record is normative for the current architecture. It does not introduce
 an implementation, a public API, a persistence format or a roadmap commitment.
@@ -94,15 +95,47 @@ Tasks create estimates, request reservations, execute bounded work and release
 reservations. The Governor owns only policy, budgets, pressure, lots and
 reservations.
 
-## Project DB v16 boundary
+### Task demand declaration versus admission policy
 
-Project DB v16 remains unchanged and frozen. It already stores the current
-logical IDs, content hashes, sizes, states, relations and artifact paths needed
-by implemented stores. No resource table, handle table, cache table,
-dependency table, schema field or migration is required by this decision.
+**FROZEN.** A task producer owns the immutable declaration of the workload it
+submits through the existing `Lardon3DResourceEstimate` contract. Constructing
+that estimate from immutable payload, input shape and known implementation
+characteristics describes what the task expects to require; it is not a
+Governor policy decision.
 
-No Project DB v17, bundle redesign, Track Model change, Track Builder change or
-persistence API redesign is part of this scope.
+The existing Task Runtime, queue and Governor remain responsible for deciding
+whether and when the declared work is admitted and for creating the mandatory
+reservation. Admission thresholds, current machine state, pressure, telemetry,
+adaptive tuning, swap or scratch policy and future estimate calibration remain
+outside the task producer. A producer never changes scientific inputs or
+identity in response to resources.
+
+Gate F may therefore construct the immutable Sparse SfM task estimate required
+by `lardon3d_task_create_typed()` and submit the task through the normal queue.
+It does not inspect resource snapshots, decide admission, create reservations,
+change Governor or queue policy, or bypass the reservation invariant. The
+estimate is operational metadata and is excluded from the Sparse SfM parameter
+fingerprint, candidate identity and scientific determinism. Future Gate G owns
+resource-management policy and operational refinement of that estimate.
+
+Gate F v1 freezes its declarative Sparse SfM RAM request as the checked sum
+`128 MiB + I*64 KiB + T*2048 + O*512`, rounded upward to one MiB, where `I`,
+`T` and `O` are immutable participating-image, Track and observation counts.
+The complete amount is fixed RAM for one atomic batch; per-item RAM and all GPU
+fields are zero, batch bounds are one, and the task requests one CPU thread and
+one IO slot in the CPU class. These coefficients are conservative operational
+policy inputs, not measured dynamically or included in scientific identity.
+
+## Project DB boundary
+
+The historical Project DB v16 migration and Sparse SfM reconstruction model
+remain unchanged and frozen. Gate F is authorized to advance the current schema
+head to v17 only with the dedicated `sparse_sfm_tasks` typed-payload table; that
+task persistence does not add a resource table, handle table, cache table,
+dependency table or resource-policy field.
+
+No further schema expansion, bundle redesign, Track Model change, Track Builder
+change or persistence API redesign is part of this resource-boundary scope.
 
 ## Options considered
 
@@ -164,7 +197,7 @@ resolver or Governor asset integration as part of the current architecture.
 - Generic dependency graph or cycle management.
 - Streaming or asynchronous resource loading.
 - CPU/GPU dual-residency manager.
-- Project DB v17 or schema migration.
+- Project DB schema beyond the additive Gate F v17 typed-task migration.
 - Bundle redesign.
 - Governor integration with persistent asset identity.
 - BA, new orchestration, Task Runtime redesign or renderer redesign.
@@ -178,8 +211,9 @@ contracts remain authoritative in their own domains.
 
 ## Persistence impact
 
-None. Project DB remains v16. Existing IDs, hashes, metadata and relative paths
-are not renamed, generalized or duplicated.
+The historical Project DB v16 migration remains unchanged. Gate F adds only the
+v17 typed-task payload already described above. Existing IDs, hashes, metadata
+and relative paths are not renamed, generalized or duplicated.
 
 ## Memory / resource impact
 
@@ -239,7 +273,8 @@ These are trigger conditions, not current requirements or roadmap commitments.
 - No Track Model or Track Builder contract is changed.
 - No bundle or migration is introduced.
 - Governor ownership remains limited to execution budgets.
-- Project DB remains v16.
+- At the Gate B freeze, Project DB remained v16; the later additive Gate F v17
+  migration does not alter that historical proof.
 
 Therefore Gate B remains **PASS / FROZEN**.
 

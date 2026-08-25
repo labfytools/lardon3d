@@ -137,6 +137,11 @@ ni persistance, ni Task Runtime, ni Resource Governor.
 
 **Statut :** GATES C/D/E — PASS / FROZEN
 
+Gate F relie ces noyaux au Task Runtime durable, à la Queue/Governor/Reservation
+et à la publication Project DB v17 atomique et idempotente.
+
+**Statut :** GATE F — PASS / FROZEN. Gate G reste planifiée.
+
 ## Résultats et publication live
 
 Les traitements fonctionnent par séquences adaptatives : lire un lot borné,

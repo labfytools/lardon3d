@@ -7,9 +7,10 @@
 #include <time.h>
 
 #include <lardon3d/task.h>
+#include <lardon3d/sparse_sfm_incremental.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 16,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 17,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -391,6 +392,15 @@ typedef struct {
   int64_t created_at;
 } Lardon3DProjectDbTrackSet;
 
+typedef struct {
+  uint64_t task_id;
+  uint64_t track_set_id;
+  uint64_t calibration_scope_id;
+  uint32_t sfm_kind;
+  uint32_t sfm_version;
+  Lardon3DSparseIncrementalParameters parameters;
+} Lardon3DProjectDbSparseSfmTask;
+
 void lardon3d_project_db_free_track(Lardon3DProjectDbTrack *track);
 Lardon3DProjectDbResult lardon3d_project_db_create_track_set(
     Lardon3DProjectDb *database, const Lardon3DProjectDbTrackSet *configuration,
@@ -602,6 +612,14 @@ Lardon3DProjectDbResult lardon3d_project_db_record_track_builder_task(
 Lardon3DProjectDbResult lardon3d_project_db_load_track_builder_task(
     Lardon3DProjectDb *database, uint64_t task_id,
     Lardon3DProjectDbTrackBuilderTask *parameters);
+Lardon3DProjectDbResult lardon3d_project_db_record_sparse_sfm_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *kind, uint32_t version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbSparseSfmTask *parameters, int64_t updated_at);
+Lardon3DProjectDbResult lardon3d_project_db_load_sparse_sfm_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbSparseSfmTask *parameters);
 
 Lardon3DProjectDbResult lardon3d_project_db_create_match_result(
     Lardon3DProjectDb *database, uint64_t candidate_pair_id, uint64_t feature_set_id_a,

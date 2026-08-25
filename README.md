@@ -29,9 +29,11 @@ persistante, enrichissable et versionnable.
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v16** : résultats géométriques, Track Model v1 et persistance Sparse SfM
+- **Project Database v17** : résultats v16 et payload durable typé Sparse SfM Gate F
 - **Sparse SfM Gates C/D/E** : géométrie calibrée, noyau incrémental et Bundle
   Adjustment final par composante, tous PASS / FROZEN
+- **Sparse SfM Gate F** : orchestration durable, runtime gouverné et publication
+  atomique, PASS / FROZEN
 - **Geometric Verification Model v1** : identité, masque d'inliers et modèle 3×3 persistants
 - **Geometric Verifier v1** : Fundamental USAC/MAGSAC, reprise et lots resource-aware
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
@@ -169,8 +171,8 @@ de petits lots, le Resource Governor interactif et un hot path Vulkan ORB exact 
 fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ; ces deux matchers
 restent sur OpenCV L2. Track Model/Builder, les primitives géométriques Gate C,
 le noyau Sparse SfM incrémental Gate D et le Bundle Adjustment final Gate E sont
-implémentés et validés. L'orchestration Sparse SfM Gate F, l'intégration
-Governor Gate G, le DAG, le viewer et les étapes denses restent des tickets
+implémentés et validés. L'orchestration Sparse SfM Gate F est PASS / FROZEN ;
+l'intégration Governor Gate G, le DAG, le viewer et les étapes denses restent des tickets
 séparés planifiés. Le Resource Governor ne
 constitue pas un Resource System générique : voir la décision d’architecture.
 
