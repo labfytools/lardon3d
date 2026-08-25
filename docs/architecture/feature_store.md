@@ -121,7 +121,8 @@ les Feature Sets persistés.
 **IMPLEMENTED** — vérification géométrique et tracks. **Sparse SfM Gate A
 PASS**, the Sparse SfM v16 persistence model is **FROZEN** after Gate B;
 Gate C geometry and the synchronous in-memory Gate D incremental core are
-**IMPLEMENTED / PASS**. BA and project/task orchestration remain **PLANNED**.
+**IMPLEMENTED / PASS**. Final per-component Gate E BA is **PASS / FROZEN**;
+Gate F project/task orchestration remains **PLANNED**.
 
 ## Extension v2 multi-descriptor
 

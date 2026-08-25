@@ -128,6 +128,15 @@ Déterministe, idempotent, borné.
 
 **Statut :** IMPLEMENTED
 
+### Sparse SfM
+Les primitives géométriques calibrées Gate C, le noyau incrémental synchrone
+Gate D et le Bundle Adjustment final par composante Gate E sont implémentés.
+Gate E traite en mémoire une copie du résultat Gate D immutable, sur CPU avec
+un thread Ceres, et publie atomiquement chaque candidate acceptée. Il n'intègre
+ni persistance, ni Task Runtime, ni Resource Governor.
+
+**Statut :** GATES C/D/E — PASS / FROZEN
+
 ## Résultats et publication live
 
 Les traitements fonctionnent par séquences adaptatives : lire un lot borné,

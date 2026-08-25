@@ -30,6 +30,8 @@ persistante, enrichissable et versionnable.
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
 - **Project Database v16** : résultats géométriques, Track Model v1 et persistance Sparse SfM
+- **Sparse SfM Gates C/D/E** : géométrie calibrée, noyau incrémental et Bundle
+  Adjustment final par composante, tous PASS / FROZEN
 - **Geometric Verification Model v1** : identité, masque d'inliers et modèle 3×3 persistants
 - **Geometric Verifier v1** : Fundamental USAC/MAGSAC, reprise et lots resource-aware
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
@@ -165,10 +167,11 @@ Matcher v1, Geometric Verification Model v1 et Geometric Verifier Fundamental v1
 sont implémentés. Le runtime Feature + Matcher + Verifier emploie des tâches durables,
 de petits lots, le Resource Governor interactif et un hot path Vulkan ORB exact avec
 fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ; ces deux matchers
-restent sur OpenCV L2. Track Model/Builder, les primitives géométriques Gate C
-et le noyau Sparse SfM incrémental Gate D sont implémentés ; BA, l'orchestration
-Sparse SfM, le DAG, le viewer et les étapes denses restent des tickets séparés
-planifiés. Le Resource Governor ne
+restent sur OpenCV L2. Track Model/Builder, les primitives géométriques Gate C,
+le noyau Sparse SfM incrémental Gate D et le Bundle Adjustment final Gate E sont
+implémentés et validés. L'orchestration Sparse SfM Gate F, l'intégration
+Governor Gate G, le DAG, le viewer et les étapes denses restent des tickets
+séparés planifiés. Le Resource Governor ne
 constitue pas un Resource System générique : voir la décision d’architecture.
 
 ## Licence

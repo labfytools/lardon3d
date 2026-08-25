@@ -20,6 +20,16 @@ typedef enum {
   LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_FAILED
 } Lardon3DSparseBundleAdjustmentStatus;
 
+/* Execution errors are separate from the scientific result status. An OK
+ * execution may produce a scientific FAILED result when no eligible component
+ * is accepted. */
+typedef enum {
+  LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_OK = 0,
+  LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INVALID_ARGUMENT,
+  LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_OUT_OF_MEMORY,
+  LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INTERNAL_ERROR
+} Lardon3DSparseBundleAdjustmentExecutionStatus;
+
 typedef enum {
   LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_AXIS_NONE = 0,
   LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_AXIS_X,
@@ -39,6 +49,7 @@ typedef enum {
   LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_INELIGIBLE,
   LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_GAUGE_DEGENERATE,
   LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_INPUT,
+  LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_UNDERCONSTRAINED,
   LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_NONFINITE,
   LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_NO_CONVERGENCE,
   LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_SOLVER_FAILURE,
@@ -105,6 +116,21 @@ typedef struct {
   size_t observation_count;
   Lardon3DSparseBundleAdjustmentComponentDiagnostic *diagnostics;
 } Lardon3DSparseBundleAdjustmentResult;
+
+/* Runs synchronous final per-component Bundle Adjustment. input remains
+ * caller-owned and immutable. result must be zero-initialized or previously
+ * destroyed. On EXECUTION_OK, result owns all non-null arrays and its
+ * scientific status may be COMPLETE, PARTIAL or FAILED. On every other
+ * execution status, result is left in its canonical zero state. */
+Lardon3DSparseBundleAdjustmentExecutionStatus
+lardon3d_sparse_bundle_adjustment_run(
+    const Lardon3DSparseBundleAdjustmentInput *input,
+    Lardon3DSparseBundleAdjustmentResult *result);
+
+/* Releases every result-owned array and restores the canonical zero state.
+ * The operation is NULL-safe and repeat-safe; it never releases input data. */
+void lardon3d_sparse_bundle_adjustment_result_destroy(
+    Lardon3DSparseBundleAdjustmentResult *result);
 
 #ifdef __cplusplus
 }

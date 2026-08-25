@@ -1,8 +1,16 @@
 #include <lardon3d/sparse_sfm_bundle_adjustment.h>
 
+#include <ceres/ceres.h>
+#include <ceres/rotation.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <memory>
 #include <new>
+#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -14,7 +22,12 @@ constexpr size_t maximum_observations = 1000000;
 constexpr double depth_epsilon = 1e-9;
 constexpr double gauge_epsilon = 1e-9;
 
-enum class PreparationStatus { prepared, invalid_argument, out_of_memory };
+enum class PreparationStatus {
+  prepared,
+  invalid_argument,
+  out_of_memory,
+  internal_error
+};
 enum class PrivateTermination { converged, no_convergence, failure };
 
 struct ResolvedObservation {
@@ -41,6 +54,74 @@ struct ObservationIndex {
   uint64_t feature_set_id;
   uint32_t feature_index;
   size_t index;
+};
+
+struct ComponentView {
+  std::vector<size_t> cameras;
+  std::vector<size_t> landmarks;
+  std::vector<size_t> observations;
+};
+
+struct SolverCamera {
+  size_t source_index;
+  size_t image_index;
+  double quaternion[4];
+  double center[3];
+  double initial_center[3];
+};
+
+struct SolverLandmark {
+  size_t source_index;
+  double point[3];
+};
+
+struct SolverObservation {
+  size_t camera_index;
+  size_t landmark_index;
+  size_t resolved_index;
+};
+
+struct UnderconstraintResult {
+  bool valid;
+  uint32_t mask;
+};
+enum class UnderconstraintAction { proceed, reject, internal_error };
+
+struct CandidateDecision {
+  bool accepted;
+  bool has_metrics;
+  Lardon3DSparseBundleAdjustmentRejectionReason rejection_reason;
+};
+
+enum class ParameterKind : int { landmark = 0, camera_quaternion = 1, camera_center = 2 };
+struct ParameterRecord {
+  ParameterKind kind;
+  uint64_t identity;
+  int group;
+  bool constant;
+  int subset_axis;
+};
+
+struct DisjointSet {
+  std::vector<size_t> parent;
+
+  explicit DisjointSet(size_t count) : parent(count) {
+    std::iota(parent.begin(), parent.end(), 0);
+  }
+
+  size_t find(size_t value) {
+    while (parent[value] != value) {
+      parent[value] = parent[parent[value]];
+      value = parent[value];
+    }
+    return value;
+  }
+
+  void join(size_t a, size_t b) {
+    a = find(a);
+    b = find(b);
+    if (a != b) parent[std::max(a, b)] = std::min(a, b);
+  }
 };
 
 bool finite_calibration(const Lardon3DSparseGeometryCalibration &value) {
@@ -93,6 +174,114 @@ bool camera_center(const Lardon3DSparseGeometryPose &pose, double center[3]) {
   }
   return true;
 }
+
+bool rotation_to_quaternion(const double rotation[9], double quaternion[4]) {
+  const double trace = rotation[0] + rotation[4] + rotation[8];
+  if (trace > 0.0) {
+    const double scale = 2.0 * std::sqrt(trace + 1.0);
+    if (!std::isfinite(scale) || scale == 0.0) return false;
+    quaternion[0] = 0.25 * scale;
+    quaternion[1] = (rotation[7] - rotation[5]) / scale;
+    quaternion[2] = (rotation[2] - rotation[6]) / scale;
+    quaternion[3] = (rotation[3] - rotation[1]) / scale;
+  } else if (rotation[0] > rotation[4] && rotation[0] > rotation[8]) {
+    const double scale = 2.0 * std::sqrt(1.0 + rotation[0] - rotation[4] - rotation[8]);
+    if (!std::isfinite(scale) || scale == 0.0) return false;
+    quaternion[0] = (rotation[7] - rotation[5]) / scale;
+    quaternion[1] = 0.25 * scale;
+    quaternion[2] = (rotation[1] + rotation[3]) / scale;
+    quaternion[3] = (rotation[2] + rotation[6]) / scale;
+  } else if (rotation[4] > rotation[8]) {
+    const double scale = 2.0 * std::sqrt(1.0 + rotation[4] - rotation[0] - rotation[8]);
+    if (!std::isfinite(scale) || scale == 0.0) return false;
+    quaternion[0] = (rotation[2] - rotation[6]) / scale;
+    quaternion[1] = (rotation[1] + rotation[3]) / scale;
+    quaternion[2] = 0.25 * scale;
+    quaternion[3] = (rotation[5] + rotation[7]) / scale;
+  } else {
+    const double scale = 2.0 * std::sqrt(1.0 + rotation[8] - rotation[0] - rotation[4]);
+    if (!std::isfinite(scale) || scale == 0.0) return false;
+    quaternion[0] = (rotation[3] - rotation[1]) / scale;
+    quaternion[1] = (rotation[2] + rotation[6]) / scale;
+    quaternion[2] = (rotation[5] + rotation[7]) / scale;
+    quaternion[3] = 0.25 * scale;
+  }
+  double norm = 0.0;
+  for (size_t index = 0; index < 4; ++index)
+    norm += quaternion[index] * quaternion[index];
+  norm = std::sqrt(norm);
+  if (!std::isfinite(norm) || norm == 0.0) return false;
+  for (size_t index = 0; index < 4; ++index) quaternion[index] /= norm;
+  if (quaternion[0] < 0.0 ||
+      (quaternion[0] == 0.0 &&
+       (quaternion[1] < 0.0 ||
+        (quaternion[1] == 0.0 &&
+         (quaternion[2] < 0.0 ||
+          (quaternion[2] == 0.0 && quaternion[3] < 0.0))))))
+    for (size_t index = 0; index < 4; ++index) quaternion[index] = -quaternion[index];
+  return true;
+}
+
+bool quaternion_to_pose(const double quaternion_source[4], const double center[3],
+                        Lardon3DSparseGeometryPose *pose) {
+  if (!pose) return false;
+  double quaternion[4] = {quaternion_source[0], quaternion_source[1],
+                          quaternion_source[2], quaternion_source[3]};
+  double norm = 0.0;
+  for (double value : quaternion) norm += value * value;
+  norm = std::sqrt(norm);
+  if (!std::isfinite(norm) || norm == 0.0) return false;
+  for (double &value : quaternion) value /= norm;
+  if (quaternion[0] < 0.0) for (double &value : quaternion) value = -value;
+  const double w = quaternion[0];
+  const double x = quaternion[1];
+  const double y = quaternion[2];
+  const double z = quaternion[3];
+  double *r = pose->rotation_cw;
+  r[0] = 1.0 - 2.0 * (y * y + z * z);
+  r[1] = 2.0 * (x * y - z * w);
+  r[2] = 2.0 * (x * z + y * w);
+  r[3] = 2.0 * (x * y + z * w);
+  r[4] = 1.0 - 2.0 * (x * x + z * z);
+  r[5] = 2.0 * (y * z - x * w);
+  r[6] = 2.0 * (x * z - y * w);
+  r[7] = 2.0 * (y * z + x * w);
+  r[8] = 1.0 - 2.0 * (x * x + y * y);
+  for (size_t row = 0; row < 3; ++row) {
+    pose->translation_cw[row] =
+        -(r[row * 3] * center[0] + r[row * 3 + 1] * center[1] +
+          r[row * 3 + 2] * center[2]);
+  }
+  return finite_pose(*pose) && valid_rotation(*pose);
+}
+
+struct ReprojectionResidual {
+  Lardon3DSparseGeometryCalibration calibration;
+  double observed_x;
+  double observed_y;
+
+  template <typename T>
+  bool operator()(const T *quaternion, const T *center, const T *point,
+                  T *residual) const {
+    const T relative[3] = {point[0] - center[0], point[1] - center[1],
+                           point[2] - center[2]};
+    T camera[3];
+    ceres::QuaternionRotatePoint(quaternion, relative, camera);
+    if (camera[2] <= T(depth_epsilon)) return false;
+    const T xn = camera[0] / camera[2];
+    const T yn = camera[1] / camera[2];
+    const T r2 = xn * xn + yn * yn;
+    const T radial = T(1.0) + T(calibration.k1) * r2 +
+                     T(calibration.k2) * r2 * r2;
+    const T xd = xn * radial + T(2.0 * calibration.p1) * xn * yn +
+                 T(calibration.p2) * (r2 + T(2.0) * xn * xn);
+    const T yd = yn * radial + T(calibration.p1) * (r2 + T(2.0) * yn * yn) +
+                 T(2.0 * calibration.p2) * xn * yn;
+    residual[0] = T(calibration.fx) * xd + T(calibration.cx - observed_x);
+    residual[1] = T(calibration.fy) * yd + T(calibration.cy - observed_y);
+    return true;
+  }
+};
 
 bool select_anchors(const std::vector<Lardon3DSparseIncrementalCamera> &cameras,
                     uint64_t component_key,
@@ -198,6 +387,160 @@ bool cost_acceptable(double initial_cost, double final_cost) {
   return std::isfinite(tolerance) && final_cost <= initial_cost + tolerance;
 }
 
+bool build_component_views(const Preparation &preparation,
+                           std::vector<ComponentView> *views) {
+  if (!views) return false;
+  views->clear();
+  views->resize(preparation.components.size());
+  for (size_t index = 0; index < preparation.components.size(); ++index) {
+    (*views)[index].cameras.reserve(
+        static_cast<size_t>(preparation.components[index].registered_image_count));
+    (*views)[index].landmarks.reserve(
+        static_cast<size_t>(preparation.components[index].landmark_count));
+    (*views)[index].observations.reserve(
+        static_cast<size_t>(preparation.diagnostics[index].observation_count));
+  }
+  for (size_t index = 0; index < preparation.cameras.size(); ++index) {
+    auto component = std::lower_bound(
+        preparation.components.begin(), preparation.components.end(),
+        preparation.cameras[index].component_key,
+        [](const auto &value, uint64_t key) { return value.component_key < key; });
+    if (component == preparation.components.end() ||
+        component->component_key != preparation.cameras[index].component_key)
+      return false;
+    (*views)[static_cast<size_t>(component - preparation.components.begin())]
+        .cameras.push_back(index);
+  }
+  for (size_t index = 0; index < preparation.landmarks.size(); ++index) {
+    auto component = std::lower_bound(
+        preparation.components.begin(), preparation.components.end(),
+        preparation.landmarks[index].component_key,
+        [](const auto &value, uint64_t key) { return value.component_key < key; });
+    if (component == preparation.components.end() ||
+        component->component_key != preparation.landmarks[index].component_key)
+      return false;
+    (*views)[static_cast<size_t>(component - preparation.components.begin())]
+        .landmarks.push_back(index);
+  }
+  for (size_t index = 0; index < preparation.observations.size(); ++index) {
+    auto landmark = std::lower_bound(
+        preparation.landmarks.begin(), preparation.landmarks.end(),
+        preparation.observations[index].track_id,
+        [](const auto &value, uint64_t key) { return value.track_id < key; });
+    if (landmark == preparation.landmarks.end() ||
+        landmark->track_id != preparation.observations[index].track_id)
+      return false;
+    auto component = std::lower_bound(
+        preparation.components.begin(), preparation.components.end(),
+        landmark->component_key,
+        [](const auto &value, uint64_t key) { return value.component_key < key; });
+    if (component == preparation.components.end() ||
+        component->component_key != landmark->component_key)
+      return false;
+    (*views)[static_cast<size_t>(component - preparation.components.begin())]
+        .observations.push_back(index);
+  }
+  return true;
+}
+
+uint32_t structural_underconstraint_mask(
+    size_t camera_count, size_t landmark_count, size_t observation_count,
+    size_t pose_anchor, std::vector<std::pair<size_t, size_t>> edges) {
+  constexpr uint32_t uc1 = 1U << 0;
+  constexpr uint32_t uc2 = 1U << 1;
+  constexpr uint32_t uc3 = 1U << 2;
+  constexpr uint32_t uc4 = 1U << 3;
+  uint32_t mask = 0;
+  const uint64_t cameras = camera_count;
+  const uint64_t landmarks = landmark_count;
+  const uint64_t observations = observation_count;
+  if (cameras > (UINT64_MAX - 7) / 6 || landmarks > UINT64_MAX / 3 ||
+      observations > UINT64_MAX / 2) {
+    mask |= uc1;
+  } else {
+    const uint64_t camera_dof = 6 * cameras;
+    const uint64_t landmark_dof = 3 * landmarks;
+    if (camera_dof > UINT64_MAX - landmark_dof ||
+        camera_dof + landmark_dof < 7 ||
+        2 * observations < camera_dof + landmark_dof - 7)
+      mask |= uc1;
+  }
+  std::sort(edges.begin(), edges.end());
+  edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+  std::vector<size_t> camera_support(camera_count, 0);
+  std::vector<size_t> landmark_support(landmark_count, 0);
+  DisjointSet graph(camera_count + landmark_count);
+  for (const auto &[camera, landmark] : edges) {
+    if (camera >= camera_count || landmark >= landmark_count)
+      return uc1 | uc2 | uc3 | uc4;
+    ++camera_support[camera];
+    ++landmark_support[landmark];
+    graph.join(camera, camera_count + landmark);
+  }
+  for (size_t support : landmark_support)
+    if (support < 2) mask |= uc2;
+  if (pose_anchor >= camera_count) return uc1 | uc2 | uc3 | uc4;
+  for (size_t index = 0; index < camera_support.size(); ++index)
+    if (index != pose_anchor && camera_support[index] < 3) mask |= uc3;
+  const size_t root = graph.find(pose_anchor);
+  for (size_t index = 0; index < graph.parent.size(); ++index)
+    if (graph.find(index) != root) mask |= uc4;
+  return mask;
+}
+
+UnderconstraintResult underconstraint_result(
+    const Preparation &preparation, const ComponentView &view,
+    const Lardon3DSparseBundleAdjustmentComponentDiagnostic &diagnostic) {
+  std::vector<std::pair<size_t, size_t>> edges;
+  edges.reserve(view.observations.size());
+  for (size_t observation_index : view.observations) {
+    const auto &observation = preparation.observations[observation_index];
+    auto camera = std::lower_bound(
+        view.cameras.begin(), view.cameras.end(), observation.image_id,
+        [&](size_t index, uint64_t key) {
+          return preparation.cameras[index].image_id < key;
+        });
+    auto landmark = std::lower_bound(
+        view.landmarks.begin(), view.landmarks.end(), observation.track_id,
+        [&](size_t index, uint64_t key) {
+          return preparation.landmarks[index].track_id < key;
+        });
+    if (camera == view.cameras.end() || landmark == view.landmarks.end() ||
+        preparation.cameras[*camera].image_id != observation.image_id ||
+        preparation.landmarks[*landmark].track_id != observation.track_id)
+      return {false, 0};
+    edges.emplace_back(static_cast<size_t>(camera - view.cameras.begin()),
+                       static_cast<size_t>(landmark - view.landmarks.begin()));
+  }
+  size_t pose_anchor = view.cameras.size();
+  for (size_t index = 0; index < view.cameras.size(); ++index)
+    if (preparation.cameras[view.cameras[index]].image_id ==
+        diagnostic.pose_anchor_image_id)
+      pose_anchor = index;
+  if (pose_anchor == view.cameras.size()) return {false, 0};
+  return {true, structural_underconstraint_mask(
+                    view.cameras.size(), view.landmarks.size(),
+                    view.observations.size(), pose_anchor, std::move(edges))};
+}
+
+UnderconstraintAction classify_underconstraint(const UnderconstraintResult &result) {
+  if (!result.valid) return UnderconstraintAction::internal_error;
+  return result.mask == 0 ? UnderconstraintAction::proceed
+                          : UnderconstraintAction::reject;
+}
+
+bool public_counts_valid(size_t image_count, size_t camera_count,
+                         size_t landmark_count, size_t result_observation_count,
+                         size_t input_observation_count) {
+  if (image_count > maximum_images || camera_count > maximum_images ||
+      landmark_count > maximum_landmarks ||
+      result_observation_count > maximum_observations ||
+      input_observation_count > maximum_observations)
+    return false;
+  return result_observation_count <= SIZE_MAX / 2 &&
+         result_observation_count <= SIZE_MAX / sizeof(double) / 2;
+}
+
 template <typename T>
 void copy_view(std::vector<T> *destination, const T *source, size_t count) {
   destination->clear();
@@ -211,10 +554,9 @@ PreparationStatus prepare(const Lardon3DSparseBundleAdjustmentInput &input,
   const auto &result = *input.incremental_result;
   if (result.status < LARDON3D_SPARSE_INCREMENTAL_COMPLETE ||
       result.status > LARDON3D_SPARSE_INCREMENTAL_FAILED ||
-      input.image_count > maximum_images || result.camera_count > maximum_images ||
-      result.landmark_count > maximum_landmarks ||
-      result.observation_count > maximum_observations ||
-      input.observation_count > maximum_observations ||
+      !public_counts_valid(input.image_count, result.camera_count,
+                           result.landmark_count, result.observation_count,
+                           input.observation_count) ||
       (input.image_count && !input.images) ||
       (input.observation_count && !input.observations) ||
       (result.component_count && !result.components) ||
@@ -403,11 +745,410 @@ PreparationStatus prepare(const Lardon3DSparseBundleAdjustmentInput &input,
   } catch (const std::bad_alloc &) {
     return PreparationStatus::out_of_memory;
   } catch (...) {
-    return PreparationStatus::invalid_argument;
+    return PreparationStatus::internal_error;
   }
 }
 
+bool component_metrics(
+    const Preparation &preparation, const ComponentView &view,
+    const std::vector<Lardon3DSparseIncrementalCamera> &cameras,
+    const std::vector<Lardon3DSparseIncrementalLandmark> &landmarks,
+    double *rmse, double *cost) {
+  std::vector<double> residuals;
+  if (view.observations.size() > SIZE_MAX / 2) return false;
+  residuals.resize(view.observations.size() * 2);
+  for (size_t local = 0; local < view.observations.size(); ++local) {
+    const size_t observation_index = view.observations[local];
+    const auto &observation = preparation.observations[observation_index];
+    auto camera = std::lower_bound(
+        cameras.begin(), cameras.end(), observation.image_id,
+        [](const auto &value, uint64_t key) { return value.image_id < key; });
+    auto landmark = std::lower_bound(
+        landmarks.begin(), landmarks.end(), observation.track_id,
+        [](const auto &value, uint64_t key) { return value.track_id < key; });
+    if (camera == cameras.end() || camera->image_id != observation.image_id ||
+        landmark == landmarks.end() || landmark->track_id != observation.track_id)
+      return false;
+    const auto &resolved = preparation.resolved_observations[observation_index];
+    Lardon3DSparseGeometryPoint2 predicted = {};
+    if (!project(preparation.images[resolved.image_index].calibration,
+                 camera->pose_cw, landmark->point, &predicted))
+      return false;
+    residuals[local * 2] = predicted.x - resolved.source.x;
+    residuals[local * 2 + 1] = predicted.y - resolved.source.y;
+  }
+  return residual_metrics(residuals.data(), view.observations.size(), rmse, cost);
+}
+
+bool build_public_candidate(
+    const Preparation &preparation,
+    const Lardon3DSparseBundleAdjustmentComponentDiagnostic &diagnostic,
+    const std::vector<SolverCamera> &cameras,
+    const std::vector<SolverLandmark> &landmarks,
+    std::vector<Lardon3DSparseIncrementalCamera> *candidate_cameras,
+    std::vector<Lardon3DSparseIncrementalLandmark> *candidate_landmarks) {
+  if (!candidate_cameras || !candidate_landmarks) return false;
+  *candidate_cameras = preparation.cameras;
+  *candidate_landmarks = preparation.landmarks;
+  for (size_t index = 0; index < cameras.size(); ++index) {
+    const size_t source_index = cameras[index].source_index;
+    if (preparation.cameras[source_index].image_id ==
+        diagnostic.pose_anchor_image_id)
+      continue;
+    if (!quaternion_to_pose(
+            cameras[index].quaternion, cameras[index].center,
+            &(*candidate_cameras)[source_index].pose_cw))
+      return false;
+  }
+  for (const auto &landmark : landmarks) {
+    const Lardon3DSparseGeometryPoint3 point = {
+        landmark.point[0], landmark.point[1], landmark.point[2]};
+    if (!finite_point(point)) return false;
+    (*candidate_landmarks)[landmark.source_index].point = point;
+  }
+  return true;
+}
+
+PrivateTermination translate_termination(ceres::TerminationType value) {
+  if (value == ceres::CONVERGENCE) return PrivateTermination::converged;
+  if (value == ceres::NO_CONVERGENCE) return PrivateTermination::no_convergence;
+  return PrivateTermination::failure;
+}
+
+Lardon3DSparseBundleAdjustmentTermination public_termination(
+    PrivateTermination value) {
+  if (value == PrivateTermination::converged)
+    return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_TERMINATION_CONVERGED;
+  if (value == PrivateTermination::no_convergence)
+    return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_TERMINATION_NO_CONVERGENCE;
+  return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_TERMINATION_FAILURE;
+}
+
+CandidateDecision validate_candidate(PrivateTermination termination,
+                                     bool final_metrics_valid,
+                                     bool gauge_valid,
+                                     double initial_cost,
+                                     double final_cost) {
+  if (!termination_accepted(termination)) {
+    return {false, false,
+            termination == PrivateTermination::no_convergence
+                ? LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_NO_CONVERGENCE
+                : LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_SOLVER_FAILURE};
+  }
+  if (!final_metrics_valid || !gauge_valid)
+    return {false, false,
+            LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_NONFINITE};
+  if (!cost_acceptable(initial_cost, final_cost))
+    return {false, true,
+            LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_COST_REGRESSION};
+  return {true, true, LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_NONE};
+}
+
+void apply_component_decision(
+    const CandidateDecision &decision, const ComponentView &view,
+    const std::vector<Lardon3DSparseIncrementalCamera> &candidate_cameras,
+    const std::vector<Lardon3DSparseIncrementalLandmark> &candidate_landmarks,
+    std::vector<Lardon3DSparseIncrementalCamera> *published_cameras,
+    std::vector<Lardon3DSparseIncrementalLandmark> *published_landmarks) {
+  if (!decision.accepted) return;
+  for (size_t source_index : view.cameras)
+    (*published_cameras)[source_index] = candidate_cameras[source_index];
+  for (size_t source_index : view.landmarks)
+    (*published_landmarks)[source_index] = candidate_landmarks[source_index];
+}
+
+bool configure_parameter_blocks(
+    ceres::Problem *problem, ceres::ParameterBlockOrdering *ordering,
+    const Preparation &preparation,
+    const Lardon3DSparseBundleAdjustmentComponentDiagnostic &diagnostic,
+    std::vector<SolverCamera> *cameras,
+    std::vector<SolverLandmark> *landmarks,
+    std::vector<ParameterRecord> *records) {
+  if (!problem || !ordering || !cameras || !landmarks) return false;
+  if (records) records->clear();
+  for (auto &landmark : *landmarks) {
+    problem->AddParameterBlock(landmark.point, 3);
+    ordering->AddElementToGroup(landmark.point, 0);
+    if (records)
+      records->push_back({ParameterKind::landmark,
+                          preparation.landmarks[landmark.source_index].track_id,
+                          0, false, -1});
+  }
+  for (auto &camera : *cameras) {
+    const uint64_t image_id = preparation.cameras[camera.source_index].image_id;
+    problem->AddParameterBlock(camera.quaternion, 4,
+                               new ceres::QuaternionManifold);
+    problem->AddParameterBlock(camera.center, 3);
+    ordering->AddElementToGroup(camera.quaternion, 1);
+    ordering->AddElementToGroup(camera.center, 1);
+    if (records) {
+      records->push_back({ParameterKind::camera_quaternion, image_id, 1,
+                          image_id == diagnostic.pose_anchor_image_id, -1});
+      records->push_back({ParameterKind::camera_center, image_id, 1,
+                          image_id == diagnostic.pose_anchor_image_id,
+                          image_id == diagnostic.scale_anchor_image_id
+                              ? static_cast<int>(diagnostic.scale_axis) - 1
+                              : -1});
+    }
+  }
+  auto pose_anchor = std::find_if(cameras->begin(), cameras->end(), [&](const auto &camera) {
+    return preparation.cameras[camera.source_index].image_id ==
+           diagnostic.pose_anchor_image_id;
+  });
+  auto scale_anchor = std::find_if(cameras->begin(), cameras->end(), [&](const auto &camera) {
+    return preparation.cameras[camera.source_index].image_id ==
+           diagnostic.scale_anchor_image_id;
+  });
+  if (pose_anchor == cameras->end() || scale_anchor == cameras->end()) return false;
+  problem->SetParameterBlockConstant(pose_anchor->quaternion);
+  problem->SetParameterBlockConstant(pose_anchor->center);
+  const int scale_axis = static_cast<int>(diagnostic.scale_axis) - 1;
+  problem->SetManifold(scale_anchor->center,
+                       new ceres::SubsetManifold(3, {scale_axis}));
+  return true;
+}
+
+bool solve_component(
+    const Preparation &preparation, const ComponentView &view,
+    Lardon3DSparseBundleAdjustmentComponentDiagnostic *diagnostic,
+    std::vector<Lardon3DSparseIncrementalCamera> *published_cameras,
+    std::vector<Lardon3DSparseIncrementalLandmark> *published_landmarks) {
+  if (!diagnostic || !published_cameras || !published_landmarks) return false;
+  std::vector<SolverCamera> cameras;
+  std::vector<SolverLandmark> landmarks;
+  std::vector<SolverObservation> observations;
+  cameras.reserve(view.cameras.size());
+  landmarks.reserve(view.landmarks.size());
+  observations.reserve(view.observations.size());
+
+  for (size_t source_index : view.cameras) {
+    const auto &source = preparation.cameras[source_index];
+    auto image = std::lower_bound(
+        preparation.images.begin(), preparation.images.end(), source.image_id,
+        [](const auto &value, uint64_t key) { return value.image_id < key; });
+    SolverCamera camera = {};
+    camera.source_index = source_index;
+    camera.image_index = static_cast<size_t>(image - preparation.images.begin());
+    if (image == preparation.images.end() || image->image_id != source.image_id ||
+        !rotation_to_quaternion(source.pose_cw.rotation_cw, camera.quaternion) ||
+        !camera_center(source.pose_cw, camera.center))
+      return false;
+    std::copy(camera.center, camera.center + 3, camera.initial_center);
+    cameras.push_back(camera);
+  }
+  for (size_t source_index : view.landmarks) {
+    const auto &source = preparation.landmarks[source_index];
+    landmarks.push_back(
+        {source_index, {source.point.x, source.point.y, source.point.z}});
+  }
+  for (size_t resolved_index : view.observations) {
+    const auto &source = preparation.observations[resolved_index];
+    auto camera = std::lower_bound(
+        cameras.begin(), cameras.end(), source.image_id,
+        [&](const auto &value, uint64_t key) {
+          return preparation.cameras[value.source_index].image_id < key;
+        });
+    auto landmark = std::lower_bound(
+        landmarks.begin(), landmarks.end(), source.track_id,
+        [&](const auto &value, uint64_t key) {
+          return preparation.landmarks[value.source_index].track_id < key;
+        });
+    if (camera == cameras.end() || landmark == landmarks.end()) return false;
+    observations.push_back({static_cast<size_t>(camera - cameras.begin()),
+                            static_cast<size_t>(landmark - landmarks.begin()),
+                            resolved_index});
+  }
+
+  if (!component_metrics(preparation, view, preparation.cameras,
+                         preparation.landmarks,
+                         &diagnostic->initial_reprojection_rmse_px,
+                         &diagnostic->initial_robust_cost)) {
+    diagnostic->rejection_reason =
+        LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_NONFINITE;
+    return true;
+  }
+  ceres::Problem problem;
+  auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
+  if (!configure_parameter_blocks(&problem, ordering.get(), preparation,
+                                  *diagnostic, &cameras, &landmarks, nullptr))
+    return false;
+
+  auto *loss = new ceres::HuberLoss(2.0);
+  for (const auto &observation : observations) {
+    const auto &resolved = preparation.resolved_observations[observation.resolved_index];
+    const auto &calibration = preparation.images[cameras[observation.camera_index]
+                                                      .image_index].calibration;
+    auto *cost = new ceres::AutoDiffCostFunction<ReprojectionResidual, 2, 4, 3, 3>(
+        new ReprojectionResidual{calibration, resolved.source.x, resolved.source.y});
+    problem.AddResidualBlock(cost, loss,
+                             cameras[observation.camera_index].quaternion,
+                             cameras[observation.camera_index].center,
+                             landmarks[observation.landmark_index].point);
+  }
+
+  auto pose_anchor = std::find_if(cameras.begin(), cameras.end(), [&](const auto &camera) {
+    return preparation.cameras[camera.source_index].image_id ==
+           diagnostic->pose_anchor_image_id;
+  });
+  auto scale_anchor = std::find_if(cameras.begin(), cameras.end(), [&](const auto &camera) {
+    return preparation.cameras[camera.source_index].image_id ==
+           diagnostic->scale_anchor_image_id;
+  });
+  if (pose_anchor == cameras.end() || scale_anchor == cameras.end()) return false;
+  const int scale_axis = static_cast<int>(diagnostic->scale_axis) - 1;
+
+  ceres::Solver::Options options;
+  options.minimizer_type = ceres::TRUST_REGION;
+  options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
+  options.linear_solver_type = ceres::ITERATIVE_SCHUR;
+  options.preconditioner_type = ceres::SCHUR_JACOBI;
+  options.num_threads = 1;
+  options.max_num_iterations = 50;
+  options.function_tolerance = 1e-6;
+  options.gradient_tolerance = 1e-10;
+  options.parameter_tolerance = 1e-8;
+  options.linear_solver_ordering = std::move(ordering);
+  ceres::Solver::Summary summary;
+  ceres::Solve(options, &problem, &summary);
+
+  const PrivateTermination termination = translate_termination(summary.termination_type);
+  diagnostic->termination = public_termination(termination);
+  diagnostic->iteration_count = summary.iterations.size() > UINT32_MAX
+                                    ? UINT32_MAX
+                                    : static_cast<uint32_t>(summary.iterations.size());
+  std::vector<Lardon3DSparseIncrementalCamera> candidate_cameras;
+  std::vector<Lardon3DSparseIncrementalLandmark> candidate_landmarks;
+  bool candidate_valid = false;
+  if (termination_accepted(termination) &&
+      build_public_candidate(preparation, *diagnostic, cameras, landmarks,
+                             &candidate_cameras, &candidate_landmarks)) {
+    candidate_valid = component_metrics(
+        preparation, view, candidate_cameras, candidate_landmarks,
+        &diagnostic->final_reprojection_rmse_px,
+        &diagnostic->final_robust_cost);
+  }
+  const bool gauge_valid =
+      scale_anchor->center[scale_axis] == scale_anchor->initial_center[scale_axis];
+  const CandidateDecision decision = validate_candidate(
+      termination, candidate_valid, gauge_valid, diagnostic->initial_robust_cost,
+      diagnostic->final_robust_cost);
+  diagnostic->has_costs = decision.has_metrics;
+  diagnostic->has_rmse = decision.has_metrics;
+  diagnostic->accepted = decision.accepted;
+  diagnostic->rejection_reason = decision.rejection_reason;
+  apply_component_decision(decision, view, candidate_cameras,
+                           candidate_landmarks, published_cameras,
+                           published_landmarks);
+  return true;
+}
+
+template <typename T>
+bool allocate_copy(const std::vector<T> &source, T **destination) {
+  *destination = nullptr;
+  if (source.empty()) return true;
+  if (source.size() > SIZE_MAX / sizeof(T)) return false;
+  *destination = static_cast<T *>(std::malloc(source.size() * sizeof(T)));
+  if (!*destination) return false;
+  std::copy(source.begin(), source.end(), *destination);
+  return true;
+}
+
+void destroy_result(Lardon3DSparseBundleAdjustmentResult *result) {
+  if (!result) return;
+  std::free(result->components);
+  std::free(result->cameras);
+  std::free(result->landmarks);
+  std::free(result->observations);
+  std::free(result->diagnostics);
+  *result = {};
+}
+
 } // namespace lardon3d::sparse_bundle_adjustment
+
+extern "C" Lardon3DSparseBundleAdjustmentExecutionStatus
+lardon3d_sparse_bundle_adjustment_run(
+    const Lardon3DSparseBundleAdjustmentInput *input,
+    Lardon3DSparseBundleAdjustmentResult *result) {
+  using namespace lardon3d::sparse_bundle_adjustment;
+  if (!result) return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INVALID_ARGUMENT;
+  destroy_result(result);
+  if (!input) return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INVALID_ARGUMENT;
+  try {
+    Preparation preparation;
+    const PreparationStatus preparation_status = prepare(*input, &preparation);
+    if (preparation_status == PreparationStatus::invalid_argument)
+      return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INVALID_ARGUMENT;
+    if (preparation_status == PreparationStatus::out_of_memory)
+      return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_OUT_OF_MEMORY;
+    if (preparation_status == PreparationStatus::internal_error)
+      return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INTERNAL_ERROR;
+
+    std::vector<ComponentView> views;
+    if (!build_component_views(preparation, &views))
+      return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INTERNAL_ERROR;
+    std::vector<Lardon3DSparseIncrementalCamera> published_cameras =
+        preparation.cameras;
+    std::vector<Lardon3DSparseIncrementalLandmark> published_landmarks =
+        preparation.landmarks;
+    size_t accepted = 0;
+    size_t rejected_eligible = 0;
+    for (size_t index = 0; index < views.size(); ++index) {
+      auto &diagnostic = preparation.diagnostics[index];
+      if (!diagnostic.eligible) continue;
+      const UnderconstraintResult underconstraint =
+          underconstraint_result(preparation, views[index], diagnostic);
+      const UnderconstraintAction underconstraint_action =
+          classify_underconstraint(underconstraint);
+      if (underconstraint_action == UnderconstraintAction::internal_error)
+        return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INTERNAL_ERROR;
+      if (underconstraint_action == UnderconstraintAction::reject) {
+        diagnostic.eligible = false;
+        diagnostic.rejection_reason =
+            LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_UNDERCONSTRAINED;
+        continue;
+      }
+      if (!solve_component(preparation, views[index], &diagnostic,
+                           &published_cameras, &published_landmarks))
+        return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INTERNAL_ERROR;
+      if (diagnostic.accepted)
+        ++accepted;
+      else
+        ++rejected_eligible;
+    }
+
+    Lardon3DSparseBundleAdjustmentResult candidate = {};
+    candidate.status = accepted == 0
+                           ? LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_FAILED
+                           : rejected_eligible == 0
+                                 ? LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_COMPLETE
+                                 : LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_PARTIAL;
+    candidate.component_count = preparation.components.size();
+    candidate.camera_count = published_cameras.size();
+    candidate.landmark_count = published_landmarks.size();
+    candidate.observation_count = preparation.observations.size();
+    if (!allocate_copy(preparation.components, &candidate.components) ||
+        !allocate_copy(published_cameras, &candidate.cameras) ||
+        !allocate_copy(published_landmarks, &candidate.landmarks) ||
+        !allocate_copy(preparation.observations, &candidate.observations) ||
+        !allocate_copy(preparation.diagnostics, &candidate.diagnostics)) {
+      destroy_result(&candidate);
+      return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_OUT_OF_MEMORY;
+    }
+    *result = candidate;
+    return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_OK;
+  } catch (const std::bad_alloc &) {
+    destroy_result(result);
+    return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_OUT_OF_MEMORY;
+  } catch (...) {
+    destroy_result(result);
+    return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INTERNAL_ERROR;
+  }
+}
+
+extern "C" void lardon3d_sparse_bundle_adjustment_result_destroy(
+    Lardon3DSparseBundleAdjustmentResult *result) {
+  lardon3d::sparse_bundle_adjustment::destroy_result(result);
+}
 
 #ifdef LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_TESTING
 extern "C" int lardon3d_sparse_bundle_adjustment_test_prepare(
@@ -459,5 +1200,194 @@ extern "C" bool lardon3d_sparse_bundle_adjustment_test_termination_accepted(
   using namespace lardon3d::sparse_bundle_adjustment;
   if (value < 0 || value > 2) return false;
   return termination_accepted(static_cast<PrivateTermination>(value));
+}
+
+extern "C" uint32_t lardon3d_sparse_bundle_adjustment_test_underconstraint(
+    const Lardon3DSparseBundleAdjustmentInput *input, size_t component_index) {
+  using namespace lardon3d::sparse_bundle_adjustment;
+  if (!input) return UINT32_MAX;
+  Preparation preparation;
+  if (prepare(*input, &preparation) != PreparationStatus::prepared ||
+      component_index >= preparation.components.size())
+    return UINT32_MAX;
+  std::vector<ComponentView> views;
+  if (!build_component_views(preparation, &views)) return UINT32_MAX;
+  const UnderconstraintResult result = underconstraint_result(
+      preparation, views[component_index], preparation.diagnostics[component_index]);
+  return result.valid ? result.mask : UINT32_MAX;
+}
+
+extern "C" uint32_t lardon3d_sparse_bundle_adjustment_test_structural_mask(
+    size_t camera_count, size_t landmark_count, size_t observation_count,
+    size_t pose_anchor, const size_t *camera_indices,
+    const size_t *landmark_indices, size_t edge_count) {
+  using namespace lardon3d::sparse_bundle_adjustment;
+  if (edge_count != 0 && (!camera_indices || !landmark_indices)) return UINT32_MAX;
+  std::vector<std::pair<size_t, size_t>> edges;
+  edges.reserve(edge_count);
+  for (size_t index = 0; index < edge_count; ++index)
+    edges.emplace_back(camera_indices[index], landmark_indices[index]);
+  return structural_underconstraint_mask(camera_count, landmark_count,
+                                         observation_count, pose_anchor,
+                                         std::move(edges));
+}
+
+extern "C" bool lardon3d_sparse_bundle_adjustment_test_candidate_decision(
+    int termination, bool final_metrics_valid, bool gauge_valid,
+    double initial_cost, double final_cost, bool *has_metrics,
+    Lardon3DSparseBundleAdjustmentRejectionReason *reason) {
+  using namespace lardon3d::sparse_bundle_adjustment;
+  if (termination < 0 || termination > 2 || !has_metrics || !reason) return false;
+  const CandidateDecision decision = validate_candidate(
+      static_cast<PrivateTermination>(termination), final_metrics_valid,
+      gauge_valid, initial_cost, final_cost);
+  *has_metrics = decision.has_metrics;
+  *reason = decision.rejection_reason;
+  return decision.accepted;
+}
+
+extern "C" bool lardon3d_sparse_bundle_adjustment_test_counts_valid(
+    size_t image_count, size_t camera_count, size_t landmark_count,
+    size_t result_observation_count, size_t input_observation_count) {
+  return lardon3d::sparse_bundle_adjustment::public_counts_valid(
+      image_count, camera_count, landmark_count, result_observation_count,
+      input_observation_count);
+}
+
+extern "C" bool lardon3d_sparse_bundle_adjustment_test_candidate_publication(
+    bool final_metrics_valid, double initial_cost, double final_cost,
+    double original_x, double candidate_x, double *published_x,
+    bool *has_metrics, Lardon3DSparseBundleAdjustmentRejectionReason *reason) {
+  using namespace lardon3d::sparse_bundle_adjustment;
+  if (!published_x || !has_metrics || !reason) return false;
+  const CandidateDecision decision = validate_candidate(
+      PrivateTermination::converged, final_metrics_valid, true, initial_cost,
+      final_cost);
+  ComponentView view;
+  view.landmarks.push_back(0);
+  std::vector<Lardon3DSparseIncrementalCamera> cameras;
+  std::vector<Lardon3DSparseIncrementalLandmark> published(1);
+  std::vector<Lardon3DSparseIncrementalLandmark> candidate(1);
+  published[0].point.x = original_x;
+  candidate[0].point.x = candidate_x;
+  apply_component_decision(decision, view, cameras, candidate, &cameras,
+                           &published);
+  *published_x = published[0].point.x;
+  *has_metrics = decision.has_metrics;
+  *reason = decision.rejection_reason;
+  return decision.accepted;
+}
+
+extern "C" int lardon3d_sparse_bundle_adjustment_test_internal_underconstraint() {
+  using namespace lardon3d::sparse_bundle_adjustment;
+  Preparation preparation;
+  preparation.cameras.resize(1);
+  preparation.cameras[0].image_id = 10;
+  preparation.landmarks.resize(1);
+  preparation.landmarks[0].track_id = 20;
+  preparation.observations.resize(1);
+  preparation.observations[0].image_id = 99;
+  preparation.observations[0].track_id = 20;
+  ComponentView view;
+  view.cameras.push_back(0);
+  view.landmarks.push_back(0);
+  view.observations.push_back(0);
+  Lardon3DSparseBundleAdjustmentComponentDiagnostic diagnostic = {};
+  diagnostic.pose_anchor_image_id = 10;
+  const UnderconstraintAction action = classify_underconstraint(
+      underconstraint_result(preparation, view, diagnostic));
+  return action == UnderconstraintAction::internal_error
+             ? LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INTERNAL_ERROR
+             : LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_OK;
+}
+
+extern "C" bool lardon3d_sparse_bundle_adjustment_test_parameter_ordering(
+    const Lardon3DSparseBundleAdjustmentInput *input, int *kinds,
+    uint64_t *identities, int *groups, bool *constants, int *subset_axes,
+    size_t capacity, size_t *count) {
+  using namespace lardon3d::sparse_bundle_adjustment;
+  if (!input || !count) return false;
+  Preparation preparation;
+  if (prepare(*input, &preparation) != PreparationStatus::prepared ||
+      preparation.components.size() != 1)
+    return false;
+  std::vector<ComponentView> views;
+  if (!build_component_views(preparation, &views)) return false;
+  std::vector<SolverCamera> cameras;
+  std::vector<SolverLandmark> landmarks;
+  for (size_t source_index : views[0].cameras) {
+    SolverCamera camera = {};
+    camera.source_index = source_index;
+    if (!rotation_to_quaternion(preparation.cameras[source_index].pose_cw.rotation_cw,
+                                camera.quaternion) ||
+        !camera_center(preparation.cameras[source_index].pose_cw, camera.center))
+      return false;
+    cameras.push_back(camera);
+  }
+  for (size_t source_index : views[0].landmarks) {
+    const auto &point = preparation.landmarks[source_index].point;
+    landmarks.push_back({source_index, {point.x, point.y, point.z}});
+  }
+  ceres::Problem problem;
+  ceres::ParameterBlockOrdering ordering;
+  std::vector<ParameterRecord> records;
+  if (!configure_parameter_blocks(&problem, &ordering, preparation,
+                                  preparation.diagnostics[0], &cameras,
+                                  &landmarks, &records))
+    return false;
+  *count = records.size();
+  if (records.size() > capacity ||
+      (!records.empty() &&
+       (!kinds || !identities || !groups || !constants || !subset_axes)))
+    return false;
+  for (size_t index = 0; index < records.size(); ++index) {
+    kinds[index] = static_cast<int>(records[index].kind);
+    identities[index] = records[index].identity;
+    groups[index] = records[index].group;
+    constants[index] = records[index].constant;
+    subset_axes[index] = records[index].subset_axis;
+  }
+  return true;
+}
+
+extern "C" bool lardon3d_sparse_bundle_adjustment_test_invalid_candidate(
+    const Lardon3DSparseBundleAdjustmentInput *input, double *published_z,
+    bool *has_metrics, Lardon3DSparseBundleAdjustmentRejectionReason *reason) {
+  using namespace lardon3d::sparse_bundle_adjustment;
+  if (!input || !published_z || !has_metrics || !reason) return false;
+  Preparation preparation;
+  if (prepare(*input, &preparation) != PreparationStatus::prepared ||
+      preparation.components.size() != 1 || preparation.landmarks.empty())
+    return false;
+  std::vector<ComponentView> views;
+  if (!build_component_views(preparation, &views)) return false;
+  std::vector<Lardon3DSparseIncrementalCamera> candidate_cameras =
+      preparation.cameras;
+  std::vector<Lardon3DSparseIncrementalLandmark> candidate_landmarks =
+      preparation.landmarks;
+  candidate_landmarks[views[0].landmarks[0]].point.z = -1.0;
+  double initial_rmse = 0.0;
+  double initial_cost = 0.0;
+  double final_rmse = 0.0;
+  double final_cost = 0.0;
+  if (!component_metrics(preparation, views[0], preparation.cameras,
+                         preparation.landmarks, &initial_rmse, &initial_cost))
+    return false;
+  const bool final_valid = component_metrics(
+      preparation, views[0], candidate_cameras, candidate_landmarks,
+      &final_rmse, &final_cost);
+  const CandidateDecision decision = validate_candidate(
+      PrivateTermination::converged, final_valid, true, initial_cost, final_cost);
+  std::vector<Lardon3DSparseIncrementalCamera> published_cameras =
+      preparation.cameras;
+  std::vector<Lardon3DSparseIncrementalLandmark> published_landmarks =
+      preparation.landmarks;
+  apply_component_decision(decision, views[0], candidate_cameras,
+                           candidate_landmarks, &published_cameras,
+                           &published_landmarks);
+  *published_z = published_landmarks[views[0].landmarks[0]].point.z;
+  *has_metrics = decision.has_metrics;
+  *reason = decision.rejection_reason;
+  return !decision.accepted && !final_valid;
 }
 #endif

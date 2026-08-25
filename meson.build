@@ -24,6 +24,12 @@ ncursesw = dependency('ncursesw', required: true)
 threads = dependency('threads')
 sqlite3 = dependency('sqlite3', required: true)
 openssl = dependency('openssl', required: true)
+ceres = dependency(
+    'Ceres',
+    method: 'cmake',
+    version: ['>=2.2.0', '<2.3.0'],
+    required: true,
+)
 opencv = dependency(
     'opencv5',
     required: true,
@@ -164,7 +170,7 @@ executable(
     ] + matcher_backend_sources,
     include_directories: include_directories('include'),
     c_args: ['-DLARDON3D_TRACK_BUILDER_TASK_AVAILABLE'],
-    dependencies: [ncursesw, threads, sqlite3, openssl, opencv, opencv_geometry]
+    dependencies: [ncursesw, threads, sqlite3, openssl, opencv, opencv_geometry, ceres]
         + matcher_backend_dependencies,
 )
 
@@ -555,6 +561,7 @@ sparse_sfm_bundle_adjustment_test = executable(
     ],
     cpp_args: ['-DLARDON3D_SPARSE_BUNDLE_ADJUSTMENT_TESTING'],
     include_directories: include_directories('include'),
+    dependencies: [ceres],
 )
 
 test('sparse-sfm-bundle-adjustment', sparse_sfm_bundle_adjustment_test,

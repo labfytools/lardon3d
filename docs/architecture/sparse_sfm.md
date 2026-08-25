@@ -194,6 +194,12 @@ as a whole, so Track identity and observation ownership remain simple.
 
 ## Gate E v1 — Final Bundle Adjustment decision
 
+**GATE E — PASS / FROZEN.** The synchronous CPU-only final per-component
+Bundle Adjustment implementation, E01--E35 matrix, normal suite, targeted
+ASan/UBSan with LeakSanitizer, full sequential ASan/UBSan suite and at least
+20 fresh-process E27 comparisons are validated. Gate F project orchestration
+and Gate G resource integration remain later gates.
+
 **DECISION: Gate E v1 is a synchronous, independent final per-component Bundle
 Adjustment applied as post-processing to a copy of the immutable final Gate D
 result.** It consumes two caller-owned immutable views that must remain coherent
@@ -426,7 +432,7 @@ per component and requires no in-place rollback.
 
 ### Result and diagnostics
 
-The future solver-independent Gate E result has these conceptual states:
+The solver-independent Gate E result has these conceptual states:
 
 - `COMPLETE`: at least one component is eligible and every eligible component
   is optimized and accepted;
@@ -439,7 +445,7 @@ The future solver-independent Gate E result has these conceptual states:
 result states. In particular, `FAILED` is not an invalid-argument,
 out-of-memory or internal execution error.
 
-The future synchronous execution function returns the separate,
+The synchronous execution function returns the separate,
 solver-independent `Lardon3DSparseBundleAdjustmentExecutionStatus`:
 
 ```text
@@ -549,6 +555,10 @@ pre/post geometric error and robust cost. Fixtures intended to improve define
 their own scientifically measurable improvement; no universal pose or landmark
 threshold is invented.
 
+The complete E01--E35 matrix is implemented and validated. E27 passed at least
+20 fresh processes using exact structural comparison, the frozen binary64
+tolerance and geometric rotation comparison.
+
 Local BA after registration is deferred. Gate D exposes no intermediate
 scientific seam or complete registration history, and an interleaved BA could
 change its subsequent growth. Introducing that policy requires a future
@@ -561,13 +571,10 @@ fingerprint, defines no persistent identity, and publishes nothing. Gate F
 retains project/task orchestration and persistence; Gate G retains Resource
 Governor integration and final resource validation.
 
-Ceres availability on a host must be distinguished from Lardon3D dependency
-declaration. Gate E selects the Ceres Solver 2.2.x API scientifically, but
-Lardon3D currently declares no production Ceres dependency in Meson. A future
-dependency slice must verify the used API, licensing, CPU-only construction and
-a build without required SuiteSparse or CUDA. Package discovery may use CMake;
-a pkg-config miss alone does not prove host unavailability, and an installed
-host package is not a declared Lardon3D dependency.
+Ceres availability on a host remains distinct from Lardon3D dependency
+declaration. Gate E declares Ceres Solver `>=2.2.0,<2.3.0` through Meson CMake
+discovery and uses its 2.2.x CPU API. CUDA is not required and Lardon3D has no
+functional direct SuiteSparse dependency.
 
 ## Determinism and scientific identity
 
@@ -639,8 +646,8 @@ zram device, and zero current memory/IO PSI average. The host is the Ryzen 7
 
 The project already links OpenCV 5.0.0. Host-installed libraries and their
 pkg-config or CMake discovery metadata are capabilities, not Lardon3D
-production dependencies. Lardon3D currently declares no Ceres dependency in
-Meson. No package, system setting, swap device or GPU mode was changed.
+production dependencies. Gate E now declares Ceres 2.2.x through Meson CMake
+discovery. No system setting, swap device or GPU mode was changed.
 
 Gate A probes use deterministic synthetic camera arcs, controlled noise and
 degenerate planar/pure-rotation cases. Every RSS probe is a separate normal
@@ -697,7 +704,7 @@ Triangulation candidates:
 |---|---|---|---|
 | Dense normal equations | Prohibited for serious `C×P` problems | No | Rejected |
 | OpenCV generic optimization | Not a sparse BA contract | Present, wrong abstraction | Rejected |
-| Ceres 2.2.x iterative Schur | Block-sparse | Scientific selection; not in Meson | **Selected Gate E v1** |
+| Ceres 2.2.x iterative Schur | Block-sparse | Declared through Meson CMake discovery | **Implemented Gate E v1** |
 
 ### Synthetic geometry probe
 
@@ -722,9 +729,8 @@ The project already links OpenCV 5.0.0. Host probes found Eigen 5.0.1, BLAS
 3.12.0, LAPACK 3.12.0 and TBB 2023.1 as host capabilities or transitive
 facilities rather than current Lardon3D production dependencies. Ceres may use
 CMake discovery, so pkg-config alone does not establish host availability.
-Ceres 2.2.x is the selected Gate E scientific API, but Lardon3D declares no
-production Ceres dependency yet. No new dependency is added by this contract
-slice. The measured machine has 16 logical CPUs,
+Ceres 2.2.x is the implemented Gate E scientific API and is declared through
+Meson CMake discovery. The measured machine has 16 logical CPUs,
 `MemTotal=15597716 KiB`, `MemAvailable=8245288 KiB` at preflight, an 8 GiB
 swapfile, 6 GiB zram and zero memory/IO PSI averages at the probe start. Gate E
 uses one solver thread; future Gate G resource admission cannot change that
@@ -860,8 +866,8 @@ globally aligned by Gate D.
 Gate D does not implement BA, persistence adapters, Task Runtime, checkpoints,
 Governor integration, a Resource System, GPU execution, dense reconstruction,
 metric alignment, viewer integration or any Project DB change. BA remains the
-later Gate E; project/task orchestration remains Gate F; resource/freeze
-integration remains Gate G.
+separate PASS / FROZEN Gate E post-processing stage; project/task orchestration
+remains Gate F and resource/freeze integration remains Gate G.
 
 ### Canonical Gate D functional matrix
 
