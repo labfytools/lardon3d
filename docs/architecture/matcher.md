@@ -75,7 +75,7 @@ matérialisée.
 
 Le Match File complet est sérialisé dans un buffer heap borné à 98336 octets et
 écrit par un unique `write_exact`, puis synchronisé une fois. Les mesures locales
-restent dans `.opencode/work/current_ticket.md`, pas dans ce contrat canonique.
+restent dans le rapport de session, pas dans ce contrat canonique.
 À 8192 features, le coût CPU dominant reste l'évaluation exacte des distances
 dans `cv::BFMatcher::knnMatch`. ORB peut remplacer ce seul hot path par Vulkan.
 Une feasibility réelle a rejeté Vulkan pour SIFT et RootSIFT : leur accumulation

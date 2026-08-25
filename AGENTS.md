@@ -81,12 +81,8 @@ créé pour les benchmarks, diagnostics, expérimentations ou probes matériels.
 - Un reformatage ne doit jamais modifier le comportement.
 - Ces règles s'appliquent également aux fichiers créés sous `/tmp`.
 
-## Long run OpenCode
+## Validation longue
 
-- `.opencode/work/current_ticket.md` est la mémoire durable du ticket et doit
-  être actualisé après chaque phase majeure.
-- Avant une compaction ou une fin de session incomplète, écrire
-  `.opencode/work/handoff.md` avec la prochaine action exacte.
 - Une seule validation lourde à la fois : normal, ASan/UBSan, TSan puis stress.
 - Un timeout doit être isolé et expliqué ; le répéter jusqu'au vert est interdit.
 - Après les tests verts, imposer revue, audit de concurrence si pertinent,

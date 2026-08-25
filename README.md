@@ -140,7 +140,6 @@ Acquisitions
 - [Tests](docs/development/testing.md)
 - [Concurrence](docs/development/concurrency.md)
 - [Profil de performance de la machine cible](docs/performance/target_hardware.md)
-- [OpenCode long run](docs/development/opencode_long_run.md)
 
 ### Roadmap
 - [Roadmap](docs/roadmap/roadmap.md)
