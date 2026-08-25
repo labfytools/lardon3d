@@ -597,7 +597,182 @@ The candidate reconstruction identity is:
 Runtime task IDs, worker count, Governor state, pause timing and resource
 observations are excluded. Any output-changing threshold, camera model,
 initialization policy, triangulation policy, PnP policy, BA policy, precision or
-loss parameter belongs in the future fingerprint.
+loss parameter belongs in the parameter fingerprint materialized by the Gate F
+persistent-identity seam. Gate D and Gate E neither receive, compute, serialize
+nor transport it. Project DB stores it but does not own its meaning; Task Runtime
+and the Resource System are also excluded. This seam is a Gate F orchestration
+responsibility, not a new subsystem or scientific solver gate.
+
+### Sparse SfM parameter fingerprint v1
+
+The parameter fingerprint is `SHA-256(record_v1)`, with one hash operation over
+the exact fixed record below. Its output is the complete 32-byte digest. The
+record begins with the eight ASCII bytes `L3DSFMFP` (`4c 33 44 53 46 4d 46 50`),
+without a NUL byte, followed by `fingerprint_encoding_version=1`. Every
+multi-byte scalar is little-endian. `f64` means the exact finite IEEE-754
+binary64 bit pattern, with both signed zeros encoded as positive zero; NaN and
+infinity are invalid. Categorical values are the explicit `u32` policy IDs
+defined here, never native enum ordinals. No native struct, padding, pointer,
+`size_t`, host-endian value, JSON or locale-dependent text is hashed. A boolean,
+if a future encoding uses one, is `u8`, with false `0` and true `1`; v1 has no
+boolean field and no padding or reserved bytes.
+
+| Offset | Width | Field | Canonical type | Source/value |
+|---:|---:|---|---|---|
+| 0 | 8 | `domain` | ASCII bytes | `L3DSFMFP` |
+| 8 | 4 | `fingerprint_encoding_version` | `u32` | `1` |
+| 12 | 4 | `minimum_seed_tracks` | `u32` | effective Gate D parameter |
+| 16 | 4 | `minimum_seed_landmarks` | `u32` | effective Gate D parameter |
+| 20 | 4 | `minimum_pnp_correspondences` | `u32` | effective Gate D parameter |
+| 24 | 4 | `maximum_seed_candidates` | `u32` | effective Gate D parameter |
+| 28 | 4 | `maximum_registration_rounds` | `u32` | effective Gate D parameter |
+| 32 | 4 | `maximum_landmarks_per_round` | `u32` | effective Gate D parameter |
+| 36 | 4 | `maximum_images` | `u32` | effective Gate D parameter |
+| 40 | 8 | `maximum_observations` | `u64` | effective Gate D parameter |
+| 48 | 8 | `maximum_tracks` | `u64` | effective Gate D parameter |
+| 56 | 8 | `reprojection_threshold_px` | `f64` | effective Gate D parameter |
+| 64 | 8 | `minimum_track_parallax_rad` | `f64` | effective Gate D parameter |
+| 72 | 8 | `relative_pose.robust_threshold_px` | `f64` | effective Gate D parameter |
+| 80 | 8 | `relative_pose.confidence` | `f64` | effective Gate D parameter |
+| 88 | 4 | `relative_pose.max_iterations` | `u32` | effective Gate D parameter |
+| 92 | 4 | `relative_pose.minimum_inliers` | `u32` | effective Gate D parameter |
+| 96 | 8 | `relative_pose.minimum_inlier_ratio` | `f64` | effective Gate D parameter |
+| 104 | 8 | `relative_pose.minimum_parallax_rad` | `f64` | effective Gate D parameter |
+| 112 | 8 | `relative_pose.minimum_cheirality_ratio` | `f64` | effective Gate D parameter |
+| 120 | 8 | `relative_pose.deterministic_seed` | `u64` | effective Gate D parameter |
+| 128 | 8 | `pnp.reprojection_threshold_px` | `f64` | effective Gate D parameter |
+| 136 | 8 | `pnp.confidence` | `f64` | effective Gate D parameter |
+| 144 | 4 | `pnp.max_iterations` | `u32` | effective Gate D parameter |
+| 148 | 4 | `pnp.minimum_inliers` | `u32` | effective Gate D parameter |
+| 152 | 8 | `pnp.minimum_inlier_ratio` | `f64` | effective Gate D parameter |
+| 160 | 8 | `pnp.deterministic_seed` | `u64` | effective Gate D parameter |
+| 168 | 4 | `refinement.max_iterations` | `u32` | effective Gate D parameter |
+| 172 | 8 | `refinement.convergence_tolerance` | `f64` | effective Gate D parameter |
+| 180 | 4 | `camera_model_policy` | `u32` | `PINHOLE_K1_K2_P1_P2_V1=1` |
+| 184 | 4 | `calibration_policy` | `u32` | `KNOWN_FIXED_CALIBRATION_V1=1` |
+| 188 | 4 | `source_pixel_policy` | `u32` | `SOURCE_PIXEL_TOP_LEFT_X_RIGHT_Y_DOWN_V1=1` |
+| 192 | 4 | `pose_policy` | `u32` | `WORLD_TO_CAMERA_R_CW_CW_V1=1` |
+| 196 | 4 | `seed_ranking_policy` | `u32` | `SHARED_PARALLAX_IMAGE_ID_V1=1` |
+| 200 | 4 | `robust_seed_policy` | `u32` | `LOCAL_DETERMINISTIC_SEED_V1=1` |
+| 204 | 4 | `next_image_policy` | `u32` | `VISIBLE_SUPPORT_THEN_IMAGE_ID_V1=1` |
+| 208 | 4 | `track_order_policy` | `u32` | `CANONICAL_TRACK_OBSERVATION_V1=1` |
+| 212 | 4 | `component_policy` | `u32` | `DISCONNECTED_INDEPENDENT_COMPONENTS_V1=1` |
+| 216 | 4 | `triangulation_policy` | `u32` | `NORMALIZED_DLT_POINT_REFINE_V1=1` |
+| 220 | 4 | `landmark_rejection_policy` | `u32` | `WHOLE_LANDMARK_ACCEPT_OR_REJECT_V1=1` |
+| 224 | 4 | `cheirality_policy` | `u32` | `POSITIVE_DEPTH_THRESHOLD_V1=1` |
+| 228 | 4 | `gate_d_numeric_policy` | `u32` | `BINARY64_DETERMINISTIC_V1=1` |
+| 232 | 4 | `ba_mode` | `u32` | `FINAL_PER_COMPONENT_POSTPROCESS_V1=1` |
+| 236 | 4 | `local_ba_policy` | `u32` | `LOCAL_BA_DISABLED_V1=1` |
+| 240 | 4 | `ba_optimized_variables` | `u32` | `ROTATION_CENTER_LANDMARK_XYZ_V1=1` |
+| 244 | 4 | `ba_fixed_inputs` | `u32` | `INTRINSICS_DISTORTION_OBSERVATIONS_IDENTITIES_V1=1` |
+| 248 | 4 | `ba_pose_representation` | `u32` | `UNIT_QUATERNION_R_CW_PLUS_CW_V1=1` |
+| 252 | 4 | `ba_gauge_policy` | `u32` | `MIN_IMAGE_FARTHEST_CENTER_ONE_AXIS_V1=1` |
+| 256 | 8 | `ba_degenerate_scale_threshold` | `f64` | `1e-9` |
+| 264 | 4 | `ba_residual_policy` | `u32` | `ONE_FULL_2D_BLOCK_PER_OBSERVATION_V1=1` |
+| 268 | 4 | `ba_projection_policy` | `u32` | `SOURCE_PIXEL_PINHOLE_K1_K2_P1_P2_V1=1` |
+| 272 | 8 | `ba_minimum_camera_depth` | `f64` | `1e-9` |
+| 280 | 4 | `ba_robust_loss` | `u32` | `HUBER_FULL_2D_NORM_V1=1` |
+| 284 | 8 | `ba_huber_delta_px` | `f64` | `2.0` |
+| 292 | 4 | `ba_robust_cost_policy` | `u32` | `HALF_SUM_RHO_SQUARED_NORM_V1=1` |
+| 296 | 4 | `ba_solver_contract` | `u32` | `CERES_2_2_CONTRACT_V1=1` |
+| 300 | 4 | `ba_minimizer` | `u32` | `TRUST_REGION_V1=1` |
+| 304 | 4 | `ba_trust_region_strategy` | `u32` | `LEVENBERG_MARQUARDT_V1=1` |
+| 308 | 4 | `ba_linear_solver` | `u32` | `ITERATIVE_SCHUR_V1=1` |
+| 312 | 4 | `ba_preconditioner` | `u32` | `SCHUR_JACOBI_V1=1` |
+| 316 | 4 | `ba_num_threads` | `u32` | `1` |
+| 320 | 4 | `ba_max_num_iterations` | `u32` | `50` |
+| 324 | 8 | `ba_function_tolerance` | `f64` | `1e-6` |
+| 332 | 8 | `ba_gradient_tolerance` | `f64` | `1e-10` |
+| 340 | 8 | `ba_parameter_tolerance` | `f64` | `1e-8` |
+| 348 | 4 | `ba_retry_count` | `u32` | `0` |
+| 352 | 4 | `ba_convergence_acceptance` | `u32` | `CONVERGENCE_ONLY_V1=1` |
+| 356 | 8 | `ba_cost_non_regression_factor` | `f64` | `1e-12` |
+| 364 | 4 | `ba_underconstraint_policy` | `u32` | `MANIFEST_UC1_UC2_UC3_UC4_V1=1` |
+| 368 | 4 | `ba_numeric_policy` | `u32` | `BINARY64_SINGLE_THREAD_V1=1` |
+
+The exact v1 record length is 372 bytes. Gate D field semantics and source
+translations are exhaustive:
+
+| Field | Source type | Encoding/normalization | Scientific meaning |
+|---|---|---|---|
+| `minimum_seed_tracks` | `uint32_t` | `u32` | minimum shared Tracks for a seed |
+| `minimum_seed_landmarks` | `uint32_t` | `u32` | minimum accepted seed landmarks |
+| `minimum_pnp_correspondences` | `uint32_t` | `u32` | minimum correspondences for registration |
+| `maximum_seed_candidates` | `uint32_t` | `u32` | bound on seed attempts |
+| `maximum_registration_rounds` | `uint32_t` | `u32` | bound on growth rounds |
+| `maximum_landmarks_per_round` | `uint32_t` | `u32` | bound on new landmarks per round |
+| `maximum_images` | `uint32_t` | `u32` | accepted input image bound |
+| `maximum_observations` | `uint64_t` | `u64` | accepted observation bound |
+| `maximum_tracks` | `uint64_t` | `u64` | accepted Track bound |
+| `reprojection_threshold_px` | `double` | finite canonical `f64` | landmark reprojection acceptance |
+| `minimum_track_parallax_rad` | `double` | finite canonical `f64` | landmark parallax acceptance |
+| `relative_pose.robust_threshold_px` | `double` | finite canonical `f64` | essential robust residual threshold |
+| `relative_pose.confidence` | `double` | finite canonical `f64` | essential robust confidence |
+| `relative_pose.max_iterations` | `uint32_t` | `u32` | essential robust iteration bound |
+| `relative_pose.minimum_inliers` | `uint32_t` | `u32` | essential minimum inlier count |
+| `relative_pose.minimum_inlier_ratio` | `double` | finite canonical `f64` | essential minimum inlier fraction |
+| `relative_pose.minimum_parallax_rad` | `double` | finite canonical `f64` | relative-pose minimum parallax |
+| `relative_pose.minimum_cheirality_ratio` | `double` | finite canonical `f64` | relative-pose positive-depth fraction |
+| `relative_pose.deterministic_seed` | `uint64_t` | `u64` | local essential robust-estimator seed |
+| `pnp.reprojection_threshold_px` | `double` | finite canonical `f64` | PnP robust residual threshold |
+| `pnp.confidence` | `double` | finite canonical `f64` | PnP robust confidence |
+| `pnp.max_iterations` | `uint32_t` | `u32` | PnP robust iteration bound |
+| `pnp.minimum_inliers` | `uint32_t` | `u32` | PnP minimum inlier count |
+| `pnp.minimum_inlier_ratio` | `double` | finite canonical `f64` | PnP minimum inlier fraction |
+| `pnp.deterministic_seed` | `uint64_t` | `u64` | local PnP robust-estimator seed |
+| `refinement.max_iterations` | `uint32_t` | `u32` | point-refinement iteration bound |
+| `refinement.convergence_tolerance` | `double` | finite canonical `f64` | point-refinement stopping tolerance |
+
+Every row is fingerprinted. Integer fields require no normalization beyond
+their fixed-width little-endian translation; every floating field uses the
+canonical-zero rule above.
+
+The policy IDs above freeze the full named Gate D and Gate E v1 semantics,
+including canonical order and tie breaks,
+whole-landmark rejection, positive-depth cheirality, the pose anchor chosen by
+smallest image ID, the farthest-center scale anchor with exact image-ID tie,
+X/Y/Z axis tie order and exactly one fixed center coordinate. The Gate E
+projection is `R_cw + Cw`; intrinsics and `k1/k2/p1/p2` distortion are fixed.
+The robust cost policy is exactly `0.5 * sum rho(dx^2+dy^2)` with one Huber loss
+on each full two-dimensional residual. `CERES_2_2_CONTRACT_V1` denotes the
+accepted Lardon3D Ceres contract `>=2.2.0,<2.3.0`, not package, build, linker or
+transitive SuiteSparse metadata.
+
+For Gate D, `WORLD_TO_CAMERA_R_CW_CW_V1` includes the frozen SO(3) residual
+limit `1e-6`;
+`POSITIVE_DEPTH_THRESHOLD_V1` means strict camera depth greater than `1e-9`;
+and `NORMALIZED_DLT_POINT_REFINE_V1` includes the frozen homogeneous-scale
+epsilon `1e-12` and collinearity covariance-determinant limit `1e-10`. These
+constants are not runtime members, so their stable policy IDs, rather than
+duplicate floating fields or implementation enum ordinals, own their exact
+v1 semantics.
+
+All 27 effective scalar members, including nested members, of
+`Lardon3DSparseIncrementalParameters` occur exactly once. Serialization uses
+the validated effective values actually passed to Gate D, so an omitted default
+and the same explicitly supplied value produce identical bytes. Actual Track
+Set identity, Track/Feature IDs, calibration-scope identity and individual
+calibration IDs or numeric values, `sfm_kind`, `sfm_version`, project/task/
+transaction/reconstruction IDs, timestamps, resource state, result values and
+metrics are excluded. The separate calibration scope hash binds sorted image
+IDs to calibration hashes, and each calibration hash binds dimensions,
+`fx/fy/cx/cy/k1/k2/p1/p2`, model/version and provenance; the parameter record
+therefore records calibration semantics without duplicating calibration
+instances.
+
+Changing only a parameter value retains encoding version 1 and naturally
+changes the digest. Adding a fingerprint-owned field or changing byte layout
+requires a new encoding version; changing the Sparse SfM algorithmic contract
+may separately require a new `sfm_version`. Neither version substitutes for the
+other. Equal complete candidate tuples therefore identify the same scientific
+candidate regardless of runtime metadata.
+
+Gate F implementation must prefer an internal, solver-independent helper unless
+a separate public C17 API decision is made. It must reuse the project's SHA-256
+implementation, use bounded constant-size storage without cache, scheduling,
+Governor interaction or reservation, and add a golden 372-byte default record,
+its expected SHA-256 digest, and mutations proving every fingerprint-owned
+category changes the digest. This contract authorizes no public symbol.
 
 Exact byte identity is not promised for a future multi-threaded floating-point
 solver until measured. The v1 target is deterministic ordering and numerical
@@ -812,7 +987,8 @@ Gate D consumes exactly one immutable Track Set, one immutable calibration
 scope, finite calibration values for participating images, bounded keypoint
 coordinates addressed by `(feature_set_id, feature_index)`, and explicit
 parameters immutable during execution. Gate D neither computes nor carries the
-future parameter fingerprint. The Track Set is never mutated.
+parameter fingerprint materialized later at the Gate F persistent-identity
+seam. The Track Set is never mutated.
 
 ### Algorithm
 
@@ -1025,9 +1201,11 @@ The immutable reconstruction identity is:
 
 `track_set_id` and `calibration_scope_id` are project-local immutable database
 references, consistent with the existing Track Model identity convention. The
-parameter fingerprint is required to be a 32-byte SHA-256 value but its final
-byte encoding remains a later geometry-gate decision. Runtime IDs, timestamps,
-worker count, resource state and metrics are excluded.
+parameter fingerprint is the raw 32-byte SHA-256 digest of the 372-byte Sparse
+SfM parameter record v1 defined above. Gate F materializes it at its
+persistent-identity seam; Project DB stores it without owning or recomputing
+it. Runtime IDs, timestamps, worker count, resource state and metrics are
+excluded.
 
 Component identity is the minimum registered `image_id` in that component. It
 is deterministic, project-local, unique because an image belongs to at most one
