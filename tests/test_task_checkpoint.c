@@ -10,6 +10,8 @@
 
 #include <lardon3d/task_checkpoint.h>
 
+#include "resource_snapshot_test_utils.h"
+
 #define CHECK(condition) \
     do { \
         if (!(condition)) { \
@@ -355,6 +357,7 @@ run_test(void)
         &running
     );
     CHECK(governor && running_task && lardon3d_task_assign_id(running_task, 51));
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resources));
     CHECK(lardon3d_resource_governor_reserve(
         governor, &resources, &estimate, &decision, &reservation
     ));
@@ -374,6 +377,7 @@ run_test(void)
     );
     CHECK(restarted_task);
     reservation = NULL;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resources));
     CHECK(lardon3d_resource_governor_reserve(
         governor, &resources, &estimate, &decision, &reservation
     ));
@@ -393,6 +397,7 @@ run_test(void)
     );
     CHECK(sequence_task && lardon3d_task_assign_id(sequence_task, 52));
     reservation = NULL;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resources));
     CHECK(lardon3d_resource_governor_reserve(
         governor, &resources, &estimate, &decision, &reservation
     ));

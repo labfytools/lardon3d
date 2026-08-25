@@ -14,6 +14,7 @@ typedef struct {
     uint64_t page_size_bytes;
     uint64_t memory_total_bytes;
     bool gpu_available;
+    unsigned int gpu_drm_card_index;
     bool gpu_memory_known;
     bool gpu_uses_shared_memory;
     uint64_t gpu_memory_total_bytes;

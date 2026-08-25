@@ -44,6 +44,13 @@ Le type public réel est l'opaque `Lardon3DTaskQueue`.
 4. Si aucune tâche n'est admissible, le worker attend un changement.
 5. L'ordre de soumission est toujours respecté entre tâches de même priorité.
 
+Lorsqu'au moins une tâche PENDING reste en `WAIT` de ressources, cette attente
+est temporisée à 500 ms maximum. À l'expiration, le worker reprend le scan stable
+depuis la tête et le chemin d'admission capture de nouveaux snapshots. Enqueue,
+resume, `resources_changed`, annulation et arrêt continuent de réveiller
+immédiatement le worker ; le timeout n'impose donc jamais 500 ms après un signal.
+Cette règle utilise le worker unique existant et n'ajoute aucun thread.
+
 ## Sélection adaptative
 
 Le sélecteur saute les tâches pour lesquelles le governor répond `WAIT` et
@@ -77,8 +84,9 @@ le blocage par la tête de file lorsqu'une tâche ne peut pas démarrer.
 
 ## Statut
 
-**IMPLÉMENTÉ** — file FIFO avec worker unique, sélection adaptative, pause,
-annulation coopérative et accueil des tâches restaurées avec ID préassigné.
+**GATE G — PASS / FROZEN** — file FIFO avec worker unique,
+sélection adaptative, réévaluation autonome des `WAIT`, pause, annulation
+coopérative et accueil des tâches restaurées avec ID préassigné.
 
 La reprise projet utilise `try_add_ex()` et ne bloque jamais `project_open()`.
 À saturation, elle arrête sa fenêtre : les tâches non transférées restent
@@ -94,3 +102,5 @@ pas un second scheduler.
   une place se libère pendant la session courante.
 - Pas de pool de workers CPU/IO/GPU.
 - La backpressure borne les producteurs à la capacité configurée.
+- Les 500 ms concernent uniquement l'admission initiale PENDING. Le polling
+  existant à une rupture de séquence reste 50 ms.

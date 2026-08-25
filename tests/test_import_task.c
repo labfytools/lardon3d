@@ -15,6 +15,8 @@
 #include <lardon3d/task_checkpoint.h>
 #include <lardon3d/task_queue.h>
 
+#include "resource_snapshot_test_utils.h"
+
 #define CHECK(condition) do { if (!(condition)) { \
     (void)fprintf(stderr, "Échec ligne %d : %s\n", __LINE__, #condition); return false; \
 } } while (0)
@@ -253,8 +255,10 @@ test_selective_capacity_one(void)
     };
     Lardon3DResourceDecision decision;
     Lardon3DResourceReservation *held = NULL;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&available));
     CHECK(lardon3d_resource_governor_reserve(state.resource_governor,
         &available, &held_estimate, &decision, &held));
+    CHECK(held);
     state.task_queue = lardon3d_task_queue_create(state.resource_governor, 1);
     CHECK(state.task_queue
         && lardon3d_project_open(&state, "Selective Recovery"));

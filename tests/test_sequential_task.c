@@ -8,6 +8,8 @@
 
 #include <lardon3d/task.h>
 
+#include "resource_snapshot_test_utils.h"
+
 #define CHECK(condition) \
     do { \
         if (!(condition)) { \
@@ -222,6 +224,7 @@ run_sequential_test(void)
     };
     Lardon3DResourceDecision decision;
     Lardon3DResourceReservation *reservation;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor,
         &resource_snapshot,
@@ -302,6 +305,7 @@ run_wait_retry_test(void)
     };
     Lardon3DResourceDecision decision;
     Lardon3DResourceReservation *reservation;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor,
         &resource_snapshot,
@@ -387,6 +391,7 @@ run_cancel_during_wait_test(void)
     };
     Lardon3DResourceDecision decision;
     Lardon3DResourceReservation *reservation;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor,
         &resource_snapshot,
@@ -459,6 +464,7 @@ run_pause_during_wait_test(void)
     };
     Lardon3DResourceDecision decision;
     Lardon3DResourceReservation *reservation;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor,
         &resource_snapshot,
@@ -545,6 +551,7 @@ run_reject_test(void)
     };
     Lardon3DResourceDecision decision;
     Lardon3DResourceReservation *reservation;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor,
         &resource_snapshot,
@@ -647,6 +654,7 @@ run_cancel_test(void)
     };
     Lardon3DResourceDecision decision;
     Lardon3DResourceReservation *reservation;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor,
         &resource_snapshot,

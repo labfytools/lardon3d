@@ -144,7 +144,7 @@ La qualité des triangles de triangulation影响 la précision de la reconstruct
 | **Matching & Tracks** | Les contraintes filtrent les matches bruts pour ne garder que les géométries cohérentes. |
 | **Visual Index** | Les candidats du Visual Index sont les entrées des contraintes géométriques. |
 | **Reconstruction Layers** | Chaque couche applique les contraintes appropriées pour valider ses résultats. |
-| **Resource Governor** | Le gouverneur peut ajuster les seuils de contrainte en fonction des ressources disponibles. |
+| **Resource Governor** | Admission et lots neutres uniquement ; aucun paramètre scientifique modifié. |
 | **Hardware Profile** | Le calcul des matrices fondamentales/essentielles est CPU-bound. |
 
 ## Contraintes de conception

@@ -26,6 +26,22 @@ observations saines sont nécessaires à chaque palier `1 → 2 → 4 → 8`. Un
 nouvelle pression réinitialise cette progression. Cette mémoire est
 process-local, bornée et protégée par le mutex du Governor.
 
+Gate G gèle le rafraîchissement initial : lorsqu'il existe du travail PENDING
+en `WAIT` de ressources, le worker unique de la Task Queue dort au plus 500 ms
+avant de rescanner la file et de recapturer les ressources. Un signal explicite
+le réveille plus tôt. Cette cadence ne remplace pas les 50 ms existantes d'une
+tâche déjà active qui attend sa réadmission à une frontière de séquence.
+
+**Gate G — PASS / FROZEN.** Cette réévaluation bornée, la
+fraîcheur des snapshots et l'identité GPU sélectionnée sont raccordées aux
+chemins de production existants et leur validation finale est terminée.
+
+Les snapshots emploient `CLOCK_MONOTONIC` et leur âge maximal est 1000 ms. Une
+capture complète impossible est une erreur opérationnelle, tandis qu'une PSI
+ou télémétrie swap optionnelle absente reste inconnue. Le modèle cible un hôte
+Linux natif non contraint ; cgroups, limites systemd/RLIMIT, multi-GPU,
+monitoring RSS, scratch et stockage externe restent différés.
+
 ## Feature Extraction
 
 ORB est déjà une tâche durable par image : source validée, extraction,
@@ -106,6 +122,8 @@ une distribution de latence estimator-only.
 
 Le profil maximal explicite et les pools multi-workers restent hors périmètre.
 SIFT/RootSIFT et Feature Extraction Vulkan restent hors de ce contrat.
+Swap, zram et disque externe ne sont jamais ajoutés au budget RAM. Aucun chemin
+scratch/spill ni aucune action modifiant l'hôte n'appartient à Gate G core.
 
 La validation B3 du modèle Sparse SfM v16 a utilisé des processus frais, un
 fixture synthétique de 100 000 landmarks et 500 000 observations, cinq passes

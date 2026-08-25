@@ -6,6 +6,8 @@
 
 #include <lardon3d/resource_governor.h>
 
+#include "../src/resource_governor_internal.h"
+
 #define CHECK(condition) \
     do { \
         if (!(condition)) { \
@@ -16,6 +18,13 @@
 
 #define GIBIBYTES(value) ((uint64_t)(value) * 1024 * 1024 * 1024)
 #define MEBIBYTES(value) ((uint64_t)(value) * 1024 * 1024)
+
+static bool
+use_fixed_test_clock(Lardon3DResourceGovernor *governor)
+{
+    const struct timespec now = {0};
+    return lardon3d_resource_governor_internal_set_monotonic_now(governor, &now);
+}
 
 enum {
     THREAD_COUNT = 16,
@@ -101,7 +110,7 @@ test_adaptive_batches(void)
         &profile,
         &policy
     );
-    CHECK(governor);
+    CHECK(governor && use_fixed_test_clock(governor));
     Lardon3DResourceSnapshot snapshot = {
         .memory_available_bytes = GIBIBYTES(37),
         .cpu_load_1m = 0.0,
@@ -231,7 +240,7 @@ test_multiple_reservations(void)
         &profile,
         &policy
     );
-    CHECK(governor);
+    CHECK(governor && use_fixed_test_clock(governor));
     Lardon3DResourceSnapshot snapshot = {
         .memory_available_bytes = GIBIBYTES(8),
         .cpu_load_1m = 0.0,
@@ -310,6 +319,8 @@ test_gpu_reservation(void)
         &policy
     );
     CHECK(governor && other);
+    CHECK(use_fixed_test_clock(governor));
+    CHECK(use_fixed_test_clock(other));
     Lardon3DResourceSnapshot snapshot = {
         .memory_available_bytes = GIBIBYTES(16),
         .gpu_memory_available_known = true,
@@ -378,7 +389,7 @@ test_concurrency(void)
         &profile,
         &policy
     );
-    CHECK(governor);
+    CHECK(governor && use_fixed_test_clock(governor));
     Lardon3DResourceReservation *reservations[RESERVATION_COUNT] = {0};
     pthread_barrier_t created;
     pthread_barrier_t release;
@@ -455,7 +466,7 @@ test_destroy_with_active_reservations(void)
         &profile,
         &policy
     );
-    CHECK(governor);
+    CHECK(governor && use_fixed_test_clock(governor));
     Lardon3DResourceSnapshot snapshot = {
         .memory_available_bytes = GIBIBYTES(4),
         .cpu_load_1m = 0.0,

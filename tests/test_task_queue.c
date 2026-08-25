@@ -6,6 +6,9 @@
 
 #include <lardon3d/task_queue.h>
 
+#include "../src/resource_governor_internal.h"
+#include "resource_snapshot_test_utils.h"
+
 #define CHECK(condition) \
     do { \
         if (!(condition)) { \
@@ -122,7 +125,7 @@ hold_resources(
     Lardon3DResourceReservation **reservation
 )
 {
-    const Lardon3DResourceSnapshot blocking_snapshot = {
+    Lardon3DResourceSnapshot blocking_snapshot = {
         .memory_available_bytes = UINT64_MAX,
         .cpu_load_1m = 0.0,
     };
@@ -132,7 +135,8 @@ hold_resources(
         .desired_cpu_threads = 1024,
     };
     Lardon3DResourceDecision decision;
-    return lardon3d_resource_governor_reserve(
+    return lardon3d_test_resource_snapshot_make_fresh(&blocking_snapshot)
+        && lardon3d_resource_governor_reserve(
         governor,
         &blocking_snapshot,
         &blocking_estimate,
@@ -322,6 +326,7 @@ run_test(void)
     };
     Lardon3DResourceDecision decision;
     Lardon3DResourceReservation *blocking_reservation;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&blocking_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor,
         &blocking_snapshot,
@@ -365,11 +370,31 @@ run_test(void)
     short_pause();
     CHECK(!awakened.contract_seen);
     CHECK(lardon3d_resource_governor_release(governor, blocking_reservation));
-    lardon3d_task_queue_resources_changed(queue);
     CHECK(wait_terminal(queue, awakened_id, &snapshot));
     CHECK(snapshot.state == TASK_COMPLETED);
     CHECK(awakened.contract_seen);
     CHECK(lardon3d_resource_governor_reservation_count(governor) == 0);
+
+    QueueWork capture_failed = {.log = &wait_log, .value = 3, .steps = 1};
+    Lardon3DTask *capture_failed_task = lardon3d_task_create(
+        "Échec capture",
+        &estimate,
+        queue_callback,
+        &capture_failed
+    );
+    uint64_t capture_failed_id;
+    CHECK(capture_failed_task);
+    lardon3d_resource_governor_internal_force_capture_failure(governor, true);
+    CHECK(lardon3d_task_queue_add(
+        queue,
+        capture_failed_task,
+        &capture_failed_id
+    ));
+    CHECK(wait_terminal(queue, capture_failed_id, &snapshot));
+    CHECK(snapshot.state == TASK_FAILED);
+    CHECK(!capture_failed.contract_seen);
+    CHECK(lardon3d_resource_governor_reservation_count(governor) == 0);
+    lardon3d_resource_governor_internal_force_capture_failure(governor, false);
     lardon3d_task_queue_destroy(queue);
     CHECK(pthread_mutex_destroy(&wait_log.mutex) == 0);
 
@@ -387,6 +412,7 @@ run_test(void)
     };
     Lardon3DResourceDecision io_decision;
     Lardon3DResourceReservation *io_blocking_reservation;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&io_blocking_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor,
         &io_blocking_snapshot,
@@ -432,7 +458,6 @@ run_test(void)
     CHECK(snapshot.state == TASK_PENDING);
     CHECK(!blocked.contract_seen);
     CHECK(lardon3d_resource_governor_release(governor, io_blocking_reservation));
-    lardon3d_task_queue_resources_changed(queue);
     CHECK(wait_terminal(queue, blocked_id, &snapshot));
     CHECK(snapshot.state == TASK_COMPLETED);
     CHECK(blocked.contract_seen);

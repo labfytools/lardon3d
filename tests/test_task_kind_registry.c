@@ -6,6 +6,8 @@
 
 #include <lardon3d/task_kind_registry.h>
 
+#include "resource_snapshot_test_utils.h"
+
 #define CHECK(condition) do { if (!(condition)) { \
     (void)fprintf(stderr, "Échec ligne %d : %s\n", __LINE__, #condition); return false; \
 } } while (0)
@@ -162,6 +164,7 @@ run_test(void)
     };
     Lardon3DResourceDecision decision;
     Lardon3DResourceReservation *reservation = NULL;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resources));
     CHECK(governor && lardon3d_resource_governor_reserve(
         governor, &resources, &durable.estimate, &decision, &reservation));
     CHECK(lardon3d_task_start(task, governor, reservation));

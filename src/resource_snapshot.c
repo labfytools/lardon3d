@@ -8,6 +8,8 @@
 
 #include <lardon3d/resource_snapshot.h>
 
+#include "resource_snapshot_internal.h"
+
 enum {
     PROC_BUFFER_CAPACITY = 32768,
 };
@@ -132,13 +134,14 @@ vmstat_counter(const char *buffer, const char *key, uint64_t *value)
     return false;
 }
 
-static void
-capture_gpu_memory(
+void
+lardon3d_resource_snapshot_capture_gpu_at_root(
     const Lardon3DHardwareProfile *profile,
-    Lardon3DResourceSnapshot *snapshot
+    Lardon3DResourceSnapshot *snapshot,
+    const char *drm_root
 )
 {
-    if (!profile->gpu_available) {
+    if (!profile || !snapshot || !drm_root || !profile->gpu_available) {
         return;
     }
     if (profile->gpu_uses_shared_memory && !profile->gpu_memory_known) {
@@ -149,31 +152,29 @@ capture_gpu_memory(
     if (!profile->gpu_memory_known) {
         return;
     }
-    for (unsigned int index = 0; index < 64; ++index) {
-        char path[256];
-        int written = snprintf(
-            path,
-            sizeof(path),
-            "/sys/class/drm/card%u/device/mem_info_vram_used",
-            index
-        );
-        if (written < 0 || (size_t)written >= sizeof(path)) {
-            continue;
-        }
-        char buffer[64];
-        if (!read_file(path, buffer, sizeof(buffer))) {
-            continue;
-        }
-        errno = 0;
-        char *end;
-        unsigned long long used = strtoull(buffer, &end, 10);
-        if (errno == 0 && end != buffer
-            && (uint64_t)used <= profile->gpu_memory_total_bytes) {
-            snapshot->gpu_memory_available_known = true;
-            snapshot->gpu_memory_available_bytes =
-                profile->gpu_memory_total_bytes - (uint64_t)used;
-            return;
-        }
+    char path[256];
+    int written = snprintf(
+        path,
+        sizeof(path),
+        "%s/card%u/device/mem_info_vram_used",
+        drm_root,
+        profile->gpu_drm_card_index
+    );
+    if (written < 0 || (size_t)written >= sizeof(path)) {
+        return;
+    }
+    char buffer[64];
+    if (!read_file(path, buffer, sizeof(buffer))) {
+        return;
+    }
+    errno = 0;
+    char *end;
+    unsigned long long used = strtoull(buffer, &end, 10);
+    if (errno == 0 && end != buffer
+        && (uint64_t)used <= profile->gpu_memory_total_bytes) {
+        snapshot->gpu_memory_available_known = true;
+        snapshot->gpu_memory_available_bytes =
+            profile->gpu_memory_total_bytes - (uint64_t)used;
     }
 }
 
@@ -202,7 +203,7 @@ lardon3d_resource_snapshot_capture(
         || !meminfo_bytes(buffer, "MemFree", &snapshot->memory_free_bytes)
         || !meminfo_bytes(buffer, "SwapFree", &snapshot->swap_available_bytes)
         || !capture_load(snapshot)
-        || clock_gettime(CLOCK_REALTIME, &snapshot->captured_at) != 0) {
+        || clock_gettime(CLOCK_MONOTONIC, &snapshot->captured_at) != 0) {
         set_error(error_message, error_message_size, "Instantané système impossible.");
         return false;
     }
@@ -217,6 +218,10 @@ lardon3d_resource_snapshot_capture(
             buffer, "pswpin", &snapshot->swap_pages_in)
             && vmstat_counter(buffer, "pswpout", &snapshot->swap_pages_out);
     }
-    capture_gpu_memory(profile, snapshot);
+    lardon3d_resource_snapshot_capture_gpu_at_root(
+        profile,
+        snapshot,
+        "/sys/class/drm"
+    );
     return true;
 }

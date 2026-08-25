@@ -10,6 +10,8 @@
 
 #include <lardon3d/hardware_profile.h>
 
+#include "hardware_profile_internal.h"
+
 static void
 set_error(char *message, size_t size, const char *text)
 {
@@ -81,22 +83,30 @@ vendor_name(const char *vendor)
     return vendor;
 }
 
-static void
-detect_gpu(Lardon3DHardwareProfile *profile)
+void
+lardon3d_hardware_profile_detect_gpu_at_root(
+    Lardon3DHardwareProfile *profile,
+    const char *drm_root
+)
 {
+    if (!profile || !drm_root) {
+        return;
+    }
     for (unsigned int index = 0; index < 64; ++index) {
         char vendor_path[PATH_MAX];
         char memory_path[PATH_MAX];
         int vendor_written = snprintf(
             vendor_path,
             sizeof(vendor_path),
-            "/sys/class/drm/card%u/device/vendor",
+            "%s/card%u/device/vendor",
+            drm_root,
             index
         );
         int memory_written = snprintf(
             memory_path,
             sizeof(memory_path),
-            "/sys/class/drm/card%u/device/mem_info_vram_total",
+            "%s/card%u/device/mem_info_vram_total",
+            drm_root,
             index
         );
         if (vendor_written < 0 || (size_t)vendor_written >= sizeof(vendor_path)
@@ -109,6 +119,7 @@ detect_gpu(Lardon3DHardwareProfile *profile)
             continue;
         }
         profile->gpu_available = true;
+        profile->gpu_drm_card_index = index;
         (void)snprintf(
             profile->gpu_name,
             sizeof(profile->gpu_name),
@@ -177,6 +188,6 @@ lardon3d_hardware_profile_detect(
             "Linux"
         );
     }
-    detect_gpu(profile);
+    lardon3d_hardware_profile_detect_gpu_at_root(profile, "/sys/class/drm");
     return true;
 }

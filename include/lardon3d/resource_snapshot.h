@@ -8,6 +8,10 @@
 
 #include <lardon3d/hardware_profile.h>
 
+enum {
+    LARDON3D_RESOURCE_SNAPSHOT_MAX_AGE_MILLISECONDS = 1000,
+};
+
 typedef struct {
     struct timespec captured_at;
     uint64_t memory_available_bytes;

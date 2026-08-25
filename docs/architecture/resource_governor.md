@@ -30,6 +30,32 @@ RED vers YELLOW, puis trois autres YELLOW vers GREEN. Le plafond reste 1 pendant
 ces phases. Une fois GREEN, chaque groupe de trois observations saines double
 le plafond : 1, 2, 4, 8, puis les paliers supérieurs utiles aux autres kinds.
 
+## Contrat Gate G gelé
+
+**PASS / FROZEN.** Les constantes existantes ci-dessus
+restent inchangées. La RAM disponible conserve le modèle conservateur
+`min(MemAvailable, RAM physique) - réserve hôte - réservations actives`, borné à
+zéro. Le double comptage conservateur possible d'une allocation déjà visible
+dans `MemAvailable` est accepté : un faux `WAIT` est préféré à un overcommit.
+
+Les snapshots de production emploient `CLOCK_MONOTONIC` et sont valides jusqu'à
+un âge exact de 1000 ms inclus. Un snapshot plus ancien ou daté dans le futur
+produit `WAIT`, sans réservation ni mutation de l'état de politique du
+Governor. La capture synchrone complète impossible reste une erreur
+opérationnelle qui fait échouer la tâche avant callback. Une télémétrie PSI ou
+vmstat optionnelle absente reste inconnue et ne crée aucune pression fictive.
+
+Gate G core cible un processus Linux natif non contraint et n'est pas cgroup,
+systemd `MemoryMax` ou RLIMIT-aware. Il gouverne un seul GPU : le périphérique
+DRM de plus petit numéro retenu par Hardware Profile. La capacité et l'usage
+doivent provenir de ce même périphérique. La mémoire UMA est débitée exactement
+une fois du budget RAM. Le multi-GPU est différé.
+
+Le Governor ne garantit aucune allocation et ne transforme ni swap, ni zram,
+ni stockage externe en RAM. Il ne modifie aucun paramètre scientifique. Aucun
+scratch, cache de télémétrie, suivi RSS, redimensionnement de réservation ou
+monitoring live n'appartient à Gate G core.
+
 ## API principale
 
 ### Création et destruction
@@ -136,4 +162,12 @@ le plafond : 1, 2, 4, 8, puis les paliers supérieurs utiles aux autres kinds.
 - Pas de persistance des métriques
 - Pas de communication avec d'autres gouverneurs
 
-## Statut : IMPLEMENTED
+Les corrections dérivables G-D01 (`UINT64_MAX` est le dernier ID valide et la
+création suivante échoue sans réservation ni charge comptable),
+G-D02 (saturation des compteurs de streak) et G-D03 (identité DRM identique
+entre capacité et usage) sont implémentées. Les sept décisions G-B01 à G-B07
+sont gelées ; il ne reste aucune décision humaine Gate G.
+
+## Statut
+
+**GATE G — PASS / FROZEN.**

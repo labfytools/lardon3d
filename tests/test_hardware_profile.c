@@ -32,6 +32,7 @@ run_test(void)
     }
     if (profile.gpu_available) {
         CHECK(profile.gpu_name[0]);
+        CHECK(profile.gpu_drm_card_index < 64);
     }
     Lardon3DHardwareProfile second;
     CHECK(lardon3d_hardware_profile_detect(&second, NULL, 0));

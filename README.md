@@ -172,8 +172,8 @@ fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ; ces deux ma
 restent sur OpenCV L2. Track Model/Builder, les primitives géométriques Gate C,
 le noyau Sparse SfM incrémental Gate D et le Bundle Adjustment final Gate E sont
 implémentés et validés. L'orchestration Sparse SfM Gate F est PASS / FROZEN ;
-l'intégration Governor Gate G, le DAG, le viewer et les étapes denses restent des tickets
-séparés planifiés. Le Resource Governor ne
+l'intégration Governor Gate G est **PASS / FROZEN** ; le DAG,
+le viewer et les étapes denses restent des tickets séparés planifiés. Le Resource Governor ne
 constitue pas un Resource System générique : voir la décision d’architecture.
 
 ## Licence

@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include <lardon3d/task_queue.h>
 
@@ -10,6 +11,10 @@ typedef struct TaskNode {
     struct TaskNode *next_all;
     struct TaskNode *next_pending;
 } TaskNode;
+
+enum {
+    LARDON3D_PENDING_RESOURCE_WAIT_MILLISECONDS = 500,
+};
 
 struct Lardon3DTaskQueue {
     pthread_mutex_t mutex;
@@ -63,9 +68,11 @@ unlink_pending(Lardon3DTaskQueue *queue, TaskNode *previous, TaskNode *node)
 static Lardon3DTask *
 select_admissible(
     Lardon3DTaskQueue *queue,
-    Lardon3DResourceReservation **reservation
+    Lardon3DResourceReservation **reservation,
+    bool *resource_wait_pending
 )
 {
+    *resource_wait_pending = false;
     TaskNode *previous = NULL;
     TaskNode *node = queue->pending_head;
     while (node) {
@@ -101,6 +108,7 @@ select_admissible(
             continue;
         }
         if (decision.kind == LARDON3D_RESOURCE_WAIT) {
+            *resource_wait_pending = true;
             previous = node;
             node = next;
             continue;
@@ -118,6 +126,30 @@ select_admissible(
     return NULL;
 }
 
+static void
+wait_for_pending_change(Lardon3DTaskQueue *queue, bool resource_wait_pending)
+{
+    if (!resource_wait_pending) {
+        (void)pthread_cond_wait(&queue->not_empty, &queue->mutex);
+        return;
+    }
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
+        return;
+    }
+    deadline.tv_nsec +=
+        LARDON3D_PENDING_RESOURCE_WAIT_MILLISECONDS * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        ++deadline.tv_sec;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    (void)pthread_cond_timedwait(
+        &queue->not_empty,
+        &queue->mutex,
+        &deadline
+    );
+}
+
 static void *
 queue_worker(void *context)
 {
@@ -132,9 +164,14 @@ queue_worker(void *context)
             return NULL;
         }
         Lardon3DResourceReservation *reservation = NULL;
-        Lardon3DTask *selected = select_admissible(queue, &reservation);
+        bool resource_wait_pending;
+        Lardon3DTask *selected = select_admissible(
+            queue,
+            &reservation,
+            &resource_wait_pending
+        );
         if (!selected) {
-            (void)pthread_cond_wait(&queue->not_empty, &queue->mutex);
+            wait_for_pending_change(queue, resource_wait_pending);
             (void)pthread_mutex_unlock(&queue->mutex);
             continue;
         }
@@ -177,11 +214,26 @@ lardon3d_task_queue_create(Lardon3DResourceGovernor *governor, size_t capacity)
         free(queue);
         return NULL;
     }
-    if (pthread_cond_init(&queue->not_empty, NULL) != 0) {
+    pthread_condattr_t not_empty_attributes;
+    if (pthread_condattr_init(&not_empty_attributes) != 0) {
         (void)pthread_mutex_destroy(&queue->mutex);
         free(queue);
         return NULL;
     }
+    if (pthread_condattr_setclock(
+            &not_empty_attributes,
+            CLOCK_MONOTONIC
+        ) != 0
+        || pthread_cond_init(
+            &queue->not_empty,
+            &not_empty_attributes
+        ) != 0) {
+        (void)pthread_condattr_destroy(&not_empty_attributes);
+        (void)pthread_mutex_destroy(&queue->mutex);
+        free(queue);
+        return NULL;
+    }
+    (void)pthread_condattr_destroy(&not_empty_attributes);
     if (pthread_cond_init(&queue->not_full, NULL) != 0) {
         (void)pthread_cond_destroy(&queue->not_empty);
         (void)pthread_mutex_destroy(&queue->mutex);

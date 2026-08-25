@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <lardon3d/feature_store.h>
@@ -106,13 +107,20 @@ static bool runtime(Lardon3DAppState *s) {
 }
 static bool wait_state(Lardon3DTaskQueue *q, uint64_t id, Lardon3DTaskState wanted,
                        Lardon3DTaskSnapshot *out) {
-  for (size_t i = 0; i < 2000000; i++) {
+  struct timespec deadline;
+  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) return false;
+  deadline.tv_sec += 5;
+  for (;;) {
     if (lardon3d_task_queue_get(q, id, out) && out->state == wanted) {
       return true;
     }
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0 || now.tv_sec > deadline.tv_sec ||
+        (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+      return false;
+    }
     sched_yield();
   }
-  return false;
 }
 
 typedef struct {

@@ -7,6 +7,8 @@
 
 #include <lardon3d/task.h>
 
+#include "resource_snapshot_test_utils.h"
+
 #define CHECK(condition) \
     do { \
         if (!(condition)) { \
@@ -161,6 +163,7 @@ run_test(void)
     CHECK(strcmp(snapshot.name, "Tâche de test") == 0);
 
     pthread_t thread;
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor, &resource_snapshot, &estimate, &decision, &reservation
     ));
@@ -199,6 +202,7 @@ run_test(void)
     FinishProbe cancelled_probe = {.governor = governor};
     CHECK(lardon3d_task_set_finished_callback(task, finished_callback,
         &cancelled_probe));
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor, &resource_snapshot, &estimate, &decision, &reservation
     ));
@@ -222,6 +226,7 @@ run_test(void)
     FinishProbe failed_probe = {.governor = governor};
     CHECK(lardon3d_task_set_finished_callback(task, finished_callback,
         &failed_probe));
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor, &resource_snapshot, &estimate, &decision, &reservation
     ));

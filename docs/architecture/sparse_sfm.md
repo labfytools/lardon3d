@@ -198,7 +198,7 @@ as a whole, so Track identity and observation ownership remain simple.
 Bundle Adjustment implementation, E01--E35 matrix, normal suite, targeted
 ASan/UBSan with LeakSanitizer, full sequential ASan/UBSan suite and at least
 20 fresh-process E27 comparisons are validated. Gate F project orchestration
-is now **PASS / FROZEN**; Gate G resource integration remains a later gate.
+is now **PASS / FROZEN**; Gate G resource integration is **PASS / FROZEN**.
 
 **DECISION: Gate E v1 is a synchronous, independent final per-component Bundle
 Adjustment applied as post-processing to a copy of the immutable final Gate D
@@ -823,12 +823,20 @@ it never depends on current RAM, swap, PSI, load, queue depth, task attempt or
 Governor state. Gate F submits through the existing queue and does not perform
 admission or reservation itself.
 
-The existing Governor owns admission and reservation policy. Future Gate G owns
-telemetry, adaptive tuning, pressure and swap/scratch policy, scheduling policy
-and estimate refinement. The estimate never enters the 372-byte parameter
-record, candidate identity, `sfm_version` or scientific decisions, and cannot
+The existing Governor owns admission and reservation policy. Gate G owns
+telemetry, pressure and scheduling policy, but Gate G core neither changes the
+frozen Sparse SfM producer estimate nor adds scratch support. The estimate never
+enters the 372-byte parameter record, candidate identity, `sfm_version` or scientific decisions, and cannot
 change Gate D or Gate E parameters. This clarification preserves
 `NO_NEW_SUBSYSTEM` and the mandatory reservation invariant.
+
+Gate G G0a freezes consumption of the exact Gate F v1 estimate. A restored task
+keeps its persisted estimate and is evaluated with newly captured machine
+telemetry; it is never recomputed with later coefficients. A future formula
+change requires a separate operational formula/version review for newly created
+tasks and cannot affect F0, candidate identity, Gate D/E parameters or existing
+tasks. Sparse SfM remains batch one and has no scratch, spill or out-of-core
+path. Swap, zram and external storage do not enlarge its RAM capacity.
 
 ### Gate F durable task payload
 
@@ -916,7 +924,7 @@ component keys nor changes candidate identity. No persistent diagnostic table,
 sidecar, metadata blob or schema beyond v17 `sparse_sfm_tasks` is introduced.
 
 Gate F v1 is **PASS / FROZEN**. Gate D and Gate E remain **PASS / FROZEN**;
-Gate G remains open and planned.
+Gate G architecture decisions and implementation are **PASS / FROZEN**.
 
 ### Gate F validation closure
 
@@ -933,7 +941,7 @@ Gate C — PASS / FROZEN
 Gate D — PASS / FROZEN
 Gate E — PASS / FROZEN
 Gate F — PASS / FROZEN
-Gate G — OPEN / PLANNED
+Gate G — PASS / FROZEN
 ```
 
 The five candidate-identity dimensions remain separate:
@@ -985,11 +993,11 @@ bounded storage.
 
 Triangulation/registration are light CPU units and can be batched. Gate E v1
 uses local scientific limits for its final per-component BA and does not query
-the Governor. Future Gate G admission may use `C`, `P`, `O`, solver mode and
-calibration-variable count without changing scientific results. The existing
-Resource Governor owns RAM/PSI/swap policy; Sparse SfM adds no system-pressure
-thresholds. Swap is never normal working memory, and UMA RAM must preserve
-several GiB of desktop/iGPU headroom.
+the Governor. Gate G consumes the frozen Gate F estimate derived from immutable
+workload shape without changing scientific results. The existing Resource
+Governor owns RAM/PSI/swap policy; Sparse SfM adds no system-pressure thresholds.
+Swap is never normal working memory, and UMA RAM must preserve several GiB of
+desktop/iGPU headroom.
 
 ## Hardware and probe study
 
@@ -1024,8 +1032,9 @@ production Sparse SfM code is created by this gate.
   contract frozen here; interleaved local BA is deferred.
 - **Gate F — PASS / FROZEN — Project orchestration:** explicit Track Set/calibration input,
   atomic publication and durable runtime integration.
-- **Gate G — OPEN / PLANNED — Resource/freeze:** Governor admission, sustained hardware safety,
-  recovery, full validation and final freeze.
+- **Gate G — PASS / FROZEN — Resource/freeze:** Governor
+  admission, sustained hardware safety and recovery are implemented and fully
+  validated.
 
 ## Algorithm comparison and Gate A evidence
 

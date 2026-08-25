@@ -4,8 +4,7 @@
 
 **ACCEPTED** — architecture decision for the post-Gate C documentation freeze.
 
-Current Sparse SfM gates A through F are **PASS / FROZEN**. Gate G remains
-open/planned.
+Current Sparse SfM gates A through G are **PASS / FROZEN**.
 Project Database: current schema **v17**; historical v16 remains frozen.
 
 This record is normative for the current architecture. It does not introduce
@@ -115,8 +114,9 @@ by `lardon3d_task_create_typed()` and submit the task through the normal queue.
 It does not inspect resource snapshots, decide admission, create reservations,
 change Governor or queue policy, or bypass the reservation invariant. The
 estimate is operational metadata and is excluded from the Sparse SfM parameter
-fingerprint, candidate identity and scientific determinism. Future Gate G owns
-resource-management policy and operational refinement of that estimate.
+fingerprint, candidate identity and scientific determinism. Gate G owns
+resource-management and admission policy, but Gate G core does not modify the
+fields of the frozen Sparse SfM Gate F v1 estimate.
 
 Gate F v1 freezes its declarative Sparse SfM RAM request as the checked sum
 `128 MiB + I*64 KiB + T*2048 + O*512`, rounded upward to one MiB, where `I`,
@@ -125,6 +125,146 @@ The complete amount is fixed RAM for one atomic batch; per-item RAM and all GPU
 fields are zero, batch bounds are one, and the task requests one CPU thread and
 one IO slot in the CPU class. These coefficients are conservative operational
 policy inputs, not measured dynamically or included in scientific identity.
+
+### Gate G resource-policy implementation
+
+**PASS / FROZEN.** The G0a contract is implemented and validated. All seven G0
+human decisions remain resolved.
+
+#### Pending admission and snapshot freshness
+
+When pending work exists but every candidate receives `WAIT`, the existing Task
+Queue worker performs a timed wait of at most 500 milliseconds. An earlier
+enqueue, resume, resource-change, cancellation or shutdown signal wakes it
+immediately. On timeout it repeats the normal stable queue scan and obtains new
+snapshots through the existing admission path. No monitor thread, scheduler or
+subsystem is added. The separate polling interval for a running sequential task
+waiting at `lardon3d_task_sequence_break()` remains 50 milliseconds.
+
+Production snapshots use `CLOCK_MONOTONIC`. A directly supplied snapshot is
+fresh through an age of exactly 1000 milliseconds. A snapshot older than 1000
+milliseconds or timestamped in the future must produce `WAIT`, must not produce
+`START` or `REDUCE_BATCH`, creates no reservation and does not mutate Governor
+policy state. Normal production admission captures synchronously through
+`lardon3d_resource_governor_reserve_available()` immediately before evaluation.
+There is no last-known-good cache, grace cache or telemetry-cache subsystem.
+
+A mandatory whole-snapshot capture failure is an operational/internal resource
+error: the queued task becomes `FAILED`, no callback starts and no reservation
+leaks. Unavailable optional CPU, memory or IO PSI and vmstat/swap telemetry is
+unknown and asserts no artificial pressure. Actual GPU demand with no selected
+GPU is `REJECT`; temporarily unknown required live VRAM for a selected dedicated
+GPU is `WAIT`. VRAM availability is never fabricated.
+
+#### Conservative RAM accounting and platform
+
+Gate G core preserves the conservative live admission model:
+
+```text
+available_ram = max(
+    0,
+    min(MemAvailable, physical_ram)
+        - host_ram_reserve
+        - active_charged_reservations
+)
+```
+
+The implementation retains its existing checked, saturating subtraction order.
+The host reserve remains one quarter of physical RAM and the emergency floor
+remains one eighth of physical RAM.
+Possible overlap between `MemAvailable` and already-materialized memory from an
+active reservation is accepted. The deliberate bias is false `WAIT`, not
+overcommit. Gate G adds no RSS tracking, materialization state, allocation
+measurement, reservation resizing or live per-task monitoring. The current
+single-worker topology remains unchanged.
+
+Gate G core supports a native unconstrained Linux host process. Capacity uses
+the existing `_SC_PHYS_PAGES`, `_SC_PAGESIZE` and `/proc/meminfo` mechanisms.
+It is not cgroup v2, systemd `MemoryMax`, `RLIMIT_AS` or `RLIMIT_DATA` aware and
+does not claim correct host-capacity admission inside a tighter constrained
+container or service. Effective constrained-runtime accounting is deferred. No
+cgroup write, systemd dependency or new dependency is authorized.
+
+#### Sparse SfM estimate authority
+
+Gate G consumes and restores the exact Sparse SfM Gate F estimate above and
+does not alter any producer field. Batch adaptation is permitted only for task
+contracts whose existing minimum/maximum range allows it; Sparse SfM remains
+fixed at batch one. Restart retains the estimate persisted when the task was
+created and evaluates it against newly captured machine telemetry.
+
+Any future coefficient change requires a separate explicit review and an
+operational formula/version contract applying only to newly created tasks. It
+must not alter F0, candidate identity, Gate D/E parameters or existing persisted
+tasks. Estimate-formula refinement is not part of Gate G core.
+
+#### Selected GPU
+
+Gate G core supports one selected GPU and no multi-GPU scheduling. Hardware
+Profile deterministically selects the lowest numeric `/sys/class/drm/cardN`
+accepted by its selection rules and retains that identity internally. Snapshot
+capacity and live usage must refer to that same device; Resource Snapshot must
+not perform an independent first-usable-GPU selection. Memory is never summed
+across devices and reservations are not made per device.
+
+Dedicated memory uses the selected device's capacity and usage. UMA/shared GPU
+demand is charged exactly once against system RAM and never against a second
+fictitious VRAM pool. Backend and fallback selection remain task-producer/task
+contract responsibilities, not Governor policy. Multi-GPU and complex hybrid
+topologies are deferred.
+
+#### Scratch, persistence and science
+
+Scratch and external-storage support is excluded from Gate G core. It adds no
+scratch estimate fields, demand/availability API, manager, allocator, removable
+media monitor, mount logic, capacity policy, spill contract, cleanup contract,
+project scratch path or SSD detection. Sparse SfM has no scratch consumer,
+spill algorithm or out-of-core path. Swap, zram and external SSD capacity never
+enlarge scientific RAM admission.
+
+No automatic `swapon`, `swapoff`, mount, unmount, formatting, partitioning or
+destructive cleanup is authorized. A future feature requires a real task
+consumer, an explicit task-specific contract, user opt-in where appropriate and
+a separate architecture review. No dormant generic API is introduced.
+
+Gate G core requires no Project DB v18, resource-history, reservation,
+telemetry, policy or scratch table. Reservations and snapshots remain ephemeral;
+the generic Task checkpoint already owns estimate durability. Resource policy,
+machine data and hardware identity never enter F0, `sfm_version`, candidate
+identity or a resource fingerprint. No resource-policy version is required for
+Gate G core.
+
+Gate G never changes scientific thresholds, seeds, iteration limits, image or
+track selection, Bundle Adjustment parameters, Gate D, Gate E, F0, candidate
+identity, Track Model, Track Builder scientific semantics, Feature Store,
+calibration identity or Project DB reconstruction semantics.
+
+#### Known derivable implementation defects
+
+These implementation obligations required no further human policy decision and
+are implemented:
+
+- **G-D01:** `UINT64_MAX` is the final valid reservation ID; the following
+  reservation creation fails without an executable decision, reservation or
+  accounting charge.
+- **G-D02:** pressure, recovery and slow-start streak counters must saturate at
+  the largest meaningful threshold and never wrap.
+- **G-D03:** selected dedicated-GPU capacity and live usage must refer to the
+  same Hardware Profile-selected DRM device.
+
+`TOTAL REMAINING GATE G HUMAN DECISIONS: 0`.
+
+#### Closure validation
+
+The complete normal suite passes 41/41 and the Gate G resource/task core passes
+the targeted ASan/UBSan/LSan validation with leak detection enabled. The three
+OpenCL-touching tests `candidate-pair-task`, `feature-task` and
+`precision-consolidation` pass functionally and under ASan/UBSan with leak
+detection disabled. Their LeakSanitizer-only termination has the identical
+external `/opt/cuda/lib64/libOpenCL.so` signature of 3808 bytes in 68
+allocations and is not classified as a Lardon3D Gate G leak. The real-machine
+`orb-vulkan-backend` test, `git diff --check`, and the complete human diff review
+pass. No Gate G human decision or implementation blocker remains.
 
 ## Project DB boundary
 

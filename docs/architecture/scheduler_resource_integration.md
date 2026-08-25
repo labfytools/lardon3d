@@ -41,6 +41,11 @@ Documenter l'intégration architecturale entre le scheduler de tâches et le Res
 - Le scheduler saute la tâche en tête de file
 - Il évalue la tâche suivante
 - Pas de blocage de la file
+- Si aucune tâche n'est admissible mais qu'un `WAIT` PENDING subsiste, le worker
+  effectue une attente temporisée d'au plus 500 ms, puis rescane normalement la
+  file avec de nouveaux snapshots. Tout signal explicite le réveille plus tôt.
+- Cette attente appartient au worker existant : aucun thread de monitoring,
+  nouveau scheduler ou nouveau sous-système n'est créé.
 
 ## Gestion des pauses
 
@@ -60,6 +65,9 @@ Documenter l'intégration architecturale entre le scheduler de tâches et le Res
 - Capturer un nouvel instantané de ressources
 - Obtenir un contrat actualisé
 - Reprendre le callback en conservant la progression
+- L'attente d'admission à cette frontière conserve son polling existant de
+  50 ms ; elle est distincte des 500 ms de réévaluation d'une tâche initialement
+  PENDING.
 
 ### Avantages
 - Adaptation dynamique des lots en cours d'exécution
@@ -80,4 +88,4 @@ Documenter l'intégration architecturale entre le scheduler de tâches et le Res
 - Pas de priorités
 - Pas de notification automatique de libération externe
 
-## Statut : DOCUMENTATION DE L'IMPLÉMENTATION ACTUELLE
+## Statut : GATE G — PASS / FROZEN
