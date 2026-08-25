@@ -144,13 +144,112 @@ tâche Gate F est l'ajout v17.
 
 ### H. Reconstruction incrémentale
 
-| Aspect | Description |
-|--------|-------------|
-| **Indexation** | À chaque vague d'images, la reconstruction existante est indexée (positions approximatives des points 3D, orientations des caméras). |
-| **Comparaison aux acquisitions précédentes** | Les nouvelles images sont comparées à la reconstruction existante : localisation des caméras, triangulation de nouveaux points, mise à jour des tracks existants. |
-| **Enrichissement local** | Seules les régions couvertes par les nouvelles images sont recalculées. Le reste de la reconstruction reste inchangé et valide. |
+La phase H est une étape du pipeline, pas un « Gate H ». Sa version 1 enrichit
+scientifiquement un snapshot Sparse SfM publié, sans réexécuter Gate F depuis
+zéro. Ses entrées immuables sont l'identité de la reconstruction de base,
+l'identité d'un Track Set d'extension et l'identité d'un scope de calibration.
+Son identité scientifique est :
 
-**Statut :** PLANNED — aucune implémentation existante.
+```
+(base_reconstruction_identity, extension_track_set_identity,
+ calibration_scope_identity, incremental_kind, incremental_version,
+ parameter_fingerprint)
+```
+
+L'enregistrement canonique `L3DHIDV1` est encodé little-endian puis condensé
+par SHA-256. Le fingerprint H v1, distinct de F0, encode `L3DHPRM1`, sa version
+et les politiques versionnées suivantes : filiation stricte par identité
+d'observation `(feature_set_id, feature_index)`, absence de split/merge,
+`STRICT_DESCENDANT_REGISTERED_OBSERVATIONS_V1`,
+`PRESERVE_BASE_COMPONENT_KEY_V1`, absence de fusion de composantes de base,
+politiques scientifiques Gate D v1 pour PnP/triangulation/raffinement, BA
+complète Gate E v1 de chaque composante affectée, calibration historique
+exacte, préservation du gauge historique, snapshot complet immuable,
+ordre canonique et absence de nouvelle composante déconnectée. Matériel,
+ressources, tâche, chemins, horodatages et télémétrie sont exclus.
+L'enregistrement de fingerprint fait exactement 80 octets ; son vecteur doré
+SHA-256 v1 est
+`f44a89b23b520481701848ecf175638e82f2c9e25b70a01f3eb767bf28446cd8`.
+Après le magic et les deux versions `u32`, ses seize champs `u32` versionnés
+sont, dans l'ordre : `STRICT_OBSERVATION_LINEAGE`, `NO_SPLIT`, `NO_MERGE`,
+`STRICT_DESCENDANT_REGISTERED_OBSERVATIONS`, `PRESERVE_BASE_COMPONENT_KEY`,
+`NO_BASE_COMPONENT_MERGE`, `GATE_D_PNP_REGISTRATION`,
+`GATE_D_TRIANGULATION_REFINEMENT`, `FULL_AFFECTED_COMPONENT_BA`,
+`GATE_E_POLICY`, `EXACT_HISTORICAL_CALIBRATION`, `HISTORICAL_BASE_GAUGE`,
+`COMPLETE_IMMUTABLE_SNAPSHOT`, `CANONICAL_ID_ORDER`,
+`NO_DISCONNECTED_COMPONENT` et `TERMINAL_BA_FAILURE`. Chaque valeur vaut 1
+en H v1 ; la position identifie la politique sans chaîne dépendante de locale.
+
+La filiation est dérivée par indexation déterministe des observations, jamais
+par égalité de `track_id` entre générations. Chaque Track historique publié a
+un unique descendant contenant exactement toutes ses observations historiques.
+Un historique manquant, dupliqué, scindé, fusionné ou reliant deux composantes
+de base invalide toute la mise à jour. Une observation ajoutée à un descendant
+historique dont l'image nouvelle reste non enregistrée dans sa composante
+invalide également toute la mise à jour ; une image non enregistrée qui ne
+porte que des Tracks nouveaux reste admissible et ne crée pas de composante.
+
+Chaque caméra nouvelle est localisée dans exactement une composante historique.
+Les composantes de base ne fusionnent pas et gardent leur `component_key`, égal
+au plus petit `image_id` historique enregistré. Une caméra géométriquement
+enregistrée dont l'ID est inférieur à cette clé rend la mise à jour
+incompatible ; elle n'est pas maquillée en rejet géométrique. Les landmarks
+existants reçoivent leurs observations descendantes admissibles, les Tracks
+nouveaux entièrement ancrés peuvent être triangulés, puis chaque composante
+affectée subit une BA complète avec les ancres historiques. Une composante non
+affectée est copiée sans modification scientifique.
+
+La sortie est un snapshot complet, autonome et immuable. Le prédécesseur est
+une provenance, jamais une dépendance de lecture en chaîne. Publication et
+métadonnées H sont atomiques ; toute erreur de filiation, calibration,
+compatibilité de clé, géométrie, BA, annulation ou base de données ne publie
+rien et ne modifie pas le prédécesseur. Une identité H déjà publiée est
+réutilisée avant matérialisation lourde. Une extension sans effet scientifique
+retourne explicitement le prédécesseur sans publier une génération factice.
+Les métriques globales sont recalculées après la BA sur chaque observation
+finalement retenue, avec la projection pixel Gate F. Une profondeur invalide,
+un résidu non fini ou un ensemble vide rend la publication impossible.
+
+L'API scientifique publique valide aussi la cohérence complète du snapshot de
+base : landmark, Track, caméra, composante et position canonique de chaque
+observation doivent correspondre. Son résultat doit être initialisé à zéro ou
+avoir été préalablement détruit avant un nouvel appel.
+
+L'orchestration appartient à la tâche durable `incremental_reconstruction.run`
+v1, atomique (lot 1..1), sans DAG ni état scientifique intermédiaire durable.
+Après redémarrage elle recommence depuis les entrées immuables. Son estimation
+opérationnelle H v1 est, avec arithmétique `uint64_t` vérifiée et arrondi au MiB
+supérieur :
+
+```
+raw = 268435456
+    + base_cameras * 131072
+    + base_landmarks * 4096
+    + base_observations * 1024
+    + extension_images * 131072
+    + extension_tracks * 4096
+    + extension_observations * 1024
+```
+
+Elle est CPU, fixe, `min_batch_size=max_batch_size=1`, demande un thread CPU,
+zéro slot GPU et un slot IO. Elle est persistée avec la tâche, exclue de
+l'identité et admise uniquement par Queue → Governor → Reservation. Pression
+mémoire et ressources ne modifient jamais la science.
+
+Project DB v18 ajoute seulement les métadonnées d'identité/prédécesseur H et
+le payload de tâche H. Le parent générique conserve le vrai fingerprint de
+paramètres et porte l'identité H dans son `derivation_identity` nullable ; les
+lignes Gate F gardent ce champ à `NULL` et leur unicité historique. La
+géométrie reste un snapshot complet conforme au
+modèle historique ; aucun sous-ensemble d'observations, remappage de clé ou
+graphe de filiation générique n'est introduit.
+
+**Statut :** PASS / FROZEN — contrat H v1 implémenté et validé. Validation
+finale : suite normale 42/42 PASS ; suite ciblée ASan/UBSan/LSan 5/5 PASS ;
+revue finale indépendante PASS ; `git diff --check` PASS. Restent différés :
+généalogie complexe, split/merge légitime,
+fusion de composantes, BA locale, DAG, étapes scientifiques intermédiaires
+durables, scratch/SSD, GPU SfM/BA et nouvelles composantes déconnectées.
 
 ---
 
@@ -259,12 +358,11 @@ Import, Image Catalog, Feature Extraction, Feature Store, Visual Index,
 Candidate Pair, Matching v1, Geometric Verification, Track Model/Builder v1
 and Sparse SfM Gate C geometry are **IMPLEMENTED**. The synchronous in-memory
 incremental Sparse SfM Gate D core is **IMPLEMENTED / PASS**, and final
-per-component Gate E BA is **PASS / FROZEN**. Gate F orchestration is
-**PASS / FROZEN**. Gate G Governor integration, MVS, mesh,
-texturing and viewer remain **PLANNED**.
+per-component Gate E BA is **PASS / FROZEN**. Gate F orchestration and Gate G
+Governor integration are **PASS / FROZEN**. Phase H v1 is **PASS / FROZEN**.
+MVS, mesh, texturing and viewer remain **PLANNED**.
 
 Ce document décrit la vision architecturale cible du pipeline de
 reconstruction. Les modules listés ici ne sont pas tous implémentés.
-L'implémentation suit la feuille de route définie dans `.opencode/context.md`
-et progresse par tickets successifs en respectant les invariants
-d'indépendance et de reprise.
+L'implémentation suit la feuille de route canonique de `docs/roadmap/roadmap.md`
+et progresse par phases respectant les invariants d'indépendance et de reprise.

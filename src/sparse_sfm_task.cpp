@@ -389,25 +389,19 @@ bool build_publication(const Resolved &resolved,
                                                 observation.feature_index);
     if (camera == cameras.end() || calibration == resolved.calibrations.end() || !source)
       return false;
-    const auto &pose = *camera->second;
-    const auto &point = *landmark->second;
-    double xc = pose.rotation_cw[0] * point.x + pose.rotation_cw[1] * point.y +
-                    pose.rotation_cw[2] * point.z + pose.translation_cw[0];
-    double yc = pose.rotation_cw[3] * point.x + pose.rotation_cw[4] * point.y +
-                    pose.rotation_cw[5] * point.z + pose.translation_cw[1];
-    double zc = pose.rotation_cw[6] * point.x + pose.rotation_cw[7] * point.y +
-                    pose.rotation_cw[8] * point.z + pose.translation_cw[2];
-    if (!std::isfinite(xc) || !std::isfinite(yc) || !std::isfinite(zc) || zc <= 1e-9)
+    Lardon3DSparseGeometryPose pose{};
+    std::memcpy(pose.rotation_cw, camera->second->rotation_cw,
+                sizeof(pose.rotation_cw));
+    std::memcpy(pose.translation_cw, camera->second->translation_cw,
+                sizeof(pose.translation_cw));
+    const Lardon3DSparseGeometryPoint3 point{landmark->second->x,
+                                             landmark->second->y,
+                                             landmark->second->z};
+    const Lardon3DSparseGeometryPoint2 observed{source->x, source->y};
+    double squared = 0.0;
+    if (!lardon3d_sparse_sfm_squared_reprojection_error(
+            &calibration->second, &pose, &point, &observed, &squared))
       return false;
-    double xn = xc / zc, yn = yc / zc, r2 = xn * xn + yn * yn;
-    const auto &cal = calibration->second;
-    double radial = 1.0 + cal.k1 * r2 + cal.k2 * r2 * r2;
-    double xd = xn * radial + 2.0 * cal.p1 * xn * yn + cal.p2 * (r2 + 2.0 * xn * xn);
-    double yd = yn * radial + cal.p1 * (r2 + 2.0 * yn * yn) + 2.0 * cal.p2 * xn * yn;
-    double dx = cal.fx * xd + cal.cx - source->x;
-    double dy = cal.fy * yd + cal.cy - source->y;
-    double squared = dx * dx + dy * dy;
-    if (!std::isfinite(squared)) return false;
     squared_errors.push_back(squared);
     storage->observations.push_back(
         {0, observation.track_id, observation.feature_set_id, observation.feature_index,

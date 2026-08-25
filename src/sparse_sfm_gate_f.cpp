@@ -150,3 +150,30 @@ bool lardon3d_sparse_sfm_publication_metrics(const double *squared_errors, size_
     return false;
   }
 }
+
+bool lardon3d_sparse_sfm_squared_reprojection_error(
+    const Lardon3DSparseGeometryCalibration *calibration,
+    const Lardon3DSparseGeometryPose *pose,
+    const Lardon3DSparseGeometryPoint3 *point,
+    const Lardon3DSparseGeometryPoint2 *observed, double *squared_error) {
+  if (!calibration || !pose || !point || !observed || !squared_error) return false;
+  const double *r = pose->rotation_cw;
+  const double *t = pose->translation_cw;
+  const double xc = r[0] * point->x + r[1] * point->y + r[2] * point->z + t[0];
+  const double yc = r[3] * point->x + r[4] * point->y + r[5] * point->z + t[1];
+  const double zc = r[6] * point->x + r[7] * point->y + r[8] * point->z + t[2];
+  if (!std::isfinite(xc) || !std::isfinite(yc) || !std::isfinite(zc) || zc <= 1e-9)
+    return false;
+  const double xn = xc / zc;
+  const double yn = yc / zc;
+  const double r2 = xn * xn + yn * yn;
+  const double radial = 1.0 + calibration->k1 * r2 + calibration->k2 * r2 * r2;
+  const double xd = xn * radial + 2.0 * calibration->p1 * xn * yn +
+                    calibration->p2 * (r2 + 2.0 * xn * xn);
+  const double yd = yn * radial + calibration->p1 * (r2 + 2.0 * yn * yn) +
+                    2.0 * calibration->p2 * xn * yn;
+  const double dx = calibration->fx * xd + calibration->cx - observed->x;
+  const double dy = calibration->fy * yd + calibration->cy - observed->y;
+  *squared_error = dx * dx + dy * dy;
+  return std::isfinite(*squared_error);
+}

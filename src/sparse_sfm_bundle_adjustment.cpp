@@ -1,5 +1,7 @@
 #include <lardon3d/sparse_sfm_bundle_adjustment.h>
 
+#include "incremental_reconstruction_internal.h"
+
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
 
@@ -547,8 +549,10 @@ void copy_view(std::vector<T> *destination, const T *source, size_t count) {
   if (count != 0) destination->assign(source, source + count);
 }
 
-PreparationStatus prepare(const Lardon3DSparseBundleAdjustmentInput &input,
-                          Preparation *preparation) {
+PreparationStatus prepare(
+    const Lardon3DSparseBundleAdjustmentInput &input, Preparation *preparation,
+    const Lardon3DSparseBundleAdjustmentAnchor *anchors = nullptr,
+    size_t anchor_count = 0) {
   if (!preparation || !input.incremental_result)
     return PreparationStatus::invalid_argument;
   const auto &result = *input.incremental_result;
@@ -730,10 +734,45 @@ PreparationStatus prepare(const Lardon3DSparseBundleAdjustmentInput &input,
       diagnostic.termination = LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_TERMINATION_NOT_RUN;
       diagnostic.rejection_reason =
           LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_INELIGIBLE;
+      const Lardon3DSparseBundleAdjustmentAnchor *override = nullptr;
+      for (size_t anchor_index = 0; anchor_index < anchor_count; ++anchor_index) {
+        if (anchors[anchor_index].component_key == component.component_key) {
+          if (override) return PreparationStatus::invalid_argument;
+          override = &anchors[anchor_index];
+        }
+      }
+      bool anchors_valid = false;
+      if (override) {
+        const auto pose = std::find_if(candidate.cameras.begin(), candidate.cameras.end(),
+                                      [&](const auto &camera) {
+                                        return camera.component_key == component.component_key &&
+                                               camera.image_id ==
+                                                   override->pose_anchor_image_id;
+                                      });
+        const auto scale = std::find_if(candidate.cameras.begin(), candidate.cameras.end(),
+                                       [&](const auto &camera) {
+                                         return camera.component_key == component.component_key &&
+                                                camera.image_id ==
+                                                    override->scale_anchor_image_id;
+                                       });
+        anchors_valid = pose != candidate.cameras.end() &&
+                        scale != candidate.cameras.end() && pose != scale &&
+                        override->scale_axis >=
+                            LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_AXIS_X &&
+                        override->scale_axis <=
+                            LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_AXIS_Z;
+        if (anchors_valid) {
+          diagnostic.pose_anchor_image_id = override->pose_anchor_image_id;
+          diagnostic.scale_anchor_image_id = override->scale_anchor_image_id;
+          diagnostic.scale_axis = override->scale_axis;
+          diagnostic.has_anchors = true;
+        }
+      } else {
+        anchors_valid = select_anchors(candidate.cameras, component.component_key,
+                                       &diagnostic);
+      }
       diagnostic.eligible = component.registered_image_count >= 2 &&
-                            component.landmark_count >= 1 &&
-                            select_anchors(candidate.cameras, component.component_key,
-                                           &diagnostic);
+                            component.landmark_count >= 1 && anchors_valid;
       if (diagnostic.eligible)
         diagnostic.rejection_reason = LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_REJECTION_NONE;
       else if (!diagnostic.has_anchors && component.registered_image_count >= 2)
@@ -1065,17 +1104,19 @@ void destroy_result(Lardon3DSparseBundleAdjustmentResult *result) {
 
 } // namespace lardon3d::sparse_bundle_adjustment
 
-extern "C" Lardon3DSparseBundleAdjustmentExecutionStatus
-lardon3d_sparse_bundle_adjustment_run(
+static Lardon3DSparseBundleAdjustmentExecutionStatus run_bundle_adjustment(
     const Lardon3DSparseBundleAdjustmentInput *input,
+    const Lardon3DSparseBundleAdjustmentAnchor *anchors, size_t anchor_count,
     Lardon3DSparseBundleAdjustmentResult *result) {
   using namespace lardon3d::sparse_bundle_adjustment;
   if (!result) return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INVALID_ARGUMENT;
   destroy_result(result);
-  if (!input) return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INVALID_ARGUMENT;
+  if (!input || (anchor_count != 0 && !anchors))
+    return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INVALID_ARGUMENT;
   try {
     Preparation preparation;
-    const PreparationStatus preparation_status = prepare(*input, &preparation);
+    const PreparationStatus preparation_status =
+        prepare(*input, &preparation, anchors, anchor_count);
     if (preparation_status == PreparationStatus::invalid_argument)
       return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INVALID_ARGUMENT;
     if (preparation_status == PreparationStatus::out_of_memory)
@@ -1143,6 +1184,21 @@ lardon3d_sparse_bundle_adjustment_run(
     destroy_result(result);
     return LARDON3D_SPARSE_BUNDLE_ADJUSTMENT_EXECUTION_INTERNAL_ERROR;
   }
+}
+
+extern "C" Lardon3DSparseBundleAdjustmentExecutionStatus
+lardon3d_sparse_bundle_adjustment_run(
+    const Lardon3DSparseBundleAdjustmentInput *input,
+    Lardon3DSparseBundleAdjustmentResult *result) {
+  return run_bundle_adjustment(input, nullptr, 0, result);
+}
+
+Lardon3DSparseBundleAdjustmentExecutionStatus
+lardon3d_sparse_bundle_adjustment_run_with_anchors(
+    const Lardon3DSparseBundleAdjustmentInput *input,
+    const Lardon3DSparseBundleAdjustmentAnchor *anchors, size_t anchor_count,
+    Lardon3DSparseBundleAdjustmentResult *result) {
+  return run_bundle_adjustment(input, anchors, anchor_count, result);
 }
 
 extern "C" void lardon3d_sparse_bundle_adjustment_result_destroy(

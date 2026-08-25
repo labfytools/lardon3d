@@ -60,6 +60,8 @@ typedef struct {
   uint32_t sfm_kind;
   uint32_t sfm_version;
   unsigned char parameter_fingerprint[32];
+  bool has_derivation_identity;
+  unsigned char derivation_identity[32];
   uint64_t component_count;
   uint64_t registered_image_count;
   uint64_t landmark_count;
@@ -119,6 +121,17 @@ typedef struct {
   double reprojection_median_px;
   int64_t created_at;
 } Lardon3DSparsePublication;
+
+typedef struct {
+  uint64_t reconstruction_id;
+  uint64_t base_reconstruction_id;
+  uint64_t extension_track_set_id;
+  uint64_t calibration_scope_id;
+  uint32_t incremental_kind;
+  uint32_t incremental_version;
+  unsigned char parameter_fingerprint[32];
+  unsigned char scientific_identity[32];
+} Lardon3DIncrementalReconstructionMetadata;
 
 typedef struct {
   uint64_t after_id;
@@ -200,6 +213,17 @@ Lardon3DProjectDbResult lardon3d_sparse_calibration_scope_list_members(
 Lardon3DProjectDbResult lardon3d_sparse_reconstruction_publish(
     Lardon3DProjectDb *database, const Lardon3DSparsePublication *publication,
     Lardon3DSparseReconstruction *output);
+Lardon3DProjectDbResult lardon3d_incremental_reconstruction_publish(
+    Lardon3DProjectDb *database, const Lardon3DSparsePublication *publication,
+    const Lardon3DIncrementalReconstructionMetadata *metadata,
+    Lardon3DSparseReconstruction *output);
+Lardon3DProjectDbResult lardon3d_incremental_reconstruction_find_exact(
+    Lardon3DProjectDb *database, const unsigned char scientific_identity[32],
+    Lardon3DIncrementalReconstructionMetadata *metadata,
+    Lardon3DSparseReconstruction *reconstruction);
+Lardon3DProjectDbResult lardon3d_incremental_reconstruction_load_metadata(
+    Lardon3DProjectDb *database, uint64_t reconstruction_id,
+    Lardon3DIncrementalReconstructionMetadata *metadata);
 Lardon3DProjectDbResult lardon3d_sparse_reconstruction_find_exact(
     Lardon3DProjectDb *database, uint64_t track_set_id,
     uint64_t calibration_scope_id, uint32_t sfm_kind, uint32_t sfm_version,

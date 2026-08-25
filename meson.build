@@ -155,6 +155,9 @@ executable(
         'src/sparse_sfm_bundle_adjustment.cpp',
         'src/sparse_sfm_gate_f.cpp',
         'src/sparse_sfm_task.cpp',
+        'src/incremental_reconstruction_identity.cpp',
+        'src/incremental_reconstruction.cpp',
+        'src/incremental_reconstruction_task.cpp',
         'src/task.c',
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
@@ -174,6 +177,7 @@ executable(
     c_args: [
         '-DLARDON3D_TRACK_BUILDER_TASK_AVAILABLE',
         '-DLARDON3D_SPARSE_SFM_TASK_AVAILABLE',
+        '-DLARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_AVAILABLE',
     ],
     dependencies: [ncursesw, threads, sqlite3, openssl, opencv, opencv_geometry, ceres]
         + matcher_backend_dependencies,
@@ -945,6 +949,9 @@ sparse_sfm_task_test = executable(
         'src/sparse_sfm_incremental.cpp',
         'src/sparse_sfm_geometry.cpp',
         'src/sparse_sfm_bundle_adjustment.cpp',
+        'src/incremental_reconstruction_identity.cpp',
+        'src/incremental_reconstruction.cpp',
+        'src/incremental_reconstruction_task.cpp',
         'src/project_db.c', 'src/project_db_sparse_sfm.c',
         'src/feature_store.c', 'src/feature_extractor_opencv.cpp',
         'src/app_state.c',
@@ -957,6 +964,21 @@ sparse_sfm_task_test = executable(
     dependencies: [threads, sqlite3, openssl, opencv, opencv_geometry, ceres],
 )
 test('sparse-sfm-task', sparse_sfm_task_test, timeout: 120)
+
+incremental_reconstruction_test = executable(
+    'test-incremental-reconstruction',
+    sources: [
+        'tests/test_incremental_reconstruction.cpp',
+        'src/incremental_reconstruction_identity.cpp',
+        'src/incremental_reconstruction.cpp',
+        'src/sparse_sfm_geometry.cpp',
+        'src/sparse_sfm_incremental.cpp',
+        'src/sparse_sfm_bundle_adjustment.cpp',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [openssl, opencv_geometry, ceres],
+)
+test('incremental-reconstruction', incremental_reconstruction_test, timeout: 120)
 
 sparse_sfm_payload_test = executable(
     'test-sparse-sfm-payload',

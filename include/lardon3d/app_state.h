@@ -12,6 +12,8 @@ typedef struct Lardon3DResourceGovernor Lardon3DResourceGovernor;
 typedef struct Lardon3DProjectDb Lardon3DProjectDb;
 typedef struct Lardon3DOrbVulkanBackend Lardon3DOrbVulkanBackend;
 
+enum { LARDON3D_APP_STATE_PATH_CAPACITY = 4096 };
+
 typedef enum {
     LARDON3D_SCREEN_HOME = 0,
     LARDON3D_SCREEN_PROJECTS,
@@ -22,12 +24,12 @@ typedef enum {
     LARDON3D_SCREEN_RESOURCES
 } Lardon3DScreen;
 
-typedef struct {
+typedef struct Lardon3DAppState {
     Lardon3DScreen screen;
     bool running;
     bool project_loaded;
     char project_name[128];
-    char project_path[PATH_MAX];
+    char project_path[LARDON3D_APP_STATE_PATH_CAPACITY];
     char project_stable_id[65];
     char status_message[256];
     Lardon3DImageCatalog *image_catalog;

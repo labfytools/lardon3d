@@ -7,6 +7,7 @@
 
 extern "C" {
 #include <lardon3d/project_db.h>
+#include <lardon3d/incremental_reconstruction_task.h>
 #include <lardon3d/sparse_sfm_task.h>
 }
 
@@ -65,7 +66,7 @@ int main() {
   Lardon3DProjectDb *database = nullptr;
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY]{};
   CHECK(lardon3d_project_db_open(path.c_str(), &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 17);
+  CHECK(lardon3d_project_db_schema_version(database) == 18);
 
   sqlite3 *raw = nullptr;
   CHECK(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
@@ -74,7 +75,11 @@ int main() {
       "verifier_kind,verifier_version,verifier_fingerprint,input_scope_hash,gvr_count,track_count,"
       "created_at) VALUES(41,'track_builder',1,zeroblob(32),1,1,zeroblob(32),zeroblob(32),1,0,0);"
       "INSERT INTO sparse_calibration_scopes(scope_id,scientific_hash,member_count) "
-      "VALUES(43,randomblob(32),1);";
+      "VALUES(43,randomblob(32),1);"
+      "INSERT INTO sparse_reconstructions(reconstruction_id,track_set_id,"
+      "calibration_scope_id,sfm_kind,sfm_version,parameter_fingerprint,component_count,"
+      "registered_image_count,landmark_count,reprojection_rmse_px,reprojection_median_px,"
+      "created_at) VALUES(42,41,43,1,1,zeroblob(32),1,2,1,0,0,0);";
   CHECK(sqlite3_exec(raw, fixture_sql, nullptr, nullptr, nullptr) == SQLITE_OK);
   sqlite3_close(raw);
 
@@ -135,6 +140,30 @@ int main() {
   sqlite3_close(raw);
   CHECK(lardon3d_project_db_load_sparse_sfm_task(database, 101, &corrupt) ==
         LARDON3D_PROJECT_DB_NOT_FOUND);
+
+  Lardon3DTaskDurableSnapshot h_snapshot{};
+  h_snapshot.id = 200;
+  std::snprintf(h_snapshot.name, sizeof(h_snapshot.name), "Phase H payload");
+  h_snapshot.saved_state = TASK_PENDING;
+  h_snapshot.recovery_state = TASK_PENDING;
+  h_snapshot.estimate = {269484032, 0, 0, 0, 1, 1, 1, 0, 1,
+                         LARDON3D_RESOURCE_TASK_CPU};
+  Lardon3DProjectDbIncrementalReconstructionTask h_payload{
+      200, 42, 41, 43, 1, 1, {}};
+  h_payload.parameter_fingerprint[0] = 77;
+  CHECK(lardon3d_project_db_record_incremental_reconstruction_task(
+            database, &h_snapshot, LARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_KIND,
+            LARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_KIND_VERSION, nullptr,
+            &h_payload, 0) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DProjectDbIncrementalReconstructionTask loaded_h{};
+  CHECK(lardon3d_project_db_load_incremental_reconstruction_task(
+            database, 200, &loaded_h) == LARDON3D_PROJECT_DB_OK);
+  CHECK(loaded_h.task_id == 200 && loaded_h.base_reconstruction_id == 42 &&
+        loaded_h.extension_track_set_id == 41 &&
+        loaded_h.calibration_scope_id == 43 && loaded_h.incremental_kind == 1 &&
+        loaded_h.incremental_version == 1 &&
+        std::memcmp(loaded_h.parameter_fingerprint,
+                    h_payload.parameter_fingerprint, 32) == 0);
   lardon3d_project_db_close(database);
   CHECK(unlink(path.c_str()) == 0);
   CHECK(rmdir(directory) == 0);

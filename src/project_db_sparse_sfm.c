@@ -35,6 +35,37 @@ static void sparse_put_u32(unsigned char *data, size_t *offset,
 }
 
 static void sparse_put_u64(unsigned char *data, size_t *offset,
+                           uint64_t value);
+
+static bool sparse_incremental_identity_valid(
+    const Lardon3DIncrementalReconstructionMetadata *metadata) {
+  unsigned char record[76] = {0};
+  unsigned char digest[32] = {0};
+  unsigned int digest_size = 0;
+  size_t offset = 0;
+  if (!metadata || metadata->base_reconstruction_id == 0 ||
+      metadata->extension_track_set_id == 0 ||
+      metadata->calibration_scope_id == 0 || metadata->incremental_kind != 1 ||
+      metadata->incremental_version != 1)
+    return false;
+  memcpy(record, "L3DHIDV1", 8);
+  offset = 8;
+  sparse_put_u32(record, &offset, 1);
+  sparse_put_u64(record, &offset, metadata->base_reconstruction_id);
+  sparse_put_u64(record, &offset, metadata->extension_track_set_id);
+  sparse_put_u64(record, &offset, metadata->calibration_scope_id);
+  sparse_put_u32(record, &offset, metadata->incremental_kind);
+  sparse_put_u32(record, &offset, metadata->incremental_version);
+  memcpy(record + offset, metadata->parameter_fingerprint, 32);
+  offset += 32;
+  return offset == sizeof(record) &&
+         EVP_Digest(record, sizeof(record), digest, &digest_size, EVP_sha256(),
+                    NULL) == 1 &&
+         digest_size == sizeof(digest) &&
+         memcmp(digest, metadata->scientific_identity, sizeof(digest)) == 0;
+}
+
+static void sparse_put_u64(unsigned char *data, size_t *offset,
                            uint64_t value) {
   for (unsigned byte = 0; byte < 8; ++byte)
     data[(*offset)++] = (unsigned char)(value >> (byte * 8));
@@ -939,7 +970,7 @@ sparse_load_reconstruction_locked(Lardon3DProjectDb *db, uint64_t id,
       prepare(db,
               "SELECT "
               "track_set_id,calibration_scope_id,sfm_kind,sfm_version,"
-              "parameter_fingerprint,component_count,registered_image_count,"
+              "parameter_fingerprint,derivation_identity,component_count,registered_image_count,"
               "landmark_count,reprojection_rmse_px,reprojection_median_px FROM "
               "sparse_reconstructions WHERE reconstruction_id=?1",
               &statement);
@@ -949,7 +980,9 @@ sparse_load_reconstruction_locked(Lardon3DProjectDb *db, uint64_t id,
   int code = sqlite3_step(statement);
   if (code == SQLITE_DONE)
     result = LARDON3D_PROJECT_DB_NOT_FOUND;
-  else if (code != SQLITE_ROW || sqlite3_column_bytes(statement, 4) != 32)
+  else if (code != SQLITE_ROW || sqlite3_column_bytes(statement, 4) != 32 ||
+           (sqlite3_column_type(statement, 5) != SQLITE_NULL &&
+            sqlite3_column_bytes(statement, 5) != 32))
     result = LARDON3D_PROJECT_DB_CORRUPT;
   else {
     memset(output, 0, sizeof(*output));
@@ -960,12 +993,17 @@ sparse_load_reconstruction_locked(Lardon3DProjectDb *db, uint64_t id,
     output->sfm_version = (uint32_t)sqlite3_column_int64(statement, 3);
     memcpy(output->parameter_fingerprint, sqlite3_column_blob(statement, 4),
            32);
-    output->component_count = (uint64_t)sqlite3_column_int64(statement, 5);
+    output->has_derivation_identity =
+        sqlite3_column_type(statement, 5) != SQLITE_NULL;
+    if (output->has_derivation_identity)
+      memcpy(output->derivation_identity, sqlite3_column_blob(statement, 5),
+             32);
+    output->component_count = (uint64_t)sqlite3_column_int64(statement, 6);
     output->registered_image_count =
-        (uint64_t)sqlite3_column_int64(statement, 6);
-    output->landmark_count = (uint64_t)sqlite3_column_int64(statement, 7);
-    output->reprojection_rmse_px = sqlite3_column_double(statement, 8);
-    output->reprojection_median_px = sqlite3_column_double(statement, 9);
+        (uint64_t)sqlite3_column_int64(statement, 7);
+    output->landmark_count = (uint64_t)sqlite3_column_int64(statement, 8);
+    output->reprojection_rmse_px = sqlite3_column_double(statement, 9);
+    output->reprojection_median_px = sqlite3_column_double(statement, 10);
     if (!output->track_set_id || !output->calibration_scope_id ||
         output->sfm_kind != LARDON3D_SPARSE_SFM_KIND_INCREMENTAL ||
         output->sfm_version != LARDON3D_SPARSE_SFM_VERSION ||
@@ -981,10 +1019,21 @@ sparse_load_reconstruction_locked(Lardon3DProjectDb *db, uint64_t id,
   return result;
 }
 
-Lardon3DProjectDbResult lardon3d_sparse_reconstruction_publish(
+static Lardon3DProjectDbResult sparse_reconstruction_publish_internal(
     Lardon3DProjectDb *db, const Lardon3DSparsePublication *publication,
+    const Lardon3DIncrementalReconstructionMetadata *metadata,
     Lardon3DSparseReconstruction *output) {
-  if (!db || !output || !sparse_publication_valid(publication))
+  if (!db || !output || !sparse_publication_valid(publication) ||
+      (metadata &&
+       memcmp(publication->parameter_fingerprint,
+              metadata->parameter_fingerprint, 32) != 0) ||
+      (metadata &&
+       (!sparse_fits_sqlite(metadata->base_reconstruction_id) ||
+        metadata->base_reconstruction_id == 0 ||
+        metadata->extension_track_set_id != publication->track_set_id ||
+        metadata->calibration_scope_id != publication->calibration_scope_id ||
+        metadata->incremental_kind != 1 || metadata->incremental_version != 1 ||
+        !sparse_incremental_identity_valid(metadata))))
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   (void)pthread_mutex_lock(&db->mutex);
   Lardon3DProjectDbResult result =
@@ -1022,9 +1071,9 @@ Lardon3DProjectDbResult lardon3d_sparse_reconstruction_publish(
         db,
         "INSERT INTO "
         "sparse_reconstructions(track_set_id,calibration_scope_id,sfm_kind,sfm_"
-        "version,parameter_fingerprint,component_count,registered_image_count,"
+        "version,parameter_fingerprint,derivation_identity,component_count,registered_image_count,"
         "landmark_count,reprojection_rmse_px,reprojection_median_px,created_at)"
-        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         &statement);
   if (result == LARDON3D_PROJECT_DB_OK) {
     sqlite3_bind_int64(statement, 1,
@@ -1036,20 +1085,26 @@ Lardon3DProjectDbResult lardon3d_sparse_reconstruction_publish(
     sqlite3_bind_int64(statement, 4, publication->sfm_version);
     sqlite3_bind_blob(statement, 5, publication->parameter_fingerprint, 32,
                       SQLITE_TRANSIENT);
-    sqlite3_bind_int64(statement, 6,
-                       (sqlite3_int64)publication->component_count);
+    if (metadata)
+      sqlite3_bind_blob(statement, 6, metadata->scientific_identity, 32,
+                        SQLITE_TRANSIENT);
+    else
+      sqlite3_bind_null(statement, 6);
     sqlite3_bind_int64(statement, 7,
-                       (sqlite3_int64)publication->registered_image_count);
+                       (sqlite3_int64)publication->component_count);
     sqlite3_bind_int64(statement, 8,
+                       (sqlite3_int64)publication->registered_image_count);
+    sqlite3_bind_int64(statement, 9,
                        (sqlite3_int64)publication->landmark_count);
-    sqlite3_bind_double(statement, 9, publication->reprojection_rmse_px);
-    sqlite3_bind_double(statement, 10, publication->reprojection_median_px);
-    sqlite3_bind_int64(statement, 11, publication->created_at);
+    sqlite3_bind_double(statement, 10, publication->reprojection_rmse_px);
+    sqlite3_bind_double(statement, 11, publication->reprojection_median_px);
+    sqlite3_bind_int64(statement, 12, publication->created_at);
     result = step_done(db, statement, "insert sparse reconstruction");
     statement = NULL;
   }
   if (statement)
     sqlite3_finalize(statement);
+  statement = NULL;
   if (result == LARDON3D_PROJECT_DB_OK)
     reconstruction_id = (uint64_t)sqlite3_last_insert_rowid(db->connection);
   if (result == LARDON3D_PROJECT_DB_OK)
@@ -1156,6 +1211,33 @@ Lardon3DProjectDbResult lardon3d_sparse_reconstruction_publish(
   }
   if (statement)
     sqlite3_finalize(statement);
+  statement = NULL;
+  if (result == LARDON3D_PROJECT_DB_OK && metadata)
+    result = prepare(
+        db,
+        "INSERT INTO incremental_reconstructions(reconstruction_id,"
+        "base_reconstruction_id,extension_track_set_id,calibration_scope_id,"
+        "incremental_kind,incremental_version,parameter_fingerprint,"
+        "scientific_identity) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        &statement);
+  if (result == LARDON3D_PROJECT_DB_OK && metadata) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)reconstruction_id);
+    sqlite3_bind_int64(statement, 2,
+                       (sqlite3_int64)metadata->base_reconstruction_id);
+    sqlite3_bind_int64(statement, 3,
+                       (sqlite3_int64)metadata->extension_track_set_id);
+    sqlite3_bind_int64(statement, 4,
+                       (sqlite3_int64)metadata->calibration_scope_id);
+    sqlite3_bind_int(statement, 5, (int)metadata->incremental_kind);
+    sqlite3_bind_int(statement, 6, (int)metadata->incremental_version);
+    sqlite3_bind_blob(statement, 7, metadata->parameter_fingerprint, 32,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_blob(statement, 8, metadata->scientific_identity, 32,
+                      SQLITE_TRANSIENT);
+    result = step_done(db, statement, "insert incremental reconstruction metadata");
+    statement = NULL;
+  }
+  if (statement) sqlite3_finalize(statement);
   if (result == LARDON3D_PROJECT_DB_OK)
     result = execute(db, "COMMIT", "commit sparse reconstruction");
   if (result != LARDON3D_PROJECT_DB_OK)
@@ -1163,6 +1245,131 @@ Lardon3DProjectDbResult lardon3d_sparse_reconstruction_publish(
   if (result == LARDON3D_PROJECT_DB_OK)
     result = sparse_load_reconstruction_locked(db, reconstruction_id, output);
   (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_sparse_reconstruction_publish(
+    Lardon3DProjectDb *db, const Lardon3DSparsePublication *publication,
+    Lardon3DSparseReconstruction *output) {
+  return sparse_reconstruction_publish_internal(db, publication, NULL, output);
+}
+
+Lardon3DProjectDbResult lardon3d_incremental_reconstruction_publish(
+    Lardon3DProjectDb *db, const Lardon3DSparsePublication *publication,
+    const Lardon3DIncrementalReconstructionMetadata *metadata,
+    Lardon3DSparseReconstruction *output) {
+  if (!metadata) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  return sparse_reconstruction_publish_internal(db, publication, metadata, output);
+}
+
+static Lardon3DProjectDbResult incremental_metadata_locked(
+    Lardon3DProjectDb *db, uint64_t reconstruction_id,
+    Lardon3DIncrementalReconstructionMetadata *metadata) {
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      db,
+      "SELECT base_reconstruction_id,extension_track_set_id,calibration_scope_id,"
+      "incremental_kind,incremental_version,parameter_fingerprint,scientific_identity "
+      "FROM incremental_reconstructions WHERE reconstruction_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)reconstruction_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE)
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    else if (code != SQLITE_ROW || sqlite3_column_bytes(statement, 5) != 32 ||
+             sqlite3_column_bytes(statement, 6) != 32)
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    else {
+      memset(metadata, 0, sizeof(*metadata));
+      metadata->reconstruction_id = reconstruction_id;
+      metadata->base_reconstruction_id =
+          (uint64_t)sqlite3_column_int64(statement, 0);
+      metadata->extension_track_set_id =
+          (uint64_t)sqlite3_column_int64(statement, 1);
+      metadata->calibration_scope_id =
+          (uint64_t)sqlite3_column_int64(statement, 2);
+      metadata->incremental_kind = (uint32_t)sqlite3_column_int(statement, 3);
+      metadata->incremental_version = (uint32_t)sqlite3_column_int(statement, 4);
+      memcpy(metadata->parameter_fingerprint, sqlite3_column_blob(statement, 5), 32);
+      memcpy(metadata->scientific_identity, sqlite3_column_blob(statement, 6), 32);
+      if (!metadata->base_reconstruction_id || !metadata->extension_track_set_id ||
+          !metadata->calibration_scope_id || metadata->incremental_kind != 1 ||
+          metadata->incremental_version != 1 ||
+          !sparse_incremental_identity_valid(metadata))
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+    }
+    sqlite3_finalize(statement);
+  }
+  if (result != LARDON3D_PROJECT_DB_OK) memset(metadata, 0, sizeof(*metadata));
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_incremental_reconstruction_load_metadata(
+    Lardon3DProjectDb *db, uint64_t reconstruction_id,
+    Lardon3DIncrementalReconstructionMetadata *metadata) {
+  if (!db || !reconstruction_id || !metadata)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  (void)pthread_mutex_lock(&db->mutex);
+  Lardon3DProjectDbResult result =
+      incremental_metadata_locked(db, reconstruction_id, metadata);
+  Lardon3DSparseReconstruction reconstruction = {0};
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = sparse_load_reconstruction_locked(db, reconstruction_id,
+                                               &reconstruction);
+  if (result == LARDON3D_PROJECT_DB_OK &&
+      (!reconstruction.has_derivation_identity ||
+       memcmp(reconstruction.derivation_identity,
+              metadata->scientific_identity, 32) != 0 ||
+       memcmp(reconstruction.parameter_fingerprint,
+              metadata->parameter_fingerprint, 32) != 0))
+    result = LARDON3D_PROJECT_DB_CORRUPT;
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_incremental_reconstruction_find_exact(
+    Lardon3DProjectDb *db, const unsigned char scientific_identity[32],
+    Lardon3DIncrementalReconstructionMetadata *metadata,
+    Lardon3DSparseReconstruction *reconstruction) {
+  if (!db || !scientific_identity || !metadata || !reconstruction)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  memset(metadata, 0, sizeof(*metadata));
+  memset(reconstruction, 0, sizeof(*reconstruction));
+  (void)pthread_mutex_lock(&db->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      db,
+      "SELECT reconstruction_id FROM incremental_reconstructions WHERE "
+      "scientific_identity=?1",
+      &statement);
+  uint64_t reconstruction_id = 0;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_blob(statement, 1, scientific_identity, 32, SQLITE_TRANSIENT);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE)
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    else if (code != SQLITE_ROW)
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    else
+      reconstruction_id = (uint64_t)sqlite3_column_int64(statement, 0);
+    sqlite3_finalize(statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = incremental_metadata_locked(db, reconstruction_id, metadata);
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = sparse_load_reconstruction_locked(db, reconstruction_id, reconstruction);
+  if (result == LARDON3D_PROJECT_DB_OK &&
+      (!reconstruction->has_derivation_identity ||
+       memcmp(reconstruction->derivation_identity, scientific_identity, 32) != 0 ||
+       memcmp(reconstruction->parameter_fingerprint,
+              metadata->parameter_fingerprint, 32) != 0))
+    result = LARDON3D_PROJECT_DB_CORRUPT;
+  (void)pthread_mutex_unlock(&db->mutex);
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    memset(metadata, 0, sizeof(*metadata));
+    memset(reconstruction, 0, sizeof(*reconstruction));
+  }
   return result;
 }
 
@@ -1178,7 +1385,8 @@ Lardon3DProjectDbResult lardon3d_sparse_reconstruction_find_exact(
       prepare(db,
               "SELECT reconstruction_id FROM sparse_reconstructions WHERE "
               "track_set_id=?1 AND calibration_scope_id=?2 AND sfm_kind=?3 AND "
-              "sfm_version=?4 AND parameter_fingerprint=?5",
+              "sfm_version=?4 AND parameter_fingerprint=?5 AND "
+              "derivation_identity IS NULL",
               &statement);
   if (result == LARDON3D_PROJECT_DB_OK) {
     sqlite3_bind_int64(statement, 1, (sqlite3_int64)track_set_id);

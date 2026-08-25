@@ -447,6 +447,136 @@ static const char schema_sparse_sfm_task_v17[] =
     "CHECK(length(pnp_deterministic_seed)=8),refinement_max_iterations INTEGER NOT NULL,"
     "refinement_convergence_tolerance REAL NOT NULL);";
 
+static const char schema_sparse_derivation_identity_v18[] =
+    "PRAGMA legacy_alter_table=ON;"
+    "DROP INDEX sparse_landmark_observations_page_idx;"
+    "DROP INDEX sparse_landmark_track_lookup_idx;"
+    "DROP INDEX sparse_landmarks_page_idx;"
+    "DROP INDEX sparse_registered_image_lookup_idx;"
+    "DROP INDEX sparse_registered_page_idx;"
+    "DROP INDEX sparse_components_page_idx;"
+    "DROP INDEX sparse_reconstructions_scope_idx;"
+    "DROP INDEX IF EXISTS sparse_reconstructions_gate_f_candidate_idx;"
+    "DROP INDEX IF EXISTS sparse_reconstructions_derivation_idx;"
+    "ALTER TABLE sparse_landmark_observations RENAME TO sparse_landmark_observations_v17;"
+    "ALTER TABLE sparse_landmarks RENAME TO sparse_landmarks_v17;"
+    "ALTER TABLE sparse_registered_images RENAME TO sparse_registered_images_v17;"
+    "ALTER TABLE sparse_reconstruction_components RENAME TO sparse_reconstruction_components_v17;"
+    "ALTER TABLE sparse_reconstructions RENAME TO sparse_reconstructions_v17;"
+    "CREATE TABLE sparse_reconstructions("
+    "reconstruction_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(reconstruction_id>0),"
+    "track_set_id INTEGER NOT NULL REFERENCES track_sets(track_set_id),"
+    "calibration_scope_id INTEGER NOT NULL REFERENCES sparse_calibration_scopes(scope_id),"
+    "sfm_kind INTEGER NOT NULL CHECK(sfm_kind=1),sfm_version INTEGER NOT NULL "
+    "CHECK(sfm_version=1),parameter_fingerprint BLOB NOT NULL "
+    "CHECK(length(parameter_fingerprint)=32),derivation_identity BLOB "
+    "CHECK(derivation_identity IS NULL OR length(derivation_identity)=32),"
+    "component_count INTEGER NOT NULL CHECK(component_count>0),"
+    "registered_image_count INTEGER NOT NULL CHECK(registered_image_count>=2),"
+    "landmark_count INTEGER NOT NULL CHECK(landmark_count>0),"
+    "reprojection_rmse_px REAL NOT NULL,reprojection_median_px REAL NOT NULL,"
+    "created_at INTEGER NOT NULL);"
+    "INSERT INTO sparse_reconstructions("
+    "reconstruction_id,track_set_id,calibration_scope_id,sfm_kind,sfm_version,"
+    "parameter_fingerprint,derivation_identity,component_count,"
+    "registered_image_count,landmark_count,reprojection_rmse_px,"
+    "reprojection_median_px,created_at) SELECT reconstruction_id,track_set_id,"
+    "calibration_scope_id,sfm_kind,sfm_version,parameter_fingerprint,NULL,"
+    "component_count,registered_image_count,landmark_count,reprojection_rmse_px,"
+    "reprojection_median_px,created_at FROM sparse_reconstructions_v17;";
+
+static const char schema_sparse_derivation_children_v18[] =
+    "CREATE TABLE sparse_reconstruction_components("
+    "component_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(component_id>0),"
+    "reconstruction_id INTEGER NOT NULL REFERENCES sparse_reconstructions("
+    "reconstruction_id) ON DELETE CASCADE,component_key INTEGER NOT NULL "
+    "CHECK(component_key>0),registered_image_count INTEGER NOT NULL "
+    "CHECK(registered_image_count>0),landmark_count INTEGER NOT NULL "
+    "CHECK(landmark_count>0),UNIQUE(reconstruction_id,component_id),"
+    "UNIQUE(reconstruction_id,component_key));"
+    "INSERT INTO sparse_reconstruction_components SELECT * FROM "
+    "sparse_reconstruction_components_v17;"
+    "CREATE TABLE sparse_registered_images("
+    "reconstruction_id INTEGER NOT NULL REFERENCES sparse_reconstructions("
+    "reconstruction_id) ON DELETE CASCADE,component_id INTEGER NOT NULL,"
+    "image_id INTEGER NOT NULL REFERENCES images(image_id),"
+    "rotation_00 REAL NOT NULL,rotation_01 REAL NOT NULL,rotation_02 REAL NOT NULL,"
+    "rotation_10 REAL NOT NULL,rotation_11 REAL NOT NULL,rotation_12 REAL NOT NULL,"
+    "rotation_20 REAL NOT NULL,rotation_21 REAL NOT NULL,rotation_22 REAL NOT NULL,"
+    "translation_0 REAL NOT NULL,translation_1 REAL NOT NULL,translation_2 REAL NOT NULL,"
+    "PRIMARY KEY(reconstruction_id,image_id),FOREIGN KEY(reconstruction_id,component_id) "
+    "REFERENCES sparse_reconstruction_components(reconstruction_id,component_id));"
+    "INSERT INTO sparse_registered_images SELECT * FROM sparse_registered_images_v17;"
+    "CREATE TABLE sparse_landmarks("
+    "landmark_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(landmark_id>0),"
+    "reconstruction_id INTEGER NOT NULL REFERENCES sparse_reconstructions("
+    "reconstruction_id) ON DELETE CASCADE,component_id INTEGER NOT NULL,"
+    "track_id INTEGER NOT NULL REFERENCES tracks(track_id),x REAL NOT NULL,y REAL NOT NULL,"
+    "z REAL NOT NULL,reprojection_rmse_px REAL NOT NULL,reprojection_median_px REAL NOT NULL,"
+    "observation_count INTEGER NOT NULL CHECK(observation_count>0),"
+    "UNIQUE(reconstruction_id,track_id),FOREIGN KEY(reconstruction_id,component_id) "
+    "REFERENCES sparse_reconstruction_components(reconstruction_id,component_id));"
+    "INSERT INTO sparse_landmarks SELECT * FROM sparse_landmarks_v17;"
+    "CREATE TABLE sparse_landmark_observations("
+    "landmark_id INTEGER NOT NULL REFERENCES sparse_landmarks(landmark_id) ON DELETE CASCADE,"
+    "feature_set_id INTEGER NOT NULL REFERENCES feature_sets(feature_set_id),"
+    "feature_index INTEGER NOT NULL CHECK(feature_index>=0),"
+    "position_in_track INTEGER NOT NULL CHECK(position_in_track>=0),"
+    "PRIMARY KEY(landmark_id,feature_set_id,feature_index));"
+    "INSERT INTO sparse_landmark_observations SELECT * FROM "
+    "sparse_landmark_observations_v17;"
+    "DROP TABLE sparse_landmark_observations_v17;"
+    "DROP TABLE sparse_landmarks_v17;"
+    "DROP TABLE sparse_registered_images_v17;"
+    "DROP TABLE sparse_reconstruction_components_v17;"
+    "DROP TABLE sparse_reconstructions_v17;"
+    "CREATE UNIQUE INDEX sparse_reconstructions_gate_f_candidate_idx ON "
+    "sparse_reconstructions(track_set_id,calibration_scope_id,sfm_kind,sfm_version,"
+    "parameter_fingerprint) WHERE derivation_identity IS NULL;"
+    "CREATE UNIQUE INDEX sparse_reconstructions_derivation_idx ON "
+    "sparse_reconstructions(derivation_identity) WHERE derivation_identity IS NOT NULL;"
+    "CREATE INDEX sparse_reconstructions_scope_idx ON "
+    "sparse_reconstructions(calibration_scope_id);"
+    "CREATE INDEX sparse_components_page_idx ON sparse_reconstruction_components("
+    "reconstruction_id,component_key);"
+    "CREATE INDEX sparse_registered_page_idx ON sparse_registered_images("
+    "reconstruction_id,component_id,image_id);"
+    "CREATE INDEX sparse_registered_image_lookup_idx ON sparse_registered_images("
+    "reconstruction_id,image_id);"
+    "CREATE INDEX sparse_landmarks_page_idx ON sparse_landmarks("
+    "reconstruction_id,component_id,track_id);"
+    "CREATE INDEX sparse_landmark_track_lookup_idx ON sparse_landmarks("
+    "reconstruction_id,track_id);"
+    "CREATE INDEX sparse_landmark_observations_page_idx ON "
+    "sparse_landmark_observations(landmark_id,position_in_track);"
+    "PRAGMA legacy_alter_table=OFF;";
+
+static const char schema_incremental_reconstruction_v18[] =
+    "CREATE TABLE incremental_reconstructions("
+    "reconstruction_id INTEGER PRIMARY KEY REFERENCES sparse_reconstructions("
+    "reconstruction_id) ON DELETE CASCADE,"
+    "base_reconstruction_id INTEGER NOT NULL REFERENCES sparse_reconstructions("
+    "reconstruction_id),"
+    "extension_track_set_id INTEGER NOT NULL REFERENCES track_sets(track_set_id),"
+    "calibration_scope_id INTEGER NOT NULL REFERENCES sparse_calibration_scopes(scope_id),"
+    "incremental_kind INTEGER NOT NULL CHECK(incremental_kind=1),"
+    "incremental_version INTEGER NOT NULL CHECK(incremental_version=1),"
+    "parameter_fingerprint BLOB NOT NULL CHECK(length(parameter_fingerprint)=32),"
+    "scientific_identity BLOB NOT NULL CHECK(length(scientific_identity)=32) UNIQUE,"
+    "UNIQUE(base_reconstruction_id,extension_track_set_id,calibration_scope_id,"
+    "incremental_kind,incremental_version,parameter_fingerprint));"
+    "CREATE INDEX incremental_reconstructions_base_idx ON incremental_reconstructions("
+    "base_reconstruction_id,reconstruction_id);"
+    "CREATE TABLE incremental_reconstruction_tasks("
+    "task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,"
+    "base_reconstruction_id INTEGER NOT NULL REFERENCES sparse_reconstructions("
+    "reconstruction_id),"
+    "extension_track_set_id INTEGER NOT NULL REFERENCES track_sets(track_set_id),"
+    "calibration_scope_id INTEGER NOT NULL REFERENCES sparse_calibration_scopes(scope_id),"
+    "incremental_kind INTEGER NOT NULL CHECK(incremental_kind=1),"
+    "incremental_version INTEGER NOT NULL CHECK(incremental_version=1),"
+    "parameter_fingerprint BLOB NOT NULL CHECK(length(parameter_fingerprint)=32));";
+
 static void copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text) {
   if (destination) {
     (void)snprintf(destination, LARDON3D_PROJECT_DB_ERROR_CAPACITY, "%s", text ? text : "");
@@ -537,8 +667,8 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
   if (from_version != 0 && from_version != 1 && from_version != 2 && from_version != 3 &&
       from_version != 4 && from_version != 5 && from_version != 6 && from_version != 7 &&
       from_version != 8 && from_version != 9 && from_version != 10 && from_version != 11 &&
-       from_version != 12 && from_version != 13 && from_version != 14 &&
-       from_version != 15) {
+      from_version != 12 && from_version != 13 && from_version != 14 &&
+      from_version != 15 && from_version != 16 && from_version != 17) {
     return LARDON3D_PROJECT_DB_CORRUPT;
   }
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
@@ -880,6 +1010,29 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
           "finish schema v17 migration");
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version < 18) {
+    result = execute(database, schema_sparse_derivation_identity_v18,
+                     "migrate sparse derivation identity v17 to v18");
+    if (result == LARDON3D_PROJECT_DB_OK)
+      result = execute(database, schema_sparse_derivation_children_v18,
+                       "migrate sparse derivation children v17 to v18");
+    if (result == LARDON3D_PROJECT_DB_OK)
+      result = execute(database, schema_incremental_reconstruction_v18,
+                       "migrate incremental reconstruction v17 to v18");
+#ifdef LARDON3D_PROJECT_DB_TESTING
+    if (result == LARDON3D_PROJECT_DB_OK &&
+        getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V18")) {
+      result = execute(database, "INSERT INTO missing_v18_test_table VALUES(1)",
+                       "forced migration v18 failure");
+    }
+#endif
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(
+          database,
+          "UPDATE metadata SET value=18 WHERE key='schema_version' AND value=17",
+          "finish schema v18 migration");
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit migration");
   }
@@ -1008,7 +1161,9 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
                                "sparse_reconstruction_components",
                                "sparse_registered_images",
                                "sparse_landmarks",
-                               "sparse_landmark_observations"};
+                               "sparse_landmark_observations",
+                               "incremental_reconstructions",
+                               "incremental_reconstruction_tasks"};
     for (size_t index = 0; index < sizeof(required) / sizeof(required[0]) &&
                            result == LARDON3D_PROJECT_DB_OK;
          ++index) {
@@ -4164,6 +4319,115 @@ Lardon3DProjectDbResult lardon3d_project_db_load_sparse_sfm_task(
     sqlite3_finalize(statement);
   }
   (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_record_incremental_reconstruction_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *kind, uint32_t version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbIncrementalReconstructionTask *parameters,
+    int64_t updated_at) {
+  if (!database || !snapshot || !parameters ||
+      !lardon3d_task_kind_is_valid(kind) ||
+      strcmp(kind, "incremental_reconstruction.run") != 0 || version != 1 ||
+      parameters->task_id != snapshot->id ||
+      !valid_task_id(parameters->base_reconstruction_id) ||
+      !valid_task_id(parameters->extension_track_set_id) ||
+      !valid_task_id(parameters->calibration_scope_id) ||
+      parameters->incremental_kind != 1 || parameters->incremental_version != 1)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  Lardon3DProjectDbResult result = lardon3d_project_db_record_task(
+      database, snapshot, kind, version, checkpoint, updated_at);
+  if (result != LARDON3D_PROJECT_DB_OK) return result;
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  result = execute(database, "BEGIN IMMEDIATE", "begin incremental task payload");
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = prepare(
+        database,
+        "INSERT INTO incremental_reconstruction_tasks(task_id,base_reconstruction_id,"
+        "extension_track_set_id,calibration_scope_id,incremental_kind,incremental_version,"
+        "parameter_fingerprint) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(task_id) DO "
+        "UPDATE SET task_id=excluded.task_id WHERE incremental_reconstruction_tasks."
+        "base_reconstruction_id=excluded.base_reconstruction_id AND "
+        "incremental_reconstruction_tasks.extension_track_set_id=excluded."
+        "extension_track_set_id AND incremental_reconstruction_tasks.calibration_scope_id="
+        "excluded.calibration_scope_id AND incremental_reconstruction_tasks.incremental_kind="
+        "excluded.incremental_kind AND incremental_reconstruction_tasks.incremental_version="
+        "excluded.incremental_version AND incremental_reconstruction_tasks."
+        "parameter_fingerprint=excluded.parameter_fingerprint",
+        &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)parameters->task_id);
+    sqlite3_bind_int64(statement, 2,
+                       (sqlite3_int64)parameters->base_reconstruction_id);
+    sqlite3_bind_int64(statement, 3,
+                       (sqlite3_int64)parameters->extension_track_set_id);
+    sqlite3_bind_int64(statement, 4,
+                       (sqlite3_int64)parameters->calibration_scope_id);
+    sqlite3_bind_int(statement, 5, (int)parameters->incremental_kind);
+    sqlite3_bind_int(statement, 6, (int)parameters->incremental_version);
+    sqlite3_bind_blob(statement, 7, parameters->parameter_fingerprint, 32,
+                      SQLITE_TRANSIENT);
+    result = step_done(database, statement, "upsert incremental task payload");
+    statement = NULL;
+    if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1) {
+      copy_error(database->error, "Payload de reconstruction incrémentale immuable.");
+      result = LARDON3D_PROJECT_DB_CONSTRAINT;
+    }
+  }
+  if (statement) sqlite3_finalize(statement);
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = execute(database, "COMMIT", "commit incremental task payload");
+  if (result != LARDON3D_PROJECT_DB_OK)
+    (void)execute(database, "ROLLBACK", "rollback incremental task payload");
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_incremental_reconstruction_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbIncrementalReconstructionTask *parameters) {
+  if (!database || !valid_task_id(task_id) || !parameters)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  memset(parameters, 0, sizeof(*parameters));
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT base_reconstruction_id,extension_track_set_id,calibration_scope_id,"
+      "incremental_kind,incremental_version,parameter_fingerprint FROM "
+      "incremental_reconstruction_tasks WHERE task_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE)
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    else if (code != SQLITE_ROW || sqlite3_column_bytes(statement, 5) != 32)
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    else {
+      parameters->task_id = task_id;
+      parameters->base_reconstruction_id =
+          (uint64_t)sqlite3_column_int64(statement, 0);
+      parameters->extension_track_set_id =
+          (uint64_t)sqlite3_column_int64(statement, 1);
+      parameters->calibration_scope_id =
+          (uint64_t)sqlite3_column_int64(statement, 2);
+      parameters->incremental_kind = (uint32_t)sqlite3_column_int(statement, 3);
+      parameters->incremental_version = (uint32_t)sqlite3_column_int(statement, 4);
+      memcpy(parameters->parameter_fingerprint, sqlite3_column_blob(statement, 5), 32);
+      if (!valid_task_id(parameters->base_reconstruction_id) ||
+          !valid_task_id(parameters->extension_track_set_id) ||
+          !valid_task_id(parameters->calibration_scope_id) ||
+          parameters->incremental_kind != 1 || parameters->incremental_version != 1)
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+    }
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  if (result != LARDON3D_PROJECT_DB_OK) memset(parameters, 0, sizeof(*parameters));
   return result;
 }
 

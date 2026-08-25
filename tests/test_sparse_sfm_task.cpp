@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <sched.h>
 #include <string>
 #include <sys/stat.h>
@@ -10,6 +12,8 @@
 extern "C" {
 #include <lardon3d/app_state.h>
 #include <lardon3d/feature_store.h>
+#include <lardon3d/incremental_reconstruction.h>
+#include <lardon3d/incremental_reconstruction_task.h>
 #include <lardon3d/project_db.h>
 #include <lardon3d/resource_governor.h>
 #include <lardon3d/sparse_sfm_model.h>
@@ -38,7 +42,8 @@ namespace {
     }                                                                           \
   } while (0)
 
-constexpr size_t kImageCount = 3;
+constexpr size_t kBaseImageCount = 3;
+constexpr size_t kImageCount = 4;
 constexpr size_t kTrackCount = 12;
 
 struct Fixture {
@@ -48,6 +53,7 @@ struct Fixture {
   Lardon3DProjectDbScanSet scanset{};
   Lardon3DProjectDbImage images[kImageCount]{};
   Lardon3DProjectDbFeatureSet feature_sets[kImageCount]{};
+  Lardon3DProjectDbTrackSet base_track_set{};
   Lardon3DProjectDbTrackSet track_set{};
   Lardon3DSparseCalibrationScope scope{};
   Lardon3DSparseIncrementalParameters parameters{};
@@ -58,12 +64,34 @@ Lardon3DResourcePolicy policy() {
 }
 
 bool wait_state(Lardon3DTaskQueue *queue, uint64_t id, Lardon3DTaskState wanted) {
-  for (size_t attempt = 0; attempt < 4000000; ++attempt) {
+  timespec start{};
+  if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) return false;
+  const int64_t deadline = start.tv_sec * INT64_C(1000000000) + start.tv_nsec +
+                           INT64_C(10000000000);
+  for (;;) {
     Lardon3DTaskSnapshot snapshot{};
     if (lardon3d_task_queue_get(queue, id, &snapshot) && snapshot.state == wanted) return true;
+    timespec now{};
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0 ||
+        now.tv_sec * INT64_C(1000000000) + now.tv_nsec >= deadline)
+      return false;
     sched_yield();
   }
-  return false;
+}
+
+bool wait_reservations_released(Lardon3DResourceGovernor *governor) {
+  timespec start{};
+  if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) return false;
+  const int64_t deadline = start.tv_sec * INT64_C(1000000000) + start.tv_nsec +
+                           INT64_C(10000000000);
+  while (lardon3d_resource_governor_reservation_count(governor) != 0) {
+    timespec now{};
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0 ||
+        now.tv_sec * INT64_C(1000000000) + now.tv_nsec >= deadline)
+      return false;
+    sched_yield();
+  }
+  return true;
 }
 
 Lardon3DSparseGeometryPoint2 project(const Lardon3DSparseGeometryCalibration &calibration,
@@ -144,6 +172,8 @@ bool create_fixture(Fixture *fixture) {
       auto pixel = project(geometry, camera, points[track]);
       keypoints[track].x = static_cast<float>(pixel.x);
       keypoints[track].y = static_cast<float>(pixel.y);
+      if (camera == kImageCount - 1 && track == 0)
+        keypoints[track].x += 0.25F;
       keypoints[track].size = 1.0F;
       std::memset(descriptors.data() + track * 32, static_cast<int>(track + camera), 32);
     }
@@ -202,6 +232,23 @@ bool create_fixture(Fixture *fixture) {
   CHECK(lardon3d_project_db_create_track_set(fixture->state.project_db, &configuration,
                                              tracks.data(), tracks.size(),
                                              &fixture->track_set) == LARDON3D_PROJECT_DB_OK);
+  std::vector<Lardon3DProjectDbTrackObservation> base_observations(
+      kTrackCount * kBaseImageCount);
+  std::vector<Lardon3DProjectDbTrack> base_tracks(kTrackCount);
+  for (size_t track = 0; track < kTrackCount; ++track) {
+    base_tracks[track].observation_count = kBaseImageCount;
+    base_tracks[track].observations =
+        base_observations.data() + track * kBaseImageCount;
+    for (size_t camera = 0; camera < kBaseImageCount; ++camera)
+      base_tracks[track].observations[camera] = {
+          fixture->feature_sets[camera].feature_set_id,
+          static_cast<uint32_t>(track), static_cast<uint32_t>(camera)};
+  }
+  configuration.parameter_fingerprint[0] = 1;
+  CHECK(lardon3d_project_db_create_track_set(
+            fixture->state.project_db, &configuration, base_tracks.data(),
+            base_tracks.size(), &fixture->base_track_set) ==
+        LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_sparse_incremental_parameters_default(&fixture->parameters));
   fixture->parameters.minimum_seed_tracks = 6;
   fixture->parameters.minimum_seed_landmarks = 6;
@@ -219,7 +266,88 @@ void destroy_runtime(Fixture *fixture) {
 }
 
 Lardon3DSparseSfmTaskConfiguration configuration(Fixture *fixture) {
-  return {fixture->track_set.track_set_id, fixture->scope.scope_id, fixture->parameters};
+  return {fixture->base_track_set.track_set_id, fixture->scope.scope_id,
+          fixture->parameters};
+}
+
+bool recompute_metrics(Fixture *fixture,
+                       const Lardon3DSparseReconstruction &reconstruction,
+                       double *rmse, double *median) {
+  std::map<uint64_t, Lardon3DSparseRegisteredImage> cameras;
+  std::map<uint64_t, Lardon3DSparseLandmark> landmarks;
+  Lardon3DSparseRegisteredImage camera_items[64]{};
+  Lardon3DSparseRegisteredImagePage camera_page{0, 64, 0, 0, camera_items};
+  CHECK(lardon3d_sparse_registered_image_list(
+            fixture->state.project_db, reconstruction.reconstruction_id, 0,
+            64, &camera_page) == LARDON3D_PROJECT_DB_OK);
+  for (size_t index = 0; index < camera_page.count; ++index)
+    cameras.emplace(camera_items[index].image_id, camera_items[index]);
+  Lardon3DSparseLandmark landmark_items[64]{};
+  Lardon3DSparseLandmarkPage landmark_page{0, 64, 0, 0, landmark_items};
+  CHECK(lardon3d_sparse_landmark_list(
+            fixture->state.project_db, reconstruction.reconstruction_id, 0,
+            64, &landmark_page) == LARDON3D_PROJECT_DB_OK);
+  for (size_t index = 0; index < landmark_page.count; ++index)
+    landmarks.emplace(landmark_items[index].track_id, landmark_items[index]);
+  Lardon3DSparseLandmarkObservation observation_items[64]{};
+  Lardon3DSparseObservationPage observation_page{0, 0, 64, 0, 0, 0,
+                                                  observation_items};
+  CHECK(lardon3d_sparse_observation_list(
+            fixture->state.project_db, reconstruction.reconstruction_id, 0, 0,
+            64, &observation_page) == LARDON3D_PROJECT_DB_OK);
+  std::vector<double> errors;
+  double sum = 0.0;
+  const auto geometry = Lardon3DSparseGeometryCalibration{
+      4000, 3000, 2000.0, 2000.0, 2000.0, 1500.0, 0.0, 0.0, 0.0, 0.0};
+  for (size_t index = 0; index < observation_page.count; ++index) {
+    const auto &observation = observation_items[index];
+    auto landmark = landmarks.find(observation.track_id);
+    const Lardon3DProjectDbFeatureSet *feature_set = nullptr;
+    size_t camera_index = 0;
+    for (; camera_index < kImageCount; ++camera_index)
+      if (fixture->feature_sets[camera_index].feature_set_id ==
+          observation.feature_set_id) {
+        feature_set = &fixture->feature_sets[camera_index];
+        break;
+      }
+    CHECK(landmark != landmarks.end() && feature_set != nullptr);
+    auto camera = cameras.find(fixture->images[camera_index].image_id);
+    CHECK(camera != cameras.end());
+    Lardon3DFeatureReader *reader = nullptr;
+    Lardon3DFeatureFileMetadata metadata{};
+    CHECK(lardon3d_feature_reader_open(fixture->root.c_str(), feature_set,
+                                       &reader, &metadata) ==
+          LARDON3D_FEATURE_STORE_OK);
+    Lardon3DFeatureKeypoint keypoint{};
+    const auto read_status = lardon3d_feature_reader_keypoints(
+        reader, observation.feature_index, &keypoint, 1);
+    lardon3d_feature_reader_close(reader);
+    CHECK(read_status == LARDON3D_FEATURE_STORE_OK);
+    const double *r = camera->second.rotation_cw;
+    const double *t = camera->second.translation_cw;
+    const double x = r[0] * landmark->second.x + r[1] * landmark->second.y +
+                     r[2] * landmark->second.z + t[0];
+    const double y = r[3] * landmark->second.x + r[4] * landmark->second.y +
+                     r[5] * landmark->second.z + t[1];
+    const double z = r[6] * landmark->second.x + r[7] * landmark->second.y +
+                     r[8] * landmark->second.z + t[2];
+    CHECK(std::isfinite(z) && z > 1e-9);
+    const double dx = geometry.fx * x / z + geometry.cx - keypoint.x;
+    const double dy = geometry.fy * y / z + geometry.cy - keypoint.y;
+    const double squared = dx * dx + dy * dy;
+    CHECK(std::isfinite(squared) && std::isfinite(sum + squared));
+    sum += squared;
+    errors.push_back(std::sqrt(squared));
+  }
+  CHECK(!errors.empty());
+  std::sort(errors.begin(), errors.end());
+  *rmse = std::sqrt(sum / static_cast<double>(errors.size()));
+  const size_t middle = errors.size() / 2;
+  *median = errors.size() % 2
+                ? errors[middle]
+                : errors[middle - 1] +
+                      (errors[middle] - errors[middle - 1]) / 2.0;
+  return std::isfinite(*rmse) && std::isfinite(*median);
 }
 
 bool test_lookup() {
@@ -296,7 +424,8 @@ bool test_task() {
   CHECK(lardon3d_sparse_sfm_parameter_fingerprint(&fixture.parameters, fingerprint));
   Lardon3DSparseReconstruction reconstruction{};
   CHECK(lardon3d_sparse_reconstruction_find_exact(
-            fixture.state.project_db, fixture.track_set.track_set_id, fixture.scope.scope_id, 1, 1,
+            fixture.state.project_db, fixture.base_track_set.track_set_id,
+            fixture.scope.scope_id, 1, 1,
             fingerprint, &reconstruction) == LARDON3D_PROJECT_DB_OK);
   CHECK(reconstruction.component_count == 1 && reconstruction.registered_image_count == 3 &&
         reconstruction.landmark_count >= 6 &&
@@ -310,12 +439,150 @@ bool test_task() {
                                          &observation_page) == LARDON3D_PROJECT_DB_OK);
   CHECK(observation_page.count >= 18);
 
+  Lardon3DIncrementalReconstructionTaskConfiguration h_configuration{
+      reconstruction.reconstruction_id, fixture.track_set.track_set_id,
+      fixture.scope.scope_id};
+  uint64_t h_task_id = 0;
+  Lardon3DTask *h_task = lardon3d_project_create_incremental_reconstruction_task(
+      &fixture.state, &h_configuration, &h_task_id);
+  CHECK(h_task && h_task_id != 0);
+  CHECK(lardon3d_task_kind(h_task, kind, &kind_version));
+  CHECK(std::strcmp(kind, LARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_KIND) == 0 &&
+        kind_version == 1);
+  Lardon3DResourceEstimate h_estimate{};
+  CHECK(lardon3d_task_resource_estimate(h_task, &h_estimate));
+  CHECK(h_estimate.minimum_batch_size == 1 && h_estimate.maximum_batch_size == 1 &&
+        h_estimate.desired_cpu_threads == 1 && h_estimate.desired_gpu_slots == 0 &&
+        h_estimate.desired_io_slots == 1 &&
+        h_estimate.task_class == LARDON3D_RESOURCE_TASK_CPU);
+  Lardon3DProjectDbIncrementalReconstructionTask h_payload{};
+  CHECK(lardon3d_project_db_load_incremental_reconstruction_task(
+            fixture.state.project_db, h_task_id, &h_payload) == LARDON3D_PROJECT_DB_OK);
+  unsigned char h_fingerprint[32]{};
+  CHECK(lardon3d_incremental_reconstruction_parameter_fingerprint(h_fingerprint));
+  CHECK(std::memcmp(h_payload.parameter_fingerprint, h_fingerprint, 32) == 0);
+  CHECK(lardon3d_task_queue_add(fixture.state.task_queue, h_task, nullptr));
+  CHECK(wait_state(fixture.state.task_queue, h_task_id, TASK_COMPLETED));
+  CHECK(wait_reservations_released(fixture.state.resource_governor));
+  Lardon3DIncrementalReconstructionIdentity h_identity{
+      reconstruction.reconstruction_id, fixture.track_set.track_set_id,
+      fixture.scope.scope_id, 1, 1, {}};
+  std::memcpy(h_identity.parameter_fingerprint, h_fingerprint, 32);
+  unsigned char h_digest[32]{};
+  CHECK(lardon3d_incremental_reconstruction_identity_digest(&h_identity,
+                                                             h_digest));
+  Lardon3DIncrementalReconstructionMetadata h_metadata{};
+  Lardon3DSparseReconstruction h_reconstruction{};
+  CHECK(lardon3d_incremental_reconstruction_find_exact(
+            fixture.state.project_db, h_digest, &h_metadata,
+            &h_reconstruction) == LARDON3D_PROJECT_DB_OK);
+  CHECK(h_metadata.base_reconstruction_id == reconstruction.reconstruction_id);
+  CHECK(h_reconstruction.reconstruction_id != reconstruction.reconstruction_id &&
+        h_reconstruction.registered_image_count == kImageCount &&
+        h_reconstruction.landmark_count == reconstruction.landmark_count &&
+        h_reconstruction.reprojection_rmse_px > 0.0 &&
+        h_reconstruction.reprojection_median_px >= 0.0);
+  double expected_h_rmse = 0.0;
+  double expected_h_median = 0.0;
+  CHECK(recompute_metrics(&fixture, h_reconstruction, &expected_h_rmse,
+                          &expected_h_median));
+  CHECK(std::abs(h_reconstruction.reprojection_rmse_px - expected_h_rmse) <
+            1e-12 &&
+        std::abs(h_reconstruction.reprojection_median_px - expected_h_median) <
+            1e-12);
+  CHECK(std::abs(h_reconstruction.reprojection_rmse_px -
+                 reconstruction.reprojection_rmse_px) > 1e-12);
+
+  Lardon3DSparseCalibration incompatible_calibration{};
+  incompatible_calibration.model_kind =
+      LARDON3D_SPARSE_SFM_CALIBRATION_KIND_PINHOLE;
+  incompatible_calibration.model_version =
+      LARDON3D_SPARSE_SFM_CALIBRATION_VERSION;
+  incompatible_calibration.width = 4000;
+  incompatible_calibration.height = 3000;
+  incompatible_calibration.fx = 2100.0;
+  incompatible_calibration.fy = 2100.0;
+  incompatible_calibration.cx = 2000.0;
+  incompatible_calibration.cy = 1500.0;
+  incompatible_calibration.provenance_kind =
+      LARDON3D_SPARSE_SFM_PROVENANCE_USER_EXPLICIT;
+  Lardon3DSparseCalibration incompatible_stored{};
+  CHECK(lardon3d_sparse_calibration_create(
+            fixture.state.project_db, &incompatible_calibration,
+            &incompatible_stored) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DSparseCalibrationMember incompatible_members[kImageCount]{};
+  for (size_t index = 0; index < kImageCount; ++index) {
+    incompatible_members[index].image_id = fixture.images[index].image_id;
+    incompatible_members[index].calibration_id = incompatible_stored.calibration_id;
+    std::memcpy(incompatible_members[index].calibration_hash,
+                incompatible_stored.scientific_hash, 32);
+  }
+  Lardon3DSparseCalibrationScope incompatible_scope{};
+  CHECK(lardon3d_sparse_calibration_scope_create(
+            fixture.state.project_db, incompatible_members, kImageCount,
+            &incompatible_scope) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DIncrementalReconstructionTaskConfiguration incompatible_h{
+      reconstruction.reconstruction_id, fixture.track_set.track_set_id,
+      incompatible_scope.scope_id};
+  uint64_t incompatible_task_id = 0;
+  CHECK(lardon3d_project_enqueue_incremental_reconstruction_task(
+      &fixture.state, &incompatible_h, &incompatible_task_id));
+  CHECK(wait_state(fixture.state.task_queue, incompatible_task_id, TASK_FAILED));
+  CHECK(wait_reservations_released(fixture.state.resource_governor));
+  Lardon3DIncrementalReconstructionIdentity incompatible_identity{
+      reconstruction.reconstruction_id, fixture.track_set.track_set_id,
+      incompatible_scope.scope_id, 1, 1, {}};
+  std::memcpy(incompatible_identity.parameter_fingerprint, h_fingerprint, 32);
+  unsigned char incompatible_digest[32]{};
+  CHECK(lardon3d_incremental_reconstruction_identity_digest(
+      &incompatible_identity, incompatible_digest));
+  Lardon3DIncrementalReconstructionMetadata missing_metadata{};
+  Lardon3DSparseReconstruction missing_reconstruction{};
+  CHECK(lardon3d_incremental_reconstruction_find_exact(
+            fixture.state.project_db, incompatible_digest, &missing_metadata,
+            &missing_reconstruction) == LARDON3D_PROJECT_DB_NOT_FOUND);
+
+  uint64_t h_restart_id = 0;
+  Lardon3DTask *h_pending =
+      lardon3d_project_create_incremental_reconstruction_task(
+          &fixture.state, &h_configuration, &h_restart_id);
+  CHECK(h_pending != nullptr);
+  Lardon3DTaskDurableSnapshot h_before{};
+  CHECK(lardon3d_task_durable_snapshot(h_pending, &h_before));
+  lardon3d_task_destroy(h_pending);
+  Lardon3DTaskKindDescriptor h_descriptor{
+      LARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_KIND, 1,
+      lardon3d_incremental_reconstruction_task_reconstruct};
+  Lardon3DTaskKindRegistry h_registry{};
+  CHECK(lardon3d_task_kind_registry_init(&h_registry, &h_descriptor, 1));
+  Lardon3DTaskReconstructionContext h_runtime{
+      fixture.root.c_str(), fixture.state.project_db,
+      fixture.state.resource_governor, nullptr};
+  Lardon3DTask *h_restored = nullptr;
+  CHECK(lardon3d_task_kind_registry_restore(
+            &h_registry, LARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_KIND, 1,
+            &h_before, &h_runtime, &h_restored) == LARDON3D_TASK_KIND_OK);
+  Lardon3DResourceEstimate h_restored_estimate{};
+  CHECK(lardon3d_task_resource_estimate(h_restored, &h_restored_estimate));
+  CHECK(std::memcmp(&h_estimate, &h_restored_estimate,
+                    sizeof(h_estimate)) == 0);
+  CHECK(lardon3d_task_queue_add(fixture.state.task_queue, h_restored, nullptr));
+  CHECK(wait_state(fixture.state.task_queue, h_restart_id, TASK_COMPLETED));
+  CHECK(wait_reservations_released(fixture.state.resource_governor));
+  Lardon3DIncrementalReconstructionMetadata reused_h_metadata{};
+  Lardon3DSparseReconstruction reused_h{};
+  CHECK(lardon3d_incremental_reconstruction_find_exact(
+            fixture.state.project_db, h_digest, &reused_h_metadata, &reused_h) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(reused_h.reconstruction_id == h_reconstruction.reconstruction_id);
+
   uint64_t reuse_id = 0;
   CHECK(lardon3d_project_enqueue_sparse_sfm_task(&fixture.state, &config, &reuse_id));
   CHECK(wait_state(fixture.state.task_queue, reuse_id, TASK_COMPLETED));
   Lardon3DSparseReconstruction reused{};
   CHECK(lardon3d_sparse_reconstruction_find_exact(
-            fixture.state.project_db, fixture.track_set.track_set_id, fixture.scope.scope_id, 1, 1,
+            fixture.state.project_db, fixture.base_track_set.track_set_id,
+            fixture.scope.scope_id, 1, 1,
             fingerprint, &reused) == LARDON3D_PROJECT_DB_OK);
   CHECK(reused.reconstruction_id == reconstruction.reconstruction_id);
 
@@ -331,6 +598,17 @@ bool test_task() {
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY]{};
   CHECK(lardon3d_project_db_open(fixture.database_path.c_str(), &fixture.state.project_db, error) ==
         LARDON3D_PROJECT_DB_OK);
+  Lardon3DIncrementalReconstructionMetadata reopened_h_metadata{};
+  Lardon3DSparseReconstruction reopened_h{};
+  CHECK(lardon3d_incremental_reconstruction_find_exact(
+            fixture.state.project_db, h_digest, &reopened_h_metadata,
+            &reopened_h) == LARDON3D_PROJECT_DB_OK);
+  CHECK(reopened_h.reconstruction_id == h_reconstruction.reconstruction_id &&
+        reopened_h_metadata.base_reconstruction_id ==
+            reconstruction.reconstruction_id &&
+        reopened_h.registered_image_count == kImageCount &&
+        reopened_h.reprojection_rmse_px ==
+            h_reconstruction.reprojection_rmse_px);
   Lardon3DTaskKindDescriptor descriptor{LARDON3D_SPARSE_SFM_TASK_KIND, 1,
                                         lardon3d_sparse_sfm_task_reconstruct};
   Lardon3DTaskKindRegistry registry{};

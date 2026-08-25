@@ -1,6 +1,33 @@
 # Base de données projet Lardon3D
 
-## Gate F — décision Project DB v17
+## Phase H — décision Project DB v18
+
+**PASS / FROZEN.** La migration transactionnelle v17→v18
+ajoute `derivation_identity` au parent `sparse_reconstructions`, puis crée
+`incremental_reconstructions` et `incremental_reconstruction_tasks`.
+Les lignes Gate F ont `derivation_identity IS NULL` et gardent exactement leur
+`parameter_fingerprint`. Leur tuple candidat historique est imposé par un
+index UNIQUE partiel. Les lignes dérivées H stockent le vrai fingerprint H
+dans `parameter_fingerprint` et l'identité scientifique H canonique dans
+`derivation_identity`, elle-même protégée par un second index UNIQUE partiel.
+La reconstruction transactionnelle du parent et de ses tables filles conserve
+les IDs, lignes, clés étrangères et cascades v17 sans réécrire les données
+scientifiques.
+La première table associe atomiquement un snapshot Sparse SfM complet à son
+prédécesseur, au Track Set d'extension, au scope de calibration, au kind/version
+H, au fingerprint H et à son identité scientifique SHA-256 unique. La seconde
+conserve le payload immuable de la tâche durable H. Aucun état de réservation,
+snapshot de ressources, géométrie partielle, sous-ensemble d'observations,
+remappage de composante ou graphe de filiation n'est persisté. Un redémarrage
+recalcule depuis les entrées immuables.
+
+La publication H réutilise sans le relâcher le validateur structurel historique
+du snapshot complet. Géométrie et métadonnées H sont insérées dans une même
+transaction ; une erreur tardive de métadonnées annule aussi toute la nouvelle
+géométrie. Les lignes Gate F v16/v17 restent inchangées et leurs recherches
+exactes conservent leur sémantique.
+
+## Gate F — décision historique Project DB v17
 
 **PASS / FROZEN.** La migration historique v15→v16 et le
 modèle de reconstruction Sparse SfM v16 restent inchangés. Gate F fait avancer
@@ -38,7 +65,9 @@ persistée exactement ; seule une composante de graphe non reconstruite est
 omise. Les comptes et métriques globaux décrivent exclusivement la géométrie
 effectivement persistée. Aucun placeholder ni table diagnostique n'est ajouté.
 
-> Version courante : **v17**. La migration transactionnelle v16→v17 ajoute le
+> Version courante : **v18**. La migration transactionnelle v17→v18 ajoute le
+> discriminateur générique nullable et les deux tables H minimales décrites
+> ci-dessus. La migration v16→v17 ajoute le
 > payload durable typé `sparse_sfm_tasks`. La migration transactionnelle v15→v16 ajoute
 > le modèle persistant Sparse SfM (calibrations, scopes et reconstructions).
 > La migration transactionnelle v14→v15 ajoute
@@ -779,8 +808,8 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v15 et migrations séquentielles
-v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14→v15, identité projet, transactions
+**IMPLEMENTED** — SQLite système, schéma v18 et migrations séquentielles
+v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14→v15→v16→v17→v18, identité projet, transactions
 tâche+checkpoint, pagination de reprise et artefacts génériques.
 
 **IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,
@@ -837,7 +866,7 @@ orphelins et compaction Visual Index. Feature Store et Visual Index v1 sont impl
 Visual Index v1 borne un index à 256 segments de 16 memberships, soit 4096 Feature Sets;
 la couverture de 50 000 Feature Sets nécessitera la compaction ou une évolution v2.
 
-**PLANNED** — dépendances d'artefacts, graphe géométrique et orchestration
-projet/tâche de la reconstruction incrémentale. Le noyau Sparse SfM
-incrémental synchrone en mémoire Gate D est **IMPLEMENTED / PASS** hors
-Project DB v16.
+**PASS / FROZEN** — Phase H v1 : métadonnées d'identité et
+de prédécesseur dans `incremental_reconstructions`, payload durable dans
+`incremental_reconstruction_tasks`, snapshot complet publié atomiquement et
+réutilisation par identité H. Aucun graphe de dépendances n'est introduit.

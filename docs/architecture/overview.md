@@ -142,6 +142,13 @@ et à la publication Project DB v17 atomique et idempotente.
 
 **Statut :** GATE F — PASS / FROZEN. Gate G est **PASS / FROZEN**.
 
+La phase de pipeline H `incremental_reconstruction.run` v1 enrichit un snapshot
+publié et produit un nouveau snapshot complet avec provenance prédécesseur dans
+Project DB v18. Elle reste scientifiquement distincte de Gate F et ne modifie
+ni F0 ni les contrats Gate D/E.
+
+**Statut :** PHASE H V1 — PASS / FROZEN.
+
 ## Résultats et publication live
 
 Les traitements fonctionnent par séquences adaptatives : lire un lot borné,

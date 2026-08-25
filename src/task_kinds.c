@@ -11,6 +11,9 @@
 #ifdef LARDON3D_SPARSE_SFM_TASK_AVAILABLE
 #include <lardon3d/sparse_sfm_task.h>
 #endif
+#ifdef LARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_AVAILABLE
+#include <lardon3d/incremental_reconstruction_task.h>
+#endif
 #include <lardon3d/task_kind_registry.h>
 
 const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_production(void) {
@@ -67,6 +70,13 @@ const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_production(void) {
           .kind = LARDON3D_SPARSE_SFM_TASK_KIND,
           .kind_version = LARDON3D_SPARSE_SFM_TASK_KIND_VERSION,
           .reconstruct = lardon3d_sparse_sfm_task_reconstruct,
+      },
+#endif
+#ifdef LARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_AVAILABLE
+      {
+          .kind = LARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_KIND,
+          .kind_version = LARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_KIND_VERSION,
+          .reconstruct = lardon3d_incremental_reconstruction_task_reconstruct,
       },
 #endif
       };

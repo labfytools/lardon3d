@@ -84,3 +84,10 @@ version, fingerprint, checksum, tri, unicité ou L3DTSIS1 incohérents.
 payload scientifique explicite Project DB v17, restaure l'estimation générique
 persistée et rejoue D puis E depuis les références Track Set/calibration. Le
 fingerprint F0 est recalculé ; le checkpoint générique v1 reste inchangé.
+
+**PASS / FROZEN** — `incremental_reconstruction.run`,
+version 1, recharge le payload Project DB v18 composé du prédécesseur, du Track
+Set d'extension, du scope de calibration et du fingerprint H. La tâche atomique
+recalcule depuis ces entrées après redémarrage, passe par la Queue et le
+Governor avec son estimation H immuable, et ne persiste aucun état de solveur.
+Elle n'ajoute ni DAG ni dépendance implicite.

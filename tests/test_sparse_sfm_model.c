@@ -1,4 +1,5 @@
 #include <math.h>
+#include <openssl/evp.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,37 @@
       return false;                                                            \
     }                                                                          \
   } while (0)
+
+static void test_put_u32(unsigned char *record, size_t *offset,
+                         uint32_t value) {
+  for (unsigned byte = 0; byte < 4; ++byte)
+    record[(*offset)++] = (unsigned char)(value >> (byte * 8));
+}
+
+static void test_put_u64(unsigned char *record, size_t *offset,
+                         uint64_t value) {
+  for (unsigned byte = 0; byte < 8; ++byte)
+    record[(*offset)++] = (unsigned char)(value >> (byte * 8));
+}
+
+static bool test_h_identity(Lardon3DIncrementalReconstructionMetadata *metadata) {
+  unsigned char record[76] = {0};
+  unsigned int size = 0;
+  size_t offset = 8;
+  memcpy(record, "L3DHIDV1", 8);
+  test_put_u32(record, &offset, 1);
+  test_put_u64(record, &offset, metadata->base_reconstruction_id);
+  test_put_u64(record, &offset, metadata->extension_track_set_id);
+  test_put_u64(record, &offset, metadata->calibration_scope_id);
+  test_put_u32(record, &offset, metadata->incremental_kind);
+  test_put_u32(record, &offset, metadata->incremental_version);
+  memcpy(record + offset, metadata->parameter_fingerprint, 32);
+  offset += 32;
+  return offset == sizeof(record) &&
+         EVP_Digest(record, sizeof(record), metadata->scientific_identity,
+                    &size, EVP_sha256(), NULL) == 1 &&
+         size == sizeof(metadata->scientific_identity);
+}
 
 static int raw_exec(const char *path, const char *sql) {
   sqlite3 *connection = NULL;
@@ -91,7 +123,7 @@ static bool run_test(void) {
   Lardon3DProjectDb *db = NULL;
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
   CHECK(lardon3d_project_db_open(path, &db, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(db) == 17);
+  CHECK(lardon3d_project_db_schema_version(db) == 18);
 
   Lardon3DProjectDbScanSet scanset;
   CHECK(lardon3d_project_db_create_scanset(db, "Sparse model", &scanset) ==
@@ -305,6 +337,92 @@ static bool run_test(void) {
   Lardon3DSparseReconstruction reconstruction;
   CHECK(lardon3d_sparse_reconstruction_publish(
             db, &publication, &reconstruction) == LARDON3D_PROJECT_DB_OK);
+  CHECK(!reconstruction.has_derivation_identity &&
+        reconstruction.parameter_fingerprint[0] == 9);
+  Lardon3DIncrementalReconstructionMetadata h_metadata = {
+      .base_reconstruction_id = reconstruction.reconstruction_id,
+      .extension_track_set_id = published_tracks.track_set_id,
+      .calibration_scope_id = scope.scope_id,
+      .incremental_kind = 1,
+      .incremental_version = 1,
+  };
+  h_metadata.parameter_fingerprint[0] = 44;
+  CHECK(test_h_identity(&h_metadata));
+  memcpy(publication.parameter_fingerprint, h_metadata.parameter_fingerprint, 32);
+  Lardon3DSparseReconstruction h_reconstruction;
+  CHECK(lardon3d_incremental_reconstruction_publish(
+            db, &publication, &h_metadata, &h_reconstruction) ==
+        LARDON3D_PROJECT_DB_OK);
+  Lardon3DIncrementalReconstructionMetadata loaded_h_metadata;
+  Lardon3DSparseReconstruction loaded_h_reconstruction;
+  CHECK(lardon3d_incremental_reconstruction_find_exact(
+            db, h_metadata.scientific_identity, &loaded_h_metadata,
+            &loaded_h_reconstruction) == LARDON3D_PROJECT_DB_OK);
+  CHECK(loaded_h_metadata.reconstruction_id == h_reconstruction.reconstruction_id);
+  CHECK(loaded_h_metadata.base_reconstruction_id == reconstruction.reconstruction_id);
+  CHECK(loaded_h_reconstruction.reconstruction_id == h_reconstruction.reconstruction_id);
+  CHECK(loaded_h_reconstruction.has_derivation_identity &&
+        memcmp(loaded_h_reconstruction.derivation_identity,
+               h_metadata.scientific_identity, 32) == 0 &&
+        memcmp(loaded_h_reconstruction.parameter_fingerprint,
+               h_metadata.parameter_fingerprint, 32) == 0);
+  CHECK(memcmp(loaded_h_metadata.parameter_fingerprint,
+               h_metadata.parameter_fingerprint, 32) == 0);
+  CHECK(memcmp(loaded_h_metadata.scientific_identity,
+               h_metadata.scientific_identity, 32) == 0);
+  Lardon3DSparseReconstruction duplicate_h;
+  Lardon3DSparsePublication mismatched_h_publication = publication;
+  mismatched_h_publication.parameter_fingerprint[0] ^= 0x80;
+  CHECK(lardon3d_incremental_reconstruction_publish(
+            db, &mismatched_h_publication, &h_metadata, &duplicate_h) ==
+        LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
+  CHECK(raw_scalar_equals(path, "SELECT COUNT(*) FROM sparse_reconstructions", 2));
+  CHECK(raw_scalar_equals(path, "SELECT COUNT(*) FROM incremental_reconstructions", 1));
+  CHECK(lardon3d_incremental_reconstruction_publish(
+            db, &publication, &h_metadata, &duplicate_h) ==
+        LARDON3D_PROJECT_DB_CONSTRAINT);
+
+  publication.parameter_fingerprint[0] = 10;
+  Lardon3DSparseReconstruction second_base;
+  CHECK(lardon3d_sparse_reconstruction_publish(db, &publication, &second_base) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(!second_base.has_derivation_identity &&
+        second_base.parameter_fingerprint[0] == 10);
+  Lardon3DIncrementalReconstructionMetadata second_h_metadata = h_metadata;
+  second_h_metadata.base_reconstruction_id = second_base.reconstruction_id;
+  CHECK(test_h_identity(&second_h_metadata));
+  memcpy(publication.parameter_fingerprint,
+         second_h_metadata.parameter_fingerprint, 32);
+  Lardon3DSparseReconstruction second_h;
+  CHECK(lardon3d_incremental_reconstruction_publish(
+            db, &publication, &second_h_metadata, &second_h) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(second_h.reconstruction_id != h_reconstruction.reconstruction_id &&
+        second_h.has_derivation_identity &&
+        memcmp(second_h.parameter_fingerprint,
+               h_reconstruction.parameter_fingerprint, 32) == 0 &&
+        memcmp(second_h.derivation_identity,
+               h_reconstruction.derivation_identity, 32) != 0);
+  unsigned char valid_identity[32];
+  memcpy(valid_identity, h_metadata.scientific_identity, 32);
+  h_metadata.scientific_identity[0] ^= 0x80;
+  CHECK(lardon3d_incremental_reconstruction_publish(
+            db, &publication, &h_metadata, &loaded_h_reconstruction) ==
+        LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
+  memcpy(h_metadata.scientific_identity, valid_identity, 32);
+  h_metadata.parameter_fingerprint[0] ^= 0x40;
+  CHECK(lardon3d_incremental_reconstruction_publish(
+            db, &publication, &h_metadata, &loaded_h_reconstruction) ==
+        LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
+  h_metadata.parameter_fingerprint[0] ^= 0x40;
+  publication.parameter_fingerprint[0] = h_metadata.parameter_fingerprint[0];
+  h_metadata.base_reconstruction_id = UINT64_C(999999);
+  CHECK(test_h_identity(&h_metadata));
+  CHECK(lardon3d_incremental_reconstruction_publish(
+            db, &publication, &h_metadata, &loaded_h_reconstruction) ==
+        LARDON3D_PROJECT_DB_CONSTRAINT);
+  CHECK(raw_scalar_equals(path, "SELECT COUNT(*) FROM sparse_reconstructions", 4));
+  publication.parameter_fingerprint[0] = 9;
   Lardon3DSparseLandmarkPage landmark_page = {0};
   Lardon3DSparseLandmark landmark_items[1];
   landmark_page.items = landmark_items;

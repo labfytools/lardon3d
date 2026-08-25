@@ -19,5 +19,10 @@ bool lardon3d_sparse_sfm_component_persistable(uint64_t registered_image_count,
                                                 uint64_t landmark_count);
 bool lardon3d_sparse_sfm_publication_metrics(const double *squared_errors, size_t count,
                                               double *rmse, double *median);
+bool lardon3d_sparse_sfm_squared_reprojection_error(
+    const Lardon3DSparseGeometryCalibration *calibration,
+    const Lardon3DSparseGeometryPose *pose,
+    const Lardon3DSparseGeometryPoint3 *point,
+    const Lardon3DSparseGeometryPoint2 *observed, double *squared_error);
 
 #endif

@@ -56,8 +56,8 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 - ✅ Sparse SfM Gate F : orchestration durable et publication atomique PASS / FROZEN
 - ✅ Sparse SfM Gate G : politique et cœur **PASS / FROZEN**
 
-### Phase 5 : Reconstruction (PLANNED)
-- 📋 Orchestration de reconstruction incrémentale
+### Phase 5 : Reconstruction
+- ✅ Orchestration de reconstruction incrémentale H v1 — **PASS / FROZEN**
 - 📋 MVS / dense
 - 📋 Mesh
 - 📋 Contraintes externes

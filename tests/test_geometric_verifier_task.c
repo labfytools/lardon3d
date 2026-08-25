@@ -332,6 +332,8 @@ static bool run_task_test(void) {
   CHECK(exec_sql(
       database_path,
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE IF EXISTS incremental_reconstruction_tasks;"
+      "DROP TABLE IF EXISTS incremental_reconstructions;"
       "DROP TABLE IF EXISTS sparse_sfm_tasks;"
       "DROP TABLE IF EXISTS sparse_landmark_observations;"
       "DROP TABLE IF EXISTS sparse_landmarks;"
@@ -362,7 +364,7 @@ static bool run_task_test(void) {
                     0));
   CHECK(lardon3d_project_db_open(database_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 17);
+  CHECK(lardon3d_project_db_schema_version(database) == 18);
   lardon3d_project_db_close(database);
   CHECK(remove_tree(root));
   return true;
