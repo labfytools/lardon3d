@@ -1,147 +1,190 @@
-# Guide des agents Lardon3D
+# Lardon3D — Agent Engineering Contract
 
-## Validation obligatoire
+## 1. Authority and priority
 
-Avant livraison, exécuter réellement :
+- The root `README.md` is the index of project documentation.
+- Canonical documents under `docs/**` define scientific contracts, architecture,
+  FROZEN invariants, and roadmap ordering.
+- Before changing an architectural or scientific area, identify and read the
+  relevant canonical document and its applicable invariants.
+- FROZEN documentation and contracts must never be changed silently to fit an
+  implementation. A lower-level convenience never overrides a higher-level
+  canonical contract.
+- If requested work, code, and a FROZEN contract genuinely conflict: stop the
+  affected change, report the contradiction, and require an explicit human
+  decision. Do not choose a new policy implicitly.
+
+## 2. FROZEN integrity
+
+The following historical foundation is protected and may change only through
+an explicitly authorized, explicitly scoped human ticket:
+
+- Gates A–G — PASS/FROZEN
+- Track Model — PASS/FROZEN
+- Builder — PASS/FROZEN
+- F0 — PASS/FROZEN
+- Phase H v1 — PASS/FROZEN
+- MVS-M1 — PASS/FROZEN
+- Project DB v18
+
+When a ticket declares `NO_NEW_SUBSYSTEM`, do not introduce Task Runtime,
+Queue, Governor, scheduler, pools, persistence, viewer, mesh, texturing,
+scratch/SSD, or another deferred subsystem. This file states invariants and
+working rules; it does not duplicate a roadmap snapshot or claim that a
+deferred subsystem can never exist.
+
+## 3. Scope and Git discipline
+
+- Inspect `git status` before editing.
+- Preserve unrelated user and worktree changes.
+- Modify only files explicitly authorized by the ticket.
+- Never modify or add anything under `scan3d/`, especially
+  `scan3d/tri_photos.py`.
+- Never use `git add -A` against the real repository index.
+- Without explicit human authorization, never commit, push, reset, restore,
+  checkout files, stash, clean, or perform another destructive Git operation.
+- Never discard unrelated modifications.
+- At delivery, list the exact files modified by the ticket.
+
+For review of untracked files, a temporary `GIT_INDEX_FILE` may be used when
+necessary. Add paths explicitly; do not use `git add -A`; keep the real index
+untouched; remove the temporary index afterward. Do not use this machinery when
+a normal diff is sufficient.
+
+## 4. Language / API / ABI rules
+
+- Public C APIs must remain valid C17.
+- C++ must remain within the standard configured by Meson; the repository is
+  intentionally mixed-language and must not be treated as C-only.
+- Preserve public API and ABI unless the ticket explicitly authorizes change.
+- No C++ exception may cross an `extern "C"` or other public C ABI boundary.
+- Keep ownership and lifetime rules explicit.
+- Do not introduce undefined behavior, unchecked narrowing, or unchecked
+  integer overflow.
+- Reject silent path truncation.
+- Deterministic serialization must use explicit fixed widths and byte order;
+  never depend on native struct padding or native endianness.
+
+## 5. Architecture and resources
+
+- Keep TUI/ncurses ownership separate from business logic and layout according
+  to canonical architecture.
+- Keep ncurses on its designated/main thread wherever the canonical contract
+  requires it.
+- Extend validated abstractions rather than rewriting validated modules.
+- System stability and responsiveness take priority over throughput.
+- Bound memory, buffers, files, descriptors, processes, threads, and captured
+  output reasonably for the operation.
+- Memory shared with an iGPU counts against host RAM.
+- zram and swap are pressure/safety mechanisms, not normal working-memory
+  budgets.
+- Do not invent a global resource subsystem inside a ticket that defers it.
+- Contractually atomic outputs must remain atomic; failure paths must clean all
+  resources owned by the current operation without deleting unrelated data.
+
+## 6. Code quality and readability
+
+- Clang and Meson are the reference build tools.
+- Do not add global mutable state unless an established historical contract
+  explicitly permits it.
+- Clean allocations, file descriptors, processes, mutexes, conditions, and
+  threads explicitly.
+- Do not use `system()` or `popen()` in production where direct process
+  execution is required.
+- Do not leave TODOs, dead code, or accidental dependencies in a completed
+  ticket.
+- Prefer minimal evolution to rewrites.
+- Target approximately 100 columns; normally do not exceed 120 without local
+  justification.
+- Do not use code golf or compress multiple logical operations onto a line.
+- Split complex code when that materially improves auditability.
+- Temporary probes, benchmarks, diagnostics, C/C++/GLSL files, and scripts
+  under `/tmp` must also be readable and auditable.
+- Comments should explain non-obvious invariants, not paraphrase code.
+- Formatting-only changes must not alter behavior.
+
+## 7. External processes and filesystem
+
+- Prefer direct process execution over shell command strings.
+- Explicitly own, monitor, and reap child processes.
+- Use process groups when required and prevent orphaned children.
+- Bound retained stdout/stderr where applicable and drain output when required
+  to avoid deadlocks.
+- Clean owned resources on every success and failure path.
+- Do not assume a CLI flag exists without evidence.
+- Authoritative upstream documentation or source may be inspected for external
+  dependencies.
+- Temporary probes, clones, and builds under `/tmp` are allowed when useful.
+- Do not use `sudo`, modify the host persistently, install system packages
+  without explicit authorization, or add a permanent repository dependency
+  without explicit authorization.
+
+## 8. Documentation discipline
+
+- Do not create duplicate canonical documents for one contract.
+- Link every new canonical document under `docs/**` from the root `README.md`.
+- For changes to API, architecture, ownership, concurrency, persistence,
+  pipeline, or limits, check whether canonical documentation must be updated.
+- Documentation must describe proven implementation, not desired future
+  behavior.
+- Statuses such as PLANNED, IMPLEMENTED, VALIDATION PENDING, and PASS/FROZEN
+  are authoritative lifecycle statements: update them only when the required
+  implementation, validation, and review evidence supports the state.
+- Never mark work PASS/FROZEN without the required validation and review.
+
+## 9. Required validation
+
+For ordinary implementation tickets, before claiming completion, actually run
+the applicable commands:
 
 ```sh
-CC=clang meson setup build --wipe
 meson compile -C build -j8
-meson test -C build --print-errorlogs
+meson test -C build --num-processes 1 --print-errorlogs
 git diff --check
 ```
 
-Pour les changements sensibles à la mémoire ou aux durées de vie, ajouter un
-build ASan/UBSan séparé. Pour toute concurrence, exécuter aussi TSan lorsque
-disponible. Ne jamais annoncer une vérification non exécutée.
+If build configuration must be regenerated, follow the documented Clang/Meson
+setup and do not blindly wipe a valid build tree.
 
-## Git et périmètre
+For a new or modified public C header, also run a C17 syntax check, for example:
 
-- Ne jamais utiliser `git add -A`.
-- Ne jamais ajouter ou modifier `scan3d/`, notamment
-  `scan3d/tri_photos.py`.
-- Ne faire ni commit ni push depuis le sandbox.
-- Préserver les changements existants hors ticket.
-- Fournir à la fin la liste exacte des fichiers appartenant au ticket.
+```sh
+cc -x c -std=c17 -fsyntax-only -Iinclude \
+  -include lardon3d/<header>.h /dev/null
+```
 
-## Architecture à préserver
+For memory/lifetime-sensitive changes, use a separate ASan/UBSan build and do
+not overwrite the normal build. For relevant concurrency changes, run TSan
+when supported. If a sanitizer is unavailable or invalid because of the
+environment/toolchain, report that explicitly rather than claiming PASS.
 
-- La TUI orchestre les entrées et ncurses ; le métier et le layout restent
-  séparés. Le layout dessine uniquement et ne modifie aucun état.
-- ncurses appartient exclusivement au thread principal.
-- Toute tâche possède une estimation immuable et une réservation valide avant
-  son exécution. Aucun callback ne démarre sans réservation active.
-- Le Resource Governor décide des budgets, slots et lots. Le scheduler applique
-  le FIFO et exécute le contrat ; il ne réinterprète jamais les ressources.
-- Les API à durée de vie complexe restent opaques, avec propriété et nettoyage
-  explicites.
+Run expensive or stress validation only when relevant, one heavy validation at
+a time. Investigate a timeout; do not rerun it until it happens to pass.
+Distinguish third-party sanitizer noise from repository defects using concrete
+stack and failure evidence. Never claim a command, test, sanitizer, or review
+that was not actually performed.
 
-## Principes non négociables
+## 10. Delivery report / STOP conditions
 
-- La stabilité du système hôte et la réactivité de la TUI passent avant le
-  débit.
-- Aucun traitement lourd monolithique : utiliser des séquences adaptatives.
-- Budgets, files et buffers doivent être bornés.
-- La RAM d'un iGPU partagé appartient au budget RAM système.
-- La zram est un filet de sécurité, jamais un budget de travail.
-- Publier uniquement des sorties atomiques validées ; effectuer un rollback
-  ciblé sans toucher aux données antérieures.
-- Préserver des frontières permettant la reprise après interruption.
-- Le viewer reste séparé, lecteur de snapshots validés et non bloquant.
+Every completed ticket report must include:
 
-## Contraintes de code
+- exact files modified;
+- concise implementation description;
+- validations actually executed and exact results;
+- tests or checks not executed;
+- known blockers;
+- non-blocking findings;
+- deliberately deferred/future-scope items;
+- confirmation that unrelated and FROZEN areas were preserved.
 
-- C17, Clang, Meson et ncursesw.
-- Aucune variable globale d'état.
-- Nettoyer explicitement chaque allocation, descripteur, mutex, condition et
-  thread.
-- Ne pas utiliser `system()` ni `popen()` dans le code de production.
-- Ne laisser aucun `TODO`, code mort ou dépendance inutile dans un ticket fini.
-- Préférer l'évolution minimale aux réécritures de modules validés.
-- Viser 100 colonnes et ne jamais dépasser 120 sans justification locale.
-- Mettre les appels complexes et le SQL sur plusieurs lignes lisibles.
-- Éviter le code-golf et garder des fonctions confortables à relire dans Neovim.
-- Commenter les invariants non évidents plutôt que paraphraser le code.
+STOP and request a human decision if:
 
-## Lisibilité du code
+- requested work contradicts a FROZEN contract;
+- satisfying it requires files outside the authorized scope;
+- a scientific contract or identity must change without authorization;
+- a new subsystem or dependency is required contrary to scope;
+- destructive Git action is required;
+- incompatible policies remain unsettled by canonical documentation.
 
-Ces règles s'appliquent aussi bien au code du dépôt qu'au code temporaire
-créé pour les benchmarks, diagnostics, expérimentations ou probes matériels.
-
-- Viser environ 100 colonnes par ligne.
-- Limite absolue : 120 colonnes.
-- Ne pas compresser plusieurs instructions logiques sur une même ligne.
-- Aucun code-golf, même pour un prototype.
-- Les fichiers temporaires C, C++, GLSL et les scripts doivent rester
-  lisibles et auditables.
-- Découper les grosses fonctions en responsabilités claires lorsque cela
-  améliore la compréhension.
-- Les benchmarks et prototypes doivent pouvoir être relus et débogués
-  facilement.
-- Un reformatage ne doit jamais modifier le comportement.
-- Ces règles s'appliquent également aux fichiers créés sous `/tmp`.
-
-## Validation longue
-
-- Une seule validation lourde à la fois : normal, ASan/UBSan, TSan puis stress.
-- Un timeout doit être isolé et expliqué ; le répéter jusqu'au vert est interdit.
-- Après les tests verts, imposer revue, audit de concurrence si pertinent,
-  documentation, corrections et revalidation ciblée.
-
-## État actuel
-
-- Moteur de tâches FIFO, un worker, pause et annulation coopératives.
-- Gouverneur thread-safe avec estimations, budgets et réservations opaques.
-- Scheduler relié au gouverneur ; réservation obligatoire avant callback.
-- Aucun DAG, aucune priorité, aucun pool de workers.
-- L'import asynchrone `import.images` utilise le scheduler générique, ses lots
-  adaptatifs et ses checkpoints persistants.
-- Le viewer Vulkan n'est pas commencé.
-
-## Prochains tickets recommandés
-
-1. Sélectionner une tâche admissible sans blocage par la tête de file ✓
-2. Introduire le DAG et les dépendances.
-3. Persister les tâches et checkpoints de reprise.
-4. Orchestrer et mesurer les séquences adaptatives.
-5. Ajouter les pools bornés CPU, IO et GPU.
-6. Migrer l'import vers le scheduler générique.
-7. Ajouter la publication live validée, puis le viewer Vulkan séparé.
-
-## Règles documentaires
-
-### README.md racine
-Le README.md à la racine est le sommaire canonique de la documentation.
-
-### Vérification avant ticket architectural
-Avant un ticket architectural important :
-1. Identifier le document canonique correspondant dans docs/
-2. Le lire
-3. Vérifier que le ticket respecte ses invariants
-
-### Mise à jour après ticket
-Après un ticket modifiant :
-- API
-- Architecture
-- Ownership
-- Concurrence
-- Persistance
-- Pipeline
-- Limites
-
-Appeler lardon-docs avant de considérer le ticket terminé.
-
-### Contradictions code/documentation
-Si code et documentation architecturale se contredisent :
-1. Ne pas choisir silencieusement
-2. Signaler la contradiction
-3. Décider quelle spécification doit devenir canonique
-4. Mettre la documentation à jour
-5. Seulement ensuite poursuivre
-
-### Nouveaux documents
-Tout nouveau document docs/** doit être référencé depuis README.md si c'est
-un document canonique destiné aux lecteurs du projet.
-
-### Unicité des documents
-Ne jamais créer plusieurs documents canoniques décrivant le même contrat.
+Do not stop merely because an ordinary local implementation detail can be
+resolved safely from existing code and documentation.
