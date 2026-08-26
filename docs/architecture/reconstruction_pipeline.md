@@ -253,6 +253,103 @@ durables, scratch/SSD, GPU SfM/BA et nouvelles composantes déconnectées.
 
 ---
 
+### MVS-M1. Dense externe borné
+
+MVS-M1 est **IMPLEMENTED / VALIDATION PENDING**. Son identité scientifique lie
+l'identité de reconstruction de base, l'identité du jeu d'images source, le
+`calibration_scope_identity` historique, le binding numérique de calibration MVS,
+le backend et les paramètres. Les octets des sources restent liés séparément par
+leur SHA-256 ; ils ne sont pas remplacés par le binding de calibration. Le record
+d'identité dense est `L3DMDID2`, version 2, de taille fixe 220 octets. Sa frontière
+externe est OpenMVS v2.4.0 : Sparse/H est exporté vers COLMAP, puis traité par
+`InterfaceCOLMAP` et `DensifyPointCloud`.
+
+Le binding numérique de calibration est le record `L3DMCAL1`, version 1. Il est
+formé après tri strict des `image_id` et rejet des identifiants dupliqués ; tous
+les entiers et binary64 y sont encodés explicitement en little-endian de largeur
+fixe. Les NaN et infinis sont rejetés et toute valeur `-0` est canonisée en `+0`
+avant l'encodage. Il lie, pour chaque image, son identifiant, ses dimensions et
+les paramètres numériques de calibration utilisés par l'undistortion.
+
+L'export COLMAP est déterministe et écrit en flux : locale classique, notation
+scientifique et précision binary64 fidèle au round-trip (`max_digits10 - 1`
+chiffres après le point). Les images et les observations source sont undistordues
+de façon déterministe avec OpenCV ; les observations exportées sont les
+coordonnées transformées. `points3D.txt` contient les tracks COLMAP réels,
+produits dans l'ordre déterministe à partir d'un index de landmarks et de leurs
+observations : l'export ne rescane pas quadratiquement les observations pour
+chaque landmark.
+
+Chaque invocation crée sous le staging fourni par l'appelant un espace de travail
+privé neuf. Aucune scène, profondeur, cache ou sortie d'une invocation antérieure
+n'est recherchée ni réemployée. Les images undistordues et tous les intermédiaires
+COLMAP/OpenMVS restent dans cet espace de travail.
+
+Le résultat accepté est le PLY fusionné ; `fusion_mode` doit être 0. Le lecteur
+valide le format de sortie par défaut d'OpenMVS v2.4.0 : PLY binaire
+little-endian. Le plafond d'en-tête est de 1 MiB et compte les octets bruts :
+une fin de ligne CRLF consomme donc deux octets, contrairement à LF. Les règles
+de lignes acceptent LF et CRLF ; un CR seul malformé est rejeté. Chaque ligne
+est bornée à 64 KiB. Le lecteur borne les listes de propriétés `view_indices` et
+`view_weights` avant
+allocation ou lecture de leur contenu, et valide les valeurs numériques sans
+dépendre de la locale du processus.
+
+La capacité CPU-only est conditionnelle : le probe borné interroge chaque
+exécutable backend, vérifie qu'il s'identifie comme OpenMVS v2.4.0 et relève les
+options effectivement exposées. Si `DensifyPointCloud` expose `--cuda-device`,
+l'adaptateur demande explicitement le périphérique CPU ; sinon il n'ajoute aucune
+option CUDA. Les options requises, dont `--max-threads`, doivent être exposées ;
+celle-ci reçoit le nombre de threads d'exécution. Ce nombre est opérationnel et
+exclu de l'identité scientifique.
+
+Les contrats B1–B6 du jalon sont les suivants :
+
+- **B1 — result failure atomicity.** Un échec ne retourne aucun
+  résultat MVS-M1 partiel.
+- **B2 — source-image status classification.** Les erreurs source,
+  snapshot, I/O, backend, output et OOM restent distinctes.
+- **B3 — source byte identity binding.** Chaque source acceptée est
+  un fichier régulier dont la taille du descripteur est contrôlée avant le hash ;
+  son SHA-256 complet est calculé avec une mémoire de streaming fixe, jusqu'à
+  1 GiB au maximum par fichier source, puis la stabilité du fichier est vérifiée
+  après lecture. Il n'existe volontairement aucun budget agrégé de 1 GiB pour le
+  jeu de sources : la vérification totale croît avec les octets d'entrée acceptés
+  et son admission/comptage global relève d'un futur Task/Governor.
+- **B4 — deterministic COLMAP numeric export.** Les images, observations et
+  tracks sont ceux décrits ci-dessus ; aucune observation distordue n'est exportée
+  à la place de sa coordonnée transformée, et l'export des tracks ne réalise pas
+  de rescan quadratique landmark-observation. Une coordonnée source undistordue
+  non finie est `INVALID_SOURCE_IMAGE`, tandis qu'une pose du snapshot invalide
+  reste `INVALID_SNAPSHOT`.
+- **B5 — write/close FD cleanup.** Les descripteurs possédés sont nettoyés
+  explicitement lors de l'écriture et de la fermeture,
+  y compris sur erreur.
+- **B6 — C ABI / `std::bad_alloc` containment.** L'API C ne laisse pas
+  traverser `std::bad_alloc`.
+
+Indépendamment de la borne de ligne PLY, l'inspection de l'en-tête d'image
+encodée avant décodage est bornée à 64 KiB. Les formats acceptés implémentés sont
+PNG, JPEG et BMP ; les dimensions, le nombre de pixels et l'estimation de working
+set sont validés avant décodage (16 384 pixels par dimension, 40 Mpx et 240 MB).
+Les intermédiaires d'undistortion déterministe
+et les intermédiaires COLMAP/OpenMVS sont privés à l'espace de travail neuf créé
+par invocation sous le staging appelant ; aucune invocation ne réemploie des
+artefacts antérieurs.
+
+Les deux exécutables backend sont hashés sous un budget borné partagé, distinct
+du plafond par fichier des sources. Les processus possédés et leurs groupes sont
+nettoyés ; stdout et stderr sont intégralement drainés pour chaque backend, avec
+au plus 1 MiB retenu par log. L'excédent est consommé puis écarté, sans empêcher
+le backend de poursuivre et de réussir.
+
+Restent différés : publication dense dans la Project DB, Task Runtime,
+Queue/Governor, `ResourceEstimate`, annulation, publication dense durable,
+mesh, texturing, viewer, scratch/SSD et infrastructure backend généralisée.
+Ce jalon ne marque ni MVS complet ni PASS / FROZEN.
+
+---
+
 ### I. Reconstruction Layers
 
 | Aspect | Description |
@@ -360,7 +457,26 @@ and Sparse SfM Gate C geometry are **IMPLEMENTED**. The synchronous in-memory
 incremental Sparse SfM Gate D core is **IMPLEMENTED / PASS**, and final
 per-component Gate E BA is **PASS / FROZEN**. Gate F orchestration and Gate G
 Governor integration are **PASS / FROZEN**. Phase H v1 is **PASS / FROZEN**.
-MVS, mesh, texturing and viewer remain **PLANNED**.
+MVS-M1 is **IMPLEMENTED / VALIDATION PENDING**: `L3DMDID2` v2 (220-byte) dense
+identity binds the base reconstruction, source-image-set,
+historical `calibration_scope_identity`, exact `L3DMCAL1` v1 numeric calibration
+binding, backend and parameters, while source bytes remain separately bound;
+deterministic OpenCV-undistorted COLMAP images, transformed observations and real
+tracks exported from an index without a quadratic landmark-observation rescan;
+and the external OpenMVS v2.4.0
+`InterfaceCOLMAP`/`DensifyPointCloud` boundary. Every invocation has a fresh
+private workspace beneath caller staging and reuses no prior scene, depth, cache
+or output. Its numeric calibration binding sorts image IDs, uses explicit
+fixed-width little-endian fields, rejects NaN/Inf and canonicalizes `-0`; PLY
+headers are capped at 1 MiB of raw bytes (so CRLF costs two), accept LF/CRLF,
+reject malformed bare CR, and cap each line at 64 KiB.
+Non-finite undistorted source coordinates are `INVALID_SOURCE_IMAGE`; invalid
+snapshot poses remain `INVALID_SNAPSHOT`. It validates OpenMVS's default binary
+little-endian PLY, including bounded `view_indices`/`view_weights` lists with
+locale-independent numeric validation, requires fusion mode 0 for the fused PLY,
+and has conditional CPU-only capability plus supported `--max-threads`. It does
+not include durable dense publication, runtime/governor integration, mesh,
+texturing or viewer; those remain **PLANNED**.
 
 Ce document décrit la vision architecturale cible du pipeline de
 reconstruction. Les modules listés ici ne sont pas tous implémentés.

@@ -43,6 +43,13 @@ opencv_benchmark = dependency(
     modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d', 'opencv_imgproc'],
 )
 
+opencv_dense_mvs = dependency(
+    'opencv5',
+    required: true,
+    include_type: 'system',
+    modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_imgproc', 'opencv_calib3d'],
+)
+
 opencv_geometry = dependency(
     'opencv5',
     version: '>=5.0.0',
@@ -158,6 +165,8 @@ executable(
         'src/incremental_reconstruction_identity.cpp',
         'src/incremental_reconstruction.cpp',
         'src/incremental_reconstruction_task.cpp',
+        'src/dense_mvs_identity.cpp',
+        'src/dense_mvs.cpp',
         'src/task.c',
         'src/task_checkpoint.c',
         'src/task_kind_registry.c',
@@ -179,7 +188,16 @@ executable(
         '-DLARDON3D_SPARSE_SFM_TASK_AVAILABLE',
         '-DLARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_AVAILABLE',
     ],
-    dependencies: [ncursesw, threads, sqlite3, openssl, opencv, opencv_geometry, ceres]
+    dependencies: [
+        ncursesw,
+        threads,
+        sqlite3,
+        openssl,
+        opencv,
+        opencv_geometry,
+        opencv_dense_mvs,
+        ceres,
+    ]
         + matcher_backend_dependencies,
 )
 
@@ -979,6 +997,14 @@ incremental_reconstruction_test = executable(
     dependencies: [openssl, opencv_geometry, ceres],
 )
 test('incremental-reconstruction', incremental_reconstruction_test, timeout: 120)
+
+dense_mvs_test = executable(
+    'test-dense-mvs',
+    sources: ['tests/test_dense_mvs.cpp', 'src/dense_mvs_identity.cpp', 'src/dense_mvs.cpp'],
+    include_directories: include_directories('include'),
+    dependencies: [openssl, opencv_dense_mvs],
+)
+test('dense-mvs', dense_mvs_test, timeout: 30)
 
 sparse_sfm_payload_test = executable(
     'test-sparse-sfm-payload',
