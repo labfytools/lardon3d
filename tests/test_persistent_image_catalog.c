@@ -12,6 +12,9 @@
 
 #include <lardon3d/image_catalog.h>
 
+Lardon3DImageCatalogAssetPublishResult lardon3d_image_catalog_test_copy_hash(
+    int input, int output);
+
 #define CHECK(condition) do { if (!(condition)) { \
     (void)fprintf(stderr, "Échec ligne %d : %s\n", __LINE__, #condition); return false; \
 } } while (0)
@@ -139,12 +142,27 @@ run_test(void)
 {
     char root[] = "/tmp/lardon3d-catalog-v1-XXXXXX";
     CHECK(mkdtemp(root));
-    char database_path[PATH_MAX], source_a[PATH_MAX], source_b[PATH_MAX];
+    char database_path[PATH_MAX], source_a[PATH_MAX], source_b[PATH_MAX], copied_path[PATH_MAX];
     CHECK(join_path(database_path, root, "project.db"));
     CHECK(join_path(source_a, root, "photo001.jpg"));
     CHECK(join_path(source_b, root, "other-name.jpg"));
+    CHECK(join_path(copied_path, root, "copy.bin"));
     CHECK(write_file(source_a, "same-image-content"));
     CHECK(write_file(source_b, "same-image-content"));
+    int copy_source = open(source_a, O_RDONLY);
+    int copy_destination = open(copied_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    CHECK(copy_source >= 0 && copy_destination >= 0);
+    CHECK(lardon3d_image_catalog_test_copy_hash(copy_source, copy_destination)
+        == LARDON3D_IMAGE_CATALOG_ASSET_PUBLISHED);
+    CHECK(close(copy_source) == 0 && close(copy_destination) == 0);
+    struct stat full_information;
+    CHECK(stat("/dev/full", &full_information) == 0 && S_ISCHR(full_information.st_mode));
+    copy_source = open(source_a, O_RDONLY);
+    copy_destination = open("/dev/full", O_WRONLY);
+    CHECK(copy_source >= 0 && copy_destination >= 0);
+    CHECK(lardon3d_image_catalog_test_copy_hash(copy_source, copy_destination)
+        == LARDON3D_IMAGE_CATALOG_ASSET_PUBLICATION_ERROR);
+    CHECK(close(copy_source) == 0 && close(copy_destination) == 0);
     Lardon3DProjectDb *database = NULL;
     char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
     CHECK(lardon3d_project_db_open(database_path, &database, error)

@@ -16,6 +16,16 @@ typedef enum {
     LARDON3D_IMAGE_CATALOG_DB_ERROR
 } Lardon3DImageCatalogImportResult;
 
+typedef enum {
+    LARDON3D_IMAGE_CATALOG_ASSET_PUBLISHED = 0,
+    LARDON3D_IMAGE_CATALOG_ASSET_INVALID_ARGUMENT,
+    LARDON3D_IMAGE_CATALOG_ASSET_SOURCE_ERROR,
+    LARDON3D_IMAGE_CATALOG_ASSET_SOURCE_CHANGED,
+    LARDON3D_IMAGE_CATALOG_ASSET_TOO_LARGE,
+    LARDON3D_IMAGE_CATALOG_ASSET_PUBLICATION_ERROR,
+    LARDON3D_IMAGE_CATALOG_ASSET_DB_ERROR
+} Lardon3DImageCatalogAssetPublishResult;
+
 bool lardon3d_image_catalog_create_scanset(
     Lardon3DAppState *state, const char *name,
     Lardon3DProjectDbScanSet *scanset
@@ -23,6 +33,12 @@ bool lardon3d_image_catalog_create_scanset(
 Lardon3DImageCatalogImportResult lardon3d_image_catalog_import_file(
     Lardon3DAppState *state, uint64_t scanset_id, const char *source_path,
     uint64_t producer_task_id, Lardon3DProjectDbImage *image,
+    Lardon3DProjectDbImageAsset *asset
+);
+/* Publishes immutable bytes to the managed asset store without creating an image. */
+Lardon3DImageCatalogAssetPublishResult lardon3d_image_catalog_publish_asset_file(
+    Lardon3DAppState *state, const char *source_path, int64_t created_at,
+    uint64_t max_source_bytes,
     Lardon3DProjectDbImageAsset *asset
 );
 Lardon3DProjectDbResult lardon3d_image_catalog_list(

@@ -36,6 +36,9 @@ opencv = dependency(
     include_type: 'system',
     modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d', 'opencv_geometry'],
 )
+libraw = dependency('libraw', required: true)
+libpng = dependency('libpng', required: true)
+libdeflate = dependency('libdeflate', required: true)
 opencv_benchmark = dependency(
     'opencv5',
     required: true,
@@ -144,6 +147,7 @@ executable(
         'src/import_task.c',
         'src/image_catalog.c',
         'src/image_catalog_persistent.c',
+        'src/raw_development.cpp',
         'src/feature_extractor_opencv.cpp',
         'src/feature_store.c',
         'src/feature_extractor_opencv.cpp',
@@ -193,6 +197,9 @@ executable(
         threads,
         sqlite3,
         openssl,
+        libraw,
+        libpng,
+        libdeflate,
         opencv,
         opencv_geometry,
         opencv_dense_mvs,
@@ -293,6 +300,25 @@ persistent_image_catalog_test = executable(
 )
 
 test('persistent-image-catalog', persistent_image_catalog_test, timeout: 60)
+
+raw_development_test = executable(
+    'test-raw-development',
+    sources: [
+        'tests/test_raw_development.cpp',
+        'src/app_state.c',
+        'src/image_catalog_persistent.c',
+        'src/raw_development.cpp',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    cpp_args: ['-DLARDON3D_RAW_DEVELOPMENT_TESTING'],
+    dependencies: [threads, sqlite3, openssl, opencv, libraw, libpng, libdeflate],
+)
+
+test('raw-development', raw_development_test, timeout: 30)
 
 feature_store_test = executable(
     'test-feature-store',
