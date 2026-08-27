@@ -27,6 +27,9 @@ persistante, enrichissable et versionnable.
 - **ScanSet / Image Catalog v1** : acquisitions, images logiques, provenance et assets SHA-256 persistants et paginés
 - **Capture / Asset Provenance v1** : Captures par ScanSet, associations source/dérivé
   et sélection explicite d'une image logique — IMPLEMENTED / VALIDATION PENDING
+- **Découverte et planification de campagne bornées** : racines explicites,
+  plan metadata-only et exécution par groupes via S3-E — IMPLEMENTED /
+  VALIDATION PENDING
 - **Feature Store v1/v2** : ORB U8×32, SIFT/RootSIFT F32×128 et lecture typée bornée
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences

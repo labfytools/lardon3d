@@ -133,6 +133,184 @@ bool extract_unsigned(ExifData *data, ExifTag tag, uint32_t &value) {
     return false;
 }
 
+enum class JpegValidationResult {
+    valid,
+    corrupt,
+    io_error,
+};
+
+constexpr size_t JPEG_MAX_CONTAINER_IMAGES = 8u;
+
+bool read_byte(FILE *file, unsigned char &value) {
+    const int byte = std::fgetc(file);
+    if (byte == EOF) {
+        return false;
+    }
+    value = static_cast<unsigned char>(byte);
+    return true;
+}
+
+bool skip_bytes(FILE *file, uint16_t count) {
+    unsigned char byte = 0u;
+    for (uint16_t index = 0u; index < count; ++index) {
+        if (!read_byte(file, byte)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool marker_has_length(unsigned char marker) {
+    return (marker >= 0xc0u && marker <= 0xc7u) ||
+           (marker >= 0xc9u && marker <= 0xcfu) ||
+           (marker >= 0xdau && marker <= 0xdfu) ||
+           (marker >= 0xe0u && marker <= 0xfeu);
+}
+
+bool read_marker(FILE *file, unsigned char &marker) {
+    unsigned char byte = 0u;
+    if (!read_byte(file, byte) || byte != 0xffu) {
+        return false;
+    }
+    do {
+        if (!read_byte(file, marker)) {
+            return false;
+        }
+    } while (marker == 0xffu);
+    return marker != 0x00u;
+}
+
+bool skip_marker_payload(FILE *file, unsigned char marker, bool &has_mpf_app2) {
+    unsigned char high = 0u;
+    unsigned char low = 0u;
+    if (!read_byte(file, high) || !read_byte(file, low)) {
+        return false;
+    }
+    const uint16_t length = static_cast<uint16_t>((static_cast<uint16_t>(high) << 8u) |
+                                                  static_cast<uint16_t>(low));
+    if (marker == 0xdau) {
+        unsigned char component_count = 0u;
+        if (length < 3u || !read_byte(file, component_count) || component_count == 0u ||
+            component_count > 4u) {
+            return false;
+        }
+        const uint16_t expected_length =
+            static_cast<uint16_t>(6u + 2u * static_cast<uint16_t>(component_count));
+        return length == expected_length &&
+               skip_bytes(file, static_cast<uint16_t>(length - 3u));
+    }
+    if (marker == 0xdcu) {
+        unsigned char line_count_high = 0u;
+        unsigned char line_count_low = 0u;
+        return length == 4u && read_byte(file, line_count_high) &&
+               read_byte(file, line_count_low) &&
+               (line_count_high != 0u || line_count_low != 0u);
+    }
+    if (marker == 0xe2u && length >= 6u) {
+        unsigned char identifier[4] = {};
+        for (unsigned char &byte : identifier) {
+            if (!read_byte(file, byte)) {
+                return false;
+            }
+        }
+        if (std::memcmp(identifier, "MPF\0", sizeof(identifier)) == 0) {
+            has_mpf_app2 = true;
+        }
+        return skip_bytes(file, static_cast<uint16_t>(length - 6u));
+    }
+    return length >= 2u && skip_bytes(file, static_cast<uint16_t>(length - 2u));
+}
+
+JpegValidationResult validate_jpeg_image(FILE *file, bool soi_already_consumed,
+                                         bool &has_mpf_app2) {
+    has_mpf_app2 = false;
+    if (!soi_already_consumed) {
+        unsigned char first = 0u;
+        unsigned char second = 0u;
+        if (!read_byte(file, first) || !read_byte(file, second) || first != 0xffu ||
+            second != 0xd8u) {
+            return std::ferror(file) != 0 ? JpegValidationResult::io_error
+                                         : JpegValidationResult::corrupt;
+        }
+    }
+
+    bool in_entropy = false;
+    for (;;) {
+        unsigned char marker = 0u;
+        bool marker_from_entropy = false;
+        if (in_entropy) {
+            unsigned char byte = 0u;
+            do {
+                if (!read_byte(file, byte)) {
+                    return std::ferror(file) != 0 ? JpegValidationResult::io_error
+                                                 : JpegValidationResult::corrupt;
+                }
+            } while (byte != 0xffu);
+            do {
+                if (!read_byte(file, marker)) {
+                    return std::ferror(file) != 0 ? JpegValidationResult::io_error
+                                                 : JpegValidationResult::corrupt;
+                }
+            } while (marker == 0xffu);
+            if (marker == 0x00u || (marker >= 0xd0u && marker <= 0xd7u)) {
+                continue;
+            }
+            marker_from_entropy = true;
+            in_entropy = false;
+        } else if (!read_marker(file, marker)) {
+            return std::ferror(file) != 0 ? JpegValidationResult::io_error
+                                         : JpegValidationResult::corrupt;
+        }
+
+        if (marker == 0xd9u) {
+            return JpegValidationResult::valid;
+        }
+        if (marker == 0xd8u) {
+            return JpegValidationResult::corrupt;
+        }
+        if (marker == 0x01u || (marker >= 0xd0u && marker <= 0xd7u)) {
+            continue;
+        }
+        if (!marker_has_length(marker) ||
+            !skip_marker_payload(file, marker, has_mpf_app2)) {
+            return std::ferror(file) != 0 ? JpegValidationResult::io_error
+                                         : JpegValidationResult::corrupt;
+        }
+        if (marker == 0xdau || (marker == 0xdcu && marker_from_entropy)) {
+            in_entropy = true;
+        }
+    }
+}
+
+JpegValidationResult validate_jpeg_structure(FILE *file) {
+    bool primary_has_mpf = false;
+    for (size_t image_index = 0u; image_index < JPEG_MAX_CONTAINER_IMAGES; ++image_index) {
+        bool image_has_mpf = false;
+        const JpegValidationResult image_result =
+            validate_jpeg_image(file, image_index != 0u, image_has_mpf);
+        if (image_result != JpegValidationResult::valid) {
+            return image_result;
+        }
+        if (image_index == 0u) {
+            primary_has_mpf = image_has_mpf;
+        }
+
+        int byte = EOF;
+        do {
+            byte = std::fgetc(file);
+        } while (byte == 0);
+        if (byte == EOF) {
+            return std::ferror(file) != 0 ? JpegValidationResult::io_error
+                                         : JpegValidationResult::valid;
+        }
+        if (!primary_has_mpf || byte != 0xff || std::fgetc(file) != 0xd8) {
+            return std::ferror(file) != 0 ? JpegValidationResult::io_error
+                                         : JpegValidationResult::corrupt;
+        }
+    }
+    return JpegValidationResult::corrupt;
+}
+
 Lardon3DAcquisitionResult extract_jpeg(const char *path,
                                        Lardon3DAcquisitionMetadata &metadata) {
     FILE *file = std::fopen(path, "rb");
@@ -140,14 +318,12 @@ Lardon3DAcquisitionResult extract_jpeg(const char *path,
         return errno == ENOENT || errno == EACCES ? LARDON3D_ACQUISITION_IO_ERROR
                                                   : LARDON3D_ACQUISITION_IO_ERROR;
     }
-    bool has_end_marker = false;
-    if (std::fseek(file, -2L, SEEK_END) == 0) {
-        unsigned char tail[2] = {};
-        has_end_marker = std::fread(tail, 1u, sizeof(tail), file) == sizeof(tail) &&
-                         tail[0] == 0xffu && tail[1] == 0xd9u;
+    const JpegValidationResult validation = validate_jpeg_structure(file);
+    const bool close_failed = std::fclose(file) != 0;
+    if (validation == JpegValidationResult::io_error || close_failed) {
+        return LARDON3D_ACQUISITION_IO_ERROR;
     }
-    std::fclose(file);
-    if (!has_end_marker) {
+    if (validation != JpegValidationResult::valid) {
         return LARDON3D_ACQUISITION_CORRUPT_SOURCE;
     }
 

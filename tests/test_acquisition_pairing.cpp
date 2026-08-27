@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <unistd.h>
 
 namespace {
@@ -213,6 +214,40 @@ void write_exif_jpeg(const std::string &path) {
     exif_data_unref(data);
 }
 
+void append_bytes(const std::string &path, const unsigned char *bytes, size_t size) {
+    FILE *file = std::fopen(path.c_str(), "ab");
+    assert(file != nullptr);
+    assert(std::fwrite(bytes, 1u, size, file) == size);
+    assert(std::fclose(file) == 0);
+}
+
+void write_bytes(const std::string &path, const unsigned char *bytes, size_t size) {
+    FILE *file = std::fopen(path.c_str(), "wb");
+    assert(file != nullptr);
+    assert(std::fwrite(bytes, 1u, size, file) == size);
+    assert(std::fclose(file) == 0);
+}
+
+void assert_jpeg_corrupt(const unsigned char *bytes, size_t size) {
+    const std::string path = temporary_path(".jpg");
+    write_bytes(path, bytes, size);
+    Lardon3DAcquisitionMetadata value = {};
+    assert(lardon3d_acquisition_extract_metadata(path.c_str(), &value) ==
+           LARDON3D_ACQUISITION_CORRUPT_SOURCE);
+    assert(unlink(path.c_str()) == 0);
+}
+
+void assert_jpeg_structurally_accepted(const unsigned char *bytes, size_t size) {
+    const std::string path = temporary_path(".jpg");
+    write_bytes(path, bytes, size);
+    Lardon3DAcquisitionMetadata value = {};
+    const Lardon3DAcquisitionResult result =
+        lardon3d_acquisition_extract_metadata(path.c_str(), &value);
+    assert(result == LARDON3D_ACQUISITION_OK ||
+           result == LARDON3D_ACQUISITION_METADATA_UNAVAILABLE);
+    assert(unlink(path.c_str()) == 0);
+}
+
 void test_extraction() {
     const std::string jpeg = temporary_path(".jpg");
     write_exif_jpeg(jpeg);
@@ -228,6 +263,159 @@ void test_extraction() {
     assert(std::strcmp(value.body_serial, "BODY-42") == 0);
     assert(std::strcmp(value.image_unique_id, "IMAGE-99") == 0);
     assert(unlink(jpeg.c_str()) == 0);
+
+    const std::string padded = temporary_path(".jpg");
+    write_exif_jpeg(padded);
+    const unsigned char zero_padding[37] = {};
+    append_bytes(padded, zero_padding, sizeof(zero_padding));
+    assert(lardon3d_acquisition_extract_metadata(padded.c_str(), &value) ==
+           LARDON3D_ACQUISITION_OK);
+    assert(value.source_kind == LARDON3D_ACQUISITION_SOURCE_JPEG);
+    assert(std::strcmp(value.make, "Sony") == 0);
+    assert(std::strcmp(value.model, "ILCE-7M4") == 0);
+    assert(std::strcmp(value.datetime_original, "2026:08:27 12:34:56") == 0);
+    assert(std::strcmp(value.subsec_original, "123") == 0);
+    assert(std::strcmp(value.offset_original, "+02:00") == 0);
+    assert(std::strcmp(value.body_serial, "BODY-42") == 0);
+    assert(std::strcmp(value.image_unique_id, "IMAGE-99") == 0);
+    assert(unlink(padded.c_str()) == 0);
+
+    const unsigned char missing_eoi[] = {0xffu, 0xd8u, 0xffu, 0xe0u,
+                                         0x00u, 0x02u};
+    assert_jpeg_corrupt(missing_eoi, sizeof(missing_eoi));
+
+    const unsigned char truncated_segment[] = {0xffu, 0xd8u, 0xffu, 0xe1u,
+                                                0x00u, 0x08u, 0x11u};
+    assert_jpeg_corrupt(truncated_segment, sizeof(truncated_segment));
+
+    const unsigned char payload_eoi[] = {0xffu, 0xd8u, 0xffu, 0xe2u, 0x00u,
+                                         0x06u, 0xffu, 0xd9u, 0x11u, 0x22u};
+    assert_jpeg_corrupt(payload_eoi, sizeof(payload_eoi));
+
+    const std::string trailing_garbage = temporary_path(".jpg");
+    write_exif_jpeg(trailing_garbage);
+    const unsigned char nonzero_padding[] = {0x00u, 0x01u};
+    append_bytes(trailing_garbage, nonzero_padding, sizeof(nonzero_padding));
+    assert(lardon3d_acquisition_extract_metadata(trailing_garbage.c_str(), &value) ==
+           LARDON3D_ACQUISITION_CORRUPT_SOURCE);
+    assert(unlink(trailing_garbage.c_str()) == 0);
+
+    const unsigned char entropy_markers[] = {
+        0xffu, 0xd8u, 0xffu, 0xdau, 0x00u, 0x08u, 0x01u, 0x01u, 0x00u, 0x00u,
+        0x3fu, 0x00u, 0x12u, 0xffu, 0x00u, 0x34u, 0xffu, 0xd0u, 0x56u, 0xffu,
+        0xffu, 0xd9u};
+    const std::string entropy = temporary_path(".jpg");
+    write_bytes(entropy, entropy_markers, sizeof(entropy_markers));
+    const Lardon3DAcquisitionResult entropy_result =
+        lardon3d_acquisition_extract_metadata(entropy.c_str(), &value);
+    assert(entropy_result == LARDON3D_ACQUISITION_OK ||
+           entropy_result == LARDON3D_ACQUISITION_METADATA_UNAVAILABLE);
+    assert(unlink(entropy.c_str()) == 0);
+
+    const unsigned char mismatched_sos_length[] = {
+        0xffu, 0xd8u, 0xffu, 0xdau, 0x00u, 0x06u, 0x01u, 0x01u,
+        0x00u, 0x00u, 0xffu, 0xd9u};
+    assert_jpeg_corrupt(mismatched_sos_length, sizeof(mismatched_sos_length));
+
+    const unsigned char zero_sos_components[] = {
+        0xffu, 0xd8u, 0xffu, 0xdau, 0x00u, 0x06u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0xffu, 0xd9u};
+    assert_jpeg_corrupt(zero_sos_components, sizeof(zero_sos_components));
+
+    const unsigned char too_many_sos_components[] = {
+        0xffu, 0xd8u, 0xffu, 0xdau, 0x00u, 0x10u, 0x05u, 0x01u, 0x00u,
+        0x02u, 0x00u, 0x03u, 0x00u, 0x04u, 0x00u, 0x05u, 0x00u, 0x00u,
+        0x3fu, 0x00u, 0xffu, 0xd9u};
+    assert_jpeg_corrupt(too_many_sos_components, sizeof(too_many_sos_components));
+
+    const unsigned char entropy_dnl[] = {
+        0xffu, 0xd8u, 0xffu, 0xdau, 0x00u, 0x08u, 0x01u, 0x01u, 0x00u,
+        0x00u, 0x3fu, 0x00u, 0x12u, 0xffu, 0xdcu, 0x00u, 0x04u, 0x00u,
+        0x2au, 0x34u, 0xffu, 0x00u, 0x56u, 0xffu, 0xd1u, 0x78u, 0xffu,
+        0xd9u};
+    const std::string entropy_dnl_path = temporary_path(".jpg");
+    write_bytes(entropy_dnl_path, entropy_dnl, sizeof(entropy_dnl));
+    const Lardon3DAcquisitionResult entropy_dnl_result =
+        lardon3d_acquisition_extract_metadata(entropy_dnl_path.c_str(), &value);
+    assert(entropy_dnl_result == LARDON3D_ACQUISITION_OK ||
+           entropy_dnl_result == LARDON3D_ACQUISITION_METADATA_UNAVAILABLE);
+    assert(unlink(entropy_dnl_path.c_str()) == 0);
+
+    const unsigned char malformed_dnl_length[] = {
+        0xffu, 0xd8u, 0xffu, 0xdcu, 0x00u, 0x02u, 0xffu, 0xd9u};
+    assert_jpeg_corrupt(malformed_dnl_length, sizeof(malformed_dnl_length));
+
+    const unsigned char zero_dnl_line_count[] = {
+        0xffu, 0xd8u, 0xffu, 0xdcu, 0x00u, 0x04u, 0x00u, 0x00u, 0xffu, 0xd9u};
+    assert_jpeg_corrupt(zero_dnl_line_count, sizeof(zero_dnl_line_count));
+
+    const unsigned char marker_level_dnl_does_not_start_entropy[] = {
+        0xffu, 0xd8u, 0xffu, 0xdcu, 0x00u, 0x04u, 0x00u, 0x2au,
+        0x12u, 0xffu, 0xd9u};
+    assert_jpeg_corrupt(marker_level_dnl_does_not_start_entropy,
+                        sizeof(marker_level_dnl_does_not_start_entropy));
+
+    const unsigned char mpf_primary[] = {
+        0xffu, 0xd8u, 0xffu, 0xe2u, 0x00u, 0x06u, 'M', 'P', 'F', 0x00u,
+        0xffu, 0xd9u};
+    const unsigned char ordinary_image[] = {0xffu, 0xd8u, 0xffu, 0xd9u};
+    std::vector<unsigned char> mpf_two_images(std::begin(mpf_primary), std::end(mpf_primary));
+    mpf_two_images.insert(mpf_two_images.end(), 9u, 0u);
+    mpf_two_images.insert(mpf_two_images.end(), std::begin(ordinary_image),
+                          std::end(ordinary_image));
+    mpf_two_images.insert(mpf_two_images.end(), 11u, 0u);
+    assert_jpeg_structurally_accepted(mpf_two_images.data(), mpf_two_images.size());
+
+    std::vector<unsigned char> no_mpf_second(std::begin(ordinary_image),
+                                             std::end(ordinary_image));
+    no_mpf_second.insert(no_mpf_second.end(), 3u, 0u);
+    no_mpf_second.insert(no_mpf_second.end(), std::begin(ordinary_image),
+                         std::end(ordinary_image));
+    assert_jpeg_corrupt(no_mpf_second.data(), no_mpf_second.size());
+
+    std::vector<unsigned char> mpf_garbage(std::begin(mpf_primary), std::end(mpf_primary));
+    mpf_garbage.insert(mpf_garbage.end(), 5u, 0u);
+    mpf_garbage.push_back(0x42u);
+    assert_jpeg_corrupt(mpf_garbage.data(), mpf_garbage.size());
+
+    std::vector<unsigned char> mpf_truncated(std::begin(mpf_primary), std::end(mpf_primary));
+    const unsigned char truncated_second[] = {0xffu, 0xd8u, 0xffu, 0xe0u, 0x00u};
+    mpf_truncated.insert(mpf_truncated.end(), std::begin(truncated_second),
+                         std::end(truncated_second));
+    assert_jpeg_corrupt(mpf_truncated.data(), mpf_truncated.size());
+
+    std::vector<unsigned char> mpf_missing_second_eoi(std::begin(mpf_primary),
+                                                       std::end(mpf_primary));
+    const unsigned char second_without_eoi[] = {0xffu, 0xd8u, 0xffu, 0xe0u, 0x00u, 0x02u};
+    mpf_missing_second_eoi.insert(mpf_missing_second_eoi.end(),
+                                  std::begin(second_without_eoi),
+                                  std::end(second_without_eoi));
+    assert_jpeg_corrupt(mpf_missing_second_eoi.data(), mpf_missing_second_eoi.size());
+
+    std::vector<unsigned char> too_many_images(std::begin(mpf_primary),
+                                                std::end(mpf_primary));
+    for (size_t index = 1u; index < 9u; ++index) {
+        too_many_images.insert(too_many_images.end(), std::begin(ordinary_image),
+                               std::end(ordinary_image));
+    }
+    assert_jpeg_corrupt(too_many_images.data(), too_many_images.size());
+
+    const unsigned char embedded_boundaries_in_payload[] = {
+        0xffu, 0xd8u, 0xffu, 0xe1u, 0x00u, 0x06u, 0xffu, 0xd8u, 0xffu, 0xd9u,
+        0xffu, 0xd9u};
+    assert_jpeg_structurally_accepted(embedded_boundaries_in_payload,
+                                      sizeof(embedded_boundaries_in_payload));
+
+    const unsigned char stuffed_boundaries_in_entropy[] = {
+        0xffu, 0xd8u, 0xffu, 0xdau, 0x00u, 0x08u, 0x01u, 0x01u, 0x00u,
+        0x00u, 0x3fu, 0x00u, 0xffu, 0x00u, 0xd8u, 0xffu, 0x00u, 0xd9u,
+        0xffu, 0xd9u};
+    assert_jpeg_structurally_accepted(stuffed_boundaries_in_entropy,
+                                      sizeof(stuffed_boundaries_in_entropy));
+
+    std::vector<unsigned char> mpf_nonzero_final = mpf_two_images;
+    mpf_nonzero_final.push_back(0x01u);
+    assert_jpeg_corrupt(mpf_nonzero_final.data(), mpf_nonzero_final.size());
 
     const std::string malformed = temporary_path(".jpg");
     FILE *file = std::fopen(malformed.c_str(), "wb");
@@ -279,7 +467,27 @@ void test_non_terminated_raw_fixed_text_mapping() {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    if (argc == 3 && std::strcmp(argv[1], "--extract") == 0) {
+        Lardon3DAcquisitionMetadata value = {};
+        const Lardon3DAcquisitionResult result =
+            lardon3d_acquisition_extract_metadata(argv[2], &value);
+        std::printf("METADATA_RESULT=%d\n", static_cast<int>(result));
+        if (result == LARDON3D_ACQUISITION_OK) {
+            std::printf("MAKE=%s\nMODEL=%s\nDATETIME_ORIGINAL=%s\nSUBSEC_ORIGINAL=%s\n"
+                        "BODY_SERIAL=%s\nIMAGE_UNIQUE_ID=%s\nWIDTH=%u\nHEIGHT=%u\n"
+                        "ORIENTATION=%u\nPRESENT_FIELDS=%u\n",
+                        value.make, value.model, value.datetime_original,
+                        value.subsec_original, value.body_serial, value.image_unique_id,
+                        value.width, value.height, static_cast<unsigned int>(value.orientation),
+                        value.present_fields);
+        }
+        return result == LARDON3D_ACQUISITION_OK ? 0 : 1;
+    }
+    if (argc != 1) {
+        std::fprintf(stderr, "usage: %s [--extract PATH]\n", argv[0]);
+        return 64;
+    }
     test_pairing_policy();
     test_selector();
     test_non_terminated_public_text_is_unavailable();

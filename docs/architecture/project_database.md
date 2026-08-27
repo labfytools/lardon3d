@@ -56,6 +56,64 @@ chaque image v18, relie son asset comme source et rend cette même image
 sélectionnée. Aucun nom de fichier, EXIF ou rapprochement de siblings n'est
 interprété ; les IDs et la sémantique v18 restent inchangés.
 
+### Couche finale bornée de découverte et de planification de campagne
+
+**IMPLEMENTED / VALIDATION PENDING.** Cette couche reçoit de 1 à 64 racines
+absolues, lexicalement normalisées et explicitement fournies par l'appelant.
+Elle ne parcourt pas récursivement : chaque racine et chacune de ses entrées
+immédiates régulières est inspectée sans suivre de lien symbolique. Seuls les
+fichiers `.arw`, `.jpg` et `.jpeg`, sans sensibilité à la casse, sont des
+sources supportées. La découverte, les groupes et les propositions sont chacun
+bornés à 4096 éléments et les chemins sont ordonnés de façon déterministe par
+`strcmp`.
+
+La planification appelle S3-D uniquement sur les métadonnées : elle ne lit pas
+de pixels, n'écrit pas en base et ne matérialise aucun asset ou Capture. Une
+association automatique est admise seulement pour une relation forte unique et
+mutuelle. Un stem de nom de fichier identique est une proposition, jamais une
+identité. Les contradictions, ambiguïtés, comparaisons insuffisantes et cas non
+résolus restent des singletons. L'appelant peut confirmer explicitement de 1 à
+64 groupes ; chacun est alors étiqueté `CALLER_EXPLICIT`. Une confirmation
+réelle explicite reste nécessaire avant tout regroupement.
+
+Le plan et sa progression appartiennent à l'appelant. Ils retiennent les
+`capture_id` et `resume_capture_id` retournés afin de reprendre par Capture ;
+aucune garantie whole-request exactly-once n'existe avant cette rétention.
+L'exécution applique le lot par groupe, avec exactement un appel S3-E par
+groupe figé. S3-E demeure l'unique matérialisateur et les représentations
+restent explicites. Project DB demeure v19 : cette couche ne détourne ni Task,
+ni checkpoint, et n'ajoute aucun sous-système de persistance.
+
+La validation structurelle JPEG accepte un fichier ordinaire jusqu'à son EOI,
+puis uniquement du remplissage nul. Si et seulement si l'image primaire porte
+un segment APP2 commençant par `MPF\0`, ce remplissage peut être suivi d'une
+nouvelle image JPEG structurellement validée par le même parseur ; jusqu'à huit
+images au total sont admises, en mémoire constante. Chaque intervalle et la fin
+physique restent limités à des octets nuls. Une image ajoutée sans preuve MPF,
+un trailer non nul, une image secondaire tronquée ou sans EOI et un neuvième
+élément sont corrompus. Les marqueurs ressemblants dans les payloads APP/EXIF
+et les données entropy-coded ne deviennent jamais des frontières de conteneur.
+
+Observation autorisée sur le jeu A6000 réel, en dry run : 953 ARW, 953 JPEG,
+soit 1906 sources ; métadonnées OK pour les 1906 sources, indisponibles 0 et
+autres erreurs 0. Les fichiers JPEG Sony sont des conteneurs MPF valides avec
+une image secondaire et un remplissage final nul. Leurs métadonnées ne portent
+pas d'`ImageUniqueID` utilisable en commun avec les RAW : fortes 0,
+propositions candidates par stem 953, ambiguïtés 0, contradictions 0,
+comparaisons insuffisantes 1814512, non résolus 1906 et groupes automatiques
+planifiés 1906. L'inversion de l'ordre des racines a réussi la vérification de
+déterminisme. Ce dry run n'a effectué ni écriture DB, ni matérialisation, ni
+développement RAW ; il ne prouve donc pas un compte physique de 1906
+acquisitions et n'affaiblit pas S3-D. Les 953 propositions nécessitent une
+confirmation explicite `CALLER_EXPLICIT` avant tout regroupement. Le fixture
+d'intégration couvre l'adaptateur, sa matérialisation et son retry ; aucune
+mutation de campagne complète n'a été effectuée.
+
+Restent hors S3 : identité persistante de campagne ou de Task, exécution par
+scheduler/Governor, traitement de campagne complet, TUI, scrub d'assets et
+réconciliation des orphelins, ainsi que vidéo et reconstruction aval lorsqu'ils
+sont applicables.
+
 ### S3-D — Acquisition Pairing Evidence v1
 
 **IMPLEMENTED / VALIDATION PENDING — non FROZEN.** S3-D extrait, depuis des
