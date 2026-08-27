@@ -166,16 +166,85 @@ redéfini ici.
 
 ## LATER
 
-- **Vidéo/keyframes** : asset vidéo, timeline, extraction déterministe,
-  provenance frame↔vidéo, espacement, blur/qualité, redondance et couverture.
-  Ces politiques restent séparées des contrats photo gelés.
+### Ingestion vidéo et keyframes — PLANNED
+
+Une vidéo sera une source d'acquisition portant sa propre provenance, pas un
+pipeline scientifique parallèle :
+
+```text
+asset vidéo SOURCE
+→ timeline et métadonnées déterministes
+→ extraction bornée et déterministe de keyframes
+→ filtres blur/qualité/redondance
+→ candidats Capture
+→ représentations image sélectionnées et immuables
+→ pipeline scientifique Lardon3D existant
+```
+
+Le futur contrat devra lier chaque frame à l'asset vidéo source, définir une
+identité d'extraction reproductible et retenir son timestamp. La sélection
+combinera espacement temporel, netteté, rejet des frames redondantes, diversité
+de mouvement/point de vue et couverture utile. Exécution, buffers et nombre de
+frames resteront bornés ; reprise/checkpoint et admission appartiendront au
+Task Runtime et au Resource Governor existants. Il n'existera **aucun pipeline
+SfM séparé pour la vidéo** : les keyframes validées rejoignent les mêmes
+Capture, images, features, matching, tracks, Sparse SfM et étapes aval que les
+photos Sony, Samsung ou autres.
+
+### Coverage Viewer et assistance à l'acquisition — PLANNED
+
+Cette frontière passive de visualisation et d'aide analysera une reconstruction
+publiée afin d'identifier où des photographies supplémentaires sont réellement
+nécessaires. Ses entrées pourront inclure poses caméra, provenance Capture,
+géométrie sparse/dense, nombre d'observations par track, densité de features,
+qualité de reprojection, triangulation/parallaxe, visibilité de surface et
+historique des ScanSets.
+
+Overlays planifiés :
+
+- positions et frustums des caméras ;
+- régions bien couvertes et faiblement couvertes ;
+- zones invisibles ou manquantes ;
+- régions à faible diversité angulaire ou mauvaise parallaxe ;
+- zones de reconstruction à faible confiance ;
+- heatmap de couverture.
+
+Les diagnostics devront produire des indications actionnables, par exemple :
+
+```text
+cette région demande plus de photographies
+cette région demande un autre angle de vue
+le nombre d'images suffit mais la parallaxe est insuffisante
+cette cavité ou face est visible depuis trop peu de Captures
+```
+
+Toute recommandation dérivera d'évidence géométrique et de reconstruction,
+jamais d'un nombre de fichiers, de basenames ou d'une heuristique d'identité.
+Le workflow itératif visé est :
+
+```text
+ScanSet N
+→ reconstruction
+→ analyse de couverture
+→ viewer des zones manquantes/faibles
+→ acquisition supplémentaire
+→ nouveau ScanSet
+→ alignement/enrichissement Phase H
+→ réévaluation de la couverture
+```
+
+Cette boucle reliera les acquisitions Sony A6000, Samsung/mobile, ScanSets
+mixtes et futures keyframes vidéo sans fork par device. La sélection future de
+keyframes pourra utiliser la couverture déjà reconstruite pour favoriser des
+points de vue réellement complémentaires.
+
+Lardon3D reste TUI-first. Le Coverage Viewer demeure un consommateur passif de
+snapshots validés et une frontière séparée d'assistance ; il ne transforme pas
+l'application principale en GUI et ne lit jamais les buffers workers mutables.
+
 - **Maintenance projet** : vérification de provenance, assets orphelins,
   scrub/réconciliation et réclamation sûre du scratch. Aucun asset immuable
   partagé n'est supprimé silencieusement.
-- **Coverage/capture assistance** : overlap, zones faibles, photos ou ScanSets
-  supplémentaires et comparaison de points de vue ; jamais une identité.
-- **Viewer** : frontière passive et optionnelle pour sparse, dense, mesh, poses,
-  provenance, couverture et overlays qualité. Le projet reste TUI-first.
 - **Exports/publication live** : snapshots validés et consommation sans accès
   aux buffers workers mutables.
 
