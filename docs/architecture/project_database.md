@@ -17,6 +17,37 @@ est acceptée sans nouvelle ligne ni migration de schéma. Elle ne crée aucune
 image logique, ne modifie aucune sélection et ne réalise aucun appariement
 automatique.
 
+### S3-E — Orchestration d'ingestion multi-source v1
+
+**IMPLEMENTED / VALIDATION PENDING.** S3-E reçoit un ScanSet explicite et au
+plus 64 chemins source explicitement fournis par l'appelant ; il ne parcourt
+jamais un répertoire. Chaque fichier est d'abord publié comme asset immuable
+géré, puis son évidence S3-D est extraite depuis ces octets publiés. Le
+regroupement automatique ne crée un Capture commun que pour une relation
+`SAME_ACQUISITION_STRONG` unique et mutuelle. Les noms, chemins, SHA-256,
+timestamps, modèle, évidence faible, contradictions et ambiguïtés ne sont
+jamais une identité de Capture et ne donnent jamais lieu à un rapprochement
+automatique. Deux assets identiques dans une requête sont rejetés de façon
+déterministe.
+
+L'appelant peut aussi déclarer explicitement des groupes. Ce résultat porte la
+basis `CALLER_EXPLICIT`, distincte de la basis scientifique `STRONG`; cette
+provenance est un résultat de l'opération v1, non une nouvelle colonne durable.
+Les siblings sont persistés exclusivement avec S3-C. Pour la représentation,
+un JPEG caméra reste un asset `SOURCE` et devient une image logique du même
+Capture via la publication source-image transactionnelle; un RAW reste
+`SOURCE` et son image est produite seulement par S3-B1, avec son PNG `DERIVED`.
+RAW et JPEG d'une même acquisition ne créent pas deux Captures. La sélection ne
+change que si l'appelant demande explicitement la représentation sélectionnée.
+
+Project DB reste strictement v19, sans migration ni fusion de Captures. Après
+qu'un Capture ID a été renvoyé ou durablement retenu, une reprise doit fournir
+explicitement `resume_capture_id`: publication, attaches S3-C et représentation
+convergent alors sans réhoming ni doublon logique. Une panne avant que
+l'appelant ait retenu cet ID ne peut pas offrir une reprise whole-request
+exactly-once en v19; S3-E n'infère volontairement jamais une identité de
+reprise depuis SHA, chemin, basename, timestamp, métadonnées ou `image_id`.
+
 `asset_derivations` est volontairement limité à un parent asset et un enfant
 asset, avec kind/version et fingerprint canonique de 32 octets. Il n'est pas un
 DAG générique et ne réalise aucun développement RAW ni extraction vidéo. La
@@ -44,9 +75,8 @@ assets sont différents. Une valeur absente n'est pas un conflit. Une ambiguït�
 n'est jamais résolue par l'ordre des assets.
 
 S3-D n'effectue aucune écriture en base ni changement de schéma : Project DB
-reste v19 et S3-C attach demeure l'unique primitive de persistance. S3-E, la
-future intégration d'ingestion multi-source avant `Capture`, n'est pas
-implémentée.
+reste v19 et S3-C attach demeure l'unique primitive de persistance. S3-E
+réutilise cette évidence sans la redéfinir.
 
 ## Phase H — décision Project DB v18
 

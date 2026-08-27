@@ -150,6 +150,7 @@ executable(
         'src/image_catalog_persistent.c',
         'src/raw_development.cpp',
         'src/acquisition_pairing.cpp',
+        'src/acquisition_ingest.cpp',
         'src/feature_extractor_opencv.cpp',
         'src/feature_store.c',
         'src/feature_extractor_opencv.cpp',
@@ -332,6 +333,27 @@ acquisition_pairing_test = executable(
 )
 
 test('acquisition-pairing', acquisition_pairing_test, timeout: 30)
+
+acquisition_ingest_test = executable(
+    'test-acquisition-ingest',
+    sources: [
+        'tests/test_acquisition_ingest.cpp',
+        'src/app_state.c',
+        'src/image_catalog_persistent.c',
+        'src/acquisition_ingest.cpp',
+        'src/acquisition_pairing.cpp',
+        'src/raw_development.cpp',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c',
+        'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    cpp_args: ['-DLARDON3D_ACQUISITION_INGEST_TESTING'],
+    dependencies: [threads, sqlite3, openssl, opencv, libraw, libexif, libpng, libdeflate],
+)
+
+test('acquisition-ingest', acquisition_ingest_test, timeout: 30)
 
 feature_store_test = executable(
     'test-feature-store',
