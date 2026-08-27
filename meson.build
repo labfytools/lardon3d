@@ -37,6 +37,7 @@ opencv = dependency(
     modules: ['opencv_core', 'opencv_imgcodecs', 'opencv_features2d', 'opencv_geometry'],
 )
 libraw = dependency('libraw', required: true)
+libexif = dependency('libexif', required: true)
 libpng = dependency('libpng', required: true)
 libdeflate = dependency('libdeflate', required: true)
 opencv_benchmark = dependency(
@@ -148,6 +149,7 @@ executable(
         'src/image_catalog.c',
         'src/image_catalog_persistent.c',
         'src/raw_development.cpp',
+        'src/acquisition_pairing.cpp',
         'src/feature_extractor_opencv.cpp',
         'src/feature_store.c',
         'src/feature_extractor_opencv.cpp',
@@ -198,6 +200,7 @@ executable(
         sqlite3,
         openssl,
         libraw,
+        libexif,
         libpng,
         libdeflate,
         opencv,
@@ -319,6 +322,16 @@ raw_development_test = executable(
 )
 
 test('raw-development', raw_development_test, timeout: 30)
+
+acquisition_pairing_test = executable(
+    'test-acquisition-pairing',
+    sources: ['tests/test_acquisition_pairing.cpp', 'src/acquisition_pairing.cpp'],
+    include_directories: include_directories('include'),
+    cpp_args: ['-DLARDON3D_ACQUISITION_PAIRING_TESTING'],
+    dependencies: [libraw, libexif],
+)
+
+test('acquisition-pairing', acquisition_pairing_test, timeout: 30)
 
 feature_store_test = executable(
     'test-feature-store',

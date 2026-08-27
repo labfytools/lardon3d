@@ -25,6 +25,29 @@ chaque image v18, relie son asset comme source et rend cette même image
 sélectionnée. Aucun nom de fichier, EXIF ou rapprochement de siblings n'est
 interprété ; les IDs et la sémantique v18 restent inchangés.
 
+### S3-D — Acquisition Pairing Evidence v1
+
+**IMPLEMENTED / VALIDATION PENDING — non FROZEN.** S3-D extrait, depuis des
+assets source immuables, un ensemble fixe et borné de métadonnées d'évidence
+d'appariement. Pour les RAW, l'extraction est metadata-only avec LibRaw ; pour
+les JPEG, elle utilise libexif. Cette évidence n'est pas une identité
+scientifique et ne modifie ni les identités existantes ni leur sémantique.
+
+La politique d'appariement v1 est la suivante : entre deux assets distincts,
+seul un `ImageUniqueID` caméra connu, non vide et exactement partagé est une
+évidence forte, éligible à une association automatique dans une future
+intégration. Les timestamp, make/model, numéro de série du boîtier concordant,
+dimensions/exposition et basename sont faibles ou corroboratifs : ils ne
+constituent jamais une identité. Des `ImageUniqueID` connus contradictoires, ou
+des numéros de série de boîtier connus contradictoires, signifient que les
+assets sont différents. Une valeur absente n'est pas un conflit. Une ambiguïté
+n'est jamais résolue par l'ordre des assets.
+
+S3-D n'effectue aucune écriture en base ni changement de schéma : Project DB
+reste v19 et S3-C attach demeure l'unique primitive de persistance. S3-E, la
+future intégration d'ingestion multi-source avant `Capture`, n'est pas
+implémentée.
+
 ## Phase H — décision Project DB v18
 
 **PASS / FROZEN.** La migration transactionnelle v17→v18
