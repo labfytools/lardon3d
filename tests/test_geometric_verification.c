@@ -172,6 +172,11 @@ static bool create_v11_database(const char *path) {
   lardon3d_project_db_close(database);
   return execute_sql(path,
                      "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+                     "DROP TABLE IF EXISTS asset_derivations;"
+                     "DROP TABLE IF EXISTS capture_selections;"
+                     "DROP TABLE IF EXISTS capture_assets;"
+                     "DROP TABLE IF EXISTS capture_images;"
+                     "DROP TABLE IF EXISTS captures;"
                      "DROP TABLE IF EXISTS incremental_reconstruction_tasks;"
                      "DROP TABLE IF EXISTS incremental_reconstructions;"
                      "DROP TABLE IF EXISTS sparse_sfm_tasks;"
@@ -197,7 +202,7 @@ static bool test_model_api(const char *path) {
   Lardon3DProjectDb *database = NULL;
   CHECK(lardon3d_project_db_open(path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 18);
+  CHECK(lardon3d_project_db_schema_version(database) == 19);
   Parents parents;
   CHECK(create_parents(database, &parents));
 
@@ -481,7 +486,7 @@ static bool test_migration(const char *v11_path, const char *failed_path) {
                     0));
   CHECK(lardon3d_project_db_open(v11_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 18);
+  CHECK(lardon3d_project_db_schema_version(database) == 19);
   Parents parents;
   CHECK(create_parents(database, &parents));
   unsigned char fingerprint[32] = {0x91};
@@ -496,7 +501,7 @@ static bool test_migration(const char *v11_path, const char *failed_path) {
       migrated_result.geometric_verification_result_id;
   lardon3d_project_db_close(database);
   CHECK(query_integer(
-      v11_path, "SELECT value FROM metadata WHERE key='schema_version'", 18));
+      v11_path, "SELECT value FROM metadata WHERE key='schema_version'", 19));
   CHECK(
       query_integer(v11_path,
                     "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
@@ -525,7 +530,7 @@ static bool test_migration(const char *v11_path, const char *failed_path) {
                     0));
   CHECK(lardon3d_project_db_open(failed_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 18);
+  CHECK(lardon3d_project_db_schema_version(database) == 19);
   lardon3d_project_db_close(database);
   return true;
 }

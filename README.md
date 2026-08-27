@@ -25,11 +25,14 @@ persistante, enrichissable et versionnable.
 - **Project** : cycle de vie persistant, identité stable et Project Database ouverte
 - **Import** : premier task kind de production, exécuté par la file générique en lots bornés et reprenables
 - **ScanSet / Image Catalog v1** : acquisitions, images logiques, provenance et assets SHA-256 persistants et paginés
+- **Capture / Asset Provenance v1** : Captures par ScanSet, associations source/dérivé
+  et sélection explicite d'une image logique — IMPLEMENTED / VALIDATION PENDING
 - **Feature Store v1/v2** : ORB U8×32, SIFT/RootSIFT F32×128 et lecture typée bornée
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v18** : résultats v16 et payload durable typé Sparse SfM Gate F
+- **Project Database v19** : fondations v18 préservées, avec Capture / Asset
+  Provenance additive
 - **Sparse SfM Gates C/D/E** : géométrie calibrée, noyau incrémental et Bundle
   Adjustment final par composante, tous PASS / FROZEN
 - **Sparse SfM Gate F** : orchestration durable, runtime gouverné et publication

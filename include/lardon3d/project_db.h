@@ -10,7 +10,7 @@
 #include <lardon3d/sparse_sfm_incremental.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 18,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 19,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -128,6 +128,38 @@ typedef struct {
   uint64_t producer_task_id;
   int64_t imported_at;
 } Lardon3DProjectDbImage;
+
+typedef struct {
+  uint64_t capture_id;
+  uint64_t scanset_id;
+  int64_t created_at;
+} Lardon3DProjectDbCapture;
+
+typedef enum {
+  LARDON3D_DB_CAPTURE_ASSET_SOURCE = 1,
+  LARDON3D_DB_CAPTURE_ASSET_DERIVED = 2,
+} Lardon3DProjectDbCaptureAssetRole;
+
+typedef struct {
+  uint64_t capture_id;
+  uint64_t asset_id;
+  Lardon3DProjectDbCaptureAssetRole role;
+} Lardon3DProjectDbCaptureAsset;
+
+typedef enum {
+  LARDON3D_DB_ASSET_DERIVATION_GENERIC_VERSIONED = 1,
+} Lardon3DProjectDbAssetDerivationKind;
+
+typedef struct {
+  uint64_t parent_asset_id;
+  uint64_t child_asset_id;
+  Lardon3DProjectDbAssetDerivationKind kind;
+  uint32_t version;
+  unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
+  bool has_producer_task;
+  uint64_t producer_task_id;
+  int64_t created_at;
+} Lardon3DProjectDbAssetDerivation;
 
 typedef struct {
   uint64_t candidate_pair_id;
@@ -469,6 +501,10 @@ Lardon3DProjectDbResult lardon3d_project_db_register_image(
     uint64_t size_bytes, const char *original_name, const char *source_path,
     uint64_t producer_task_id, int64_t imported_at, Lardon3DProjectDbImageRegisterStatus *status,
     Lardon3DProjectDbImage *image);
+Lardon3DProjectDbResult lardon3d_project_db_register_image_asset(
+    Lardon3DProjectDb *database,
+    const unsigned char sha256[LARDON3D_PROJECT_DB_SHA256_SIZE], const char *asset_path,
+    uint64_t size_bytes, int64_t created_at, Lardon3DProjectDbImageAsset *asset);
 Lardon3DProjectDbResult lardon3d_project_db_load_image(Lardon3DProjectDb *database,
                                                        uint64_t image_id,
                                                        Lardon3DProjectDbImage *image,
@@ -481,6 +517,33 @@ Lardon3DProjectDbResult lardon3d_project_db_list_images(Lardon3DProjectDb *datab
                                                         size_t capacity, size_t *count);
 Lardon3DProjectDbResult lardon3d_project_db_count_images(Lardon3DProjectDb *database,
                                                          uint64_t scanset_id, uint64_t *count);
+Lardon3DProjectDbResult lardon3d_project_db_create_capture(
+    Lardon3DProjectDb *database, uint64_t scanset_id, int64_t created_at,
+    Lardon3DProjectDbCapture *capture);
+Lardon3DProjectDbResult lardon3d_project_db_load_capture(
+    Lardon3DProjectDb *database, uint64_t capture_id, Lardon3DProjectDbCapture *capture);
+Lardon3DProjectDbResult lardon3d_project_db_list_captures(
+    Lardon3DProjectDb *database, uint64_t scanset_id, uint64_t after_capture_id,
+    Lardon3DProjectDbCapture *captures, size_t capacity, size_t *count);
+Lardon3DProjectDbResult lardon3d_project_db_attach_capture_asset(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t asset_id,
+    Lardon3DProjectDbCaptureAssetRole role);
+Lardon3DProjectDbResult lardon3d_project_db_list_capture_assets(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t after_asset_id,
+    Lardon3DProjectDbCaptureAsset *assets, size_t capacity, size_t *count);
+Lardon3DProjectDbResult lardon3d_project_db_attach_capture_image(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t image_id);
+Lardon3DProjectDbResult lardon3d_project_db_find_capture_for_image(
+    Lardon3DProjectDb *database, uint64_t image_id, Lardon3DProjectDbCapture *capture);
+Lardon3DProjectDbResult lardon3d_project_db_record_asset_derivation(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbAssetDerivation *derivation);
+Lardon3DProjectDbResult lardon3d_project_db_load_asset_derivation(
+    Lardon3DProjectDb *database, uint64_t child_asset_id,
+    Lardon3DProjectDbAssetDerivation *derivation);
+Lardon3DProjectDbResult lardon3d_project_db_set_selected_capture_image(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t image_id);
+Lardon3DProjectDbResult lardon3d_project_db_get_selected_capture_image(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t *image_id);
 Lardon3DProjectDbResult lardon3d_project_db_create_candidate_pair(
     Lardon3DProjectDb *database, uint64_t image_id_a, uint64_t image_id_b, int64_t created_at,
     Lardon3DProjectDbCandidatePair *pair);

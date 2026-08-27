@@ -13,8 +13,10 @@ l'import.
 ```text
 Project
   └── ScanSet (acquisition logique)
-        └── Image (observation logique)
-              └── Image Asset (contenu physique géré)
+        └── Capture (observation physique potentielle)
+              ├── Image Assets source/dérivés (contenus physiques gérés)
+              ├── Images (représentations logiques)
+              └── zéro ou une Image sélectionnée
 ```
 
 - `scanset_id` identifie durablement une acquisition, indépendamment de son
@@ -25,6 +27,15 @@ Project
   chemin relatif décrivent le fichier géré par Lardon3D.
 - La provenance d'une image conserve son nom original, son chemin source, son
   instant d'import et, s'il existe, le `task_id` importeur.
+- Un `Capture` est une association de catalogue dans un unique ScanSet ; il ne
+  remplace pas `image_id`. Il peut conserver par exemple les assets RAW et JPEG
+  d'un même déclenchement, sans inférer ce lien à partir de leurs noms.
+- Seule une image logique explicitement sélectionnée est la représentation
+  courante proposée au pipeline scientifique ultérieur. La sélection ne modifie
+  ni l'image, ni son asset, ni les résultats existants.
+- Une dérivation asset bornée parent→enfant, versionnée par fingerprint, rend
+  possible une future image de travail RAW ou frame vidéo sans prétendre que
+  RAW ou vidéo sont déjà importés.
 
 Un contenu identique n'implique pas une identité logique unique. Dans un même
 ScanSet, le couple `(scanset_id, asset_id)` est unique : réimporter le même

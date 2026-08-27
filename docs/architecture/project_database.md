@@ -1,5 +1,24 @@
 # Base de données projet Lardon3D
 
+## Capture / Asset Provenance v1 — Project DB v19
+
+**IMPLEMENTED / VALIDATION PENDING.** La migration transactionnelle v18→v19
+ajoute seulement une fondation de catalogue : `captures`, `capture_images`,
+`capture_assets`, `capture_selections` et `asset_derivations`. Un `Capture`
+appartient à un seul ScanSet ; il n'est ni un `image_id` ni une nouvelle identité
+scientifique. Les assets source et dérivés peuvent lui être associés sans créer
+d'image logique. Une sélection courante optionnelle référence exactement une
+image déjà associée au Capture et ne modifie jamais cette image, son asset, ni
+les résultats scientifiques existants.
+
+`asset_derivations` est volontairement limité à un parent asset et un enfant
+asset, avec kind/version et fingerprint canonique de 32 octets. Il n'est pas un
+DAG générique et ne réalise aucun développement RAW ni extraction vidéo. La
+migration crée, par `image_id` croissant, un Capture legacy indépendant pour
+chaque image v18, relie son asset comme source et rend cette même image
+sélectionnée. Aucun nom de fichier, EXIF ou rapprochement de siblings n'est
+interprété ; les IDs et la sémantique v18 restent inchangés.
+
 ## Phase H — décision Project DB v18
 
 **PASS / FROZEN.** La migration transactionnelle v17→v18
@@ -65,7 +84,9 @@ persistée exactement ; seule une composante de graphe non reconstruite est
 omise. Les comptes et métriques globaux décrivent exclusivement la géométrie
 effectivement persistée. Aucun placeholder ni table diagnostique n'est ajouté.
 
-> Version courante : **v18**. La migration transactionnelle v17→v18 ajoute le
+> Version courante : **v19**. La migration transactionnelle v18→v19 ajoute la
+> fondation Capture/Asset Provenance décrite ci-dessus sans modifier les tables
+> scientifiques historiques. La migration transactionnelle v17→v18 ajoute le
 > discriminateur générique nullable et les deux tables H minimales décrites
 > ci-dessus. La migration v16→v17 ajoute le
 > payload durable typé `sparse_sfm_tasks`. La migration transactionnelle v15→v16 ajoute
@@ -808,8 +829,8 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED** — SQLite système, schéma v18 et migrations séquentielles
-v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14→v15→v16→v17→v18, identité projet, transactions
+**IMPLEMENTED / VALIDATION PENDING** — SQLite système, schéma v19 et migrations séquentielles
+v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14→v15→v16→v17→v18→v19, identité projet, transactions
 tâche+checkpoint, pagination de reprise et artefacts génériques.
 
 **IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,
@@ -828,6 +849,12 @@ fenêtre de queue non bloquante et résumé consultable.
 bornée à 256. Les identités sont des `INTEGER PRIMARY KEY AUTOINCREMENT` SQLite
 allouées sous transaction ; aucun `SELECT MAX()+1` n'est utilisé en
 fonctionnement normal et une identité validée n'est jamais réutilisée.
+
+**IMPLEMENTED / VALIDATION PENDING** — Capture / Asset Provenance v1 :
+Capture borné par ScanSet, associations explicites asset/image, sélection
+courante optionnelle et dérivation asset à parent unique. RAW, vidéo,
+appariement automatique et toute exécution de dérivation restent hors de cette
+fondation.
 
 La migration v3→v4 ne lit pas `manifest.tsv`. Elle crée le ScanSet legacy et
 positionne `metadata.legacy_image_catalog_pending=1` dès qu'une ancienne tâche

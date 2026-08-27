@@ -58,6 +58,10 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 
 ### Phase 5 : Reconstruction
 - ✅ Orchestration de reconstruction incrémentale H v1 — **PASS / FROZEN**
+- 🔄 Capture / Asset Provenance v1 — **IMPLEMENTED / VALIDATION PENDING** :
+  Project DB v19 ajoute les Captures par ScanSet, les associations source/dérivé
+  et la sélection explicite d'une image logique, sans changer le pipeline
+  scientifique. L'ingestion RAW et vidéo reste PLANNED.
 - ✅ MVS-M1 — **PASS / FROZEN** : identité dense `L3DMDID2`
   v2 (220 octets) liant reconstruction de base, jeu d'images source,
   `calibration_scope_identity` historique, binding numérique exact `L3DMCAL1` v1,

@@ -66,7 +66,7 @@ int main() {
   Lardon3DProjectDb *database = nullptr;
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY]{};
   CHECK(lardon3d_project_db_open(path.c_str(), &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 18);
+  CHECK(lardon3d_project_db_schema_version(database) == 19);
 
   sqlite3 *raw = nullptr;
   CHECK(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
