@@ -2,7 +2,7 @@
 
 ## Capture / Asset Provenance v1 — Project DB v19
 
-**IMPLEMENTED / VALIDATION PENDING.** La migration transactionnelle v18→v19
+**PASS / FROZEN.** La migration transactionnelle v18→v19
 ajoute seulement une fondation de catalogue : `captures`, `capture_images`,
 `capture_assets`, `capture_selections` et `asset_derivations`. Un `Capture`
 appartient à un seul ScanSet ; il n'est ni un `image_id` ni une nouvelle identité
@@ -19,7 +19,7 @@ automatique.
 
 ### S3-E — Orchestration d'ingestion multi-source v1
 
-**IMPLEMENTED / VALIDATION PENDING.** S3-E reçoit un ScanSet explicite et au
+**PASS / FROZEN.** S3-E reçoit un ScanSet explicite et au
 plus 64 chemins source explicitement fournis par l'appelant ; il ne parcourt
 jamais un répertoire. Chaque fichier est d'abord publié comme asset immuable
 géré, puis son évidence S3-D est extraite depuis ces octets publiés. Le
@@ -58,7 +58,7 @@ interprété ; les IDs et la sémantique v18 restent inchangés.
 
 ### Couche finale bornée de découverte et de planification de campagne
 
-**IMPLEMENTED / VALIDATION PENDING.** Cette couche reçoit de 1 à 64 racines
+**PASS / FROZEN.** Cette couche reçoit de 1 à 64 racines
 absolues, lexicalement normalisées et explicitement fournies par l'appelant.
 Elle ne parcourt pas récursivement : chaque racine et chacune de ses entrées
 immédiates régulières est inspectée sans suivre de lien symbolique. Seuls les
@@ -116,7 +116,7 @@ sont applicables.
 
 ### S3-D — Acquisition Pairing Evidence v1
 
-**IMPLEMENTED / VALIDATION PENDING — non FROZEN.** S3-D extrait, depuis des
+**PASS / FROZEN.** S3-D extrait, depuis des
 assets source immuables, un ensemble fixe et borné de métadonnées d'évidence
 d'appariement. Pour les RAW, l'extraction est metadata-only avec LibRaw ; pour
 les JPEG, elle utilise libexif. Cette évidence n'est pas une identité
@@ -946,7 +946,7 @@ ouvert.
 
 ## Statut
 
-**IMPLEMENTED / VALIDATION PENDING** — SQLite système, schéma v19 et migrations séquentielles
+**PASS / FROZEN** — SQLite système, schéma v19 et migrations séquentielles
 v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14→v15→v16→v17→v18→v19, identité projet, transactions
 tâche+checkpoint, pagination de reprise et artefacts génériques.
 
@@ -967,11 +967,11 @@ bornée à 256. Les identités sont des `INTEGER PRIMARY KEY AUTOINCREMENT` SQLi
 allouées sous transaction ; aucun `SELECT MAX()+1` n'est utilisé en
 fonctionnement normal et une identité validée n'est jamais réutilisée.
 
-**IMPLEMENTED / VALIDATION PENDING** — Capture / Asset Provenance v1 :
+**PASS / FROZEN** — Capture / Asset Provenance v1 :
 Capture borné par ScanSet, associations explicites asset/image, sélection
-courante optionnelle et dérivation asset à parent unique. RAW, vidéo,
-appariement automatique et toute exécution de dérivation restent hors de cette
-fondation.
+courante optionnelle et dérivation asset à parent unique. S3-B1/S3-D/S3-E et la
+campagne bornée réutilisent cette fondation sans redéfinir ses identités ; la
+vidéo reste hors de S3.
 
 La migration v3→v4 ne lit pas `manifest.tsv`. Elle crée le ScanSet legacy et
 positionne `metadata.legacy_image_catalog_pending=1` dès qu'une ancienne tâche

@@ -20,16 +20,16 @@ persistante, enrichissable et versionnable.
 
 ## État actuel
 
-### Briques implémentées (IMPLEMENTED)
+### Briques validées
 
 - **Project** : cycle de vie persistant, identité stable et Project Database ouverte
 - **Import** : premier task kind de production, exécuté par la file générique en lots bornés et reprenables
 - **ScanSet / Image Catalog v1** : acquisitions, images logiques, provenance et assets SHA-256 persistants et paginés
 - **Capture / Asset Provenance v1** : Captures par ScanSet, associations source/dérivé
-  et sélection explicite d'une image logique — IMPLEMENTED / VALIDATION PENDING
+  et sélection explicite d'une image logique — PASS / FROZEN
 - **Découverte et planification de campagne bornées** : racines explicites,
-  plan metadata-only et exécution par groupes via S3-E — IMPLEMENTED /
-  VALIDATION PENDING
+  plan metadata-only et exécution par groupes via S3-E — PASS / FROZEN ; campagne
+  A6000 réelle validée sur 953 ARW + 953 JPEG MPF
 - **Feature Store v1/v2** : ORB U8×32, SIFT/RootSIFT F32×128 et lecture typée bornée
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
@@ -60,19 +60,19 @@ persistante, enrichissable et versionnable.
 - **Resource Snapshot** : capture instantanée des ressources
 - **Resource Governor** : arbitrage centralisé des budgets et réservations
 
-### Briques en cours de consolidation
+### Prochaine tranche
 
-- Intégration scheduler ↔ governor avec séquences adaptatives
-- Documentation architecture
-- **Visual Index v1** : LSH ORB persistant, incrémental et validé, avec recherche top-K bornée
+- **Exécution durable de campagne d'acquisition** : confirmations et progression
+  persistantes, matérialisation S3-E incrémentale, reprise par `capture_id` retenu
+  et admission par les Task/Scheduler/Governor existants. Voir la
+  [roadmap canonique](docs/roadmap/roadmap.md).
 
-### Briques prévues (PLANNED)
+### Plus tard / différé
 
-- Graphe de dépendances pour ordonner les futures reprises interdépendantes
-- DAG de dépendances
-- Pools de workers multiples (CPU/GPU/IO)
-- Publication live validée
-- Viewer intégré
+- publication durable dense/mesh et scratch SSD externe optionnel gouverné ;
+- workflow TUI de confirmation/progression et sources mixtes multi-ScanSet ;
+- vidéo/keyframes, coverage assistance, viewer et exports ;
+- DAG général, pools multiples et parallélisme inter-tâches restent différés.
 
 ## Architecture
 
