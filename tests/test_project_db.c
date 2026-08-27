@@ -1066,22 +1066,24 @@ static bool run_test(void) {
 
   /* S1: Capture is a catalog policy layer; image_id and asset_id stay immutable. */
   Lardon3DProjectDbCapture capture, other_capture, mapped_capture;
-  CHECK(lardon3d_project_db_create_capture(database, replacement_scanset.scanset_id, 20,
-                                           &capture) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_find_capture_for_image(database, pair_image.image_id, &capture) ==
+        LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_create_capture(database, replacement_scanset.scanset_id, 21,
                                            &other_capture) == LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_create_capture(database, UINT64_C(999999), 22, &mapped_capture) ==
         LARDON3D_PROJECT_DB_CONSTRAINT);
   Lardon3DProjectDbCapture capture_page[2];
   size_t capture_count = 0;
-  CHECK(lardon3d_project_db_list_captures(database, replacement_scanset.scanset_id, 0,
+  CHECK(lardon3d_project_db_list_captures(database, replacement_scanset.scanset_id,
+                                          capture.capture_id - 1,
                                           capture_page, 1, &capture_count) ==
             LARDON3D_PROJECT_DB_OK &&
         capture_count == 1 && capture_page[0].capture_id == capture.capture_id);
   uint64_t selected_image = 0;
   CHECK(lardon3d_project_db_get_selected_capture_image(database, capture.capture_id,
                                                         &selected_image) ==
-        LARDON3D_PROJECT_DB_NOT_FOUND);
+            LARDON3D_PROJECT_DB_OK &&
+        selected_image == pair_image.image_id);
   unsigned char raw_hash[LARDON3D_PROJECT_DB_SHA256_SIZE] = {5};
   char raw_asset_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
   asset_path_for_hash(raw_hash, raw_asset_path);
@@ -1093,7 +1095,7 @@ static bool run_test(void) {
             LARDON3D_DB_CAPTURE_ASSET_SOURCE) == LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_attach_capture_asset(
             database, capture.capture_id, pair_image.asset_id,
-            LARDON3D_DB_CAPTURE_ASSET_SOURCE) == LARDON3D_PROJECT_DB_OK);
+            LARDON3D_DB_CAPTURE_ASSET_SOURCE) == LARDON3D_PROJECT_DB_CONSTRAINT);
   CHECK(lardon3d_project_db_attach_capture_asset(
             database, capture.capture_id, raw_asset.asset_id,
             (Lardon3DProjectDbCaptureAssetRole)99) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
@@ -1108,6 +1110,17 @@ static bool run_test(void) {
             database, replacement_scanset.scanset_id, developed_hash, developed_asset_path, 3,
             "developed.png", "/source/developed.png", 0, 23, &identity_status,
             &developed_image) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DProjectDbCapture developed_capture;
+  CHECK(lardon3d_project_db_find_capture_for_image(database, developed_image.image_id,
+                                                   &developed_capture) == LARDON3D_PROJECT_DB_OK);
+  lardon3d_project_db_close(database);
+  database = NULL;
+  char remove_developed_capture[256];
+  CHECK(snprintf(remove_developed_capture, sizeof(remove_developed_capture),
+                 "PRAGMA foreign_keys=ON;DELETE FROM captures WHERE capture_id=%llu",
+                 (unsigned long long)developed_capture.capture_id) > 0);
+  CHECK(execute_test_sql(database_path, remove_developed_capture));
+  CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_attach_capture_asset(
             database, capture.capture_id, developed_image.asset_id,
             LARDON3D_DB_CAPTURE_ASSET_DERIVED) == LARDON3D_PROJECT_DB_OK);
@@ -1118,7 +1131,7 @@ static bool run_test(void) {
             LARDON3D_PROJECT_DB_OK &&
         capture_asset_count == 3);
   CHECK(lardon3d_project_db_attach_capture_image(database, capture.capture_id,
-                                                 pair_image.image_id) == LARDON3D_PROJECT_DB_OK);
+                                                 pair_image.image_id) == LARDON3D_PROJECT_DB_CONSTRAINT);
   CHECK(lardon3d_project_db_attach_capture_image(database, other_capture.capture_id,
                                                  pair_image.image_id) ==
         LARDON3D_PROJECT_DB_CONSTRAINT);
@@ -1141,6 +1154,16 @@ static bool run_test(void) {
                                                         &selected_image) ==
             LARDON3D_PROJECT_DB_OK &&
         selected_image == developed_image.image_id && pair_image.image_id != developed_image.image_id);
+  CHECK(lardon3d_project_db_register_image(
+            database, replacement_scanset.scanset_id, third_hash, third_asset_path, 1,
+            "pair-a.jpg", "/source/pair-a.jpg", 0, 3, &identity_status,
+            &pair_image) == LARDON3D_PROJECT_DB_OK &&
+        identity_status == LARDON3D_PROJECT_DB_IMAGE_ALREADY_PRESENT);
+  CHECK(lardon3d_project_db_get_selected_capture_image(database, capture.capture_id,
+                                                        &selected_image) ==
+            LARDON3D_PROJECT_DB_OK &&
+        selected_image == developed_image.image_id);
+  CHECK(query_integer(database_path, "SELECT count(*) FROM asset_derivations", 0));
   Lardon3DProjectDbAssetDerivation derivation = {
       .parent_asset_id = raw_asset.asset_id,
       .child_asset_id = developed_image.asset_id,

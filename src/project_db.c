@@ -2510,6 +2510,80 @@ static const char image_select[] =
     "a.state,a.created_at,i.producer_task_id,i.imported_at FROM images i JOIN image_assets a ON "
     "a.asset_id=i.asset_id ";
 
+static Lardon3DProjectDbResult ensure_capture_for_registered_image_locked(
+    Lardon3DProjectDb *database, uint64_t scanset_id, uint64_t asset_id, uint64_t image_id) {
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database, "SELECT capture_id FROM capture_images WHERE image_id=?1", &statement);
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    return result;
+  }
+  (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)image_id);
+  int code = sqlite3_step(statement);
+  if (code == SQLITE_ROW) {
+    (void)sqlite3_finalize(statement);
+    return LARDON3D_PROJECT_DB_OK;
+  }
+  (void)sqlite3_finalize(statement);
+  if (code != SQLITE_DONE) {
+    return sqlite_result(database, code, "find capture for registered image");
+  }
+
+  result = prepare(
+      database, "INSERT INTO captures(scanset_id,created_at) "
+                "SELECT scanset_id,imported_at FROM images WHERE image_id=?1 AND scanset_id=?2",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)image_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)scanset_id);
+    result = step_done(database, statement, "create initial image capture");
+    statement = NULL;
+  }
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    return result;
+  }
+  if (sqlite3_changes(database->connection) != 1) {
+    return LARDON3D_PROJECT_DB_CORRUPT;
+  }
+  sqlite3_int64 capture_id = sqlite3_last_insert_rowid(database->connection);
+  if (capture_id <= 0) {
+    return LARDON3D_PROJECT_DB_CORRUPT;
+  }
+
+  result = prepare(database,
+                   "INSERT INTO capture_assets(capture_id,asset_id,role) VALUES(?1,?2,1)",
+                   &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, capture_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)asset_id);
+    result = step_done(database, statement, "attach initial image source asset");
+    statement = NULL;
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(database,
+                     "INSERT INTO capture_images(capture_id,image_id) VALUES(?1,?2)",
+                     &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, capture_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)image_id);
+    result = step_done(database, statement, "attach initial image capture");
+    statement = NULL;
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(database,
+                     "INSERT INTO capture_selections(capture_id,image_id) VALUES(?1,?2)",
+                     &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, capture_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)image_id);
+    result = step_done(database, statement, "select initial capture image");
+    statement = NULL;
+  }
+  return result;
+}
+
 Lardon3DProjectDbResult lardon3d_project_db_register_image_asset(
     Lardon3DProjectDb *database,
     const unsigned char sha256[LARDON3D_PROJECT_DB_SHA256_SIZE], const char *asset_path,
@@ -2681,6 +2755,10 @@ Lardon3DProjectDbResult lardon3d_project_db_register_image(
     }
     (void)sqlite3_finalize(statement);
     statement = NULL;
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = ensure_capture_for_registered_image_locked(database, scanset_id, (uint64_t)asset_id,
+                                                        (uint64_t)image_id);
   }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit image register");
@@ -6346,12 +6424,14 @@ lardon3d_project_db_test_delete_catalog_identity(Lardon3DProjectDb *database, ui
   Lardon3DProjectDbResult result =
       execute(database, "BEGIN IMMEDIATE", "begin catalog identity deletion test");
   const char *sql[] = {
+      ("DELETE FROM captures WHERE capture_id IN "
+       "(SELECT capture_id FROM capture_images WHERE image_id=?1)"),
       "DELETE FROM images WHERE image_id=?1",
       "DELETE FROM image_assets WHERE asset_id=?1",
       "DELETE FROM scansets WHERE scanset_id=?1",
   };
-  const uint64_t ids[] = {image_id, asset_id, scanset_id};
-  for (size_t index = 0; index < 3 && result == LARDON3D_PROJECT_DB_OK; ++index) {
+  const uint64_t ids[] = {image_id, image_id, asset_id, scanset_id};
+  for (size_t index = 0; index < 4 && result == LARDON3D_PROJECT_DB_OK; ++index) {
     sqlite3_stmt *statement = NULL;
     result = prepare(database, sql[index], &statement);
     if (result == LARDON3D_PROJECT_DB_OK) {

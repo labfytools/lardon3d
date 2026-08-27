@@ -115,6 +115,26 @@ import_thread(void *userdata)
 }
 
 static bool
+has_initial_capture(Lardon3DProjectDb *database, const Lardon3DProjectDbImage *image,
+    const Lardon3DProjectDbImageAsset *asset, uint64_t scanset_id,
+    Lardon3DProjectDbCapture *capture)
+{
+    if (lardon3d_project_db_find_capture_for_image(database, image->image_id, capture)
+            != LARDON3D_PROJECT_DB_OK
+        || capture->scanset_id != scanset_id) return false;
+    uint64_t selected_image = 0;
+    if (lardon3d_project_db_get_selected_capture_image(database, capture->capture_id,
+            &selected_image) != LARDON3D_PROJECT_DB_OK
+        || selected_image != image->image_id) return false;
+    Lardon3DProjectDbCaptureAsset capture_asset;
+    size_t count = 0;
+    return lardon3d_project_db_list_capture_assets(database, capture->capture_id, 0,
+               &capture_asset, 1, &count) == LARDON3D_PROJECT_DB_OK
+        && count == 1 && capture_asset.asset_id == asset->asset_id
+        && capture_asset.role == LARDON3D_DB_CAPTURE_ASSET_SOURCE;
+}
+
+static bool
 run_test(void)
 {
     char root[] = "/tmp/lardon3d-catalog-v1-XXXXXX";
@@ -139,6 +159,9 @@ run_test(void)
     CHECK(lardon3d_image_catalog_create_scanset(&state, "Campagne générale", &a));
     CHECK(lardon3d_image_catalog_create_scanset(&state, "Pièce démontée", &b));
     CHECK(a.scanset_id != b.scanset_id);
+    Lardon3DProjectDbCapture preexisting_capture;
+    CHECK(lardon3d_project_db_create_capture(database, a.scanset_id, 1,
+        &preexisting_capture) == LARDON3D_PROJECT_DB_OK);
     Lardon3DProjectDbScanSet scanset_page[2]; size_t scanset_count = 0;
     CHECK(lardon3d_project_db_list_scansets(database, 0, scanset_page, 1,
         &scanset_count) == LARDON3D_PROJECT_DB_OK && scanset_count == 1
@@ -163,14 +186,20 @@ run_test(void)
     CHECK(lardon3d_image_catalog_import_file(&state, a.scanset_id, source_a, 0,
         &image_a, &asset_a) == LARDON3D_IMAGE_CATALOG_IMPORTED);
     CHECK(canonical_asset_path(asset_a.path));
+    Lardon3DProjectDbCapture capture_a, capture_b, capture_different;
+    CHECK(has_initial_capture(database, &image_a, &asset_a, a.scanset_id, &capture_a));
+    CHECK(capture_a.capture_id != image_a.image_id);
     CHECK(lardon3d_image_catalog_import_file(&state, a.scanset_id, source_b, 0,
         &duplicate_a, &duplicate_asset) == LARDON3D_IMAGE_CATALOG_ALREADY_PRESENT);
     CHECK(image_a.image_id == duplicate_a.image_id
         && asset_a.asset_id == duplicate_asset.asset_id);
+    CHECK(has_initial_capture(database, &duplicate_a, &duplicate_asset, a.scanset_id, &capture_a));
     CHECK(lardon3d_image_catalog_import_file(&state, b.scanset_id, source_b, 0,
         &image_b, &asset_b) == LARDON3D_IMAGE_CATALOG_IMPORTED);
     CHECK(image_b.image_id != image_a.image_id && asset_b.asset_id == asset_a.asset_id);
     CHECK(strcmp(asset_b.path, asset_a.path) == 0);
+    CHECK(has_initial_capture(database, &image_b, &asset_b, b.scanset_id, &capture_b));
+    CHECK(capture_b.capture_id != capture_a.capture_id);
 
     char different_dir[PATH_MAX], same_name[PATH_MAX];
     CHECK(join_path(different_dir, root, "different") && mkdir(different_dir, 0700) == 0);
@@ -184,6 +213,9 @@ run_test(void)
         && different_asset.asset_id != asset_a.asset_id
         && canonical_asset_path(different_asset.path)
         && strcmp(different_asset.path, asset_a.path) != 0);
+    CHECK(has_initial_capture(database, &different_image, &different_asset, a.scanset_id,
+        &capture_different));
+    CHECK(capture_different.capture_id != capture_a.capture_id);
 
     char orphan_source[PATH_MAX], asset_root[PATH_MAX];
     CHECK(join_path(orphan_source, root, "orphan.jpg"));
