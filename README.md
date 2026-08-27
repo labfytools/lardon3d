@@ -29,7 +29,7 @@ persistante, enrichissable et versionnable.
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v17** : résultats v16 et payload durable typé Sparse SfM Gate F
+- **Project Database v18** : résultats v16 et payload durable typé Sparse SfM Gate F
 - **Sparse SfM Gates C/D/E** : géométrie calibrée, noyau incrémental et Bundle
   Adjustment final par composante, tous PASS / FROZEN
 - **Sparse SfM Gate F** : orchestration durable, runtime gouverné et publication
@@ -44,8 +44,7 @@ persistante, enrichissable et versionnable.
   et aux paramètres ; `L3DMDID2` v2 (220 octets) et binding `L3DMCAL1` v1 ; PLY
   OpenMVS binaire little-endian validé (en-tête <= 1 MiB en octets bruts,
   LF/CRLF acceptés, CR seul malformé rejeté, ligne <= 64 KiB), fusionné en
-  mode 0 — IMPLEMENTED /
-  VALIDATION PENDING
+  mode 0 — PASS / FROZEN
 - **Geometric Verification Model v1** : identité, masque d'inliers et modèle 3×3 persistants
 - **Geometric Verifier v1** : Fundamental USAC/MAGSAC, reprise et lots resource-aware
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
@@ -183,9 +182,9 @@ fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ; ces deux ma
 restent sur OpenCV L2. Track Model/Builder, les primitives géométriques Gate C,
 le noyau Sparse SfM incrémental Gate D et le Bundle Adjustment final Gate E sont
 implémentés et validés. L'orchestration Sparse SfM Gate F est PASS / FROZEN ;
-l'intégration Governor Gate G est **PASS / FROZEN**. MVS-M1 est **IMPLEMENTED /
-VALIDATION PENDING** : une frontière OpenMVS v2.4.0 externe et bornée, sans
-publication dense durable ni MVS complet. Les sources sont liées par SHA-256
+l'intégration Governor Gate G est **PASS / FROZEN**. MVS-M1 est **PASS / FROZEN** :
+une frontière OpenMVS v2.4.0 externe et bornée, sans publication dense durable
+ni MVS complet. Les sources sont liées par SHA-256
 complet, borné à 1 GiB par fichier régulier (sans budget agrégé de dataset) ; les
 octets source restent un binding distinct de l'identité dense. Celle-ci lie la
 reconstruction de base, le jeu d'images source, le `calibration_scope_identity`

@@ -58,7 +58,7 @@ Lardon3D suit une feuille de route ordonnée qui privilégie la stabilité et la
 
 ### Phase 5 : Reconstruction
 - ✅ Orchestration de reconstruction incrémentale H v1 — **PASS / FROZEN**
-- 🔄 MVS-M1 — **IMPLEMENTED / VALIDATION PENDING** : identité dense `L3DMDID2`
+- ✅ MVS-M1 — **PASS / FROZEN** : identité dense `L3DMDID2`
   v2 (220 octets) liant reconstruction de base, jeu d'images source,
   `calibration_scope_identity` historique, binding numérique exact `L3DMCAL1` v1,
   backend et paramètres ; les octets source restent liés séparément ; frontière

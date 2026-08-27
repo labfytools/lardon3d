@@ -255,7 +255,7 @@ durables, scratch/SSD, GPU SfM/BA et nouvelles composantes déconnectées.
 
 ### MVS-M1. Dense externe borné
 
-MVS-M1 est **IMPLEMENTED / VALIDATION PENDING**. Son identité scientifique lie
+MVS-M1 est **PASS / FROZEN**. Son identité scientifique lie
 l'identité de reconstruction de base, l'identité du jeu d'images source, le
 `calibration_scope_identity` historique, le binding numérique de calibration MVS,
 le backend et les paramètres. Les octets des sources restent liés séparément par
@@ -346,7 +346,10 @@ le backend de poursuivre et de réussir.
 Restent différés : publication dense dans la Project DB, Task Runtime,
 Queue/Governor, `ResourceEstimate`, annulation, publication dense durable,
 mesh, texturing, viewer, scratch/SSD et infrastructure backend généralisée.
-Ce jalon ne marque ni MVS complet ni PASS / FROZEN.
+MVS-M1 lui-même est PASS / FROZEN ; cela ne marque pas le pipeline dense/MVS
+complet comme PASS / FROZEN. La publication dense durable, l'intégration
+Task/Queue/Governor, le mesh, le texturing, le viewer et les autres étapes
+denses différées restent en dehors de MVS-M1.
 
 ---
 
@@ -457,7 +460,7 @@ and Sparse SfM Gate C geometry are **IMPLEMENTED**. The synchronous in-memory
 incremental Sparse SfM Gate D core is **IMPLEMENTED / PASS**, and final
 per-component Gate E BA is **PASS / FROZEN**. Gate F orchestration and Gate G
 Governor integration are **PASS / FROZEN**. Phase H v1 is **PASS / FROZEN**.
-MVS-M1 is **IMPLEMENTED / VALIDATION PENDING**: `L3DMDID2` v2 (220-byte) dense
+MVS-M1 is **PASS / FROZEN**: `L3DMDID2` v2 (220-byte) dense
 identity binds the base reconstruction, source-image-set,
 historical `calibration_scope_identity`, exact `L3DMCAL1` v1 numeric calibration
 binding, backend and parameters, while source bytes remain separately bound;
