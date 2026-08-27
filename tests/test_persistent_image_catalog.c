@@ -105,6 +105,13 @@ typedef struct {
     uint64_t image_id;
 } ImportThread;
 
+typedef struct {
+    Lardon3DProjectDb *database;
+    uint64_t capture_id;
+    uint64_t asset_id;
+    Lardon3DProjectDbResult result;
+} AttachSourceThread;
+
 static void *
 import_thread(void *userdata)
 {
@@ -114,6 +121,15 @@ import_thread(void *userdata)
     thread->result = lardon3d_image_catalog_import_file(thread->state,
         thread->scanset_id, thread->path, 0, &image, &asset);
     thread->image_id = image.image_id;
+    return NULL;
+}
+
+static void *
+attach_source_thread(void *userdata)
+{
+    AttachSourceThread *thread = userdata;
+    thread->result = lardon3d_project_db_attach_capture_source_asset(thread->database,
+        thread->capture_id, thread->asset_id);
     return NULL;
 }
 
@@ -270,6 +286,90 @@ run_test(void)
         || (contexts[1].result == LARDON3D_IMAGE_CATALOG_IMPORTED
             && contexts[0].result == LARDON3D_IMAGE_CATALOG_ALREADY_PRESENT))
         && contexts[0].image_id == contexts[1].image_id);
+
+    /* S3-C: explicit, idempotent SOURCE association does not mutate catalog policy. */
+    Lardon3DProjectDbImage concurrent_image;
+    Lardon3DProjectDbImageAsset concurrent_asset;
+    CHECK(lardon3d_project_db_load_image(database, contexts[0].image_id,
+        &concurrent_image, &concurrent_asset) == LARDON3D_PROJECT_DB_OK);
+    uint64_t image_count_a_before = 0, image_count_b_before = 0;
+    CHECK(lardon3d_project_db_count_images(database, a.scanset_id,
+        &image_count_a_before) == LARDON3D_PROJECT_DB_OK);
+    CHECK(lardon3d_project_db_count_images(database, b.scanset_id,
+        &image_count_b_before) == LARDON3D_PROJECT_DB_OK);
+    uint64_t selection_before = 0;
+    CHECK(lardon3d_project_db_get_selected_capture_image(database, capture_a.capture_id,
+        &selection_before) == LARDON3D_PROJECT_DB_OK
+        && selection_before == image_a.image_id);
+
+    CHECK(lardon3d_project_db_attach_capture_source_asset(database, capture_a.capture_id,
+        different_asset.asset_id) == LARDON3D_PROJECT_DB_OK);
+    CHECK(lardon3d_project_db_attach_capture_source_asset(database, capture_a.capture_id,
+        different_asset.asset_id) == LARDON3D_PROJECT_DB_OK);
+    CHECK(lardon3d_project_db_attach_capture_source_asset(database, capture_a.capture_id,
+        concurrent_asset.asset_id) == LARDON3D_PROJECT_DB_OK);
+    Lardon3DProjectDbCaptureAsset source_page[4];
+    size_t source_count = 0;
+    CHECK(lardon3d_project_db_list_capture_assets(database, capture_a.capture_id, 0,
+        source_page, 4, &source_count) == LARDON3D_PROJECT_DB_OK && source_count == 3);
+    for (size_t index = 0; index < source_count; ++index) {
+        CHECK(source_page[index].capture_id == capture_a.capture_id
+            && source_page[index].role == LARDON3D_DB_CAPTURE_ASSET_SOURCE
+            && (index == 0 || source_page[index - 1].asset_id < source_page[index].asset_id));
+    }
+
+    AttachSourceThread attach_contexts[2] = {
+        {.database = database, .capture_id = preexisting_capture.capture_id,
+            .asset_id = asset_a.asset_id},
+        {.database = database, .capture_id = preexisting_capture.capture_id,
+            .asset_id = asset_a.asset_id},
+    };
+    pthread_t attach_threads[2];
+    CHECK(pthread_create(&attach_threads[0], NULL, attach_source_thread,
+        &attach_contexts[0]) == 0);
+    CHECK(pthread_create(&attach_threads[1], NULL, attach_source_thread,
+        &attach_contexts[1]) == 0);
+    CHECK(pthread_join(attach_threads[0], NULL) == 0
+        && pthread_join(attach_threads[1], NULL) == 0
+        && attach_contexts[0].result == LARDON3D_PROJECT_DB_OK
+        && attach_contexts[1].result == LARDON3D_PROJECT_DB_OK);
+    CHECK(lardon3d_project_db_attach_capture_source_asset(database, capture_b.capture_id,
+        asset_a.asset_id) == LARDON3D_PROJECT_DB_OK);
+    Lardon3DProjectDbCapture conflict_capture;
+    CHECK(lardon3d_project_db_create_capture(database, a.scanset_id, 2,
+        &conflict_capture) == LARDON3D_PROJECT_DB_OK);
+    CHECK(lardon3d_project_db_attach_capture_asset(database, conflict_capture.capture_id,
+        concurrent_asset.asset_id, LARDON3D_DB_CAPTURE_ASSET_DERIVED)
+        == LARDON3D_PROJECT_DB_OK);
+    CHECK(lardon3d_project_db_attach_capture_source_asset(database,
+        conflict_capture.capture_id, concurrent_asset.asset_id)
+        == LARDON3D_PROJECT_DB_CONSTRAINT);
+    size_t conflict_count = 0;
+    CHECK(lardon3d_project_db_list_capture_assets(database, conflict_capture.capture_id, 0,
+        source_page, 1, &conflict_count) == LARDON3D_PROJECT_DB_OK
+        && conflict_count == 1
+        && source_page[0].role == LARDON3D_DB_CAPTURE_ASSET_DERIVED);
+
+    lardon3d_project_db_close(database);
+    database = NULL;
+    state.project_db = NULL;
+    CHECK(lardon3d_project_db_open(database_path, &database, error)
+        == LARDON3D_PROJECT_DB_OK);
+    state.project_db = database;
+    CHECK(lardon3d_project_db_attach_capture_source_asset(database, capture_a.capture_id,
+        different_asset.asset_id) == LARDON3D_PROJECT_DB_OK);
+    source_count = 0;
+    CHECK(lardon3d_project_db_list_capture_assets(database, capture_a.capture_id, 0,
+        source_page, 4, &source_count) == LARDON3D_PROJECT_DB_OK && source_count == 3);
+    uint64_t selection_after = 0, image_count_a_after = 0, image_count_b_after = 0;
+    CHECK(lardon3d_project_db_get_selected_capture_image(database, capture_a.capture_id,
+        &selection_after) == LARDON3D_PROJECT_DB_OK && selection_after == selection_before);
+    CHECK(lardon3d_project_db_count_images(database, a.scanset_id,
+        &image_count_a_after) == LARDON3D_PROJECT_DB_OK
+        && image_count_a_after == image_count_a_before);
+    CHECK(lardon3d_project_db_count_images(database, b.scanset_id,
+        &image_count_b_after) == LARDON3D_PROJECT_DB_OK
+        && image_count_b_after == image_count_b_before);
 
     char bulk_directory[PATH_MAX];
     CHECK(join_path(bulk_directory, root, "bulk") && mkdir(bulk_directory, 0700) == 0);

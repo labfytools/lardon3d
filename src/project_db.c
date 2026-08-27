@@ -3191,6 +3191,28 @@ Lardon3DProjectDbResult lardon3d_project_db_attach_capture_asset(
   return result;
 }
 
+Lardon3DProjectDbResult lardon3d_project_db_attach_capture_source_asset(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t asset_id) {
+  Lardon3DProjectDbResult result = lardon3d_project_db_attach_capture_asset(
+      database, capture_id, asset_id, LARDON3D_DB_CAPTURE_ASSET_SOURCE);
+  if (result != LARDON3D_PROJECT_DB_CONSTRAINT) {
+    return result;
+  }
+
+  Lardon3DProjectDbCaptureAsset existing;
+  size_t count = 0;
+  result = lardon3d_project_db_list_capture_assets(database, capture_id, asset_id - 1,
+                                                   &existing, 1, &count);
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    return result;
+  }
+  if (count == 1 && existing.asset_id == asset_id &&
+      existing.role == LARDON3D_DB_CAPTURE_ASSET_SOURCE) {
+    return LARDON3D_PROJECT_DB_OK;
+  }
+  return LARDON3D_PROJECT_DB_CONSTRAINT;
+}
+
 Lardon3DProjectDbResult lardon3d_project_db_list_capture_assets(
     Lardon3DProjectDb *database, uint64_t capture_id, uint64_t after_asset_id,
     Lardon3DProjectDbCaptureAsset *assets, size_t capacity, size_t *count) {

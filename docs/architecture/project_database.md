@@ -11,6 +11,12 @@ d'image logique. Une sélection courante optionnelle référence exactement une
 image déjà associée au Capture et ne modifie jamais cette image, son asset, ni
 les résultats scientifiques existants.
 
+L'association explicite d'un asset `SOURCE` existant à un Capture existant est
+idempotente : si cette même association existe déjà avec le rôle `SOURCE`, elle
+est acceptée sans nouvelle ligne ni migration de schéma. Elle ne crée aucune
+image logique, ne modifie aucune sélection et ne réalise aucun appariement
+automatique.
+
 `asset_derivations` est volontairement limité à un parent asset et un enfant
 asset, avec kind/version et fingerprint canonique de 32 octets. Il n'est pas un
 DAG générique et ne réalise aucun développement RAW ni extraction vidéo. La

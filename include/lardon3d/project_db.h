@@ -533,6 +533,8 @@ Lardon3DProjectDbResult lardon3d_project_db_list_captures(
 Lardon3DProjectDbResult lardon3d_project_db_attach_capture_asset(
     Lardon3DProjectDb *database, uint64_t capture_id, uint64_t asset_id,
     Lardon3DProjectDbCaptureAssetRole role);
+Lardon3DProjectDbResult lardon3d_project_db_attach_capture_source_asset(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t asset_id);
 Lardon3DProjectDbResult lardon3d_project_db_list_capture_assets(
     Lardon3DProjectDb *database, uint64_t capture_id, uint64_t after_asset_id,
     Lardon3DProjectDbCaptureAsset *assets, size_t capacity, size_t *count);
