@@ -1105,42 +1105,76 @@ static bool run_test(void) {
   unsigned char developed_hash[LARDON3D_PROJECT_DB_SHA256_SIZE] = {6};
   char developed_asset_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
   asset_path_for_hash(developed_hash, developed_asset_path);
+  Lardon3DProjectDbImageAsset developed_asset;
   Lardon3DProjectDbImage developed_image;
-  CHECK(lardon3d_project_db_register_image(
-            database, replacement_scanset.scanset_id, developed_hash, developed_asset_path, 3,
-            "developed.png", "/source/developed.png", 0, 23, &identity_status,
-            &developed_image) == LARDON3D_PROJECT_DB_OK);
-  Lardon3DProjectDbCapture developed_capture;
+  CHECK(lardon3d_project_db_register_image_asset(database, developed_hash, developed_asset_path, 3,
+                                                 23, &developed_asset) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_publish_derived_capture_image(
+            database, capture.capture_id, developed_asset.asset_id, "developed.png",
+            "/source/developed.png", 0, 23, &identity_status, &developed_image) ==
+        LARDON3D_PROJECT_DB_CONSTRAINT);
+  Lardon3DProjectDbAssetDerivation derivation = {
+      .parent_asset_id = raw_asset.asset_id,
+      .child_asset_id = developed_asset.asset_id,
+      .kind = LARDON3D_DB_ASSET_DERIVATION_GENERIC_VERSIONED,
+      .version = 1,
+      .created_at = 24};
+  memset(derivation.parameter_fingerprint, 0xA5, sizeof(derivation.parameter_fingerprint));
+  CHECK(lardon3d_project_db_record_asset_derivation(database, &derivation) ==
+        LARDON3D_PROJECT_DB_OK);
+  Lardon3DProjectDbCapture capture_page_before[8];
+  size_t capture_count_before = 0;
+  CHECK(lardon3d_project_db_list_captures(database, replacement_scanset.scanset_id, 0,
+                                          capture_page_before, 8, &capture_count_before) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_publish_derived_capture_image(
+            database, capture.capture_id, developed_asset.asset_id, "developed.png",
+            "/source/developed.png", 0, 23, &identity_status, &developed_image) ==
+            LARDON3D_PROJECT_DB_OK &&
+        identity_status == LARDON3D_PROJECT_DB_IMAGE_REGISTERED &&
+        developed_image.scanset_id == capture.scanset_id &&
+        developed_image.asset_id == developed_asset.asset_id);
+  Lardon3DProjectDbCapture mapped_developed_capture;
   CHECK(lardon3d_project_db_find_capture_for_image(database, developed_image.image_id,
-                                                   &developed_capture) == LARDON3D_PROJECT_DB_OK);
-  lardon3d_project_db_close(database);
-  database = NULL;
-  char remove_developed_capture[256];
-  CHECK(snprintf(remove_developed_capture, sizeof(remove_developed_capture),
-                 "PRAGMA foreign_keys=ON;DELETE FROM captures WHERE capture_id=%llu",
-                 (unsigned long long)developed_capture.capture_id) > 0);
-  CHECK(execute_test_sql(database_path, remove_developed_capture));
-  CHECK(lardon3d_project_db_open(database_path, &database, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_attach_capture_asset(
-            database, capture.capture_id, developed_image.asset_id,
-            LARDON3D_DB_CAPTURE_ASSET_DERIVED) == LARDON3D_PROJECT_DB_OK);
+                                                   &mapped_developed_capture) ==
+            LARDON3D_PROJECT_DB_OK &&
+        mapped_developed_capture.capture_id == capture.capture_id);
+  Lardon3DProjectDbCapture capture_page_after[8];
+  size_t capture_count_after = 0;
+  CHECK(lardon3d_project_db_list_captures(database, replacement_scanset.scanset_id, 0,
+                                          capture_page_after, 8, &capture_count_after) ==
+            LARDON3D_PROJECT_DB_OK &&
+        capture_count_after == capture_count_before);
   Lardon3DProjectDbCaptureAsset capture_assets[3];
   size_t capture_asset_count = 0;
   CHECK(lardon3d_project_db_list_capture_assets(database, capture.capture_id, 0, capture_assets,
                                                 3, &capture_asset_count) ==
             LARDON3D_PROJECT_DB_OK &&
         capture_asset_count == 3);
+  bool found_original_source = false;
+  bool found_derived_asset = false;
+  for (size_t i = 0; i < capture_asset_count; ++i) {
+    found_original_source = found_original_source ||
+                            (capture_assets[i].asset_id == pair_image.asset_id &&
+                             capture_assets[i].role == LARDON3D_DB_CAPTURE_ASSET_SOURCE);
+    found_derived_asset = found_derived_asset ||
+                          (capture_assets[i].asset_id == developed_asset.asset_id &&
+                           capture_assets[i].role == LARDON3D_DB_CAPTURE_ASSET_DERIVED);
+  }
+  CHECK(found_original_source && found_derived_asset);
   CHECK(lardon3d_project_db_attach_capture_image(database, capture.capture_id,
                                                  pair_image.image_id) == LARDON3D_PROJECT_DB_CONSTRAINT);
   CHECK(lardon3d_project_db_attach_capture_image(database, other_capture.capture_id,
                                                  pair_image.image_id) ==
         LARDON3D_PROJECT_DB_CONSTRAINT);
-  CHECK(lardon3d_project_db_attach_capture_image(database, capture.capture_id,
-                                                 developed_image.image_id) ==
-        LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_find_capture_for_image(database, pair_image.image_id,
                                                    &mapped_capture) == LARDON3D_PROJECT_DB_OK &&
         mapped_capture.capture_id == capture.capture_id);
+  CHECK(lardon3d_project_db_get_selected_capture_image(database, capture.capture_id,
+                                                        &selected_image) ==
+            LARDON3D_PROJECT_DB_OK &&
+        selected_image == pair_image.image_id);
   CHECK(lardon3d_project_db_set_selected_capture_image(database, capture.capture_id,
                                                         pair_image.image_id) ==
         LARDON3D_PROJECT_DB_OK);
@@ -1163,27 +1197,111 @@ static bool run_test(void) {
                                                         &selected_image) ==
             LARDON3D_PROJECT_DB_OK &&
         selected_image == developed_image.image_id);
-  CHECK(query_integer(database_path, "SELECT count(*) FROM asset_derivations", 0));
-  Lardon3DProjectDbAssetDerivation derivation = {
-      .parent_asset_id = raw_asset.asset_id,
-      .child_asset_id = developed_image.asset_id,
-      .kind = LARDON3D_DB_ASSET_DERIVATION_GENERIC_VERSIONED,
-      .version = 1,
-      .created_at = 24};
-  memset(derivation.parameter_fingerprint, 0xA5, sizeof(derivation.parameter_fingerprint));
+  Lardon3DProjectDbImage republished_developed_image;
+  CHECK(lardon3d_project_db_publish_derived_capture_image(
+            database, capture.capture_id, developed_asset.asset_id, "developed.png",
+            "/source/developed.png", 0, 23, &identity_status, &republished_developed_image) ==
+            LARDON3D_PROJECT_DB_OK &&
+        identity_status == LARDON3D_PROJECT_DB_IMAGE_ALREADY_PRESENT &&
+        republished_developed_image.image_id == developed_image.image_id);
+  CHECK(lardon3d_project_db_get_selected_capture_image(database, capture.capture_id,
+                                                        &selected_image) ==
+            LARDON3D_PROJECT_DB_OK &&
+        selected_image == developed_image.image_id);
+  size_t capture_count_republished = 0;
+  CHECK(lardon3d_project_db_list_captures(database, replacement_scanset.scanset_id, 0,
+                                          capture_page_after, 8, &capture_count_republished) ==
+            LARDON3D_PROJECT_DB_OK &&
+        capture_count_republished == capture_count_after);
+  CHECK(lardon3d_project_db_publish_derived_capture_image(
+            database, UINT64_C(999999), developed_asset.asset_id, "developed.png",
+            "/source/developed.png", 0, 23, &identity_status, &republished_developed_image) ==
+        LARDON3D_PROJECT_DB_NOT_FOUND);
+  CHECK(lardon3d_project_db_publish_derived_capture_image(
+            database, capture.capture_id, UINT64_C(999999), "missing.png", "/source/missing.png",
+            0, 23, &identity_status, &republished_developed_image) == LARDON3D_PROJECT_DB_NOT_FOUND);
+  unsigned char other_developed_hash[LARDON3D_PROJECT_DB_SHA256_SIZE] = {7};
+  char other_developed_asset_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+  asset_path_for_hash(other_developed_hash, other_developed_asset_path);
+  Lardon3DProjectDbImageAsset other_developed_asset;
+  CHECK(lardon3d_project_db_register_image_asset(database, other_developed_hash,
+                                                 other_developed_asset_path, 4, 25,
+                                                 &other_developed_asset) ==
+        LARDON3D_PROJECT_DB_OK);
+  derivation.child_asset_id = other_developed_asset.asset_id;
+  derivation.parent_asset_id = raw_asset.asset_id;
+  derivation.created_at = 25;
   CHECK(lardon3d_project_db_record_asset_derivation(database, &derivation) ==
         LARDON3D_PROJECT_DB_OK);
+  Lardon3DProjectDbImage other_developed_image;
+  uint64_t image_count_before_cross_capture = 0;
+  CHECK(lardon3d_project_db_count_images(database, replacement_scanset.scanset_id,
+                                         &image_count_before_cross_capture) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_publish_derived_capture_image(
+            database, other_capture.capture_id, other_developed_asset.asset_id, "other-developed.png",
+            "/source/other-developed.png", 0, 25, &identity_status, &other_developed_image) ==
+        LARDON3D_PROJECT_DB_CONSTRAINT);
+  uint64_t image_count_after_cross_capture = 0;
+  CHECK(lardon3d_project_db_count_images(database, replacement_scanset.scanset_id,
+                                         &image_count_after_cross_capture) ==
+            LARDON3D_PROJECT_DB_OK &&
+        image_count_after_cross_capture == image_count_before_cross_capture);
+  Lardon3DProjectDbCaptureAsset other_capture_assets[1];
+  size_t other_capture_asset_count = 0;
+  CHECK(lardon3d_project_db_list_capture_assets(database, other_capture.capture_id, 0,
+                                                other_capture_assets, 1,
+                                                &other_capture_asset_count) ==
+            LARDON3D_PROJECT_DB_OK &&
+        other_capture_asset_count == 0);
+
+  unsigned char other_raw_hash[LARDON3D_PROJECT_DB_SHA256_SIZE] = {8};
+  char other_raw_asset_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+  asset_path_for_hash(other_raw_hash, other_raw_asset_path);
+  Lardon3DProjectDbImageAsset other_raw_asset;
+  CHECK(lardon3d_project_db_register_image_asset(database, other_raw_hash, other_raw_asset_path, 5,
+                                                 26, &other_raw_asset) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_attach_capture_asset(
+            database, other_capture.capture_id, other_raw_asset.asset_id,
+            LARDON3D_DB_CAPTURE_ASSET_SOURCE) == LARDON3D_PROJECT_DB_OK);
+  unsigned char owned_developed_hash[LARDON3D_PROJECT_DB_SHA256_SIZE] = {9};
+  char owned_developed_asset_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+  asset_path_for_hash(owned_developed_hash, owned_developed_asset_path);
+  Lardon3DProjectDbImageAsset owned_developed_asset;
+  CHECK(lardon3d_project_db_register_image_asset(database, owned_developed_hash,
+                                                 owned_developed_asset_path, 6, 27,
+                                                 &owned_developed_asset) ==
+        LARDON3D_PROJECT_DB_OK);
+  derivation.parent_asset_id = other_raw_asset.asset_id;
+  derivation.child_asset_id = owned_developed_asset.asset_id;
+  derivation.created_at = 27;
+  CHECK(lardon3d_project_db_record_asset_derivation(database, &derivation) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_publish_derived_capture_image(
+            database, other_capture.capture_id, owned_developed_asset.asset_id,
+            "owned-developed.png", "/source/owned-developed.png", 0, 27, &identity_status,
+            &other_developed_image) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_publish_derived_capture_image(
+            database, capture.capture_id, owned_developed_asset.asset_id, "owned-developed.png",
+            "/source/owned-developed.png", 0, 27, &identity_status, &republished_developed_image) ==
+        LARDON3D_PROJECT_DB_CONSTRAINT);
+  CHECK(lardon3d_project_db_find_capture_for_image(database, other_developed_image.image_id,
+                                                   &mapped_developed_capture) ==
+            LARDON3D_PROJECT_DB_OK &&
+        mapped_developed_capture.capture_id == other_capture.capture_id);
   Lardon3DProjectDbAssetDerivation loaded_derivation;
-  CHECK(lardon3d_project_db_load_asset_derivation(database, developed_image.asset_id,
+  CHECK(lardon3d_project_db_load_asset_derivation(database, developed_asset.asset_id,
                                                   &loaded_derivation) == LARDON3D_PROJECT_DB_OK &&
         loaded_derivation.parent_asset_id == raw_asset.asset_id &&
         loaded_derivation.version == 1 &&
         memcmp(loaded_derivation.parameter_fingerprint, derivation.parameter_fingerprint,
                sizeof(derivation.parameter_fingerprint)) == 0);
+  derivation.child_asset_id = developed_asset.asset_id;
   derivation.parent_asset_id = pair_image.asset_id;
   CHECK(lardon3d_project_db_record_asset_derivation(database, &derivation) ==
         LARDON3D_PROJECT_DB_CONSTRAINT);
-  derivation.parent_asset_id = developed_image.asset_id;
+  derivation.parent_asset_id = developed_asset.asset_id;
   CHECK(lardon3d_project_db_record_asset_derivation(database, &derivation) ==
         LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
 

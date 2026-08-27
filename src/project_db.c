@@ -2584,6 +2584,55 @@ static Lardon3DProjectDbResult ensure_capture_for_registered_image_locked(
   return result;
 }
 
+static Lardon3DProjectDbResult insert_or_find_image_locked(
+    Lardon3DProjectDb *database, uint64_t scanset_id, uint64_t asset_id,
+    const char *original_name, const char *source_path, uint64_t producer_task_id,
+    int64_t imported_at, int *inserted, uint64_t *image_id) {
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "INSERT INTO images(scanset_id,asset_id,original_name,source_path,producer_task_id,"
+      "imported_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(scanset_id,asset_id) DO NOTHING",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)scanset_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)asset_id);
+    (void)sqlite3_bind_text(statement, 3, original_name, -1, SQLITE_TRANSIENT);
+    (void)sqlite3_bind_text(statement, 4, source_path, -1, SQLITE_TRANSIENT);
+    if (producer_task_id) {
+      (void)sqlite3_bind_int64(statement, 5, (sqlite3_int64)producer_task_id);
+    } else {
+      (void)sqlite3_bind_null(statement, 5);
+    }
+    (void)sqlite3_bind_int64(statement, 6, imported_at);
+    result = step_done(database, statement, "insert logical image");
+    statement = NULL;
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    *inserted = sqlite3_changes(database->connection);
+    result = prepare(database, "SELECT image_id FROM images WHERE scanset_id=?1 AND asset_id=?2",
+                     &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)scanset_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)asset_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_ROW) {
+      sqlite3_int64 stored_image_id = sqlite3_column_int64(statement, 0);
+      if (stored_image_id <= 0) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else {
+        *image_id = (uint64_t)stored_image_id;
+      }
+    } else {
+      result = code == SQLITE_DONE ? LARDON3D_PROJECT_DB_CORRUPT
+                                   : sqlite_result(database, code, "load registered image");
+    }
+    (void)sqlite3_finalize(statement);
+  }
+  return result;
+}
+
 Lardon3DProjectDbResult lardon3d_project_db_register_image_asset(
     Lardon3DProjectDb *database,
     const unsigned char sha256[LARDON3D_PROJECT_DB_SHA256_SIZE], const char *asset_path,
@@ -2717,48 +2766,16 @@ Lardon3DProjectDbResult lardon3d_project_db_register_image(
     (void)sqlite3_finalize(statement);
     statement = NULL;
   }
-  if (result == LARDON3D_PROJECT_DB_OK) {
-    result = prepare(
-        database,
-        "INSERT INTO "
-        "images(scanset_id,asset_id,original_name,source_path,producer_task_id,imported_at) "
-        "VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(scanset_id,asset_id) DO NOTHING",
-        &statement);
-  }
   int inserted = 0;
+  uint64_t image_id = 0;
   if (result == LARDON3D_PROJECT_DB_OK) {
-    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)scanset_id);
-    (void)sqlite3_bind_int64(statement, 2, asset_id);
-    (void)sqlite3_bind_text(statement, 3, original_name, -1, SQLITE_TRANSIENT);
-    (void)sqlite3_bind_text(statement, 4, source_path, -1, SQLITE_TRANSIENT);
-    if (producer_task_id) {
-      (void)sqlite3_bind_int64(statement, 5, (sqlite3_int64)producer_task_id);
-    } else {
-      (void)sqlite3_bind_null(statement, 5);
-    }
-    (void)sqlite3_bind_int64(statement, 6, imported_at);
-    result = step_done(database, statement, "insert logical image");
-    statement = NULL;
-    inserted = sqlite3_changes(database->connection);
-  }
-  sqlite3_int64 image_id = 0;
-  if (result == LARDON3D_PROJECT_DB_OK) {
-    result = prepare(database, "SELECT image_id FROM images WHERE scanset_id=?1 AND asset_id=?2",
-                     &statement);
-  }
-  if (result == LARDON3D_PROJECT_DB_OK) {
-    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)scanset_id);
-    (void)sqlite3_bind_int64(statement, 2, asset_id);
-    int code = sqlite3_step(statement);
-    if (code != SQLITE_ROW || (image_id = sqlite3_column_int64(statement, 0)) <= 0) {
-      result = LARDON3D_PROJECT_DB_CORRUPT;
-    }
-    (void)sqlite3_finalize(statement);
-    statement = NULL;
+    result = insert_or_find_image_locked(database, scanset_id, (uint64_t)asset_id, original_name,
+                                         source_path, producer_task_id, imported_at, &inserted,
+                                         &image_id);
   }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = ensure_capture_for_registered_image_locked(database, scanset_id, (uint64_t)asset_id,
-                                                        (uint64_t)image_id);
+                                                        image_id);
   }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit image register");
@@ -2772,7 +2789,164 @@ Lardon3DProjectDbResult lardon3d_project_db_register_image(
   }
   *status = inserted == 1 ? LARDON3D_PROJECT_DB_IMAGE_REGISTERED
                           : LARDON3D_PROJECT_DB_IMAGE_ALREADY_PRESENT;
-  return lardon3d_project_db_load_image(database, (uint64_t)image_id, image,
+  return lardon3d_project_db_load_image(database, image_id, image,
+                                        &(Lardon3DProjectDbImageAsset){0});
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_publish_derived_capture_image(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t asset_id,
+    const char *original_name, const char *source_path, uint64_t producer_task_id,
+    int64_t imported_at, Lardon3DProjectDbImageRegisterStatus *status,
+    Lardon3DProjectDbImage *image) {
+  if (!database || !valid_catalog_id(capture_id) || !valid_catalog_id(asset_id) ||
+      !valid_original_name(original_name) ||
+      !bounded_text(source_path, LARDON3D_PROJECT_DB_PATH_CAPACITY, false) ||
+      (producer_task_id != 0 && !valid_task_id(producer_task_id)) || imported_at < 0 || !status ||
+      !image) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+
+  memset(image, 0, sizeof(*image));
+  *status = LARDON3D_PROJECT_DB_IMAGE_REGISTERED;
+  (void)pthread_mutex_lock(&database->mutex);
+  Lardon3DProjectDbResult result =
+      execute(database, "BEGIN IMMEDIATE", "begin derived capture image publication");
+  sqlite3_stmt *statement = NULL;
+  sqlite3_int64 scanset_id = 0;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(database, "SELECT scanset_id FROM captures WHERE capture_id=?1", &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE) {
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    } else if (code != SQLITE_ROW || (scanset_id = sqlite3_column_int64(statement, 0)) <= 0) {
+      result = code == SQLITE_ROW ? LARDON3D_PROJECT_DB_CORRUPT
+                                   : sqlite_result(database, code, "load derived image capture");
+    }
+    (void)sqlite3_finalize(statement);
+    statement = NULL;
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(database, "SELECT 1 FROM image_assets WHERE asset_id=?1", &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)asset_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE) {
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    } else if (code != SQLITE_ROW) {
+      result = sqlite_result(database, code, "load derived image asset");
+    }
+    (void)sqlite3_finalize(statement);
+    statement = NULL;
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(
+        database,
+        "SELECT 1 FROM asset_derivations d JOIN capture_assets p "
+        "ON p.asset_id=d.parent_asset_id WHERE d.child_asset_id=?1 AND p.capture_id=?2",
+        &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)asset_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)capture_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE) {
+      result = LARDON3D_PROJECT_DB_CONSTRAINT;
+    } else if (code != SQLITE_ROW) {
+      result = sqlite_result(database, code, "load derived image provenance");
+    }
+    (void)sqlite3_finalize(statement);
+    statement = NULL;
+  }
+
+  int inserted = 0;
+  uint64_t image_id = 0;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = insert_or_find_image_locked(database, (uint64_t)scanset_id, asset_id, original_name,
+                                         source_path, producer_task_id, imported_at, &inserted,
+                                         &image_id);
+  }
+
+  sqlite3_int64 mapped_capture_id = 0;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(database, "SELECT capture_id FROM capture_images WHERE image_id=?1", &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)image_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_ROW) {
+      mapped_capture_id = sqlite3_column_int64(statement, 0);
+      if (mapped_capture_id <= 0) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else if ((uint64_t)mapped_capture_id != capture_id) {
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+      }
+    } else if (code != SQLITE_DONE) {
+      result = sqlite_result(database, code, "find derived image capture");
+    }
+    (void)sqlite3_finalize(statement);
+    statement = NULL;
+  }
+
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(database, "SELECT role FROM capture_assets WHERE capture_id=?1 AND asset_id=?2",
+                     &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)asset_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_ROW) {
+      if (sqlite3_column_int(statement, 0) != LARDON3D_DB_CAPTURE_ASSET_DERIVED) {
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+      }
+    } else if (code == SQLITE_DONE) {
+      (void)sqlite3_finalize(statement);
+      statement = NULL;
+      result = prepare(database,
+                       "INSERT INTO capture_assets(capture_id,asset_id,role) VALUES(?1,?2,?3)",
+                       &statement);
+      if (result == LARDON3D_PROJECT_DB_OK) {
+        (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+        (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)asset_id);
+        (void)sqlite3_bind_int(statement, 3, LARDON3D_DB_CAPTURE_ASSET_DERIVED);
+        result = step_done(database, statement, "attach derived capture asset");
+        statement = NULL;
+      }
+    } else {
+      result = sqlite_result(database, code, "find derived capture asset");
+    }
+    if (statement) {
+      (void)sqlite3_finalize(statement);
+      statement = NULL;
+    }
+  }
+  if (result == LARDON3D_PROJECT_DB_OK && mapped_capture_id == 0) {
+    result = prepare(database, "INSERT INTO capture_images(capture_id,image_id) VALUES(?1,?2)",
+                     &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK && mapped_capture_id == 0) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)image_id);
+    result = step_done(database, statement, "attach derived capture image");
+    statement = NULL;
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = execute(database, "COMMIT", "commit derived capture image publication");
+  }
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    (void)execute(database, "ROLLBACK", "rollback derived capture image publication");
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    return result;
+  }
+  *status = inserted == 1 ? LARDON3D_PROJECT_DB_IMAGE_REGISTERED
+                          : LARDON3D_PROJECT_DB_IMAGE_ALREADY_PRESENT;
+  return lardon3d_project_db_load_image(database, image_id, image,
                                         &(Lardon3DProjectDbImageAsset){0});
 }
 

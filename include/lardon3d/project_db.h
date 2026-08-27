@@ -505,6 +505,11 @@ Lardon3DProjectDbResult lardon3d_project_db_register_image_asset(
     Lardon3DProjectDb *database,
     const unsigned char sha256[LARDON3D_PROJECT_DB_SHA256_SIZE], const char *asset_path,
     uint64_t size_bytes, int64_t created_at, Lardon3DProjectDbImageAsset *asset);
+Lardon3DProjectDbResult lardon3d_project_db_publish_derived_capture_image(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t asset_id,
+    const char *original_name, const char *source_path, uint64_t producer_task_id,
+    int64_t imported_at, Lardon3DProjectDbImageRegisterStatus *status,
+    Lardon3DProjectDbImage *image);
 Lardon3DProjectDbResult lardon3d_project_db_load_image(Lardon3DProjectDb *database,
                                                        uint64_t image_id,
                                                        Lardon3DProjectDbImage *image,
