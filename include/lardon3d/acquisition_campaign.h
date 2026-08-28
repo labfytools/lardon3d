@@ -108,7 +108,12 @@ Lardon3DAcquisitionCampaignResult lardon3d_acquisition_campaign_discover(
     const Lardon3DAcquisitionCampaignRoot *roots, size_t root_count,
     Lardon3DAcquisitionCampaignDiscovery *discovery);
 
-/* Pure planning over caller-supplied normalized source/evidence records. */
+/*
+ * Pure planning over caller-supplied normalized source/evidence records.
+ * The summary counts all evaluated pair evidence. If review proposals exceed
+ * MAX_PROPOSALS, the plan retains their deterministic source-pair-order prefix;
+ * proposal capacity never changes grouping or the scientific evidence rules.
+ */
 Lardon3DAcquisitionCampaignResult lardon3d_acquisition_campaign_plan(
     const Lardon3DAcquisitionCampaignSource *sources, size_t source_count,
     const Lardon3DAcquisitionCampaignConfirmation *confirmations, size_t confirmation_count,

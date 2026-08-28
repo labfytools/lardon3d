@@ -143,6 +143,34 @@ void planner_tests() {
   CHECK(weak_plan->proposals[0].kind == LARDON3D_ACQUISITION_CAMPAIGN_PROPOSAL_CANDIDATE);
   CHECK(std::strstr(weak[weak_plan->proposals[0].left_source_index].path, "/match.") != nullptr);
   CHECK(std::strstr(weak[weak_plan->proposals[0].right_source_index].path, "/match.") != nullptr);
+
+  constexpr size_t saturated_source_count = 92;
+  constexpr size_t saturated_pair_count =
+      saturated_source_count * (saturated_source_count - 1u) / 2u;
+  static_assert(saturated_pair_count > LARDON3D_ACQUISITION_CAMPAIGN_MAX_PROPOSALS);
+  auto saturated = std::make_unique<Lardon3DAcquisitionCampaignSource[]>(
+      saturated_source_count);
+  for (size_t i = 0; i < saturated_source_count; ++i) {
+    char path[64]{};
+    // Equal stems create review proposals only; they must never become identity
+    // or prevent the scientifically unresolved sources from remaining singletons.
+    std::snprintf(path, sizeof(path), "/saturated/%03zu/match.jpg", i);
+    source(saturated[i], path, nullptr, "shared-camera");
+  }
+  auto saturated_plan = std::make_unique<Lardon3DAcquisitionCampaignPlan>();
+  CHECK(lardon3d_acquisition_campaign_plan(saturated.get(), saturated_source_count,
+                                           nullptr, 0, saturated_plan.get()) ==
+        LARDON3D_ACQUISITION_CAMPAIGN_OK);
+  CHECK(saturated_plan->proposal_count == LARDON3D_ACQUISITION_CAMPAIGN_MAX_PROPOSALS);
+  CHECK(saturated_plan->summary.candidate_pair_count == saturated_pair_count);
+  CHECK(saturated_plan->summary.unresolved_source_count == saturated_source_count);
+  CHECK(saturated_plan->group_count == saturated_source_count);
+  CHECK(saturated_plan->summary.strong_group_count == 0u);
+  for (size_t i = 0; i < saturated_plan->group_count; ++i) {
+    CHECK(saturated_plan->groups[i].basis == LARDON3D_ACQUISITION_GROUP_SINGLETON);
+    CHECK(saturated_plan->groups[i].source_count == 1u);
+    CHECK(saturated_plan->groups[i].source_indices[0] == i);
+  }
 }
 
 void materialization_tests() {

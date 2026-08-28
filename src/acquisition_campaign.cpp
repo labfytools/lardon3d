@@ -57,13 +57,15 @@ bool same_stem(const char *left, const char *right) {
   return left_size == right_size && std::memcmp(left_name, right_name, left_size) == 0;
 }
 
-bool add_proposal(Lardon3DAcquisitionCampaignPlan &plan, size_t left, size_t right,
+void add_proposal(Lardon3DAcquisitionCampaignPlan &plan, size_t left, size_t right,
                   Lardon3DAcquisitionCampaignProposalKind kind,
                   const Lardon3DAcquisitionPairResult &pair) {
-  if (plan.proposal_count >= LARDON3D_ACQUISITION_CAMPAIGN_MAX_PROPOSALS) return false;
+  // Proposals are a bounded review aid, not acquisition identity or a scientific
+  // dataset-size limit. Retain the deterministic pair-order prefix while the
+  // complete summary and strong-partner analysis continue across every pair.
+  if (plan.proposal_count >= LARDON3D_ACQUISITION_CAMPAIGN_MAX_PROPOSALS) return;
   auto &proposal = plan.proposals[plan.proposal_count++];
   proposal = {left, right, kind, pair};
-  return true;
 }
 
 }  // namespace
@@ -204,20 +206,17 @@ extern "C" Lardon3DAcquisitionCampaignResult lardon3d_acquisition_campaign_plan(
       } else if (pair.decision == LARDON3D_ACQUISITION_SAME_ACQUISITION_CANDIDATE) {
         if (stem) {
           ++result.summary.candidate_pair_count;
-          if (!add_proposal(result, i, j,
-                            LARDON3D_ACQUISITION_CAMPAIGN_PROPOSAL_CANDIDATE, pair))
-            return LARDON3D_ACQUISITION_CAMPAIGN_LIMIT_EXCEEDED;
+          add_proposal(result, i, j,
+                       LARDON3D_ACQUISITION_CAMPAIGN_PROPOSAL_CANDIDATE, pair);
         } else {
           ++result.summary.insufficient_pair_count;
         }
       } else if (pair.decision == LARDON3D_ACQUISITION_AMBIGUOUS) {
         ++result.summary.ambiguous_pair_count;
-        if (!add_proposal(result, i, j, LARDON3D_ACQUISITION_CAMPAIGN_PROPOSAL_AMBIGUOUS, pair))
-          return LARDON3D_ACQUISITION_CAMPAIGN_LIMIT_EXCEEDED;
+        add_proposal(result, i, j, LARDON3D_ACQUISITION_CAMPAIGN_PROPOSAL_AMBIGUOUS, pair);
       } else if (pair.decision == LARDON3D_ACQUISITION_INSUFFICIENT && stem) {
         ++result.summary.candidate_pair_count;
-        if (!add_proposal(result, i, j, LARDON3D_ACQUISITION_CAMPAIGN_PROPOSAL_CANDIDATE, pair))
-          return LARDON3D_ACQUISITION_CAMPAIGN_LIMIT_EXCEEDED;
+        add_proposal(result, i, j, LARDON3D_ACQUISITION_CAMPAIGN_PROPOSAL_CANDIDATE, pair);
       } else if (pair.decision == LARDON3D_ACQUISITION_INSUFFICIENT) {
         ++result.summary.insufficient_pair_count;
       }
@@ -233,8 +232,7 @@ extern "C" Lardon3DAcquisitionCampaignResult lardon3d_acquisition_campaign_plan(
       if (pair.decision != LARDON3D_ACQUISITION_SAME_ACQUISITION_STRONG) continue;
       if (strong_count[i] > 1u || strong_count[j] > 1u) {
         ++result.summary.ambiguous_pair_count;
-        if (!add_proposal(result, i, j, LARDON3D_ACQUISITION_CAMPAIGN_PROPOSAL_AMBIGUOUS, pair))
-          return LARDON3D_ACQUISITION_CAMPAIGN_LIMIT_EXCEEDED;
+        add_proposal(result, i, j, LARDON3D_ACQUISITION_CAMPAIGN_PROPOSAL_AMBIGUOUS, pair);
       }
       if (strong_count[i] == 1u && strong_count[j] == 1u &&
           strong_partner[i] == j && strong_partner[j] == i && (assigned[i] || assigned[j]))
