@@ -121,13 +121,57 @@ Queue/Governor, persistance tâche/groupe→Capture et reprise sans duplication.
 La capacité bornée des propositions de revue conserve un préfixe déterministe;
 elle ne limite jamais l'évaluation complète ni le groupement scientifique.
 
-## NEXT REAL-DATA MILESTONE — SCIENTIFIC EXECUTION ON ENGINE BAY INPUTS
+## PHOTO QUALITY TRIAGE / ACQUISITION SELECTION — PASS / FROZEN
 
-1. exécuter features, candidats, matching, vérification, tracks et Sparse SfM ;
-2. évaluer la qualité de la reconstruction sparse multi-campagne ;
-3. exécuter MVS/dense avec budgets et scratch contrôlés ;
-4. publier durablement nuage dense et mesh ;
-5. comparer le résultat aux tentatives photogrammétriques antérieures.
+L'étape qualité canonique implémentée se place après la découverte bornée, les
+métadonnées et l'association minimale des sources, mais avant la matérialisation
+normale d'une campagne et avant toute représentation scientifique, feature,
+matching, SfM ou MVS :
+
+```text
+série source explicite
+→ découverte bornée / métadonnées
+→ candidats d'acquisition et confirmations existantes
+→ Photo Quality Triage
+→ recommandation GOOD / SUSPECT / REJECT par acquisition physique
+→ sélection ou override humain explicite
+→ création/exécution durable de campagne pour les groupes retenus
+→ représentations scientifiques
+→ features → candidats → matching → vérification → tracks → Sparse SfM
+```
+
+Le triage consomme les groupes d'acquisition existants et ne redéfinit jamais
+Capture, Asset, `image_id`, SHA-256, chemin ou basename. Une paire A6000
+RAW+JPEG confirmée est donc une seule unité de triage ; le JPEG caméra valide
+est le proxy rapide préféré et l'analyse ne développe pas les RAW à grande
+échelle. Un JPEG S21 singleton est la représentation d'analyse naturelle. Le
+résultat est non destructif et explicable : `GOOD` est sélectionné par défaut,
+`SUSPECT` attend une acceptation explicite et `REJECT` est exclu par défaut mais
+peut être forcé par l'humain. Ces états sont une recommandation et une sélection
+opérationnelle, jamais une identité ni une suppression de source.
+
+L'implémentation reste déterministe, générique aux appareils, bornée en mémoire
+et I/O, et exécutée par les Task, Queue et Resource Governor existants. Le décodage
+JPEG applique une limite opérationnelle de 8192 pixels sur le plus grand axe, une
+réduction à 1024 pixels et une réservation incluant le contexte retenu plus 20 MiB
+de buffers d'analyse par groupe ; ces bornes ne sont pas des limites scientifiques
+de campagne ou de dataset.
+Elle doit conserver une voie honnête pour les RAW sans proxy plutôt que de
+présumer que chaque RAW a un JPEG sibling. La revue TUI détaillée, la guidance
+de capture et les keyframes vidéo restent des intégrations ultérieures qui
+réutiliseront ce même chemin de qualité, sans second pipeline.
+
+## NEXT REAL-DATA MILESTONE — SELECTED SCIENTIFIC EXECUTION ON ENGINE BAY INPUTS
+
+Après validation de Photo Quality Triage / Acquisition Selection, l'intégration
+scientifique porte uniquement sur les acquisitions sélectionnées :
+
+1. matérialiser leurs représentations scientifiques ;
+2. exécuter features, candidats, matching, vérification, tracks et Sparse SfM ;
+3. évaluer la qualité de la reconstruction sparse multi-campagne ;
+4. exécuter MVS/dense avec budgets et scratch contrôlés ;
+5. publier durablement nuage dense et mesh ;
+6. comparer le résultat aux tentatives photogrammétriques antérieures.
 
 Ce milestone est une intégration réelle, pas une nouvelle série de micro-gates
 S3. Les antécédents d'OOM/SIGSEGV OpenMVS, pression swap, grands intermédiaires

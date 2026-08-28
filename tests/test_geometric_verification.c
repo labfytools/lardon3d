@@ -202,7 +202,7 @@ static bool test_model_api(const char *path) {
   Lardon3DProjectDb *database = NULL;
   CHECK(lardon3d_project_db_open(path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 20);
+  CHECK(lardon3d_project_db_schema_version(database) == LARDON3D_PROJECT_DB_SCHEMA_VERSION);
   Parents parents;
   CHECK(create_parents(database, &parents));
 
@@ -486,7 +486,7 @@ static bool test_migration(const char *v11_path, const char *failed_path) {
                     0));
   CHECK(lardon3d_project_db_open(v11_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 20);
+  CHECK(lardon3d_project_db_schema_version(database) == LARDON3D_PROJECT_DB_SCHEMA_VERSION);
   Parents parents;
   CHECK(create_parents(database, &parents));
   unsigned char fingerprint[32] = {0x91};
@@ -501,7 +501,8 @@ static bool test_migration(const char *v11_path, const char *failed_path) {
       migrated_result.geometric_verification_result_id;
   lardon3d_project_db_close(database);
   CHECK(query_integer(
-      v11_path, "SELECT value FROM metadata WHERE key='schema_version'", 20));
+      v11_path, "SELECT value FROM metadata WHERE key='schema_version'",
+      LARDON3D_PROJECT_DB_SCHEMA_VERSION));
   CHECK(
       query_integer(v11_path,
                     "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
@@ -530,7 +531,7 @@ static bool test_migration(const char *v11_path, const char *failed_path) {
                     0));
   CHECK(lardon3d_project_db_open(failed_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 20);
+  CHECK(lardon3d_project_db_schema_version(database) == LARDON3D_PROJECT_DB_SCHEMA_VERSION);
   lardon3d_project_db_close(database);
   return true;
 }

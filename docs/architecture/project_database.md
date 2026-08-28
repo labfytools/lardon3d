@@ -1,5 +1,17 @@
 # Base de données projet Lardon3D
 
+## Photo Quality Triage — Project DB v21
+
+**PASS / FROZEN.** La migration additive v20→v21 ajoute
+`photo_quality_triage_tasks` et `photo_quality_triage_results` sans modifier les tables
+v20 ni les identités Capture/Asset/image. Chaque résultat conserve le `group_id` canonique
+du plan (1..N). `next_group_id` utilise la même identité à base 1 : valeur initiale 1,
+avancement de `k` vers `k+1` après publication du résultat `k`, et valeur terminale `N+1`.
+Un éventuel `group_index = group_id - 1` reste strictement privé à l'exécuteur. Résultat et
+curseur sont atomiques avant le checkpoint Task générique. Les lectures valident les types,
+signes, bornes et relations dans les valeurs SQLite 64 bits avant toute conversion vers
+les champs C étroits. Recommandation mesurée et override humain restent distincts.
+
 ## Capture / Asset Provenance v1 — Project DB v19 (historique FROZEN)
 
 **PASS / FROZEN.** La migration transactionnelle v18→v19

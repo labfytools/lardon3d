@@ -129,6 +129,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("images", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--compatibility-links",
+        action="store_true",
+        help="crée des vues par liens symboliques sans supprimer de contenu existant",
+    )
     args = parser.parse_args()
 
     images_dir = args.images.expanduser().resolve()
@@ -172,16 +177,22 @@ def main() -> int:
     print()
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    for category in ("bonnes", "suspectes", "mauvaises"):
-        category_dir = output_dir / category
-        if category_dir.exists():
-            for child in category_dir.iterdir():
-                if child.is_symlink() or child.is_file():
-                    child.unlink()
-        category_dir.mkdir(parents=True, exist_ok=True)
+    report_path = output_dir / "resultats.csv"
+    if report_path.exists():
+        print(
+            f"Rapport déjà présent, aucun fichier modifié : {report_path}",
+            file=sys.stderr,
+        )
+        return 2
 
-    with (output_dir / "resultats.csv").open(
-        "w", encoding="utf-8", newline=""
+    if args.compatibility_links:
+        for category in ("bonnes", "suspectes", "mauvaises"):
+            (output_dir / category).mkdir(parents=True, exist_ok=True)
+
+    # Exclusive creation makes the analysis/report default non-destructive even
+    # when two invocations target the same output directory.
+    with report_path.open(
+        "x", encoding="utf-8", newline=""
     ) as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(
@@ -199,9 +210,17 @@ def main() -> int:
         counters = {"bonnes": 0, "suspectes": 0, "mauvaises": 0}
         for result in results:
             counters[result.category] += 1
-            link_name = f"{counters[result.category]:06d}_{result.path.name}"
-            link_path = output_dir / result.category / link_name
-            link_path.symlink_to(result.path.resolve())
+            if args.compatibility_links:
+                link_name = f"{counters[result.category]:06d}_{result.path.name}"
+                link_path = output_dir / result.category / link_name
+                if link_path.exists() or link_path.is_symlink():
+                    print(
+                        f"Lien existant conservé : {link_path}", file=sys.stderr
+                    )
+                else:
+                    # Compatibility output references originals; it never moves
+                    # or deletes immutable source files.
+                    link_path.symlink_to(result.path.resolve())
 
             writer.writerow(
                 [

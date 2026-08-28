@@ -7,10 +7,11 @@
 #include <time.h>
 
 #include <lardon3d/task.h>
+#include <lardon3d/photo_quality.h>
 #include <lardon3d/sparse_sfm_incremental.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 20,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 21,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -113,6 +114,25 @@ typedef struct {
   uint32_t group_id;
   uint64_t capture_id;
 } Lardon3DProjectDbAcquisitionCampaignCapture;
+
+typedef struct {
+  uint64_t task_id;
+  uint64_t scanset_id;
+  /* Canonical one-based group ID of the next work item. Valid durable values
+   * are 1..group_count+1, where group_count+1 denotes completion. */
+  uint32_t next_group_id;
+  uint32_t group_count;
+  const unsigned char *request;
+  size_t request_size;
+} Lardon3DProjectDbPhotoQualityTask;
+
+typedef struct {
+  uint64_t task_id;
+  uint32_t group_id;
+  uint32_t proxy_source_index;
+  Lardon3DPhotoQualityMetrics metrics;
+  Lardon3DPhotoQualityOverride override_value;
+} Lardon3DProjectDbPhotoQualityResult;
 
 typedef struct {
   uint64_t scanset_id;
@@ -598,6 +618,40 @@ Lardon3DProjectDbResult lardon3d_project_db_retain_acquisition_campaign_capture(
 Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_capture(
     Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
     Lardon3DProjectDbAcquisitionCampaignCapture *capture);
+/* Atomically record generic Task state and the immutable typed request for an
+ * existing ScanSet. All pointers are required except checkpoint; request bytes
+ * are borrowed only for the call. The request identifies campaign groups
+ * operationally and never creates or infers Capture/Asset/image identities. */
+Lardon3DProjectDbResult lardon3d_project_db_record_photo_quality_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbPhotoQualityTask *parameters, int64_t updated_at);
+/* On success, parameters receives validated one-based cursor/count fields and
+ * borrows caller-owned request storage containing the immutable request bytes.
+ * Insufficient capacity is reported as corrupt durable state, never truncated. */
+Lardon3DProjectDbResult lardon3d_project_db_load_photo_quality_task(
+    Lardon3DProjectDb *database, uint64_t task_id, unsigned char *request,
+    size_t request_capacity, Lardon3DProjectDbPhotoQualityTask *parameters);
+/* Result publication and next_group_id advance are atomic. result->group_id is
+ * the canonical plan ID in 1..N and must equal the task's current one-based
+ * cursor; next_group_id must equal result->group_id+1 (N+1 after the last
+ * group). Recovery must never checkpoint generic Task progress beyond a group
+ * whose result is not durable. Retry converges through the retained result and
+ * advanced cursor; neither ID is Capture, Asset, or image identity. */
+Lardon3DProjectDbResult lardon3d_project_db_record_photo_quality_result(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbPhotoQualityResult *result,
+    uint32_t next_group_id);
+/* Load one canonical group result into required caller-owned storage. SQLite
+ * integer/enum/range/status relations are validated before public narrowing. */
+Lardon3DProjectDbResult lardon3d_project_db_load_photo_quality_result(
+    Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
+    Lardon3DProjectDbPhotoQualityResult *result);
+/* Human override is deliberately separate from immutable measured metrics.
+ * group_id is canonical and one-based; retrying the same value is idempotent. */
+Lardon3DProjectDbResult lardon3d_project_db_set_photo_quality_override(
+    Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
+    Lardon3DPhotoQualityOverride override_value);
 Lardon3DProjectDbResult lardon3d_project_db_allocate_task_id(Lardon3DProjectDb *database,
                                                              uint64_t *task_id);
 Lardon3DProjectDbResult lardon3d_project_db_load_task(Lardon3DProjectDb *database, uint64_t task_id,

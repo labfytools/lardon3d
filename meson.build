@@ -153,6 +153,8 @@ executable(
         'src/acquisition_ingest.cpp',
         'src/acquisition_campaign.cpp',
         'src/acquisition_campaign_task.cpp',
+        'src/photo_quality.cpp',
+        'src/photo_quality_task.cpp',
         'src/feature_extractor_opencv.cpp',
         'src/feature_store.c',
         'src/feature_extractor_opencv.cpp',
@@ -197,6 +199,7 @@ executable(
         '-DLARDON3D_SPARSE_SFM_TASK_AVAILABLE',
         '-DLARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_AVAILABLE',
         '-DLARDON3D_ACQUISITION_CAMPAIGN_TASK_AVAILABLE',
+        '-DLARDON3D_PHOTO_QUALITY_TASK_AVAILABLE',
     ],
     dependencies: [
         ncursesw,
@@ -396,6 +399,68 @@ acquisition_campaign_task_test = executable(
     dependencies: [threads, sqlite3, openssl, opencv, libraw, libexif, libpng, libdeflate],
 )
 test('acquisition-campaign-task', acquisition_campaign_task_test, timeout: 30)
+
+photo_quality_test = executable(
+    'test-photo-quality',
+    sources: ['tests/test_photo_quality.cpp', 'src/photo_quality.cpp'],
+    include_directories: include_directories('include'),
+    dependencies: [opencv],
+)
+test('photo-quality', photo_quality_test, timeout: 30)
+
+photo_quality_task_test = executable(
+    'test-photo-quality-task',
+    sources: [
+        'tests/test_photo_quality_task.cpp',
+        'src/photo_quality_task.cpp', 'src/photo_quality.cpp',
+        'src/acquisition_campaign.cpp', 'src/acquisition_pairing.cpp',
+        'src/acquisition_campaign_task.cpp', 'src/acquisition_ingest.cpp',
+        'src/raw_development.cpp', 'src/app_state.c',
+        'src/image_catalog_persistent.c', 'src/image_catalog.c', 'src/image_view.c',
+        'src/project.c', 'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/task_checkpoint.c', 'src/task_kind_registry.c',
+        'src/task_queue.c', 'src/resource_governor.c',
+        'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv, libraw, libexif, libpng, libdeflate],
+)
+test('photo-quality-task', photo_quality_task_test, timeout: 30)
+
+photo_quality_real_scan = executable(
+    'photo-quality-real-scan',
+    sources: [
+        'tests/photo_quality_real_scan.cpp',
+        'src/photo_quality_task.cpp', 'src/photo_quality.cpp',
+        'src/acquisition_campaign.cpp', 'src/acquisition_pairing.cpp',
+        'src/acquisition_campaign_task.cpp', 'src/acquisition_ingest.cpp',
+        'src/raw_development.cpp', 'src/app_state.c',
+        'src/image_catalog_persistent.c', 'src/image_catalog.c', 'src/image_view.c',
+        'src/project.c', 'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/task_checkpoint.c', 'src/task_kind_registry.c',
+        'src/task_queue.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
+        'src/hardware_profile.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv, libraw, libexif, libpng, libdeflate],
+)
+
+photo_quality_restart_scan = executable(
+    'photo-quality-restart-scan',
+    sources: [
+        'tests/photo_quality_restart_scan.cpp',
+        'src/photo_quality_task.cpp', 'src/photo_quality.cpp',
+        'src/acquisition_campaign.cpp', 'src/acquisition_pairing.cpp',
+        'src/acquisition_campaign_task.cpp', 'src/acquisition_ingest.cpp',
+        'src/raw_development.cpp', 'src/app_state.c',
+        'src/image_catalog_persistent.c', 'src/image_catalog.c', 'src/image_view.c',
+        'src/project.c', 'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/task_checkpoint.c', 'src/task_kind_registry.c',
+        'src/task_queue.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv, libraw, libexif, libpng, libdeflate],
+)
 
 feature_store_test = executable(
     'test-feature-store',

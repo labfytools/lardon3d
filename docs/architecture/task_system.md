@@ -131,6 +131,16 @@ appelle `sequence_break` avant le groupe suivant. Sa reprise passe par la Queue
 et le Resource Governor existants ; aucune boucle d'exécution parallèle n'est
 introduite.
 
+**PASS / FROZEN** — le callback `photo_quality.triage` v1 réutilise ce
+même Task/Queue/Resource Governor et une `sequence_break` entre groupes. Sa requête typée
+est immuable ; le `next_group_id` canonique commence à 1, avance à `k+1` après le résultat
+`k`, puis vaut `N+1` à terminaison. Résultat et curseur sont durables avant le checkpoint
+générique, de sorte qu'une reprise ne devine ni ne réanalyse une identité déjà publiée. La
+réservation charge le contexte retenu et 20 MiB de travail par groupe ; le
+JPEG au-dessus de la limite opérationnelle de décodage 8192 pixels reste en attente
+`UNAVAILABLE + SUSPECT` (ni erreur de décodage ni rejet) ; une entrée admise est réduite à
+1024 pixels maximum avant analyse. Cette borne ne limite ni la campagne ni le dataset.
+
 Le chemin de production de l'import ne possède plus de thread ni de drapeau
 d'annulation privés. Son wrapper TUI ne fait qu'enqueue/cancel/observer la
 tâche générique. Chaque callback traite un lot borné, checkpoint hors mutex de

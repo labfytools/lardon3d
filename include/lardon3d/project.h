@@ -61,6 +61,12 @@ lardon3d_project_checkpoint_image_import_task(Lardon3DAppState *state, const Lar
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_acquisition_campaign_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbAcquisitionCampaignTask *parameters);
+/* Persist a durable photo-quality Task snapshot, immutable typed request and durable cursor.
+ * state, task and parameters are required; OK means the generic checkpoint and v21 typed
+ * record are durable, while PUBLISHED_NOT_DURABLE leaves post-crash durability unconfirmed. */
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_photo_quality_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbPhotoQualityTask *parameters);
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbFeatureExtractTask *parameters);

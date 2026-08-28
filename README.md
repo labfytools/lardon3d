@@ -34,8 +34,10 @@ persistante, enrichissable et versionnable.
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v20** : fondations v19 préservées, avec persistance
-  additive des tâches de campagne d'acquisition
+- **Project Database v21** : fondations v20 préservées, avec persistance additive
+  des résultats de triage photo
+- **[Photo Quality Triage](docs/architecture/photo_quality_triage.md)** : métriques JPEG
+  bornées et recommandations non destructives, avec persistance additive v21
 - **Exécution durable de campagne d'acquisition** : tâche générique à requête
   typée immuable, confirmations `CALLER_EXPLICIT`, curseur et correspondance
   tâche/groupe→Capture persistants ; un groupe S3-E par séquence, reprise par

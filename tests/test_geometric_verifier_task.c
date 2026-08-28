@@ -369,7 +369,7 @@ static bool run_task_test(void) {
                     0));
   CHECK(lardon3d_project_db_open(database_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 20);
+  CHECK(lardon3d_project_db_schema_version(database) == LARDON3D_PROJECT_DB_SCHEMA_VERSION);
   lardon3d_project_db_close(database);
   CHECK(remove_tree(root));
   return true;

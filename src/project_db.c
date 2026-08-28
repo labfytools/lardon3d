@@ -622,6 +622,33 @@ static const char schema_acquisition_campaign_v20[] =
     "capture_id INTEGER NOT NULL REFERENCES captures(capture_id),"
     "PRIMARY KEY(task_id,group_id),UNIQUE(task_id,capture_id));";
 
+static const char schema_photo_quality_v21[] =
+    /* v21 stores pre-materialization operational group analysis. These rows
+       never define Capture, Asset, image_id, SHA-256, path, or basename identity.
+       next_group_id is canonical and one-based: 1 initially, N+1 when done. */
+    "CREATE TABLE IF NOT EXISTS photo_quality_triage_tasks("
+    "task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,"
+    "scanset_id INTEGER NOT NULL REFERENCES scansets(scanset_id),"
+    "next_group_id INTEGER NOT NULL CHECK(next_group_id>=1 AND next_group_id<=4097),"
+    "group_count INTEGER NOT NULL CHECK(group_count>0 AND group_count<=4096),"
+    "request BLOB NOT NULL CHECK(length(request)>0),"
+    "CHECK(next_group_id<=group_count+1));"
+    "CREATE TABLE IF NOT EXISTS photo_quality_triage_results("
+    "task_id INTEGER NOT NULL REFERENCES photo_quality_triage_tasks(task_id) ON DELETE CASCADE,"
+    "group_id INTEGER NOT NULL CHECK(group_id>0 AND group_id<=4096),"
+    "proxy_source_index INTEGER NOT NULL CHECK(proxy_source_index>=0 AND proxy_source_index<=4294967295),"
+    "metrics_version INTEGER NOT NULL CHECK(metrics_version>0),"
+    "metric_status INTEGER NOT NULL CHECK(metric_status BETWEEN 0 AND 3),"
+    "recommendation INTEGER NOT NULL CHECK(recommendation BETWEEN 1 AND 3),"
+    "human_override INTEGER NOT NULL DEFAULT 0 CHECK(human_override BETWEEN 0 AND 2),"
+    "decoded_width INTEGER NOT NULL,decoded_height INTEGER NOT NULL,"
+    "analysis_width INTEGER NOT NULL,analysis_height INTEGER NOT NULL,"
+    "sharpness_raw REAL NOT NULL,sharpness_normalized REAL NOT NULL,"
+    "clipped_black_fraction REAL NOT NULL,clipped_white_fraction REAL NOT NULL,"
+    "contrast_raw REAL NOT NULL,contrast_normalized REAL NOT NULL,"
+    "low_texture_fraction REAL NOT NULL,reasons TEXT NOT NULL CHECK(length(reasons)<256),"
+    "PRIMARY KEY(task_id,group_id));";
+
 static void copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text) {
   if (destination) {
     (void)snprintf(destination, LARDON3D_PROJECT_DB_ERROR_CAPACITY, "%s", text ? text : "");
@@ -713,7 +740,8 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
       from_version != 4 && from_version != 5 && from_version != 6 && from_version != 7 &&
       from_version != 8 && from_version != 9 && from_version != 10 && from_version != 11 &&
       from_version != 12 && from_version != 13 && from_version != 14 &&
-      from_version != 15 && from_version != 16 && from_version != 17 && from_version != 18) {
+      from_version != 15 && from_version != 16 && from_version != 17 && from_version != 18 &&
+      from_version != 19 && from_version != 20) {
     return LARDON3D_PROJECT_DB_CORRUPT;
   }
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
@@ -1126,6 +1154,15 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
                        "finish schema v20 migration");
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version < 21) {
+    result = execute(database, schema_photo_quality_v21,
+                     "migrate photo quality triage v20 to v21");
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database,
+                       "UPDATE metadata SET value=21 WHERE key='schema_version' AND value=20",
+                       "finish schema v21 migration");
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit migration");
   }
@@ -1263,7 +1300,9 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
                                "capture_selections",
                                "asset_derivations",
                                "acquisition_campaign_tasks",
-                               "acquisition_campaign_captures"};
+                               "acquisition_campaign_captures",
+                               "photo_quality_triage_tasks",
+                               "photo_quality_triage_results"};
     for (size_t index = 0; index < sizeof(required) / sizeof(required[0]) &&
                            result == LARDON3D_PROJECT_DB_OK;
          ++index) {
@@ -1488,6 +1527,7 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
                      const Lardon3DProjectDbGeometricVerifierTask *geometric_verifier,
                      const Lardon3DProjectDbSparseSfmTask *sparse_sfm,
                      const Lardon3DProjectDbAcquisitionCampaignTask *campaign,
+                     const Lardon3DProjectDbPhotoQualityTask *photo_quality,
                      int64_t updated_at) {
   bool typed = task_kind != NULL;
   if (!database || !valid_durable_task(snapshot, updated_at) ||
@@ -1559,6 +1599,12 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
                     campaign->group_count > 4096 ||
                     campaign->next_group_id > campaign->group_count || !campaign->request ||
                     campaign->request_size == 0 || campaign->request_size > INT_MAX)) ||
+      (photo_quality &&
+       (!valid_task_id(photo_quality->task_id) || photo_quality->task_id != snapshot->id ||
+        !valid_task_id(photo_quality->scanset_id) || photo_quality->group_count == 0 ||
+        photo_quality->group_count > 4096 || photo_quality->next_group_id == 0 ||
+        photo_quality->next_group_id > photo_quality->group_count + 1u || !photo_quality->request ||
+        photo_quality->request_size == 0 || photo_quality->request_size > INT_MAX)) ||
       (checkpoint && !valid_checkpoint(checkpoint))) {
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
@@ -1639,6 +1685,31 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
       result = step_done(database, statement, "upsert campaign task");
       if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1) {
         copy_error(database->error, "Payload de campagne immuable.");
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+      }
+    }
+  }
+  if (result == LARDON3D_PROJECT_DB_OK && photo_quality) {
+    /* Generic checkpoints may lag the atomic business-result transaction after
+       a crash. A stale retry may repeat the cursor but must never move it back. */
+    result = prepare(
+        database,
+        "INSERT INTO photo_quality_triage_tasks(task_id,scanset_id,next_group_id,group_count,"
+        "request) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET "
+        "next_group_id=excluded.next_group_id WHERE scanset_id=excluded.scanset_id AND "
+        "group_count=excluded.group_count AND request=excluded.request AND "
+        "excluded.next_group_id>=photo_quality_triage_tasks.next_group_id",
+        &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      sqlite3_bind_int64(statement, 1, (sqlite3_int64)photo_quality->task_id);
+      sqlite3_bind_int64(statement, 2, (sqlite3_int64)photo_quality->scanset_id);
+      sqlite3_bind_int64(statement, 3, photo_quality->next_group_id);
+      sqlite3_bind_int64(statement, 4, photo_quality->group_count);
+      sqlite3_bind_blob(statement, 5, photo_quality->request, (int)photo_quality->request_size,
+                        SQLITE_TRANSIENT);
+      result = step_done(database, statement, "upsert photo quality task");
+      if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1) {
+        copy_error(database->error, "Payload de triage photo immuable.");
         result = LARDON3D_PROJECT_DB_CONSTRAINT;
       }
     }
@@ -1977,7 +2048,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_task(
     Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot, const char *task_kind,
     uint32_t task_kind_version, const Lardon3DProjectDbCheckpoint *checkpoint, int64_t updated_at) {
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, updated_at);
+                              NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_image_import_task(
@@ -1989,7 +2060,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_image_import_task(
   }
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint,
                               source_path, scanset_id, NULL, NULL, NULL, NULL, NULL, NULL,
-                              NULL, NULL, updated_at);
+                              NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_task(
@@ -2000,7 +2071,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              parameters, NULL, NULL, NULL, NULL, NULL, NULL, NULL, updated_at);
+                              parameters, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_record_sift_extract_task(
@@ -2010,7 +2081,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_sift_extract_task(
     const Lardon3DProjectDbSiftExtractTask *parameters, int64_t updated_at) {
   if (!parameters) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
-                              NULL, parameters, NULL, NULL, NULL, NULL, NULL, NULL, updated_at);
+                              NULL, parameters, NULL, NULL, NULL, NULL, NULL, NULL, NULL, updated_at);
 }
 
 static bool read_task(sqlite3_stmt *statement, Lardon3DProjectDbTask *task) {
@@ -2254,7 +2325,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_acquisition_campaign_task(
   /* The generic Task/checkpoint and typed request persist atomically: recovery
      never observes a valid campaign Task without its immutable request blob. */
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint,
-                              NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, parameters,
+                              NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, parameters, NULL,
                               updated_at);
 }
 
@@ -2395,6 +2466,316 @@ Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_capture(
     }
   }
   sqlite3_finalize(statement);
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_record_photo_quality_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbPhotoQualityTask *parameters, int64_t updated_at) {
+  if (!parameters)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  /* Generic runtime state and typed immutable request share the transaction;
+     recovery cannot observe one without the other. */
+  return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint, NULL, 0,
+                              NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, parameters,
+                              updated_at);
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_photo_quality_task(
+    Lardon3DProjectDb *database, uint64_t task_id, unsigned char *request,
+    size_t request_capacity, Lardon3DProjectDbPhotoQualityTask *parameters) {
+  if (!database || !valid_task_id(task_id) || !request || !request_capacity || !parameters)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  memset(parameters, 0, sizeof(*parameters));
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT scanset_id,next_group_id,group_count,request FROM photo_quality_triage_tasks "
+      "WHERE task_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE) result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    else if (code != SQLITE_ROW) result = sqlite_result(database, code, "load photo quality task");
+    else {
+      bool integer_columns = sqlite3_column_type(statement, 0) == SQLITE_INTEGER &&
+                             sqlite3_column_type(statement, 1) == SQLITE_INTEGER &&
+                             sqlite3_column_type(statement, 2) == SQLITE_INTEGER;
+      sqlite3_int64 scanset = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 next = sqlite3_column_int64(statement, 1);
+      sqlite3_int64 count = sqlite3_column_int64(statement, 2);
+      int bytes = sqlite3_column_bytes(statement, 3);
+      const void *blob = sqlite3_column_blob(statement, 3);
+      /* SQLite exposes signed 64-bit storage. Validate identity, operational
+         bounds, and the one-based cursor relation before narrowing to the C API.
+         N+1 is the only completed cursor; zero and values beyond N+1 are corrupt. */
+      if (!integer_columns || sqlite3_column_type(statement, 3) != SQLITE_BLOB || scanset <= 0 ||
+          next < 1 || count < 1 || count > 4096 ||
+          next > count + 1 || bytes <= 0 ||
+          (size_t)bytes > request_capacity || !blob) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else {
+        memcpy(request, blob, (size_t)bytes);
+        parameters->task_id = task_id;
+        parameters->scanset_id = (uint64_t)scanset;
+        parameters->next_group_id = (uint32_t)next;
+        parameters->group_count = (uint32_t)count;
+        parameters->request = request;
+        parameters->request_size = (size_t)bytes;
+      }
+    }
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+static bool valid_quality_result(const Lardon3DProjectDbPhotoQualityResult *r) {
+  const Lardon3DPhotoQualityMetrics *m = r ? &r->metrics : NULL;
+  bool decoded_pair = m && ((m->decoded_width == 0) == (m->decoded_height == 0));
+  bool analysis_pair = m && ((m->analysis_width == 0) == (m->analysis_height == 0));
+  bool ok_dimensions = m && m->status == LARDON3D_PHOTO_QUALITY_METRIC_OK &&
+                       m->decoded_width > 0 && m->analysis_width > 0 &&
+                       m->decoded_width <= LARDON3D_PHOTO_QUALITY_JPEG_MAX_DIMENSION &&
+                       m->decoded_height <= LARDON3D_PHOTO_QUALITY_JPEG_MAX_DIMENSION;
+  bool unavailable_dimensions = m && m->status == LARDON3D_PHOTO_QUALITY_METRIC_UNAVAILABLE &&
+                                (m->decoded_width == 0 ||
+                                 m->decoded_width > LARDON3D_PHOTO_QUALITY_JPEG_MAX_DIMENSION ||
+                                 m->decoded_height > LARDON3D_PHOTO_QUALITY_JPEG_MAX_DIMENSION);
+  bool failed_dimensions = m &&
+                           (m->status == LARDON3D_PHOTO_QUALITY_METRIC_INVALID_INPUT ||
+                            m->status == LARDON3D_PHOTO_QUALITY_METRIC_DECODE_ERROR) &&
+                           m->analysis_width == 0;
+  bool truthful_recommendation = m &&
+      ((m->status == LARDON3D_PHOTO_QUALITY_METRIC_OK) ||
+       (m->status == LARDON3D_PHOTO_QUALITY_METRIC_UNAVAILABLE &&
+        m->recommendation == LARDON3D_PHOTO_QUALITY_SUSPECT) ||
+       ((m->status == LARDON3D_PHOTO_QUALITY_METRIC_INVALID_INPUT ||
+         m->status == LARDON3D_PHOTO_QUALITY_METRIC_DECODE_ERROR) &&
+        m->recommendation == LARDON3D_PHOTO_QUALITY_REJECT));
+  return r && valid_task_id(r->task_id) && m &&
+         m->metrics_version == LARDON3D_PHOTO_QUALITY_METRICS_VERSION &&
+         m->status >= LARDON3D_PHOTO_QUALITY_METRIC_OK &&
+         m->status <= LARDON3D_PHOTO_QUALITY_METRIC_DECODE_ERROR &&
+         m->recommendation >= LARDON3D_PHOTO_QUALITY_GOOD &&
+         m->recommendation <= LARDON3D_PHOTO_QUALITY_REJECT &&
+         r->override_value >= LARDON3D_PHOTO_QUALITY_OVERRIDE_NONE &&
+         r->override_value <= LARDON3D_PHOTO_QUALITY_OVERRIDE_EXCLUDE &&
+         decoded_pair && analysis_pair &&
+         m->analysis_width <= LARDON3D_PHOTO_QUALITY_ANALYSIS_MAX_DIMENSION &&
+         m->analysis_height <= LARDON3D_PHOTO_QUALITY_ANALYSIS_MAX_DIMENSION &&
+         (ok_dimensions || unavailable_dimensions || failed_dimensions) &&
+         truthful_recommendation &&
+         bounded_text(m->reasons, sizeof(m->reasons), false) && isfinite(m->sharpness_raw) &&
+         isfinite(m->sharpness_normalized) && isfinite(m->clipped_black_fraction) &&
+         isfinite(m->clipped_white_fraction) && isfinite(m->contrast_raw) &&
+         isfinite(m->contrast_normalized) && isfinite(m->low_texture_fraction) &&
+         m->sharpness_raw >= 0.0 && m->sharpness_normalized >= 0.0 && m->contrast_raw >= 0.0 &&
+         m->contrast_normalized >= 0.0 && m->clipped_black_fraction >= 0.0 &&
+         m->clipped_black_fraction <= 1.0 && m->clipped_white_fraction >= 0.0 &&
+         m->clipped_white_fraction <= 1.0 && m->low_texture_fraction >= 0.0 &&
+         m->low_texture_fraction <= 1.0;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_record_photo_quality_result(
+    Lardon3DProjectDb *database, const Lardon3DProjectDbPhotoQualityResult *r,
+    uint32_t next_group_id) {
+  /* First publication requires the canonical one-based cursor at group_id and
+     atomically advances it to group_id+1. An exact retained replay also
+     converges when that advance is already durable; it may neither replace
+     result identity/data nor accept any other cursor. N+1 is completion. */
+  if (!database || !valid_quality_result(r) || r->group_id == 0 ||
+      r->group_id == UINT32_MAX || next_group_id != r->group_id + 1u)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  (void)pthread_mutex_lock(&database->mutex);
+  Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin quality result");
+  sqlite3_stmt *statement = NULL;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    const Lardon3DPhotoQualityMetrics *m = &r->metrics;
+    result = prepare(database,
+        "INSERT INTO photo_quality_triage_results(task_id,group_id,proxy_source_index,"
+        "metrics_version,metric_status,recommendation,human_override,decoded_width,decoded_height,"
+        "analysis_width,analysis_height,sharpness_raw,sharpness_normalized,clipped_black_fraction,"
+        "clipped_white_fraction,contrast_raw,contrast_normalized,low_texture_fraction,reasons) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19) "
+        "ON CONFLICT(task_id,group_id) DO UPDATE SET group_id=excluded.group_id WHERE "
+        "proxy_source_index IS excluded.proxy_source_index AND "
+        "metrics_version IS excluded.metrics_version AND metric_status IS excluded.metric_status "
+        "AND recommendation IS excluded.recommendation AND human_override IS excluded.human_override "
+        "AND decoded_width IS excluded.decoded_width AND decoded_height IS excluded.decoded_height "
+        "AND analysis_width IS excluded.analysis_width AND analysis_height IS excluded.analysis_height "
+        "AND sharpness_raw IS excluded.sharpness_raw AND "
+        "sharpness_normalized IS excluded.sharpness_normalized AND "
+        "clipped_black_fraction IS excluded.clipped_black_fraction AND "
+        "clipped_white_fraction IS excluded.clipped_white_fraction AND "
+        "contrast_raw IS excluded.contrast_raw AND "
+        "contrast_normalized IS excluded.contrast_normalized AND "
+        "low_texture_fraction IS excluded.low_texture_fraction AND reasons IS excluded.reasons",
+        &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+        sqlite3_bind_int64(statement, 1, (sqlite3_int64)r->task_id);
+        sqlite3_bind_int64(statement, 2, r->group_id);
+        sqlite3_bind_int64(statement, 3, r->proxy_source_index);
+        sqlite3_bind_int64(statement, 4, m->metrics_version);
+        sqlite3_bind_int(statement, 5, (int)m->status);
+        sqlite3_bind_int(statement, 6, (int)m->recommendation);
+        sqlite3_bind_int(statement, 7, (int)r->override_value);
+        sqlite3_bind_int64(statement, 8, m->decoded_width);
+        sqlite3_bind_int64(statement, 9, m->decoded_height);
+        sqlite3_bind_int64(statement, 10, m->analysis_width);
+        sqlite3_bind_int64(statement, 11, m->analysis_height);
+        sqlite3_bind_double(statement, 12, m->sharpness_raw);
+        sqlite3_bind_double(statement, 13, m->sharpness_normalized);
+        sqlite3_bind_double(statement, 14, m->clipped_black_fraction);
+        sqlite3_bind_double(statement, 15, m->clipped_white_fraction);
+        sqlite3_bind_double(statement, 16, m->contrast_raw);
+        sqlite3_bind_double(statement, 17, m->contrast_normalized);
+        sqlite3_bind_double(statement, 18, m->low_texture_fraction);
+        sqlite3_bind_text(statement, 19, m->reasons, -1, SQLITE_TRANSIENT);
+        result = step_done(database, statement, "insert quality result");
+        if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1)
+          result = LARDON3D_PROJECT_DB_CONSTRAINT;
+    }
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    result = prepare(database,
+        "UPDATE photo_quality_triage_tasks SET next_group_id=?3 WHERE task_id=?1 AND "
+        "(next_group_id=?2 OR next_group_id=?3) AND group_count>=?2 AND ?3=?2+1", &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      sqlite3_bind_int64(statement, 1, (sqlite3_int64)r->task_id);
+      sqlite3_bind_int64(statement, 2, (sqlite3_int64)r->group_id);
+      sqlite3_bind_int64(statement, 3, next_group_id);
+      result = step_done(database, statement, "advance quality cursor");
+      if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1)
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+    }
+  }
+  if (result == LARDON3D_PROJECT_DB_OK) result = execute(database, "COMMIT", "commit quality result");
+  else (void)execute(database, "ROLLBACK", "rollback quality result");
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_load_photo_quality_result(
+    Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
+    Lardon3DProjectDbPhotoQualityResult *result_row) {
+  if (!database || !valid_task_id(task_id) || group_id == 0 || !result_row)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  memset(result_row, 0, sizeof(*result_row));
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(database,
+      "SELECT proxy_source_index,metrics_version,metric_status,recommendation,human_override,"
+      "decoded_width,decoded_height,analysis_width,analysis_height,sharpness_raw,"
+      "sharpness_normalized,clipped_black_fraction,clipped_white_fraction,contrast_raw,"
+      "r.contrast_normalized,r.low_texture_fraction,r.reasons,t.group_count,t.next_group_id "
+      "FROM photo_quality_triage_results AS r JOIN photo_quality_triage_tasks AS t "
+      "ON t.task_id=r.task_id WHERE r.task_id=?1 AND r.group_id=?2", &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    sqlite3_bind_int64(statement, 2, group_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE) result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    else if (code != SQLITE_ROW) result = sqlite_result(database, code, "load quality result");
+    else {
+      bool integer_columns = true;
+      for (int column = 0; column <= 8; ++column)
+        integer_columns = integer_columns &&
+                          sqlite3_column_type(statement, column) == SQLITE_INTEGER;
+      bool numeric_columns = true;
+      for (int column = 9; column <= 15; ++column) {
+        int type = sqlite3_column_type(statement, column);
+        numeric_columns = numeric_columns && (type == SQLITE_FLOAT || type == SQLITE_INTEGER);
+      }
+      sqlite3_int64 proxy = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 version = sqlite3_column_int64(statement, 1);
+      sqlite3_int64 status = sqlite3_column_int64(statement, 2);
+      sqlite3_int64 recommendation = sqlite3_column_int64(statement, 3);
+      sqlite3_int64 override_value = sqlite3_column_int64(statement, 4);
+      sqlite3_int64 decoded_width = sqlite3_column_int64(statement, 5);
+      sqlite3_int64 decoded_height = sqlite3_column_int64(statement, 6);
+      sqlite3_int64 analysis_width = sqlite3_column_int64(statement, 7);
+      sqlite3_int64 analysis_height = sqlite3_column_int64(statement, 8);
+      /* Corrupt SQLite rows must not wrap through enum or uint32 casts. Keep
+         values wide until every sign/range constraint has passed. */
+      sqlite3_int64 group_count = sqlite3_column_int64(statement, 17);
+      sqlite3_int64 next_group_id = sqlite3_column_int64(statement, 18);
+      /* A retained result is publishable only after its canonical plan group
+         is durably completed. Validate the typed cursor while values are still
+         SQLite-width so corruption cannot wrap through public uint32 fields. */
+      if (!integer_columns || !numeric_columns ||
+          sqlite3_column_type(statement, 16) != SQLITE_TEXT || proxy < 0 || proxy > UINT32_MAX ||
+          sqlite3_column_type(statement, 17) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 18) != SQLITE_INTEGER || group_count < 1 ||
+          group_count > 4096 || next_group_id < 1 || next_group_id > group_count + 1 ||
+          (sqlite3_int64)group_id > group_count || (sqlite3_int64)group_id >= next_group_id ||
+          version != LARDON3D_PHOTO_QUALITY_METRICS_VERSION ||
+          status < LARDON3D_PHOTO_QUALITY_METRIC_OK ||
+          status > LARDON3D_PHOTO_QUALITY_METRIC_DECODE_ERROR ||
+          recommendation < LARDON3D_PHOTO_QUALITY_GOOD ||
+          recommendation > LARDON3D_PHOTO_QUALITY_REJECT ||
+          override_value < LARDON3D_PHOTO_QUALITY_OVERRIDE_NONE ||
+          override_value > LARDON3D_PHOTO_QUALITY_OVERRIDE_EXCLUDE ||
+          decoded_width < 0 || decoded_width > UINT32_MAX || decoded_height < 0 ||
+          decoded_height > UINT32_MAX || analysis_width < 0 || analysis_width > UINT32_MAX ||
+          analysis_height < 0 || analysis_height > UINT32_MAX) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else {
+        result_row->task_id = task_id;
+        result_row->group_id = group_id;
+        result_row->proxy_source_index = (uint32_t)proxy;
+        Lardon3DPhotoQualityMetrics *m = &result_row->metrics;
+        m->metrics_version = (uint32_t)version;
+        m->status = (Lardon3DPhotoQualityMetricStatus)status;
+        m->recommendation = (Lardon3DPhotoQualityRecommendation)recommendation;
+        result_row->override_value = (Lardon3DPhotoQualityOverride)override_value;
+        m->decoded_width = (uint32_t)decoded_width;
+        m->decoded_height = (uint32_t)decoded_height;
+        m->analysis_width = (uint32_t)analysis_width;
+        m->analysis_height = (uint32_t)analysis_height;
+        m->sharpness_raw = sqlite3_column_double(statement, 9);
+        m->sharpness_normalized = sqlite3_column_double(statement, 10);
+        m->clipped_black_fraction = sqlite3_column_double(statement, 11);
+        m->clipped_white_fraction = sqlite3_column_double(statement, 12);
+        m->contrast_raw = sqlite3_column_double(statement, 13);
+        m->contrast_normalized = sqlite3_column_double(statement, 14);
+        m->low_texture_fraction = sqlite3_column_double(statement, 15);
+        const unsigned char *reasons = sqlite3_column_text(statement, 16);
+        if (!reasons || snprintf(m->reasons, sizeof(m->reasons), "%s", reasons) >=
+                            (int)sizeof(m->reasons) || !valid_quality_result(result_row))
+          result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+    }
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_set_photo_quality_override(
+    Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
+    Lardon3DPhotoQualityOverride override_value) {
+  if (!database || !valid_task_id(task_id) || group_id == 0 || override_value < 0 ||
+      override_value > 2)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(database,
+      "UPDATE photo_quality_triage_results SET human_override=?3 WHERE task_id=?1 AND group_id=?2",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    sqlite3_bind_int64(statement, 2, group_id);
+    sqlite3_bind_int(statement, 3, (int)override_value);
+    result = step_done(database, statement, "set quality override");
+    if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1)
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+  }
   (void)pthread_mutex_unlock(&database->mutex);
   return result;
 }
@@ -4984,7 +5365,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_visual_index_update_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
-                              NULL, parameters, NULL, NULL, NULL, NULL, NULL, updated_at);
+                              NULL, parameters, NULL, NULL, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_load_visual_index_update_task(
@@ -5031,7 +5412,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_candidate_pair_generate_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
-                              NULL, NULL, parameters, NULL, NULL, NULL, NULL, updated_at);
+                              NULL, NULL, parameters, NULL, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_load_candidate_pair_generate_task(
@@ -5087,7 +5468,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_matcher_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
-                              NULL, NULL, NULL, parameters, NULL, NULL, NULL, updated_at);
+                              NULL, NULL, NULL, parameters, NULL, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_load_matcher_task(
@@ -5145,7 +5526,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_geometric_verifier_task(
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   return record_task_internal(db, snapshot, kind, version, checkpoint, NULL, 0, NULL,
-                              NULL, NULL, NULL, NULL, parameters, NULL, NULL, updated_at);
+                              NULL, NULL, NULL, NULL, parameters, NULL, NULL, NULL, updated_at);
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_load_geometric_verifier_task(
@@ -5218,7 +5599,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_track_builder_task(
   }
   Lardon3DProjectDbResult result = record_task_internal(
       db, snapshot, kind, version, checkpoint, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-      NULL, updated_at);
+      NULL, NULL, updated_at);
   if (result != LARDON3D_PROJECT_DB_OK) return result;
   (void)pthread_mutex_lock(&db->mutex);
   result = execute(db, "BEGIN IMMEDIATE", "begin track builder task");
@@ -5329,7 +5710,7 @@ Lardon3DProjectDbResult lardon3d_project_db_record_sparse_sfm_task(
     const Lardon3DProjectDbSparseSfmTask *parameters, int64_t updated_at) {
   if (!parameters) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   return record_task_internal(database, snapshot, kind, version, checkpoint, NULL, 0, NULL, NULL,
-                              NULL, NULL, NULL, NULL, parameters, NULL, updated_at);
+                              NULL, NULL, NULL, NULL, parameters, NULL, NULL, updated_at);
 }
 
 static bool read_u64_blob(sqlite3_stmt *statement, int column, uint64_t *value) {
