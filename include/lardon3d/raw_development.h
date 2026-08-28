@@ -50,6 +50,16 @@ Lardon3DRawDevelopmentResult lardon3d_raw_develop_to_capture(
     uint64_t producer_task_id, int64_t created_at, Lardon3DRawDevelopmentOutput *output
 );
 
+/* Develop the immutable managed RAW identified explicitly by source_asset_id.
+ * The asset must have a durable RAW source-kind relation to capture_id. This
+ * API validates the managed bytes against their stored SHA-256 and never finds
+ * source identity from path, name, hash, attachment order, or image identity.
+ * Output storage is caller-owned; published assets/images remain DB-owned. */
+Lardon3DRawDevelopmentResult lardon3d_raw_develop_asset_to_capture(
+    Lardon3DAppState *state, uint64_t capture_id, uint64_t source_asset_id,
+    uint64_t producer_task_id, int64_t created_at, Lardon3DRawDevelopmentOutput *output
+);
+
 #ifdef __cplusplus
 }
 #endif

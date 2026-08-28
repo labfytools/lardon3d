@@ -5,7 +5,7 @@
 **ACCEPTED** — architecture decision for the post-Gate C documentation freeze.
 
 Current Sparse SfM gates A through G are **PASS / FROZEN**.
-Project Database: current schema **v20**; historical v16 remains frozen.
+Project Database: current schema **v22**; historical v16 remains frozen.
 
 This record is normative for the current architecture. It does not introduce
 an implementation, a public API, a persistence format or a roadmap commitment.

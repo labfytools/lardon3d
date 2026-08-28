@@ -158,8 +158,18 @@ extern "C" Lardon3DAcquisitionIngestResult lardon3d_acquisition_ingest(
     size_t jpeg = SIZE_MAX, raw = SIZE_MAX;
     for (size_t member = 0; member < group.source_count; ++member) {
       size_t index = group.source_indices[member];
-      database_result = lardon3d_project_db_attach_capture_source_asset(
-          state->project_db, capture.capture_id, published[index].asset.asset_id);
+      Lardon3DProjectDbCaptureSourceKind source_kind{};
+      if (published[index].metadata.source_kind == LARDON3D_ACQUISITION_SOURCE_JPEG)
+        source_kind = LARDON3D_DB_CAPTURE_SOURCE_JPEG;
+      else if (published[index].metadata.source_kind == LARDON3D_ACQUISITION_SOURCE_RAW)
+        source_kind = LARDON3D_DB_CAPTURE_SOURCE_RAW;
+      else
+        return LARDON3D_ACQUISITION_INGEST_CONSTRAINT;
+      // S3-E commits SOURCE membership with the already validated source kind.
+      // Downstream RAW work may use only this explicit relation; path, hash,
+      // basename, attachment order, and image identity cannot replace it.
+      database_result = lardon3d_project_db_record_capture_source_asset(
+          state->project_db, capture.capture_id, published[index].asset.asset_id, source_kind);
       if (database_result != LARDON3D_PROJECT_DB_OK) return db_result(database_result);
       if (published[index].metadata.source_kind == LARDON3D_ACQUISITION_SOURCE_JPEG && jpeg == SIZE_MAX)
         jpeg = index;

@@ -121,6 +121,26 @@ Queue/Governor, persistance tâche/groupe→Capture et reprise sans duplication.
 La capacité bornée des propositions de revue conserve un préfixe déterministe;
 elle ne limite jamais l'évaluation complète ni le groupement scientifique.
 
+### État de calibration des campagnes réelles
+
+L'infrastructure Project DB v22, exécution sélectionnée, `raw.develop` et
+Calibration Bootstrap v1 est **PASS / FROZEN** : la suite normale 53/53, les
+contrôles syntaxiques C17, `git diff --check`, la validation ciblée ASan/UBSan
+et l'audit final ont passé. La suite ASan/UBSan complète reste qualifiée par le
+comportement LSan du pilote tiers RADV ; elle n'est pas déclarée PASS complet du
+dépôt. Ce gel concerne l'infrastructure de persistance et d'import borné, pas
+la calibration des campagnes réelles ni leur Sparse SfM.
+
+Les campagnes réelles S21 et A6000 Engine Bay actuellement évaluées sont
+`CALIBRATION_UNAVAILABLE` par non-identifiabilité scientifique des données
+disponibles pour le contrat Sparse SfM à calibration connue. Ce statut ne
+signifie ni échec logiciel, ni défaut des sources, ni rejet de qualité. Sans
+pseudo-calibration, interpolation de métadonnées ou import inféré, le Sparse
+SfM réel est `BLOCKED_BY_KNOWN_CALIBRATION_DATA`; l'intégration synthétique à
+calibration connue a passé. Une acquisition physique dédiée de calibration est
+une étape future, décrite dans [Calibration Bootstrap v1](../architecture/calibration_bootstrap.md),
+et non une fonctionnalité déjà réalisée.
+
 ## PHOTO QUALITY TRIAGE / ACQUISITION SELECTION — PASS / FROZEN
 
 L'étape qualité canonique implémentée se place après la découverte bornée, les
@@ -484,8 +504,9 @@ L'ordre demeure sans ambiguïté :
 
 ```text
 CURRENT NEXT
-  intégration réelle multi-campagne A6000 + S21
-  → pipeline scientifique → dense/mesh → publication
+  acquisition physique dédiée de calibration
+  → calibration connue validée → Sparse SfM réel multi-campagne
+  → dense/mesh → publication
 → LATER
   Coverage Analysis → Coverage Viewer → suggestions de points de vue
   → localisation live → intégration HDMI/USB → Capture Guidance / Live Coverage

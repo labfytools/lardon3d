@@ -11,7 +11,7 @@
 #include <lardon3d/sparse_sfm_incremental.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 21,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 22,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -126,6 +126,20 @@ typedef struct {
   size_t request_size;
 } Lardon3DProjectDbPhotoQualityTask;
 
+typedef enum {
+  LARDON3D_RAW_DEVELOPMENT_TASK_PENDING = 1,
+  LARDON3D_RAW_DEVELOPMENT_TASK_PUBLISHED = 2,
+} Lardon3DProjectDbRawDevelopmentTaskPhase;
+
+typedef struct {
+  uint64_t task_id;
+  uint64_t capture_id;
+  uint64_t source_asset_id;
+  Lardon3DProjectDbRawDevelopmentTaskPhase phase;
+  bool has_image;
+  uint64_t image_id;
+} Lardon3DProjectDbRawDevelopmentTask;
+
 typedef struct {
   uint64_t task_id;
   uint32_t group_id;
@@ -133,6 +147,44 @@ typedef struct {
   Lardon3DPhotoQualityMetrics metrics;
   Lardon3DPhotoQualityOverride override_value;
 } Lardon3DProjectDbPhotoQualityResult;
+
+typedef enum {
+  LARDON3D_SELECTED_EXECUTION_REPRESENTATIONS = 1,
+  LARDON3D_SELECTED_EXECUTION_CALIBRATION = 2,
+  LARDON3D_SELECTED_EXECUTION_READY = 3,
+} Lardon3DProjectDbSelectedExecutionStage;
+
+typedef struct {
+  uint64_t execution_id;
+  uint64_t quality_task_id;
+  uint64_t campaign_task_id;
+  bool has_calibration_scope;
+  uint64_t calibration_scope_id;
+  Lardon3DProjectDbSelectedExecutionStage stage;
+  uint32_t next_item_index;
+  uint32_t item_count;
+  int64_t created_at;
+} Lardon3DProjectDbSelectedExecution;
+
+typedef enum {
+  /* The selected representation is an existing source image; no RAW
+   * development identity is present or may be inferred later. */
+  LARDON3D_SELECTED_REPRESENTATION_SOURCE_IMAGE = 1,
+  /* source_asset_id explicitly identifies the Capture-owned SOURCE RAW whose
+   * deterministic S3-B1 representation is required. */
+  LARDON3D_SELECTED_REPRESENTATION_RAW_ASSET = 2,
+} Lardon3DProjectDbSelectedRepresentationSource;
+
+typedef struct {
+  uint32_t item_index;
+  uint32_t quality_group_id;
+  uint32_t campaign_group_id;
+  uint64_t capture_id;
+  Lardon3DProjectDbSelectedRepresentationSource representation_source;
+  uint64_t source_asset_id;
+  bool has_image;
+  uint64_t image_id;
+} Lardon3DProjectDbSelectedExecutionItem;
 
 typedef struct {
   uint64_t scanset_id;
@@ -179,6 +231,17 @@ typedef struct {
   uint64_t asset_id;
   Lardon3DProjectDbCaptureAssetRole role;
 } Lardon3DProjectDbCaptureAsset;
+
+typedef enum {
+  LARDON3D_DB_CAPTURE_SOURCE_JPEG = 1,
+  LARDON3D_DB_CAPTURE_SOURCE_RAW = 2,
+} Lardon3DProjectDbCaptureSourceKind;
+
+typedef struct {
+  uint64_t capture_id;
+  uint64_t asset_id;
+  Lardon3DProjectDbCaptureSourceKind source_kind;
+} Lardon3DProjectDbCaptureSourceAsset;
 
 typedef enum {
   LARDON3D_DB_ASSET_DERIVATION_GENERIC_VERSIONED = 1,
@@ -539,6 +602,11 @@ Lardon3DProjectDbResult lardon3d_project_db_register_image_asset(
     Lardon3DProjectDb *database,
     const unsigned char sha256[LARDON3D_PROJECT_DB_SHA256_SIZE], const char *asset_path,
     uint64_t size_bytes, int64_t created_at, Lardon3DProjectDbImageAsset *asset);
+/* Load one immutable managed asset by its explicit durable ID. The caller owns
+ * output storage. The returned relative path is validated and NUL-terminated;
+ * this API performs no Capture/source identity discovery. */
+Lardon3DProjectDbResult lardon3d_project_db_load_image_asset(
+    Lardon3DProjectDb *database, uint64_t asset_id, Lardon3DProjectDbImageAsset *asset);
 Lardon3DProjectDbResult lardon3d_project_db_publish_derived_capture_image(
     Lardon3DProjectDb *database, uint64_t capture_id, uint64_t asset_id,
     const char *original_name, const char *source_path, uint64_t producer_task_id,
@@ -574,6 +642,18 @@ Lardon3DProjectDbResult lardon3d_project_db_attach_capture_asset(
     Lardon3DProjectDbCaptureAssetRole role);
 Lardon3DProjectDbResult lardon3d_project_db_attach_capture_source_asset(
     Lardon3DProjectDb *database, uint64_t capture_id, uint64_t asset_id);
+/* Atomically attach an existing asset as SOURCE and retain the explicit source
+ * kind observed by S3-E. Exact retry is idempotent; a different kind conflicts.
+ * This provenance must never be synthesized from path, name, SHA-256,
+ * attachment order, or image identity. */
+Lardon3DProjectDbResult lardon3d_project_db_record_capture_source_asset(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t asset_id,
+    Lardon3DProjectDbCaptureSourceKind source_kind);
+/* Lists only explicitly retained source-kind relations. Captures migrated from
+ * v21 may truthfully return an empty page; absence is not permission to infer. */
+Lardon3DProjectDbResult lardon3d_project_db_list_capture_source_assets(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t after_asset_id,
+    Lardon3DProjectDbCaptureSourceAsset *assets, size_t capacity, size_t *count);
 Lardon3DProjectDbResult lardon3d_project_db_list_capture_assets(
     Lardon3DProjectDb *database, uint64_t capture_id, uint64_t after_asset_id,
     Lardon3DProjectDbCaptureAsset *assets, size_t capacity, size_t *count);
@@ -633,6 +713,30 @@ Lardon3DProjectDbResult lardon3d_project_db_record_photo_quality_task(
 Lardon3DProjectDbResult lardon3d_project_db_load_photo_quality_task(
     Lardon3DProjectDb *database, uint64_t task_id, unsigned char *request,
     size_t request_capacity, Lardon3DProjectDbPhotoQualityTask *parameters);
+/* Atomically persist generic Task/checkpoint state with one immutable explicit
+ * Capture/SOURCE RAW identity and its monotonic publication phase. The caller
+ * must pass `task_kind` == `LARDON3D_RAW_DEVELOPMENT_TASK_KIND` and
+ * `task_kind_version` == `LARDON3D_RAW_DEVELOPMENT_TASK_KIND_VERSION`.
+ * Any mismatch is rejected with INVALID_ARGUMENT because generic Task dispatch and
+ * typed durable payload must remain coherent across restart. PUBLISHED requires
+ * the exact derived image retained by that Capture; exact retries are idempotent
+ * and another identity or image conflicts. */
+Lardon3DProjectDbResult lardon3d_project_db_record_raw_development_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbRawDevelopmentTask *parameters, int64_t updated_at);
+/* Load and validate one durable RAW Task. Persisted durable rows with
+ * `task_kind`/`task_kind_version` not equal to
+ * `LARDON3D_RAW_DEVELOPMENT_TASK_KIND`/`LARDON3D_RAW_DEVELOPMENT_TASK_KIND_VERSION`
+ * are corrupted durable state and return CORRUPT, preserving the contract that
+ * typed durable payload and generic Task identity never silently diverge.
+ * Invalid phases, missing explicit RAW provenance, or a published image outside
+ * the retained Capture are also reported as corrupt durable state; no source
+ * identity is inferred. */
+Lardon3DProjectDbResult lardon3d_project_db_load_raw_development_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbRawDevelopmentTask *parameters);
 /* Result publication and next_group_id advance are atomic. result->group_id is
  * the canonical plan ID in 1..N and must equal the task's current one-based
  * cursor; next_group_id must equal result->group_id+1 (N+1 after the last
@@ -652,6 +756,44 @@ Lardon3DProjectDbResult lardon3d_project_db_load_photo_quality_result(
 Lardon3DProjectDbResult lardon3d_project_db_set_photo_quality_override(
     Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
     Lardon3DPhotoQualityOverride override_value);
+/* Create an immutable, ordered QUALITY_SELECTED snapshot. Each item explicitly
+ * bridges independent quality and campaign group namespaces to a retained
+ * Capture; equal numeric group values never imply identity. Each item also
+ * declares either an explicit Capture-owned SOURCE RAW asset or that its
+ * representation is a source image and therefore has no RAW identity. The DB
+ * validates RAW asset membership at creation and never recovers it from path,
+ * SHA-256, basename, source index, or group number. The caller-owned item array
+ * is borrowed only for the call. Every referenced quality result must be
+ * effectively included and both tasks must belong to the same ScanSet. An
+ * exact retry returns the existing execution; a changed mapping conflicts. */
+Lardon3DProjectDbResult lardon3d_project_db_create_selected_execution(
+    Lardon3DProjectDb *database, uint64_t quality_task_id,
+    uint64_t campaign_task_id, const Lardon3DProjectDbSelectedExecutionItem *items,
+    size_t item_count, int64_t created_at,
+    Lardon3DProjectDbSelectedExecution *execution);
+/* Load durable stage/cursor state. Output is caller-owned and contains no
+ * borrowed storage. Corrupt SQLite types, signs, bounds, or stage/cursor
+ * relations are rejected before narrowing to the public C17 fields. */
+Lardon3DProjectDbResult lardon3d_project_db_load_selected_execution(
+    Lardon3DProjectDb *database, uint64_t execution_id,
+    Lardon3DProjectDbSelectedExecution *execution);
+Lardon3DProjectDbResult lardon3d_project_db_load_selected_execution_item(
+    Lardon3DProjectDb *database, uint64_t execution_id, uint32_t item_index,
+    Lardon3DProjectDbSelectedExecutionItem *item);
+/* Publish one representation mapping and advance the cursor atomically. The
+ * image must already be explicitly associated with this item's Capture.
+ * Retrying the exact mapping after cursor advance is idempotent; no SHA, path,
+ * Asset, basename, or group number is used to recover identity. */
+Lardon3DProjectDbResult lardon3d_project_db_record_selected_representation(
+    Lardon3DProjectDb *database, uint64_t execution_id, uint32_t item_index,
+    uint64_t image_id, uint32_t next_item_index);
+/* Attach an existing immutable calibration scope only after all selected
+ * representations are durable and every selected image is a member. The
+ * successful transition makes the snapshot scientifically executable; an
+ * exact scope retry is idempotent and a different scope conflicts. */
+Lardon3DProjectDbResult lardon3d_project_db_assign_selected_calibration_scope(
+    Lardon3DProjectDb *database, uint64_t execution_id,
+    uint64_t calibration_scope_id);
 Lardon3DProjectDbResult lardon3d_project_db_allocate_task_id(Lardon3DProjectDb *database,
                                                              uint64_t *task_id);
 Lardon3DProjectDbResult lardon3d_project_db_load_task(Lardon3DProjectDb *database, uint64_t task_id,

@@ -6,6 +6,9 @@
 #ifdef LARDON3D_PHOTO_QUALITY_TASK_AVAILABLE
 #include <lardon3d/photo_quality_task.h>
 #endif
+#ifdef LARDON3D_RAW_DEVELOPMENT_TASK_AVAILABLE
+#include <lardon3d/raw_development_task.h>
+#endif
 #include <lardon3d/geometric_verifier_task.h>
 #include <lardon3d/import_task.h>
 #include <lardon3d/matcher_task.h>
@@ -24,6 +27,13 @@
 
 const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_production(void) {
   static const Lardon3DTaskKindDescriptor descriptors[] = {
+#ifdef LARDON3D_RAW_DEVELOPMENT_TASK_AVAILABLE
+      {
+          .kind = LARDON3D_RAW_DEVELOPMENT_TASK_KIND,
+          .kind_version = LARDON3D_RAW_DEVELOPMENT_TASK_KIND_VERSION,
+          .reconstruct = lardon3d_raw_development_task_reconstruct,
+      },
+#endif
 #ifdef LARDON3D_PHOTO_QUALITY_TASK_AVAILABLE
       {
           .kind = LARDON3D_PHOTO_QUALITY_TASK_KIND,

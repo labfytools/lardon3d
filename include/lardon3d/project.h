@@ -67,6 +67,12 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_acquisition_camp
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_photo_quality_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbPhotoQualityTask *parameters);
+/* Persist one RAW Task snapshot and its exact Capture/SOURCE RAW phase in the
+ * same DB transaction. The checkpoint file is atomically published first; OK
+ * means the file, generic row, checkpoint reference, and typed row are durable. */
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_raw_development_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbRawDevelopmentTask *parameters);
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbFeatureExtractTask *parameters);

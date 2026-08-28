@@ -149,6 +149,7 @@ executable(
         'src/image_catalog.c',
         'src/image_catalog_persistent.c',
         'src/raw_development.cpp',
+        'src/raw_development_task.cpp',
         'src/acquisition_pairing.cpp',
         'src/acquisition_ingest.cpp',
         'src/acquisition_campaign.cpp',
@@ -168,6 +169,7 @@ executable(
         'src/image_view.c',
         'src/project.c',
         'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/calibration_bootstrap.c',
         'src/sparse_sfm_geometry.cpp',
         'src/sparse_sfm_incremental.cpp',
         'src/sparse_sfm_bundle_adjustment.cpp',
@@ -200,6 +202,7 @@ executable(
         '-DLARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_AVAILABLE',
         '-DLARDON3D_ACQUISITION_CAMPAIGN_TASK_AVAILABLE',
         '-DLARDON3D_PHOTO_QUALITY_TASK_AVAILABLE',
+        '-DLARDON3D_RAW_DEVELOPMENT_TASK_AVAILABLE',
     ],
     dependencies: [
         ncursesw,
@@ -329,6 +332,27 @@ raw_development_test = executable(
 )
 
 test('raw-development', raw_development_test, timeout: 30)
+
+raw_development_task_test = executable(
+    'test-raw-development-task',
+    sources: [
+        'tests/test_raw_development_task.cpp',
+        'src/app_state.c',
+        'src/image_catalog.c', 'src/image_view.c',
+        'src/image_catalog_persistent.c',
+        'src/raw_development.cpp',
+        'src/raw_development_task.cpp',
+        'src/project.c',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/task_checkpoint.c', 'src/task_queue.c',
+        'src/task_kind_registry.c',
+        'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv, libraw, libpng, libdeflate],
+)
+
+test('raw-development-task', raw_development_task_test, timeout: 30)
 
 acquisition_pairing_test = executable(
     'test-acquisition-pairing',
@@ -711,6 +735,35 @@ project_db_test = executable(
 )
 
 test('project-db', project_db_test, timeout: 30)
+
+selected_execution_test = executable(
+    'test-selected-execution',
+    sources: [
+        'tests/test_selected_execution.c',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl],
+)
+
+test('selected-execution', selected_execution_test, timeout: 30)
+
+calibration_bootstrap_test = executable(
+    'test-calibration-bootstrap',
+    sources: [
+        'tests/test_calibration_bootstrap.c',
+        'src/calibration_bootstrap.c',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl],
+)
+
+test('calibration-bootstrap', calibration_bootstrap_test, timeout: 30)
 
 sparse_sfm_model_test = executable(
     'test-sparse-sfm-model',

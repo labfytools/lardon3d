@@ -146,6 +146,24 @@ bool capture_assets(Lardon3DProjectDb *database, uint64_t capture_id, size_t exp
   return true;
 }
 
+bool capture_source_kinds(Lardon3DProjectDb *database, uint64_t capture_id,
+                          size_t expected_jpeg, size_t expected_raw) {
+  Lardon3DProjectDbCaptureSourceAsset assets[64]{};
+  size_t count = 0u;
+  if (lardon3d_project_db_list_capture_source_assets(database, capture_id, 0, assets, 64,
+                                                     &count) != LARDON3D_PROJECT_DB_OK ||
+      count != expected_jpeg + expected_raw)
+    return false;
+  size_t jpeg = 0u, raw = 0u;
+  for (size_t index = 0; index < count; ++index) {
+    if (assets[index].capture_id != capture_id || assets[index].asset_id == 0) return false;
+    if (assets[index].source_kind == LARDON3D_DB_CAPTURE_SOURCE_JPEG) ++jpeg;
+    else if (assets[index].source_kind == LARDON3D_DB_CAPTURE_SOURCE_RAW) ++raw;
+    else return false;
+  }
+  return jpeg == expected_jpeg && raw == expected_raw;
+}
+
 bool test_ingest_grouping_and_resume() {
   Fixture fixture;
   CHECK(fixture.open());
@@ -181,7 +199,8 @@ bool test_ingest_grouping_and_resume() {
                                     &jpeg_options, &paired) == LARDON3D_ACQUISITION_INGEST_OK);
   CHECK(paired.group_count == 1 && paired.groups[0].basis == LARDON3D_ACQUISITION_GROUP_STRONG &&
         paired.groups[0].source_count == 2 && capture_count(strong.database, strong.scanset.scanset_id) == 1 &&
-        capture_assets(strong.database, paired.groups[0].capture_id, 2));
+        capture_assets(strong.database, paired.groups[0].capture_id, 2) &&
+        capture_source_kinds(strong.database, paired.groups[0].capture_id, 1, 1));
 
   /* A competing equal strong candidate remains entirely ungrouped. */
   Fixture ambiguous;
@@ -215,6 +234,7 @@ bool test_ingest_grouping_and_resume() {
   CHECK(lardon3d_acquisition_ingest(&resumed.state, resumed.scanset.scanset_id, one, 1, &resume_options, &first) == LARDON3D_ACQUISITION_INGEST_OK && first.groups[0].capture_id == existing.capture_id);
   Lardon3DAcquisitionIngestOutput retry{};
   CHECK(lardon3d_acquisition_ingest(&resumed.state, resumed.scanset.scanset_id, one, 1, &resume_options, &retry) == LARDON3D_ACQUISITION_INGEST_OK && capture_count(resumed.database, resumed.scanset.scanset_id) == 1 && capture_assets(resumed.database, existing.capture_id, 1));
+  CHECK(capture_source_kinds(resumed.database, existing.capture_id, 1, 0));
   uint64_t images = 0; CHECK(lardon3d_project_db_count_images(resumed.database, resumed.scanset.scanset_id, &images) == LARDON3D_PROJECT_DB_OK && images == 1);
 
   fixture.close(); strong.close(); ambiguous.close(); resumed.close();
@@ -245,6 +265,16 @@ bool test_explicit_and_db_helper() {
   Lardon3DProjectDbImageRegisterStatus status{}; Lardon3DProjectDbImage image{};
   CHECK(lardon3d_project_db_publish_source_capture_image(fixture.database, capture.capture_id, asset.asset_id,
       "helper.JPG", helper_path, 0, 8, false, &status, &image) == LARDON3D_PROJECT_DB_OK && status == LARDON3D_PROJECT_DB_IMAGE_REGISTERED);
+  CHECK(lardon3d_project_db_record_capture_source_asset(
+            fixture.database, capture.capture_id, asset.asset_id,
+            LARDON3D_DB_CAPTURE_SOURCE_JPEG) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_record_capture_source_asset(
+            fixture.database, capture.capture_id, asset.asset_id,
+            LARDON3D_DB_CAPTURE_SOURCE_JPEG) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_record_capture_source_asset(
+            fixture.database, capture.capture_id, asset.asset_id,
+            LARDON3D_DB_CAPTURE_SOURCE_RAW) == LARDON3D_PROJECT_DB_CONSTRAINT);
+  CHECK(capture_source_kinds(fixture.database, capture.capture_id, 1, 0));
   uint64_t selected = 0;
   CHECK(lardon3d_project_db_get_selected_capture_image(fixture.database, capture.capture_id, &selected) == LARDON3D_PROJECT_DB_NOT_FOUND);
   CHECK(lardon3d_project_db_publish_source_capture_image(fixture.database, capture.capture_id, asset.asset_id,

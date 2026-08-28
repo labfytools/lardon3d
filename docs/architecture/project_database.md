@@ -1,5 +1,71 @@
 # Base de données projet Lardon3D
 
+## Snapshot d'exécution scientifique sélectionnée — Project DB v22
+
+**PASS / FROZEN.** La migration additive v21→v22 ajoute
+`capture_source_assets`, `selected_executions`, `selected_execution_items` et
+`raw_development_tasks`.
+`capture_source_assets` retient l'association explicitement publiée par S3-E entre un Capture,
+son asset `SOURCE` et le kind JPEG ou RAW déjà validé. La publication de l'association SOURCE et
+du kind est transactionnelle et un retry exact converge ; un autre kind est un conflit. Les
+Captures provenant d'une v21 restent honnêtement sans mapping : la migration ne déduit rien de
+leur chemin, nom, SHA-256, ordre d'attache ou image logique.
+
+Un snapshot ordonné retient explicitement
+la relation `quality_task_id/group_id → campaign_task_id/group_id → capture_id`; les deux espaces
+de `group_id` restent indépendants et une égalité numérique n'est jamais une identité. Les deux
+tâches doivent viser le même ScanSet, le triage doit être terminé et chaque résultat retenu doit
+être effectivement inclus au moment du snapshot. Le snapshot et son ordre deviennent ensuite
+immuables.
+
+Chaque item reçoit un `image_id` seulement par association explicite déjà durable dans
+`capture_images`. La publication de cette représentation et l'avancement du curseur sont
+transactionnels ; un retry exact converge, tandis qu'un autre `image_id` est un conflit. Après le
+dernier item, un `calibration_scope_id` existant ne peut être attaché que si chaque image retenue
+est membre de ce scope. Le stage terminal `READY` représente donc exactement l'intersection
+`QUALITY_SELECTED ∩ REPRESENTATION_READY ∩ CALIBRATION_ASSIGNED` sans inférer Capture depuis
+Asset, SHA-256, chemin, basename, Task ID, groupe ou `image_id`.
+
+Le snapshot fixe aussi la source de représentation de chaque item. Un item A6000 retient
+explicitement l'`asset_id` RAW déjà associé comme `SOURCE` au Capture ; un item dont la
+représentation est une image source retient explicitement l'absence d'identité RAW. Cette paire
+discriminant/Asset est immuable et fait partie de l'exact retry du snapshot. La création vérifie
+l'association RAW dans `capture_source_assets` ; aucune exécution ultérieure ne retrouve le RAW depuis
+un chemin, SHA-256, basename, index source ou numéro de groupe.
+
+Le curseur est borné à 4096 items et ne réserve aucune ressource d'exécution. Cette fondation v22
+n'ajoute ni scheduler, worker pool, sidecar, cache décodé, ni nouvelle Queue/Governor. Le
+coordinateur scientifique et le développement RAW borné restent des étapes d'exécution séparées.
+L'importeur Calibration Bootstrap v1 valide un artifact borné contre ce snapshot, crée/réutilise les
+calibrations et le scope immuables, puis emploie cette attache v22 ; il n'étend pas le schéma et n'exécute
+ni solveur ni développement RAW.
+
+Le développeur RAW expose aussi une entrée bornée par `source_asset_id` explicite. Elle exige la
+relation RAW du Capture, charge le chemin géré depuis cet ID, vérifie les octets contre le SHA-256
+persisté, puis réutilise sans modification RAW Policy v1. Le chemin géré n'est donc qu'un accès aux
+octets après résolution d'identité explicite, jamais une méthode de découverte d'identité.
+
+La v22 amendée ajoute `raw_development_tasks` pour l'exécution durable mince de cette entrée. Une
+ligne retient exactement `task_id`, `capture_id`, `source_asset_id`, une phase monotone
+`PENDING → PUBLISHED` et, en phase publiée, l'`image_id` dérivée explicitement associée au même
+Capture. Le couple Capture/SOURCE RAW est immuable, doit exister dans `capture_source_assets` avec
+le kind RAW, et n'est jamais retrouvé depuis un chemin, digest, nom, image ou ID opérationnel.
+Snapshot Task générique, référence du checkpoint et ligne typée sont écrits dans une même
+transaction. L'asset et l'image immuables peuvent précéder ce checkpoint si le processus meurt :
+le retry exact S3-B1 converge par contenu puis publie la phase et l'`image_id` sans deviner
+l'identité. Les lectures de reprise rejettent types SQLite, phases, nullabilité et relations
+Capture/RAW/image incohérents comme corruption durable.
+
+La suite normale v22 a passé 53/53, les contrôles syntaxiques C17 et `git diff
+--check` ont passé, la validation ciblée ASan/UBSan a passé et l'audit final a
+conclu au PASS. La suite ASan/UBSan complète reste qualifiée par le comportement
+LSan du pilote tiers RADV ; elle ne constitue pas un PASS complet du dépôt.
+Cette évidence gèle la frontière de persistance v22 décrite ici, sans changement
+de contrat ni de schéma. Les campagnes réelles peuvent donc conserver un snapshot
+et leurs représentations sans être scientifiquement exécutables : une absence de
+calibration connue reste `CALIBRATION_UNAVAILABLE`, non une raison d'inférer ou
+de créer une identité, une calibration ou une migration supplémentaire.
+
 ## Photo Quality Triage — Project DB v21
 
 **PASS / FROZEN.** La migration additive v20→v21 ajoute

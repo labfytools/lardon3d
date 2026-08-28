@@ -34,10 +34,14 @@ persistante, enrichissable et versionnable.
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v21** : fondations v20 préservées, avec persistance additive
-  des résultats de triage photo
+- **Project Database v22** : fondations v20/v21 préservées, avec snapshot
+  d'exécution sélectionnée, publication bornée des représentations, attache de
+  scope de calibration et tâche durable mince `raw.develop` — PASS / FROZEN
 - **[Photo Quality Triage](docs/architecture/photo_quality_triage.md)** : métriques JPEG
-  bornées et recommandations non destructives, avec persistance additive v21
+- **[Calibration Bootstrap v1](docs/architecture/calibration_bootstrap.md)** :
+  import borné d'une calibration optimisée et traçable avant le Sparse SfM à
+  calibration connue — PASS / FROZEN ; ni
+  auto-calibration interne ni EXIF comme source de calibration scientifique
 - **Exécution durable de campagne d'acquisition** : tâche générique à requête
   typée immuable, confirmations `CALLER_EXPLICIT`, curseur et correspondance
   tâche/groupe→Capture persistants ; un groupe S3-E par séquence, reprise par
@@ -72,7 +76,11 @@ persistante, enrichissable et versionnable.
   réels A6000 (953 paires confirmées `CALLER_EXPLICIT`) et Samsung SM-G990B
   (3544 JPEG singleton) ont été validés dans deux ScanSets d'un même projet
   temporaire, avec exécution durable, Governor/Queue et reprise sans Capture
-  dupliqué. La suite reste le pipeline scientifique aval, selon la
+  dupliqué. Les campagnes réelles actuellement évaluées sont
+  `CALIBRATION_UNAVAILABLE`, donc le Sparse SfM réel est
+  `BLOCKED_BY_KNOWN_CALIBRATION_DATA` : ce n'est ni un échec logiciel, ni un
+  rejet de qualité, ni une autorisation d'importer une pseudo-calibration. La
+  suite reste le pipeline scientifique aval, selon la
   [roadmap canonique](docs/roadmap/roadmap.md).
 
 ### Plus tard / différé
@@ -210,6 +218,15 @@ les paramètres dans `L3DMDID2` v2 (220 octets). Chaque appel utilise un espace 
 travail privé neuf sous le staging appelant, sans réemploi d'une scène,
 profondeur, cache ou sortie antérieure. Le DAG, le viewer et les autres étapes
 denses restent des tickets séparés planifiés.
+Project DB v22, `raw.develop` et Calibration Bootstrap v1 sont **PASS /
+FROZEN** : la suite normale 53/53, les contrôles syntaxiques C17, `git diff
+--check`, la validation ciblée ASan/UBSan et l'audit final ont passé. La suite
+ASan/UBSan complète demeure qualifiée par le comportement LSan du pilote tiers
+RADV ; elle n'est pas présentée comme un PASS complet du dépôt. Les campagnes
+réelles S21 et A6000 Engine Bay sont
+`CALIBRATION_UNAVAILABLE` par non-identifiabilité scientifique des données de
+calibration connues ; le Sparse SfM réel reste
+`BLOCKED_BY_KNOWN_CALIBRATION_DATA`, sans pseudo-calibration ni import inféré.
 Le Resource Governor ne constitue pas un Resource System générique : voir la décision
 d’architecture.
 

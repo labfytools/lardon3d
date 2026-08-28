@@ -34,7 +34,9 @@ through an explicitly authorized, explicitly scoped human ticket:
 - F0 — PASS/FROZEN
 - Phase H v1 — PASS/FROZEN
 - MVS-M1 — PASS/FROZEN
-- Project DB v21 — PASS/FROZEN
+- Project DB v22 — PASS/FROZEN
+- Calibration Bootstrap v1 — PASS/FROZEN
+- Selected Scientific Execution — PASS/FROZEN
 - Photo Quality Triage / Acquisition Selection — PASS/FROZEN
 - S1 Capture / Asset Provenance — PASS/FROZEN
 - S2 Capture-safe Standard Ingestion — PASS/FROZEN

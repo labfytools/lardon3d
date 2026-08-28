@@ -336,3 +336,47 @@ extern "C" Lardon3DRawDevelopmentResult lardon3d_raw_develop_to_capture(
   } catch (const std::bad_alloc &) { return LARDON3D_RAW_DEVELOPMENT_OUT_OF_MEMORY; }
   catch (...) { return LARDON3D_RAW_DEVELOPMENT_INTERNAL_ERROR; }
 }
+
+extern "C" Lardon3DRawDevelopmentResult lardon3d_raw_develop_asset_to_capture(
+    Lardon3DAppState *state, uint64_t capture_id, uint64_t source_asset_id,
+    uint64_t producer_task_id, int64_t created_at, Lardon3DRawDevelopmentOutput *output) {
+  if (!state || !state->project_loaded || !state->project_db || capture_id == 0 ||
+      source_asset_id == 0 || created_at < 0 || !output)
+    return LARDON3D_RAW_DEVELOPMENT_INVALID_ARGUMENT;
+  std::memset(output, 0, sizeof(*output));
+  try {
+    bool explicit_raw = false;
+    uint64_t after_asset_id = source_asset_id - 1u;
+    Lardon3DProjectDbCaptureSourceAsset relation{};
+    size_t count = 0;
+    Lardon3DProjectDbResult listed = lardon3d_project_db_list_capture_source_assets(
+        state->project_db, capture_id, after_asset_id, &relation, 1, &count);
+    if (listed != LARDON3D_PROJECT_DB_OK) return db_result(listed);
+    explicit_raw = count == 1 && relation.asset_id == source_asset_id &&
+                   relation.source_kind == LARDON3D_DB_CAPTURE_SOURCE_RAW;
+    if (!explicit_raw) return LARDON3D_RAW_DEVELOPMENT_CONSTRAINT;
+
+    Lardon3DProjectDbImageAsset asset{};
+    Lardon3DProjectDbResult loaded = lardon3d_project_db_load_image_asset(
+        state->project_db, source_asset_id, &asset);
+    if (loaded != LARDON3D_PROJECT_DB_OK) return db_result(loaded);
+    char managed_source[LARDON3D_APP_STATE_PATH_CAPACITY];
+    if (!asset_file_path(state, asset, managed_source)) return LARDON3D_RAW_DEVELOPMENT_IO_ERROR;
+    if (!verify_managed_asset(managed_source, asset.sha256))
+      return LARDON3D_RAW_DEVELOPMENT_SOURCE_CHANGED;
+
+    // The pathname passed to the frozen developer is resolved only after the
+    // explicit durable ID and RAW relation are validated. Republishing these
+    // immutable managed bytes must converge to that same asset ID.
+    Lardon3DRawDevelopmentResult result = lardon3d_raw_develop_to_capture(
+        state, capture_id, managed_source, producer_task_id, created_at, output);
+    if (result != LARDON3D_RAW_DEVELOPMENT_OK) return result;
+    return output->source_asset.asset_id == source_asset_id
+               ? LARDON3D_RAW_DEVELOPMENT_OK
+               : LARDON3D_RAW_DEVELOPMENT_CONSTRAINT;
+  } catch (const std::bad_alloc &) {
+    return LARDON3D_RAW_DEVELOPMENT_OUT_OF_MEMORY;
+  } catch (...) {
+    return LARDON3D_RAW_DEVELOPMENT_INTERNAL_ERROR;
+  }
+}

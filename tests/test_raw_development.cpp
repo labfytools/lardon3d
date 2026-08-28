@@ -283,6 +283,18 @@ static bool run_test() {
       &state, capture.capture_id, corrupt_path, 0, 1, &output);
   CHECK(corrupt == LARDON3D_RAW_DEVELOPMENT_UNSUPPORTED_RAW
         || corrupt == LARDON3D_RAW_DEVELOPMENT_CORRUPT_RAW);
+  CHECK(output.source_asset.asset_id != 0);
+  const uint64_t corrupt_asset_id = output.source_asset.asset_id;
+  CHECK(lardon3d_raw_develop_asset_to_capture(
+            &state, capture.capture_id, corrupt_asset_id, 0, 1, &output) ==
+        LARDON3D_RAW_DEVELOPMENT_CONSTRAINT);
+  CHECK(lardon3d_project_db_record_capture_source_asset(
+            db, capture.capture_id, corrupt_asset_id,
+            LARDON3D_DB_CAPTURE_SOURCE_RAW) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DRawDevelopmentResult explicit_corrupt = lardon3d_raw_develop_asset_to_capture(
+      &state, capture.capture_id, corrupt_asset_id, 0, 1, &output);
+  CHECK(explicit_corrupt == LARDON3D_RAW_DEVELOPMENT_UNSUPPORTED_RAW ||
+        explicit_corrupt == LARDON3D_RAW_DEVELOPMENT_CORRUPT_RAW);
   uint64_t selected = 0;
   CHECK(lardon3d_project_db_get_selected_capture_image(db, capture.capture_id, &selected)
         == LARDON3D_PROJECT_DB_NOT_FOUND);
