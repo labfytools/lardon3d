@@ -58,6 +58,9 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_task(Lardon3DApp
 Lardon3DProjectTaskCheckpointResult
 lardon3d_project_checkpoint_image_import_task(Lardon3DAppState *state, const Lardon3DTask *task,
                                               const char *source_path, uint64_t scanset_id);
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_acquisition_campaign_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbAcquisitionCampaignTask *parameters);
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbFeatureExtractTask *parameters);

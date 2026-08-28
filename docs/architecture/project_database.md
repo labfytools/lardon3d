@@ -1,6 +1,6 @@
 # Base de données projet Lardon3D
 
-## Capture / Asset Provenance v1 — Project DB v19
+## Capture / Asset Provenance v1 — Project DB v19 (historique FROZEN)
 
 **PASS / FROZEN.** La migration transactionnelle v18→v19
 ajoute seulement une fondation de catalogue : `captures`, `capture_images`,
@@ -109,10 +109,57 @@ confirmation explicite `CALLER_EXPLICIT` avant tout regroupement. Le fixture
 d'intégration couvre l'adaptateur, sa matérialisation et son retry ; aucune
 mutation de campagne complète n'a été effectuée.
 
-Restent hors S3 : identité persistante de campagne ou de Task, exécution par
-scheduler/Governor, traitement de campagne complet, TUI, scrub d'assets et
-réconciliation des orphelins, ainsi que vidéo et reconstruction aval lorsqu'ils
-sont applicables.
+Restent hors S3 : TUI, scrub d'assets et réconciliation des orphelins, ainsi
+que vidéo et reconstruction aval lorsqu'ils sont applicables. L'identité
+opérationnelle persistante de campagne, son exécution par Task/Scheduler/Governor
+et sa reprise sont définies par Project DB v20 ci-dessous ; ils ne modifient pas
+le contrat S3.
+
+## Exécution durable de campagne d'acquisition — Project DB v20
+
+**PASS / FROZEN.** La migration transactionnelle additive
+v19→v20 ajoute `acquisition_campaign_tasks` et
+`acquisition_campaign_captures`, sans modifier les tables ni les identités
+Capture/Asset de v19. Une base v19 est donc ouverte par la chaîne séquentielle
+existante ; un échec de migration laisse la v19 complète et utilisable.
+
+`acquisition_campaign_tasks` est lié une-à-une à la tâche générique par
+`task_id`, qui est l'identité opérationnelle de la campagne. La création et les
+checkpoints enregistrent dans une même transaction le snapshot Task générique,
+sa référence de checkpoint et le record typé de campagne. Ce record conserve le
+`scanset_id`, le curseur `next_group_id`, le nombre de groupes et une requête
+immuable : un upsert ne peut faire progresser le curseur que si ScanSet, nombre
+de groupes et octets de requête sont identiques.
+
+La requête v1 est un codec borné, déterministe, à magic/version explicites et
+champs entiers de largeur fixe little-endian. Elle sérialise les sources, leurs
+métadonnées déjà validées, les confirmations et les options d'ingestion ; elle
+est refusée si ses bornes, longueurs, énumérations, indices, plan ou octets de
+fin ne sont pas valides. Les confirmations sont ainsi persistées explicitement
+et ne confèrent que la basis `CALLER_EXPLICIT`, jamais une inférence `STRONG`.
+
+Les groupes de plan gardent leurs IDs un-based. Pour chaque groupe achevé,
+`acquisition_campaign_captures` conserve la relation unique
+`(task_id, group_id) → capture_id` et interdit qu'un même Capture corresponde à
+deux groupes de la même tâche. Après le retour de S3-E, une transaction unique
+retient cette relation et avance `next_group_id`, avant la progression générique
+et le checkpoint. La reprise peut alors transmettre le `capture_id` retenu à
+S3-E, sans réhoming ni inférence depuis un chemin, SHA, basename, timestamp,
+métadonnée ou `image_id`.
+
+Chaque séquence matérialise un seul groupe. Pause et annulation restent
+coopératives aux frontières de groupe ; après un groupe non terminal,
+`sequence_break` rend la réservation et force la réadmission par la Queue et le
+Resource Governor existants. À l'ouverture, la registry existante reconstruit
+la tâche depuis le Task ID et la requête durable, puis le mécanisme de reprise
+existant la soumet à la Queue. Cette tranche n'introduit aucun runtime, queue,
+governor, scheduler ou stockage parallèle et reste générique pour les sources
+mono-source comme multi-source.
+
+La fenêtre résiduelle acceptée est strictement l'arrêt après le retour de S3-E
+et avant la transaction de rétention du Capture. Aucun `capture_id` n'est alors
+inféré et aucune garantie exactly-once ne lui est attribuée ; les autres
+frontières s'appuient sur la relation retenue et le curseur transactionnel.
 
 ### S3-D — Acquisition Pairing Evidence v1
 
@@ -201,8 +248,10 @@ persistée exactement ; seule une composante de graphe non reconstruite est
 omise. Les comptes et métriques globaux décrivent exclusivement la géométrie
 effectivement persistée. Aucun placeholder ni table diagnostique n'est ajouté.
 
-> Version courante : **v19**. La migration transactionnelle v18→v19 ajoute la
-> fondation Capture/Asset Provenance décrite ci-dessus sans modifier les tables
+> Version courante : **v20**. La migration transactionnelle additive v19→v20
+> ajoute les records de campagne durable décrits ci-dessus sans modifier les
+> tables ni identités Capture/Asset de v19. La migration transactionnelle
+> v18→v19 ajoute la fondation Capture/Asset Provenance sans modifier les tables
 > scientifiques historiques. La migration transactionnelle v17→v18 ajoute le
 > discriminateur générique nullable et les deux tables H minimales décrites
 > ci-dessus. La migration v16→v17 ajoute le
@@ -946,9 +995,16 @@ ouvert.
 
 ## Statut
 
-**PASS / FROZEN** — SQLite système, schéma v19 et migrations séquentielles
-v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14→v15→v16→v17→v18→v19, identité projet, transactions
+**PASS / FROZEN** — SQLite système, schéma v20 et migrations séquentielles
+v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14→v15→v16→v17→v18→v19→v20, identité projet, transactions
 tâche+checkpoint, pagination de reprise et artefacts génériques.
+
+**PASS / FROZEN** — Project DB v20 : migration additive
+v19→v20, record typé de campagne lié au Task ID, requête immuable bornée,
+confirmations `CALLER_EXPLICIT`, curseur et relation unique
+task/groupe→Capture. La reprise reste celle de la registry, de la Queue et du
+Resource Governor existants ; aucune identité de Capture n'est inférée dans la
+fenêtre résiduelle pré-rétention.
 
 **IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,
 publication de checkpoints par le projet et inventaire de reprise validé.

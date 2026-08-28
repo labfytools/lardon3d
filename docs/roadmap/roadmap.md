@@ -74,7 +74,7 @@ Le stem commun ne prouve jamais une acquisition. Les 953 propositions doivent
 être confirmées et deviennent `CALLER_EXPLICIT`, jamais `STRONG`. La campagne
 complète n'a pas encore été matérialisée.
 
-### Limite de reprise DB v19
+### Limite de reprise DB v19 (historique)
 
 S3-E reprend une matérialisation connue par `resume_capture_id`. Une campagne
 peut reconstruire son plan et conserver côté appelant le `capture_id` de chaque
@@ -85,31 +85,41 @@ future identité durable de requête/campagne pourra fermer cette fenêtre ; ell
 ne sera jamais déduite d'un chemin, SHA, basename, timestamp, métadonnée ou
 `image_id`.
 
-## NEXT — exécution durable de campagne d'acquisition
+## Exécution durable de campagne d'acquisition — PASS / FROZEN
 
-La prochaine tranche architecturale unique est l'exécution opérationnelle du
-plan S3 gelé en réutilisant Task, Scheduler et Governor existants :
+Project DB v20 apporte une migration additive v19→v20. Une tâche de campagne
+enregistre atomiquement son snapshot générique, sa référence de checkpoint et
+sa requête typée immuable. Le Task ID est l'identité opérationnelle de la
+campagne ; la requête ne déduit aucune identité depuis les sources. Son codec
+v1 est borné, à champs de largeur fixe et little-endian ; il conserve les
+sources, les confirmations explicites et les options d'ingestion.
 
-1. identité durable de requête et payload Task borné ;
-2. persistance/rechargement des confirmations, du curseur et des `capture_id` ;
-3. matérialisation incrémentale d'un groupe S3-E par unité sûre ;
-4. checkpoint après rétention durable, pause/reprise/annulation aux frontières ;
-5. admission et budgets par l'unique Resource Governor ;
-6. progression et échecs sans runtime, queue ou persistence parallèle.
+La requête persiste les confirmations comme `CALLER_EXPLICIT`, jamais comme
+inférence `STRONG`. Le plan conserve des IDs de groupe un-based et Project DB
+persiste la correspondance `(task_id, group_id) → capture_id`, ainsi que le
+curseur. Chaque séquence admet et matérialise exactement un groupe via S3-E.
+Après le retour de S3-E, une transaction conserve le Capture et avance le
+curseur avant la progression générique et le checkpoint. Pause et annulation
+sont coopératives aux frontières de groupe ; entre deux groupes,
+`sequence_break` rend la réservation et impose une nouvelle admission.
 
-Cette tranche décidera explicitement si une évolution additive après DB v19 est
-nécessaire. Elle ne peut ni changer les identités S3 ni fusionner des Captures.
+À la réouverture, la registry existante reconstruit la tâche à partir de son
+Task ID et de sa requête, puis la Queue et le Governor existants la réadmettent.
+Aucun runtime, queue, governor ou mécanisme de persistance parallèle n'est
+introduit. La fenêtre résiduelle acceptée demeure l'arrêt après le retour de
+S3-E et avant la transaction de rétention : elle ne déclenche aucune inférence
+de Capture et ne fournit pas de garantie exactly-once pour ce groupe.
 
-## NEXT REAL-DATA MILESTONE — A6000 ENGINE BAY END-TO-END
+## NEXT REAL-DATA MILESTONE — A6000 + S21 ENGINE BAY MULTI-CAMPAIGN INTEGRATION
 
-1. confirmer explicitement les 953 propositions ARW/JPEG ;
-2. matérialiser progressivement environ 953 Captures ;
-3. produire les représentations scientifiques par lots gouvernés ;
-4. exécuter features, candidats, matching, vérification, tracks et Sparse SfM ;
-5. évaluer la qualité de la reconstruction sparse ;
-6. exécuter MVS/dense avec budgets et scratch contrôlés ;
-7. publier durablement nuage dense et mesh ;
-8. comparer le résultat aux tentatives photogrammétriques antérieures.
+1. confirmer explicitement et exécuter les campagnes A6000 et S21 ;
+2. matérialiser progressivement leurs Captures et représentations scientifiques
+   par lots gouvernés ;
+3. exécuter features, candidats, matching, vérification, tracks et Sparse SfM ;
+4. évaluer la qualité de la reconstruction sparse multi-campagne ;
+5. exécuter MVS/dense avec budgets et scratch contrôlés ;
+6. publier durablement nuage dense et mesh ;
+7. comparer le résultat aux tentatives photogrammétriques antérieures.
 
 Ce milestone est une intégration réelle, pas une nouvelle série de micro-gates
 S3. Les antécédents d'OOM/SIGSEGV OpenMVS, pression swap, grands intermédiaires
@@ -204,7 +214,8 @@ Le but à long terme n'est pas seulement de reconstruire ce qui a été
 photographié, mais de guider activement l'opérateur vers les photographies qui
 manquent encore pour obtenir une reconstruction fiable. Cette capacité est
 postérieure à une reconstruction suffisamment mature ; elle ne fait pas partie
-de S3 et ne remplace pas la prochaine tranche d'exécution durable de campagne.
+de S3 et ne remplace pas le prochain milestone d'intégration multi-campagne
+A6000 + S21.
 
 ```text
 photographies existantes
@@ -421,10 +432,8 @@ L'ordre demeure sans ambiguïté :
 
 ```text
 CURRENT NEXT
-  exécution durable de campagne (Task / Queue / Scheduler / Governor,
-  confirmations durables, progression et reprise)
-→ INTÉGRATION RÉELLE
-  campagnes A6000 + S21 → pipeline scientifique → dense/mesh → publication
+  intégration réelle multi-campagne A6000 + S21
+  → pipeline scientifique → dense/mesh → publication
 → LATER
   Coverage Analysis → Coverage Viewer → suggestions de points de vue
   → localisation live → intégration HDMI/USB → Capture Guidance / Live Coverage
@@ -448,8 +457,8 @@ scientifique.
 - ALIKED tant que provenance modèle, export ONNX et oracle upstream ne sont pas
   reproductibles.
 
-Ces idées ne doivent pas devancer l'exécution durable de campagne ni créer un
-second runtime, Governor ou système de persistance.
+Ces idées ne doivent pas devancer l'intégration réelle multi-campagne ni créer
+un second runtime, Governor ou système de persistance.
 
 ## Principes de séquencement
 

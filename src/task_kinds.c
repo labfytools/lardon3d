@@ -1,4 +1,7 @@
 #include <lardon3d/candidate_pair_task.h>
+#ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_AVAILABLE
+#include <lardon3d/acquisition_campaign_task.h>
+#endif
 #include <lardon3d/feature_task.h>
 #include <lardon3d/geometric_verifier_task.h>
 #include <lardon3d/import_task.h>
@@ -18,6 +21,13 @@
 
 const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_production(void) {
   static const Lardon3DTaskKindDescriptor descriptors[] = {
+#ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_AVAILABLE
+      {
+          .kind = LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND,
+          .kind_version = LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND_VERSION,
+          .reconstruct = lardon3d_acquisition_campaign_task_reconstruct,
+      },
+#endif
       {
           .kind = LARDON3D_IMAGE_IMPORT_TASK_KIND,
           .kind_version = LARDON3D_IMAGE_IMPORT_TASK_KIND_VERSION,

@@ -10,7 +10,7 @@
 #include <lardon3d/sparse_sfm_incremental.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 19,
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 20,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -99,6 +99,20 @@ typedef struct {
   char source_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
   uint64_t scanset_id;
 } Lardon3DProjectDbImageImport;
+
+typedef struct {
+  uint64_t task_id;
+  uint64_t scanset_id;
+  uint32_t next_group_id;
+  uint32_t group_count;
+  const unsigned char *request;
+  size_t request_size;
+} Lardon3DProjectDbAcquisitionCampaignTask;
+
+typedef struct {
+  uint32_t group_id;
+  uint64_t capture_id;
+} Lardon3DProjectDbAcquisitionCampaignCapture;
 
 typedef struct {
   uint64_t scanset_id;
@@ -570,6 +584,20 @@ Lardon3DProjectDbResult lardon3d_project_db_list_candidate_pairs(
 Lardon3DProjectDbResult
 lardon3d_project_db_load_image_import(Lardon3DProjectDb *database, uint64_t task_id,
                                       Lardon3DProjectDbImageImport *parameters);
+Lardon3DProjectDbResult lardon3d_project_db_record_acquisition_campaign_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbAcquisitionCampaignTask *parameters, int64_t updated_at);
+Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_task(
+    Lardon3DProjectDb *database, uint64_t task_id, unsigned char *request,
+    size_t request_capacity, Lardon3DProjectDbAcquisitionCampaignTask *parameters);
+Lardon3DProjectDbResult lardon3d_project_db_retain_acquisition_campaign_capture(
+    Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
+    uint64_t capture_id, uint32_t next_group_id);
+Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_capture(
+    Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
+    Lardon3DProjectDbAcquisitionCampaignCapture *capture);
 Lardon3DProjectDbResult lardon3d_project_db_allocate_task_id(Lardon3DProjectDb *database,
                                                              uint64_t *task_id);
 Lardon3DProjectDbResult lardon3d_project_db_load_task(Lardon3DProjectDb *database, uint64_t task_id,

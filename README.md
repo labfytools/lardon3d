@@ -34,8 +34,12 @@ persistante, enrichissable et versionnable.
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
-- **Project Database v19** : fondations v18 préservées, avec Capture / Asset
-  Provenance additive
+- **Project Database v20** : fondations v19 préservées, avec persistance
+  additive des tâches de campagne d'acquisition
+- **Exécution durable de campagne d'acquisition** : tâche générique à requête
+  typée immuable, confirmations `CALLER_EXPLICIT`, curseur et correspondance
+  tâche/groupe→Capture persistants ; un groupe S3-E par séquence, reprise par
+  la registry, la Queue et le Resource Governor existants
 - **Sparse SfM Gates C/D/E** : géométrie calibrée, noyau incrémental et Bundle
   Adjustment final par composante, tous PASS / FROZEN
 - **Sparse SfM Gate F** : orchestration durable, runtime gouverné et publication
@@ -62,15 +66,14 @@ persistante, enrichissable et versionnable.
 
 ### Prochaine tranche
 
-- **Exécution durable de campagne d'acquisition** : confirmations et progression
-  persistantes, matérialisation S3-E incrémentale, reprise par `capture_id` retenu
-  et admission par les Task/Scheduler/Governor existants. Voir la
+- **Intégration multi-campagne réelle A6000 + S21 Engine Bay** : exécuter les
+  campagnes persistantes à travers le pipeline scientifique existant. Voir la
   [roadmap canonique](docs/roadmap/roadmap.md).
 
 ### Plus tard / différé
 
 - publication durable dense/mesh et scratch SSD externe optionnel gouverné ;
-- workflow TUI de confirmation/progression et sources mixtes multi-ScanSet ;
+- workflow TUI de confirmation/progression ;
 - vidéo/keyframes et **Capture Guidance / Live Coverage** : analyse et viewer de
   couverture, suggestions de prises de vue puis assistance live, après
   reconstruction mature ;

@@ -123,7 +123,7 @@ static bool run_test(void) {
   Lardon3DProjectDb *db = NULL;
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
   CHECK(lardon3d_project_db_open(path, &db, error) == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(db) == 19);
+  CHECK(lardon3d_project_db_schema_version(db) == 20);
 
   Lardon3DProjectDbScanSet scanset;
   CHECK(lardon3d_project_db_create_scanset(db, "Sparse model", &scanset) ==

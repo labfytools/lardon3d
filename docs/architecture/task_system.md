@@ -122,6 +122,15 @@ complet. Le scope GVR est persistant et immuable ; la reprise rejoue depuis le
 début avant publication et l'exact reuse Gate C absorbe un crash post-publication.
 Pause et annulation sont observées avant/after l'unité Gate B non préemptible.
 
+**PASS / FROZEN** — `acquisition_campaign.run` v1 est une
+tâche durable reconstruite par la registry existante à partir de son Task ID et
+de sa requête typée immuable Project DB v20. Elle matérialise un seul groupe
+S3-E par séquence, vérifie pause/annulation aux frontières de groupe, retient
+transactionnellement Capture et curseur avant progression/checkpoint, puis
+appelle `sequence_break` avant le groupe suivant. Sa reprise passe par la Queue
+et le Resource Governor existants ; aucune boucle d'exécution parallèle n'est
+introduite.
+
 Le chemin de production de l'import ne possède plus de thread ni de drapeau
 d'annulation privés. Son wrapper TUI ne fait qu'enqueue/cancel/observer la
 tâche générique. Chaque callback traite un lot borné, checkpoint hors mutex de

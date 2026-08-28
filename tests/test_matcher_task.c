@@ -373,7 +373,7 @@ static bool run_test(void) {
                     "name='matcher_tasks'",
                     0));
   CHECK(reopen_runtime(&fixture));
-  CHECK(lardon3d_project_db_schema_version(fixture.state.project_db) == 19);
+  CHECK(lardon3d_project_db_schema_version(fixture.state.project_db) == 20);
   CHECK(
       query_integer(database_path,
                     "SELECT count(*) FROM sqlite_master WHERE type='table' AND "

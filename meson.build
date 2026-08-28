@@ -152,6 +152,7 @@ executable(
         'src/acquisition_pairing.cpp',
         'src/acquisition_ingest.cpp',
         'src/acquisition_campaign.cpp',
+        'src/acquisition_campaign_task.cpp',
         'src/feature_extractor_opencv.cpp',
         'src/feature_store.c',
         'src/feature_extractor_opencv.cpp',
@@ -195,6 +196,7 @@ executable(
         '-DLARDON3D_TRACK_BUILDER_TASK_AVAILABLE',
         '-DLARDON3D_SPARSE_SFM_TASK_AVAILABLE',
         '-DLARDON3D_INCREMENTAL_RECONSTRUCTION_TASK_AVAILABLE',
+        '-DLARDON3D_ACQUISITION_CAMPAIGN_TASK_AVAILABLE',
     ],
     dependencies: [
         ncursesw,
@@ -376,6 +378,24 @@ acquisition_campaign_test = executable(
 )
 
 test('acquisition-campaign', acquisition_campaign_test, timeout: 30)
+
+acquisition_campaign_task_test = executable(
+    'test-acquisition-campaign-task',
+    sources: [
+        'tests/test_acquisition_campaign_task.cpp',
+        'src/acquisition_campaign_task.cpp', 'src/acquisition_campaign.cpp',
+        'src/acquisition_ingest.cpp', 'src/acquisition_pairing.cpp',
+        'src/raw_development.cpp', 'src/app_state.c', 'src/image_catalog_persistent.c',
+        'src/image_catalog.c', 'src/image_view.c', 'src/task_kind_registry.c',
+        'src/project.c', 'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/task_checkpoint.c', 'src/task_queue.c',
+        'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    cpp_args: ['-DLARDON3D_ACQUISITION_CAMPAIGN_TASK_TESTING'],
+    dependencies: [threads, sqlite3, openssl, opencv, libraw, libexif, libpng, libdeflate],
+)
+test('acquisition-campaign-task', acquisition_campaign_task_test, timeout: 30)
 
 feature_store_test = executable(
     'test-feature-store',
