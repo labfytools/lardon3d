@@ -110,16 +110,24 @@ introduit. La fenêtre résiduelle acceptée demeure l'arrêt après le retour d
 S3-E et avant la transaction de rétention : elle ne déclenche aucune inférence
 de Capture et ne fournit pas de garantie exactly-once pour ce groupe.
 
-## NEXT REAL-DATA MILESTONE — A6000 + S21 ENGINE BAY MULTI-CAMPAIGN INTEGRATION
+## ENGINE BAY MULTI-CAMPAIGN INTEGRATION — PASS / FROZEN
 
-1. confirmer explicitement et exécuter les campagnes A6000 et S21 ;
-2. matérialiser progressivement leurs Captures et représentations scientifiques
-   par lots gouvernés ;
-3. exécuter features, candidats, matching, vérification, tracks et Sparse SfM ;
-4. évaluer la qualité de la reconstruction sparse multi-campagne ;
-5. exécuter MVS/dense avec budgets et scratch contrôlés ;
-6. publier durablement nuage dense et mesh ;
-7. comparer le résultat aux tentatives photogrammétriques antérieures.
+L'intégration réelle a validé les deux campagnes dans un même projet temporaire
+Project DB v20 : A6000 (953 ARW + 953 JPEG, 953 confirmations
+`CALLER_EXPLICIT`, plan déterministe) et Samsung S21 FE SM-G990B (3544 JPEG,
+groupes singleton déterministes). Un échantillon borné a exercé deux Captures
+A6000 (JPEG SOURCE puis RAW dérivé) et trois Captures S21, avec ScanSets isolés,
+Queue/Governor, persistance tâche/groupe→Capture et reprise sans duplication.
+La capacité bornée des propositions de revue conserve un préfixe déterministe;
+elle ne limite jamais l'évaluation complète ni le groupement scientifique.
+
+## NEXT REAL-DATA MILESTONE — SCIENTIFIC EXECUTION ON ENGINE BAY INPUTS
+
+1. exécuter features, candidats, matching, vérification, tracks et Sparse SfM ;
+2. évaluer la qualité de la reconstruction sparse multi-campagne ;
+3. exécuter MVS/dense avec budgets et scratch contrôlés ;
+4. publier durablement nuage dense et mesh ;
+5. comparer le résultat aux tentatives photogrammétriques antérieures.
 
 Ce milestone est une intégration réelle, pas une nouvelle série de micro-gates
 S3. Les antécédents d'OOM/SIGSEGV OpenMVS, pression swap, grands intermédiaires

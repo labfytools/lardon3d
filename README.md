@@ -64,10 +64,13 @@ persistante, enrichissable et versionnable.
 - **Resource Snapshot** : capture instantanée des ressources
 - **Resource Governor** : arbitrage centralisé des budgets et réservations
 
-### Prochaine tranche
+### Intégration réelle validée
 
-- **Intégration multi-campagne réelle A6000 + S21 Engine Bay** : exécuter les
-  campagnes persistantes à travers le pipeline scientifique existant. Voir la
+- **Intégration multi-campagne A6000 + S21 FE Engine Bay** : PASS — les plans
+  réels A6000 (953 paires confirmées `CALLER_EXPLICIT`) et Samsung SM-G990B
+  (3544 JPEG singleton) ont été validés dans deux ScanSets d'un même projet
+  temporaire, avec exécution durable, Governor/Queue et reprise sans Capture
+  dupliqué. La suite reste le pipeline scientifique aval, selon la
   [roadmap canonique](docs/roadmap/roadmap.md).
 
 ### Plus tard / différé
