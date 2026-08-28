@@ -72,6 +72,14 @@ int main(int argc, char **argv) {
 6. **Déterminisme** : les tests ne dépendent pas de l'heure, du filesystem
    ou de l'état réseau (sauf test d'import).
 
+## Commentaires source
+
+Les commentaires documentent le pourquoi et les contrats non évidents :
+invariants, propriété et durée de vie, persistance, ainsi que limites et
+frontières de ressources. Les API publiques documentent leurs contrats non
+évidents. Ils ne paraphrasent pas le code ligne par ligne et sont mis à jour
+avec tout changement de comportement.
+
 ## Tests unitaires vs tests d'intégration
 
 `test-visual-index` couvre les descriptors synthétiques, le retrieval ORB réel,

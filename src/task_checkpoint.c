@@ -20,6 +20,10 @@ static const unsigned char checkpoint_magic[8] = {
     'L', '3', 'D', 'T', 'A', 'S', 'K', '\0'
 };
 
+/* Checkpoint v1 is fixed-size and field-by-field little-endian: magic,
+ * version, size, checksum, then generic runtime state.  Task-kind payloads,
+ * callbacks, locks, and reservations are intentionally transient and absent. */
+
 static void
 put_u32(unsigned char *output, uint32_t value)
 {
@@ -288,6 +292,10 @@ lardon3d_task_checkpoint_save(
     const Lardon3DTaskDurableSnapshot *snapshot
 )
 {
+    /* The temporary file is synced before rename, then its parent directory is
+     * synced.  Before rename the prior checkpoint remains authoritative; after
+     * rename a directory-sync failure is reported as published-not-durable,
+     * never as a rollbackable write. */
     if (!path || !path[0] || !valid_snapshot(snapshot)) {
         return LARDON3D_TASK_CHECKPOINT_INVALID;
     }

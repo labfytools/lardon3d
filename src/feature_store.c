@@ -17,6 +17,11 @@ static const unsigned char feature_magic[8] = {'L', '3', 'D', 'F', 'E', 'A', 'T'
 _Static_assert(sizeof(float) == 4 && FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MAX_EXP == 128,
                "Feature File v1/v2 exige IEEE-754 binary32.");
 
+/* L3DFEAT v1/v2 uses explicit fixed-width little-endian headers, never native
+ * structs.  Counts, offsets, dimensions, source SHA-256, and parameter
+ * fingerprint bind descriptors to their input; malformed/truncated or unknown
+ * versions are rejected before feature data is consumed. */
+
 struct Lardon3DFeatureReader {
   int descriptor;
   uint64_t keypoint_offset;

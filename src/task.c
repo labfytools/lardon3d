@@ -220,6 +220,9 @@ lardon3d_task_start(
     const Lardon3DResourceReservation *reservation
 )
 {
+    /* Start assumes admission/contract was already decided by the queue/ governor.
+     * Task only installs the provided active reservation and owns execution state.
+     */
     Lardon3DResourceReservationInfo information;
     if (!task || !lardon3d_resource_reservation_get_active(
             governor,
@@ -285,6 +288,10 @@ lardon3d_task_start(
     copy_text(task->message, sizeof(task->message), "Tâche en cours.");
     (void)pthread_mutex_unlock(&task->mutex);
 
+    /* Callback is executed without task mutex held; caller-visible execution
+     * state transitions remain owned by task internals only.
+     * Finished callback is also issued after lock release.
+     */
     bool succeeded = task->callback(task, task->userdata);
 
     (void)pthread_mutex_lock(&task->mutex);
@@ -563,6 +570,9 @@ lardon3d_task_sequence_break(
                 .gpu_slots = information.gpu_slots,
                 .io_slots = information.io_slots,
             };
+            // sequence_break releases one active reservation and acquires the
+            // next one before returning; tasks should continue only from a
+            // cleanly admitted boundary.
             task->has_contract = true;
             ++task->sequence_count;
             *out_reservation = next;

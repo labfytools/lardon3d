@@ -608,6 +608,8 @@ static const char schema_capture_provenance_v19[] =
     "CHECK(parent_asset_id!=child_asset_id));";
 
 static const char schema_acquisition_campaign_v20[] =
+    /* v20 is additive: the generic Task row owns runtime state, while the
+       typed row owns the immutable campaign request and durable cursor. */
     "CREATE TABLE IF NOT EXISTS acquisition_campaign_tasks("
     "task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,"
     "scanset_id INTEGER NOT NULL REFERENCES scansets(scanset_id),"
@@ -1107,6 +1109,8 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
     }
   }
   if (result == LARDON3D_PROJECT_DB_OK && from_version < 20) {
+    /* The additive v19->v20 DDL remains inside the surrounding migration
+       transaction; schema metadata advances only after this succeeds. */
     result = execute(database, schema_acquisition_campaign_v20,
                      "migrate acquisition campaign task v19 to v20");
 #ifdef LARDON3D_PROJECT_DB_TESTING
@@ -2247,6 +2251,8 @@ Lardon3DProjectDbResult lardon3d_project_db_record_acquisition_campaign_task(
       !parameters->request || parameters->request_size == 0 || parameters->request_size > INT_MAX) {
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
+  /* The generic Task/checkpoint and typed request persist atomically: recovery
+     never observes a valid campaign Task without its immutable request blob. */
   return record_task_internal(database, snapshot, task_kind, task_kind_version, checkpoint,
                               NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, parameters,
                               updated_at);
@@ -2292,6 +2298,11 @@ Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_task(
 Lardon3DProjectDbResult lardon3d_project_db_retain_acquisition_campaign_capture(
     Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
     uint64_t capture_id, uint32_t next_group_id) {
+  /* S3-E already returned capture_id.  This transaction retains the group
+     mapping and advances the one-based cursor together; generic progress and
+     checkpoint advance afterwards.  An interruption after S3-E returns and
+     before this retention transaction cannot safely be repaired by guessing
+     identity from paths, hashes, metadata, or image IDs. */
   if (!database || !valid_task_id(task_id) || !valid_task_id(capture_id) ||
       group_id == 0 || next_group_id != group_id) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   (void)pthread_mutex_lock(&database->mutex);

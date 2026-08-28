@@ -28,6 +28,10 @@ Lardon3DTaskQueue *lardon3d_task_queue_create(
     Lardon3DResourceGovernor *governor,
     size_t capacity
 );
+/* File d'exécution bornée, à ordre d'attente FIFO avec sélection adaptative du
+ * premier travail admissible, et un seul worker: ownership d'ordonnancement et
+ * de backpressure seulement. L'admission des demandes reste au Governneur.
+ */
 void lardon3d_task_queue_destroy(Lardon3DTaskQueue *queue);
 /* La file devient propriétaire de task uniquement en cas de succès.
    Bloquante : attend une place libre si la file est pleine. */

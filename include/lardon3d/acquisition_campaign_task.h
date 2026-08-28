@@ -18,8 +18,13 @@ enum {
   LARDON3D_ACQUISITION_CAMPAIGN_REQUEST_VERSION = 1,
 };
 
-/* Derived solely from the frozen source, path, confirmation and group bounds.
- */
+/* Request wire payload is a deterministic codec, not a memcpy of in-memory structs:
+   - fixed magic + version prefix
+   - fixed-width integer fields
+   - explicit little-endian byte order
+   - bounded text fields and counts
+   - strict decode-side validation rejecting malformed inputs.
+   No native struct layout is used for persistence compatibility. */
 #define LARDON3D_ACQUISITION_CAMPAIGN_TASK_REQUEST_MAX_BYTES                   \
   ((size_t)LARDON3D_ACQUISITION_CAMPAIGN_MAX_SOURCES *                         \
        (LARDON3D_ACQUISITION_CAMPAIGN_PATH_CAPACITY + 700u) +                  \
@@ -41,6 +46,9 @@ Lardon3DTask *lardon3d_project_create_acquisition_campaign_task(
 bool lardon3d_project_enqueue_acquisition_campaign(
     Lardon3DAppState *state, uint64_t scanset_id,
     const Lardon3DAcquisitionCampaignTaskRequest *request, uint64_t *task_id);
+/* Request payload is treated as immutable durable input: task execution and
+ * checkpoint/recovery flow from the encoded blob, not from caller memory after
+ * enqueue. */
 bool lardon3d_acquisition_campaign_task_reconstruct(
     const Lardon3DTaskDurableSnapshot *snapshot, void *context,
     Lardon3DTaskKindBinding *binding);

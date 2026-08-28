@@ -78,7 +78,9 @@ Lardon3DTask *lardon3d_task_create_typed(
     Lardon3DTaskUserdataDestroy userdata_destroy
 );
 void lardon3d_task_destroy(Lardon3DTask *task);
-/* Exécute le callback dans le thread appelant. */
+/* Exécute le callback dans le thread appelant. Le callback est invoqué hors
+ * mutex de tâche; le contract d'exécution et l'état appartiennent à la tâche.
+ */
 bool lardon3d_task_start(
     Lardon3DTask *task,
     Lardon3DResourceGovernor *governor,
@@ -137,6 +139,9 @@ bool lardon3d_task_resource_estimate(
     const Lardon3DTask *task,
     Lardon3DResourceEstimate *estimate
 );
+/* L'exécution ne reçoit pas de politique d'admission : c'est au gouverneur de
+ * confirmer la réservation avant l'exécution.
+ */
 bool lardon3d_task_execution_contract(
     const Lardon3DTask *task,
     Lardon3DTaskExecutionContract *contract
@@ -145,7 +150,8 @@ bool lardon3d_task_execution_contract(
  * et met à jour le contrat. À appeler uniquement depuis le callback en cours
  * d'exécution. Une réponse WAIT du gouverneur est une indisponibilité
  * temporaire : la fonction attend un changement de ressources puis retente
- * l'admission sans échouer la tâche. Retourne false si la tâche est annulée
+ * l'admission sans échouer la tâche. Les bornes de lot se poursuivent après
+ * cette nouvelle admission. Retourne false si la tâche est annulée
  * (TASK_CANCELLED), si le gouverneur répond REJECT ou en cas d'erreur interne
  * (TASK_FAILED). */
 bool lardon3d_task_sequence_break(

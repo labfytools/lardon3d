@@ -141,6 +141,8 @@ enum class JpegValidationResult {
 
 constexpr size_t JPEG_MAX_CONTAINER_IMAGES = 8u;
 
+// Structural validation deliberately parses JPEG framing without decoding
+// pixels, so metadata acceptance does not depend on decoder permissiveness.
 bool read_byte(FILE *file, unsigned char &value) {
     const int byte = std::fgetc(file);
     if (byte == EOF) {
@@ -234,6 +236,8 @@ JpegValidationResult validate_jpeg_image(FILE *file, bool soi_already_consumed,
         }
     }
 
+    // Entropy bytes are not marker payload: FF 00 is stuffing and RSTn stays
+    // within the scan.  Only a real following marker resumes marker parsing.
     bool in_entropy = false;
     for (;;) {
         unsigned char marker = 0u;
@@ -283,6 +287,9 @@ JpegValidationResult validate_jpeg_image(FILE *file, bool soi_already_consumed,
 }
 
 JpegValidationResult validate_jpeg_structure(FILE *file) {
+    // Secondary JPEGs are allowed only in the bounded private container form:
+    // primary APP2 contains MPF\0, every image reaches EOI structurally, and
+    // inter-image/final padding is zero only.  No image pixels are decoded.
     bool primary_has_mpf = false;
     for (size_t image_index = 0u; image_index < JPEG_MAX_CONTAINER_IMAGES; ++image_index) {
         bool image_has_mpf = false;

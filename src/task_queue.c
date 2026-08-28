@@ -16,6 +16,10 @@ enum {
     LARDON3D_PENDING_RESOURCE_WAIT_MILLISECONDS = 500,
 };
 
+/* The queue owns submission order and bounded backpressure only.
+ * It does not own resource policy; every admissible decision comes from the
+ * Governor via reserve/evaluate calls.
+ */
 struct Lardon3DTaskQueue {
     pthread_mutex_t mutex;
     pthread_cond_t not_empty;
@@ -61,7 +65,9 @@ unlink_pending(Lardon3DTaskQueue *queue, TaskNode *previous, TaskNode *node)
     (void)pthread_cond_signal(&queue->not_full);
 }
 
-/* Parcourt la file d'attente et sélectionne la première tâche admissible.
+/* Parcourt la file d'attente dans son ordre FIFO et sélectionne la première
+ * tâche admissible; une attente de ressources peut donc laisser passer une
+ * tâche antérieure sans lui faire perdre sa place dans la file.
  * Les tâches terminales ou refusées sont retirées de la file d'attente.
  * Une tâche en attente de ressources reste en file et sera réévaluée.
  * Retourne NULL si aucune tâche ne peut démarrer immédiatement. */
@@ -154,6 +160,10 @@ static void *
 queue_worker(void *context)
 {
     Lardon3DTaskQueue *queue = context;
+    /* Single worker only; execution is serialized by design. Queue preserves
+     * pending FIFO order with adaptive dispatch/backpressure; Governor decides
+     * admission.
+     */
     for (;;) {
         (void)pthread_mutex_lock(&queue->mutex);
         while (!queue->stopping && !queue->pending_head) {

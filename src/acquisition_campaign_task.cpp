@@ -18,6 +18,9 @@ constexpr unsigned char magic[8] = {'L', '3', 'D', 'A', 'C', 'T', '1', '\0'};
 constexpr size_t max_request_size =
     LARDON3D_ACQUISITION_CAMPAIGN_TASK_REQUEST_MAX_BYTES;
 
+/* Codec is transport-safe and deterministic: no native struct serialization is
+ * used, integers are fixed-width with explicit endianness, and strings/counts are
+ * explicitly bounded before write/read. */
 struct Writer {
   unsigned char *p;
   size_t left;
@@ -206,6 +209,8 @@ bool checkpoint(Context *c, Lardon3DTask *t, uint32_t cursor) {
 bool run_impl(Lardon3DTask *t, void *p) {
   auto *c = static_cast<Context *>(p);
   Lardon3DProjectDbAcquisitionCampaignTask persisted{};
+  // Request is reconstructed from persisted blob and treated as immutable durable
+  // input during recovery and replay.
   std::vector<unsigned char> blob(max_request_size);
   if (lardon3d_project_db_load_acquisition_campaign_task(
           c->db, lardon3d_task_id(t), blob.data(), blob.size(), &persisted) !=
@@ -218,6 +223,10 @@ bool run_impl(Lardon3DTask *t, void *p) {
       return false;
     Lardon3DProjectDbAcquisitionCampaignCapture retained{};
     uint64_t resume = 0;
+    /* Durable replay uses the stable mapping (task_id, group_id) -> capture_id.
+     * The persisted cursor is the zero-based next-work position: after group N
+     * retention, its numeric value is N and replay materializes group N + 1.
+     */
     auto lr = lardon3d_project_db_load_acquisition_campaign_capture(
         c->db, lardon3d_task_id(t), group_id, &retained);
     if (lr == LARDON3D_PROJECT_DB_OK)
@@ -248,6 +257,10 @@ bool run_impl(Lardon3DTask *t, void *p) {
             c->db, lardon3d_task_id(t), group_id, out.groups[0].capture_id,
             group_id) != LARDON3D_PROJECT_DB_OK)
       return lardon3d_task_fail(t, "Rétention de Capture impossible.");
+    /* Limite de reprise acceptée: entre le retour de S3-E et cette rétention
+     * durable, une identité de capture ne peut pas être déduite à posteriori
+     * depuis les chemins/métadonnées/ID d'image.
+     */
 #ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_TESTING
     const char *after_retention =
         std::getenv("LARDON3D_TEST_CAMPAIGN_FAIL_AFTER_RETENTION");
@@ -261,6 +274,8 @@ bool run_impl(Lardon3DTask *t, void *p) {
         !checkpoint(c, t, group_id))
       return lardon3d_task_fail(t, "Checkpoint de campagne impossible.");
     if (group_id < c->plan.group_count) {
+      // sequence_break: libère la réservation courante et renégocie l'admission
+      // via le Governor avant le groupe suivant.
       Lardon3DTaskExecutionContract contract{};
       Lardon3DResourceReservation *reservation = nullptr;
       if (!lardon3d_task_sequence_break(t, c->governor, &reservation,
@@ -352,6 +367,7 @@ bool request_decode_impl(
   unsigned char m[8];
   uint32_t version, n, c, rep, select;
   uint64_t imported, maxbytes;
+  /* Version 1 is the only accepted codec shape; any mismatch rejects replay. */
   if (!q.bytes(m, 8) || std::memcmp(m, magic, 8) || !q.u32(version) ||
       version != 1 || !q.u32(n) || n == 0 || n > sc ||
       n > LARDON3D_ACQUISITION_CAMPAIGN_MAX_SOURCES || !q.u32(c) || c > cc ||
@@ -490,6 +506,7 @@ Lardon3DTask *create_task_impl(
   return t;
 }
 
+/* C ABI boundary: exceptions are trapped so callers never receive C++ throws. */
 extern "C" bool lardon3d_acquisition_campaign_request_encode(
     const Lardon3DAcquisitionCampaignTaskRequest *r, unsigned char *out,
     size_t cap, size_t *size) {

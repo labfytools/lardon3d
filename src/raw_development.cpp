@@ -33,6 +33,8 @@ constexpr uint32_t kBackendKindLibRaw = 1;
 constexpr uint32_t kEncoderKindOpenCvPng = 1;
 constexpr size_t kRawFingerprintPayloadSize = 200;
 
+// RAW Policy v1 is part of derived scientific identity.  Its fixed
+// little-endian L3DRAWD1 payload is not a pathname-derived source identity.
 bool valid_wb(const float wb[4]) {
   for (size_t i = 0; i < 4; ++i) if (!std::isfinite(wb[i]) || wb[i] <= 0.0F) return false;
   return true;
@@ -175,6 +177,8 @@ extern "C" Lardon3DRawDevelopmentResult lardon3d_raw_development_policy_fingerpr
       return LARDON3D_RAW_DEVELOPMENT_INTERNAL_ERROR;
     std::vector<unsigned char> bytes;
     bytes.reserve(kRawFingerprintPayloadSize);
+    // Record all policy choices and relevant backend versions; decoder
+    // defaults must never create an untracked representation.
     const char magic[] = "L3DRAWD1";
     bytes.insert(bytes.end(), magic, magic + sizeof(magic) - 1);
     put_u32(&bytes, 1); put_u32(&bytes, kBackendKindLibRaw);
@@ -247,6 +251,9 @@ extern "C" Lardon3DRawDevelopmentResult lardon3d_raw_develop_to_capture(
     if (!verify_managed_asset(managed_source, output->source_asset.sha256)) return LARDON3D_RAW_DEVELOPMENT_SOURCE_CHANGED;
     LibRaw raw;
     raw.imgdata.params.user_qual = 3; raw.imgdata.params.half_size = 0;
+    // The resolved WB is explicit.  Automatic WB, brightness, and color
+    // choices are disabled so policy rather than hidden decoder state defines
+    // the derived asset.
     raw.imgdata.params.user_flip = 0; raw.imgdata.params.use_auto_wb = 0;
     raw.imgdata.params.use_camera_wb = 0; raw.imgdata.params.use_camera_matrix = 0;
     raw.imgdata.params.output_profile = nullptr; raw.imgdata.params.camera_profile = nullptr;
