@@ -175,72 +175,264 @@ pipeline scientifique parallèle :
 asset vidéo SOURCE
 → timeline et métadonnées déterministes
 → extraction bornée et déterministe de keyframes
-→ filtres blur/qualité/redondance
-→ candidats Capture
-→ représentations image sélectionnées et immuables
+→ filtres blur/netteté/redondance
+→ diversité de mouvement et de point de vue
+→ représentations frame sélectionnées / candidats Capture
 → pipeline scientifique Lardon3D existant
 ```
 
 Le futur contrat devra lier chaque frame à l'asset vidéo source, définir une
-identité d'extraction reproductible et retenir son timestamp. La sélection
-combinera espacement temporel, netteté, rejet des frames redondantes, diversité
-de mouvement/point de vue et couverture utile. Exécution, buffers et nombre de
-frames resteront bornés ; reprise/checkpoint et admission appartiendront au
-Task Runtime et au Resource Governor existants. Il n'existera **aucun pipeline
-SfM séparé pour la vidéo** : les keyframes validées rejoignent les mêmes
-Capture, images, features, matching, tracks, Sparse SfM et étapes aval que les
-photos Sony, Samsung ou autres.
-
-### Coverage Viewer et assistance à l'acquisition — PLANNED
-
-Cette frontière passive de visualisation et d'aide analysera une reconstruction
-publiée afin d'identifier où des photographies supplémentaires sont réellement
-nécessaires. Ses entrées pourront inclure poses caméra, provenance Capture,
-géométrie sparse/dense, nombre d'observations par track, densité de features,
-qualité de reprojection, triangulation/parallaxe, visibilité de surface et
-historique des ScanSets.
-
-Overlays planifiés :
-
-- positions et frustums des caméras ;
-- régions bien couvertes et faiblement couvertes ;
-- zones invisibles ou manquantes ;
-- régions à faible diversité angulaire ou mauvaise parallaxe ;
-- zones de reconstruction à faible confiance ;
-- heatmap de couverture.
-
-Les diagnostics devront produire des indications actionnables, par exemple :
+identité d'extraction reproductible et retenir le timestamp exact de chaque
+frame. Les sujets de conception incluent espacement temporel, netteté, rejet
+des frames redondantes, diversité de mouvement/point de vue, traitement borné,
+reprise et admission par le Resource Governor. L'analyse de couverture pourra
+ultérieurement contribuer à la sélection :
 
 ```text
-cette région demande plus de photographies
-cette région demande un autre angle de vue
-le nombre d'images suffit mais la parallaxe est insuffisante
-cette cavité ou face est visible depuis trop peu de Captures
+besoin de couverture actuel + trajectoire caméra / frames vidéo
+→ retenir les frames apportant une information géométrique utile
 ```
 
-Toute recommandation dérivera d'évidence géométrique et de reconstruction,
-jamais d'un nombre de fichiers, de basenames ou d'une heuristique d'identité.
-Le workflow itératif visé est :
+Cette relation reste un sujet de recherche et d'ingénierie ; aucune politique
+de sélection n'est gelée. Il n'existera **aucun second pipeline SfM propre à la
+vidéo** : les keyframes validées rejoindront les mêmes Capture, provenance,
+images, features, matching, tracks, Sparse SfM et étapes aval que les photos.
+
+### Capture Guidance / Live Coverage — PLANNED, LONG TERME
+
+Le but à long terme n'est pas seulement de reconstruire ce qui a été
+photographié, mais de guider activement l'opérateur vers les photographies qui
+manquent encore pour obtenir une reconstruction fiable. Cette capacité est
+postérieure à une reconstruction suffisamment mature ; elle ne fait pas partie
+de S3 et ne remplace pas la prochaine tranche d'exécution durable de campagne.
 
 ```text
-ScanSet N
+photographies existantes
+→ reconstruction Lardon3D
+→ analyse de qualité de couverture
+→ régions faibles ou manquantes
+→ localisation de la caméra courante
+→ projection dans la Live View
+→ photographies supplémentaires par l'opérateur
+→ ingestion / mise à jour de reconstruction
+→ mise à jour de couverture ↺
+```
+
+#### Dépendances et niveaux de maturité
+
+L'ordre conceptuel est :
+
+```text
+Sparse SfM
+→ calibration et poses caméra
+→ géométrie dense / mesh lorsque nécessaire
+→ métriques de couverture
+→ viewer et localisation live
+→ Capture Guidance / Live Coverage
+```
+
+Une première analyse peut s'appuyer sur la géométrie sparse et les tracks ; un
+mesh dense n'est donc pas une condition universelle. Les niveaux suivants sont
+des paliers de roadmap, **pas de nouveaux Gates** :
+
+1. **Offline Coverage Analysis** — calculer les régions faibles ou manquantes
+   depuis une reconstruction existante.
+2. **Coverage Viewer** — afficher géométrie, caméras, qualité de couverture et
+   zones faibles.
+3. **Suggested Supplementary Viewpoints** — associer une région faible à une
+   direction ou un cône de points de vue suggéré.
+4. **Live Camera Localization** — estimer la pose de la caméra courante par
+   rapport à la reconstruction.
+5. **Live Coverage Overlay** — reprojeter la couverture dans le flux vidéo.
+6. **Closed Acquisition Loop** — guider, capturer, transférer, ingérer,
+   reconstruire, réévaluer puis guider à nouveau.
+
+#### Coverage Analysis — PLANNED
+
+L'analyse estimera à quel point une région de surface ou de géométrie
+reconstruite est soutenue par des observations photographiques. Ses entrées
+potentielles comprennent :
+
+- nombre de Captures observant la région, angle et diversité angulaire ;
+- parallaxe disponible et diversité des points de vue ;
+- résolution effective projetée sur la surface ;
+- netteté, exposition et qualité d'image ;
+- support features/tracks et qualité de reprojection/triangulation ;
+- confiance de reconstruction, visibilité et occlusions ;
+- provenance et historique des ScanSets.
+
+Une expression telle que la suivante n'est qu'une intuition
+**NON CONTRACTUELLE** :
+
+```text
+coverage_score = f(
+    observation_count,
+    angle_quality,
+    parallax_quality,
+    effective_resolution,
+    sharpness,
+    viewpoint_diversity,
+    reconstruction_confidence
+)
+```
+
+Les métriques exactes, poids, seuils et normalisations nécessitent une
+validation expérimentale ultérieure. Aucun score scientifique n'est défini ou
+gelé par cette roadmap.
+
+#### Coverage Viewer — PLANNED
+
+Le Coverage Viewer ne sera pas un simple viewer de mesh : il servira à examiner
+la qualité d'acquisition et de reconstruction. Les overlays futurs pourront
+montrer positions, directions et frustums des caméras, surfaces bien ou mal
+couvertes, zones jamais vues, trous de reconstruction, faible nombre
+d'observations, diversité angulaire ou parallaxe insuffisante, support
+features/tracks faible, reconstruction peu fiable et contribution par ScanSet.
+
+Une heatmap pourrait par exemple utiliser rouge pour une photographie
+supplémentaire requise, orange pour un angle médiocre, violet pour une parallaxe
+insuffisante, jaune pour un problème de qualité d'image et l'affichage normal
+pour une couverture satisfaisante. Ces couleurs, catégories et significations
+sont **des exemples seulement** : elles ne sont ni choisies ni gelées.
+
+Lardon3D reste TUI-first. La TUI conserve le contrôle du projet, du workflow et
+du runtime. Une frontière visuelle/acquisition séparée pourra posséder
+l'affichage vidéo, le rendu points/mesh, les frustums, overlays et indications
+live. Son architecture finale n'est pas définie ici ; elle devra préserver
+l'isolation du viewer, consommateur de snapshots validés sans accès aux buffers
+workers mutables.
+
+#### Suggested Supplementary Viewpoints — PLANNED
+
+Le résultat recherché dépasse la coloration d'une surface défaillante :
+
+```text
+région de surface faible + direction caméra / cône de points de vue suggéré
+```
+
+Il pourra exprimer « cette région demande des photographies supplémentaires »,
+« photographier depuis une direction plus oblique », « le nombre d'images est
+suffisant mais la diversité des points de vue ne l'est pas », « cette cavité
+est vue par trop peu de Captures » ou « la géométrie d'acquisition fournit une
+parallaxe insuffisante ». La recommandation devra dériver d'évidence géométrique
+et de reconstruction, jamais du nombre de fichiers, de basenames similaires ou
+d'heuristiques arbitraires déconnectées de la géométrie. L'algorithme
+d'optimisation du point de vue n'est pas encore défini.
+
+#### Live Camera Localization — PLANNED
+
+Live Coverage dépendra de la localisation d'une vue nouvelle/live par rapport
+à une reconstruction existante. Les prérequis probables incluent calibration
+caméra, reconstruction sparse et points 3D existants, extraction de features
+sur la frame live, correspondances 2D↔3D, estimation de pose calibrée, confiance
+de pose et perte/réacquisition gracieuse du tracking. Cette capacité pourra
+réutiliser la géométrie Sparse SfM, mais elle n'est ni conçue ni implémentée à
+ce jour.
+
+#### Live Coverage et boucle d'acquisition — PLANNED
+
+La couche temps réel est distincte de l'analyse offline. Le déroulé cible est :
+
+1. construire une reconstruction initiale et calculer l'évidence de couverture ;
+2. recevoir sur le PC la Live View via une capture HDMI ;
+3. estimer la pose de la caméra courante dans la reconstruction ;
+4. projeter les régions 3D faibles/manquantes dans la frame vidéo ;
+5. indiquer les acquisitions supplémentaires nécessaires pendant que
+   l'opérateur déplace la caméra ;
+6. déclencher une photographie et transférer RAW/JPEG par le chemin
+   d'acquisition ;
+7. faire entrer les nouveaux assets/Captures dans la provenance Lardon3D
+   existante ;
+8. mettre à jour reconstruction et couverture, puis retirer progressivement de
+   l'overlay les régions corrigées.
+
+L'expérience visée est conceptuellement : « les observations
+photogrammétriques sont insuffisantes ici ; prendre une photographie
+supplémentaire approximativement depuis cette direction ».
+
+#### Frontière caméra HDMI / USB
+
+Le Sony A6000 fournit un exemple concret de matériel cible, sans définir une
+architecture scientifique propre à Sony :
+
+```text
+Sony A6000 ── HDMI → capture device → Live View ───────────┐
+           └─ USB  → contrôle / shutter / RAW+JPEG ───────┤
+                                                          ↓
+                                                     Lardon3D sur PC
+                    live camera pose + reconstruction/geometry/coverage
+                                                          ↓
+                                            reprojection et Live View overlay
+```
+
+Le calcul lourd, la reconstruction et le mesh restent sur le PC. La caméra est
+principalement le capteur d'image, la source Live View et un dispositif
+d'acquisition potentiellement contrôlable ; elle ne transporte ni n'exécute la
+reconstruction. HDMI vise une Live View à faible latence. USB pourra selon les
+capacités réelles de l'appareil fournir contrôle, déclenchement, métadonnées et
+transfert RAW/JPEG. Tous les appareils ne partagent pas le même protocole : les
+transports et contrôles spécifiques resteront à la frontière des adaptateurs
+d'acquisition, hors de l'identité Capture gelée et du cœur scientifique.
+
+Sony A6000, Samsung S21/mobile et futures caméras consommeront le modèle commun :
+
+```text
+Capture physique ↔ assets SOURCE ↔ représentations scientifiques sélectionnées
+```
+
+Capture Guidance consommera le modèle projet/reconstruction commun, sans fork
+scientifique par device.
+
+#### Boucle multi-ScanSet / Phase H
+
+```text
+ScanSet 1
 → reconstruction
 → analyse de couverture
-→ viewer des zones manquantes/faibles
+→ zones faibles/manquantes
 → acquisition supplémentaire
-→ nouveau ScanSet
-→ alignement/enrichissement Phase H
-→ réévaluation de la couverture
+→ ScanSet 2
+→ ingestion / reconstruction
+→ alignement et enrichissement Phase H
+→ couverture mise à jour
+→ répétition si nécessaire
 ```
 
-Cette boucle reliera les acquisitions Sony A6000, Samsung/mobile, ScanSets
-mixtes et futures keyframes vidéo sans fork par device. La sélection future de
-keyframes pourra utiliser la couverture déjà reconstruite pour favoriser des
-points de vue réellement complémentaires.
+Cette boucle est particulièrement importante quand un objet ne peut être
+capturé en une seule passe. Elle réutilise Phase H v1 sans le redéfinir.
 
-Lardon3D reste TUI-first. Le Coverage Viewer demeure un consommateur passif de
-snapshots validés et une frontière séparée d'assistance ; il ne transforme pas
-l'application principale en GUI et ne lit jamais les buffers workers mutables.
+Pour une baie moteur, l'opérateur pourra à terme viser avec l'A6000 une bride,
+une cavité ou une face mal observée mise en évidence dans la Live View, se
+déplacer selon l'indication et ajouter une image avant ingestion et mise à jour
+de la couverture. La valeur pratique est forte lorsque l'accès disparaîtra,
+qu'un moteur ou composant doit être retiré, ou que le démontage modifiera la
+scène : découvrir les photographies manquantes après coup pourrait être coûteux
+ou impossible. Ce scénario motive la direction produit ; ce n'est pas un
+contrat scientifique.
+
+#### État futur et ordre de dépendance
+
+Cette roadmap ne prétend implémenter aujourd'hui ni capture HDMI, contrôle USB,
+pose live, projection de mesh, score ou heatmap de couverture, recommandation
+automatique, ingestion vidéo, sélection de keyframes, ni reconstruction live
+incrémentale. Ces capacités restent planifiées, ultérieures ou exploratoires.
+
+L'ordre demeure sans ambiguïté :
+
+```text
+CURRENT NEXT
+  exécution durable de campagne (Task / Queue / Scheduler / Governor,
+  confirmations durables, progression et reprise)
+→ INTÉGRATION RÉELLE
+  campagnes A6000 + S21 → pipeline scientifique → dense/mesh → publication
+→ LATER
+  Coverage Analysis → Coverage Viewer → suggestions de points de vue
+  → localisation live → intégration HDMI/USB → Capture Guidance / Live Coverage
+```
+
+Vidéo/keyframes pourra progresser en parallèle lors d'une phase ultérieure,
+mais réutilisera toujours la même provenance Capture et le même pipeline
+scientifique.
 
 - **Maintenance projet** : vérification de provenance, assets orphelins,
   scrub/réconciliation et réclamation sûre du scratch. Aucun asset immuable

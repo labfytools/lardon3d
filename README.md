@@ -71,7 +71,10 @@ persistante, enrichissable et versionnable.
 
 - publication durable dense/mesh et scratch SSD externe optionnel gouverné ;
 - workflow TUI de confirmation/progression et sources mixtes multi-ScanSet ;
-- vidéo/keyframes, coverage assistance, viewer et exports ;
+- vidéo/keyframes et **Capture Guidance / Live Coverage** : analyse et viewer de
+  couverture, suggestions de prises de vue puis assistance live, après
+  reconstruction mature ;
+- exports et publication live ;
 - DAG général, pools multiples et parallélisme inter-tâches restent différés.
 
 ## Architecture
