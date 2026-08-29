@@ -486,6 +486,45 @@ photo_quality_restart_scan = executable(
     dependencies: [threads, sqlite3, openssl, opencv, libraw, libexif, libpng, libdeflate],
 )
 
+# Opt-in real-data evidence runner. It is intentionally not registered with
+# meson test: invocation requires explicit source roots and a fresh project
+# directory, and may perform bounded but long RAW/ORB/matching work.
+pre_sfm_real_execution = executable(
+    'pre-sfm-real-execution',
+    sources: [
+        'tests/pre_sfm_real_execution.cpp',
+        'src/app_state.c',
+        'src/acquisition_pairing.cpp', 'src/acquisition_ingest.cpp',
+        'src/acquisition_campaign.cpp', 'src/acquisition_campaign_task.cpp',
+        'src/photo_quality.cpp', 'src/photo_quality_task.cpp',
+        'src/raw_development.cpp', 'src/raw_development_task.cpp',
+        'src/import.c', 'src/import_task.c',
+        'src/image_catalog.c', 'src/image_catalog_persistent.c', 'src/image_view.c',
+        'src/feature_extractor_opencv.cpp', 'src/feature_store.c',
+        'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
+        'src/visual_index.c', 'src/visual_index_task.c',
+        'src/candidate_pair_gen.c', 'src/candidate_pair_task.c',
+        'src/match_file.c', 'src/matcher.cpp', 'src/matcher_task.c',
+        'src/geometric_verifier.cpp', 'src/geometric_verifier_task.c',
+        'src/track_builder.cpp', 'src/track_builder_project.cpp',
+        'src/track_builder_task.cpp',
+        'src/project.c', 'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/task_checkpoint.c', 'src/task_kind_registry.c', 'src/task_kinds.c',
+        'src/task_queue.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
+        'src/hardware_profile.c',
+    ] + matcher_backend_sources,
+    include_directories: include_directories('include'),
+    c_args: [
+        '-DLARDON3D_TRACK_BUILDER_TASK_AVAILABLE',
+        '-DLARDON3D_ACQUISITION_CAMPAIGN_TASK_AVAILABLE',
+        '-DLARDON3D_PHOTO_QUALITY_TASK_AVAILABLE',
+        '-DLARDON3D_RAW_DEVELOPMENT_TASK_AVAILABLE',
+    ],
+    dependencies: [
+        threads, sqlite3, openssl, opencv, libraw, libexif, libpng, libdeflate,
+    ] + matcher_backend_dependencies,
+)
+
 feature_store_test = executable(
     'test-feature-store',
     sources: [
@@ -608,7 +647,7 @@ matcher_task_test = executable(
     c_args: [
         '-DLARDON3D_PROJECT_DB_TESTING',
         '-DLARDON3D_MATCHER_TASK_TESTING',
-    ],
+    ] + (matcher_vulkan_enabled ? ['-DLARDON3D_MATCHER_TASK_VULKAN'] : []),
     include_directories: include_directories('include'),
     dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )

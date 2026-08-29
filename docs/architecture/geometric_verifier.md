@@ -1,4 +1,4 @@
-# Geometric Verifier v1
+# Geometric Verifier v1 / v2 / v3
 
 ## Scope
 
@@ -6,6 +6,14 @@ Ce document décrit l'exécution scientifique qui transforme un Match Result `MA
 Fundamental `GEOMETRIC_REJECTED` ou `GEOMETRIC_VERIFIED`. Le contrat persistant reste défini par
 [`geometric_verification.md`](geometric_verification.md). Tracks, pose, Essential, compétition
 Homography, triangulation et SfM sont hors périmètre.
+
+V1 et v2 restent des identités scientifiques historiques et immutables : leurs versions,
+fingerprints, lignes et résultats existants ne sont jamais réinterprétés. V2 conserve l'estimator,
+les paramètres, l'ordre et l'acceptance v1, mais ajoute avant USAC le support minimal par
+observations canoniques distinctes décrit ci-dessous. V3 est la policy de production courante :
+après les mêmes validations intégrales, elle compose ce support v2 avec la preuve exacte de
+faisabilité d'acceptation `match_count >= min_inlier_count`. Chaque policy possède sa version et son
+fingerprint distincts ; Project DB v22 stocke déjà ces champs et ne nécessite aucune migration.
 
 ## Inputs
 
@@ -30,6 +38,28 @@ L'entrée `i` de l'estimator correspond exactement à l'entrée `i` du Match Fil
 `feature_index_a` sélectionne le Feature Set A et `feature_index_b` le Feature Set B. Le Match
 File impose déjà des indices A strictement croissants ; le verifier ne trie et ne filtre pas les
 correspondances. Toute corruption d'index est une erreur d'exécution, jamais un rejet scientifique.
+
+V2 distingue le nombre brut de lignes des observations canoniques distinctes. Les identités sont
+`A=(feature_set_id_a, feature_index_a)` et
+`B=(feature_set_id_b, feature_index_b)`. Après validation intégrale du parent, du Match asset, des
+Feature Sets et Feature assets, v2 exige au moins sept A distincts **et** sept B distincts. Sinon il
+publie `GEOMETRIC_REJECTED`, `inlier_count=0`, masque intégralement nul de longueur exactement
+`ceil(match_count/8)`, sans modèle et sans appel USAC.
+
+Ce préflight ne modifie jamais l'évidence Matcher : aucune déduplication, tri, contrainte
+one-to-one, unicité de coordonnées, limite de multiplicité, analyse de rang/conditionnement/
+colinéarité ou compétition Homography n'est appliquée. Des IDs distincts ayant les mêmes
+coordonnées restent des observations distinctes. Le Match File canonique rendant A strictement
+croissant, une insuffisance A implique en pratique moins de sept lignes valides ; B peut en revanche
+être insuffisant malgré un grand nombre de lignes brutes.
+
+V3 exécute ensuite USAC seulement si `match_count >= min_inlier_count`. Lorsque cette inégalité
+échoue, au plus `match_count` bits du masque pourraient être inliers : l'acceptation est donc
+mathématiquement impossible. V3 publie alors le même rejet zéro borné sans appel estimator. La
+borne vient du paramètre durable, jamais d'une constante `16`. À l'égalité, l'entrée reste éligible.
+Ce contrat n'ajoute aucune règle `N<20`, rang, coordonnées, homographie, déduplication ou retry ;
+toute entrée qui franchit les deux préflights appelle l'USAC inchangé et toute exception inattendue
+reste un échec Task sans publication.
 
 ## Coordinate representation
 
@@ -91,7 +121,7 @@ quatre premiers octets sont décodés little-endian et les 31 bits faibles alime
 
 ## Parameter fingerprint
 
-Le fingerprint v1 est SHA-256 des 84 octets suivants. Les entiers sont little-endian ; les doubles
+Le fingerprint v1/v2/v3 est SHA-256 des 84 octets suivants. Les entiers sont little-endian ; les doubles
 sont leurs bits IEEE-754 binary64 écrits comme `uint64_t` little-endian. NaN/Inf sont refusés et
 le seul champ autorisant zéro signé, `min_inlier_ratio`, normalise `-0.0` en `+0.0`. Aucun octet ne
 provient d'un dump de structure.
@@ -101,7 +131,7 @@ provient d'un dump de structure.
 | 0 | 8 | domaine ASCII `L3DGVFP1` |
 | 8 | 4 | version encodage = 1 |
 | 12 | 4 | kind FUNDAMENTAL = 1 |
-| 16 | 4 | verifier version = 1 |
+| 16 | 4 | verifier version = 1, 2 ou 3 |
 | 20 | 4 | algorithme USAC_MAGSAC explicite = 1 |
 | 24 | 8 | threshold binary64 |
 | 32 | 8 | confidence binary64 |
@@ -122,10 +152,19 @@ provient d'un dump de structure.
 | 79 | 4 | polisher iterations = 3 |
 | 83 | 1 | réservé nul |
 
-Le vector golden de la configuration production commence par les 84 octets hexadécimaux
+Le vector golden v1 de la configuration historique commence par les 84 octets hexadécimaux
 `4c33444756465031...0300000000` et donne le SHA-256
 `ddb44bb070c62be66c405946e89cbb49c084f8f30a21d6f408dc239225b7bbd0`. Pour un Match File SHA
 composé de 31 octets nuls puis `01`, cette configuration donne la seed décimale `1910542150`.
+V2 conserve cet encodage et place `2` au champ `verifier version`; son fingerprint diffère donc
+obligatoirement même lorsque les sept paramètres numériques sont identiques. La seed dérivée suit
+ce fingerprint v2 et appartient à cette nouvelle identité. Pour la configuration production, le
+fingerprint v2 est `7868a893437ee611a10008a093286997212fa8bd80b2afd2bb1d11f04f01c5ae` ;
+le même Match SHA golden donne la seed décimale `1528046088`.
+V3 conserve encore exactement les 84 octets et place `3` au champ version. Pour la configuration
+production, son fingerprint est
+`6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c` ; le même Match SHA golden
+donne la seed décimale `188721673`.
 Les politiques de
 ressources, hardware, PSI, lot, worker et réservation CPU ne sont ni des champs ni des entrées.
 
@@ -160,11 +199,14 @@ popcount sont couverts avec le Model v1 inchangé.
 
 ## Scientific rejection
 
-Un nombre de matches inférieur au minimum réel, l'absence de modèle sur entrée valide ou l'échec
-de l'acceptance policy produit un résultat scientifique REJECTED cohérent.
+En v1, un nombre brut de matches inférieur au minimum réel produit le rejet zéro historique. En
+v2, moins de sept observations canoniques distinctes sur A ou B produit le rejet zéro décrit dans
+`Input ordering`. V3 conserve ce test et rejette également quand le nombre brut est strictement
+inférieur au `min_inlier_count` configuré. L'absence de modèle sur entrée valide ou l'échec de
+l'acceptance policy produit un résultat scientifique REJECTED cohérent.
 
-Le minimum USAC observé est sept. Moins de sept matches produit un masque zéro sans appel OpenCV ;
-sept à quinze peuvent produire une hypothèse mais ne franchissent pas le support production.
+Le minimum USAC observé est sept. Sept à quinze observations supportées peuvent produire une
+hypothèse mais ne franchissent pas nécessairement le support d'acceptation production.
 
 ## Execution failure
 
@@ -185,9 +227,11 @@ Une unité atomique est un Match Result, au maximum 8192 correspondances. Le Mat
 n'est utilisé.
 
 À 8192 matches, les allocations directement contrôlées maximales sont 98 304 octets d'entries,
-393 216 octets de keypoints A/B, 262 144 octets de Point2d A/B, 1024 octets de bitset, environ
-8192 octets de mask OpenCV et 72 octets de modèle, soit environ 745 Kio hors petits objets et
-scratch OpenCV. Aucun descriptor ni matrice A×B n'est lu. Massif mesure 2,445 Mio de heap au pic
+393 216 octets de keypoints A/B, 262 144 octets de Point2d A/B, deux cartes v2 de présence de
+8192 octets, 1024 octets de bitset, environ 8192 octets de mask OpenCV et 72 octets de modèle, soit
+environ 761 Kio hors petits objets et scratch OpenCV. Les cartes appartiennent à une paire et sont
+libérées au retour ; leur borne Feature Store est opérationnelle et n'ajoute aucune limite
+scientifique. Aucun descriptor ni matrice A×B n'est lu. Massif mesure 2,445 Mio de heap au pic
 du test E2E complet, incluant SQLite, OpenCV, fixtures Feature Store et toutes les séquences de test.
 Une réservation conservatrice de 4 Mio par job couvre ce profil mesuré.
 
@@ -218,6 +262,12 @@ inventer depuis un fingerprint irréversible.
 calculé à la création pour validation à la reconstruction. Aucun `cv::Mat`, buffer, état RNG,
 paramètre Governor ou donnée hardware n'y appartient. La tâche calcule hors transaction et publie
 chaque résultat par transaction courte avant avancement du curseur.
+
+Le payload v22 ne duplique pas `verifier_version`. À la reconstruction, le fingerprint exact est
+comparé aux encodages supportés v1, v2 et v3 des sept paramètres durables : cela restaure sans
+ambiguïté chaque policy, sans migration ni nouveau système d'identité. Toute nouvelle tâche
+sélectionne v3 ; le payload et l'ABI publique de configuration restent inchangés. Une tâche v3
+démarre avec une identité neuve et ne reprend ni ne ré-étiquette une tâche v1/v2.
 
 Le Task Kind production est `geometric_verifier.run` version 1. Il pagine les Match Results par ID
 strictement croissant avec une page de `batch + 1`, et traite des lots Governor 1/2/4/8. Les
@@ -282,6 +332,12 @@ fingerprint version 1.
 Gate A couvre corpus, comparaison, seed et repeatability. Gate B couvre fingerprint/seed golden,
 canonicalisation, mapping bit à bit, frontières d'acceptation, E2E DB, reuse, corruption,
 publication, 8192 matches et ASan/UBSan. Gate C couvre Task, publication avant curseur et reprise.
+
+La référence A6000 v3 complète contient 37 805 parents `MATCHED`. Le préflight v3 rejette à zéro
+9 368 parents avec `N<16`, puis le support distinct A/B rejette 117 parents supplémentaires avec
+`N>=16`. Les 28 320 autres parents appellent USAC sous leur seed v3 exacte ; ils terminent tous par
+un modèle ou une absence de modèle, sans exception estimator. Cette exécution démarre une tâche v3
+neuve et ne reprend ni ne ré-étiquette la tâche v2 historique 1385.
 
 Gate D a exécuté 1000 parents configurés dans la vraie Task, puis les reprises et variantes de
 configuration du test : environ 2001 traversées réutilisées en 5,870 s, soit environ 341/s. Ce

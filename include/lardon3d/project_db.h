@@ -564,6 +564,13 @@ Lardon3DProjectDbResult lardon3d_project_db_find_track_by_observation(
 
 Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProjectDb **database,
                                                  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY]);
+/* Copies the filename of the durable main database opened by this handle.
+ * The caller owns `path`, whose capacity must be at least
+ * LARDON3D_PROJECT_DB_PATH_CAPACITY. This identity lets private reader handles
+ * reopen the selected database without inferring a project-relative basename. */
+bool lardon3d_project_db_copy_path(
+    Lardon3DProjectDb *database,
+    char path[LARDON3D_PROJECT_DB_PATH_CAPACITY]);
 void lardon3d_project_db_close(Lardon3DProjectDb *database);
 bool lardon3d_project_db_last_error(Lardon3DProjectDb *database,
                                     char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY]);
@@ -877,6 +884,23 @@ Lardon3DProjectDbResult lardon3d_project_db_list_visual_index_segments(
 Lardon3DProjectDbResult lardon3d_project_db_list_visual_index_pending(
     Lardon3DProjectDb *database, uint64_t visual_index_id, uint64_t after_feature_set_id,
     Lardon3DProjectDbFeatureSet *feature_sets, size_t capacity, size_t *count);
+/* Lists durable membership Feature Set IDs in ascending numeric order. The
+ * cursor is an ID boundary, not a row count; sparse IDs are therefore valid.
+ * `capacity` is bounded by the catalog page maximum and output storage remains
+ * caller-owned for the duration of the call. A missing Visual Index returns
+ * `LARDON3D_PROJECT_DB_NOT_FOUND`; malformed arguments reset `count` to zero
+ * and return `LARDON3D_PROJECT_DB_INVALID_ARGUMENT`. */
+Lardon3DProjectDbResult lardon3d_project_db_list_visual_index_memberships(
+    Lardon3DProjectDb *database, uint64_t visual_index_id, uint64_t after_feature_set_id,
+    uint64_t *feature_set_ids, size_t capacity, size_t *count);
+/* Returns the durable ordered membership rank at `after_feature_set_id` and
+ * the total membership count. These are source-membership counts, never an
+ * inference from the numeric Feature Set ID, and are safe for progress after
+ * restart. Both outputs are reset to zero on entry. A missing Visual Index
+ * returns `LARDON3D_PROJECT_DB_NOT_FOUND`. */
+Lardon3DProjectDbResult lardon3d_project_db_visual_index_membership_progress(
+    Lardon3DProjectDb *database, uint64_t visual_index_id, uint64_t after_feature_set_id,
+    uint64_t *completed_count, uint64_t *total_count);
 Lardon3DProjectDbResult lardon3d_project_db_publish_visual_index_segment(
     Lardon3DProjectDb *database, const Lardon3DProjectDbVisualIndexSegment *segment,
     const uint64_t *feature_set_ids, size_t feature_set_count,

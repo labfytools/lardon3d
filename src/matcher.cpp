@@ -18,6 +18,8 @@ extern "C" {
 #include <lardon3d/feature_extractor.h>
 #include <lardon3d/match_file.h>
 #include <lardon3d/matcher.h>
+
+#include "matcher_internal.h"
 }
 
 static const char matcher_orb_str[] = "orb_bf";
@@ -540,6 +542,55 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_profiled(
         result, profile);
 }
 
+/* Only the callback owner sets this hand-off while entering the established
+ * publication function. thread_local prevents concurrent Tasks or tests from
+ * confusing operation-owned temporary files; the stage itself remains
+ * unpublished until the normal atomic asset/DB path consumes it. */
+static thread_local Lardon3DMatcherStagedResult *matcher_publication_stage = nullptr;
+
+extern "C" void lardon3d_matcher_discard_staged(Lardon3DMatcherStagedResult *staged) {
+    if (!staged) return;
+    if (staged->temporary_path[0] != '\0') {
+        (void)unlink(staged->temporary_path);
+    }
+    std::memset(staged, 0, sizeof(*staged));
+}
+
+extern "C" Lardon3DMatcherResult lardon3d_matcher_stage(
+    const char *project_path,
+    const Lardon3DProjectDbFeatureSet *feature_set_a,
+    const Lardon3DProjectDbFeatureSet *feature_set_b,
+    const Lardon3DMatcherParams *params, Lardon3DOrbVulkanBackend *backend,
+    Lardon3DMatcherStagedResult *staged) {
+    if (!project_path || !feature_set_a || !feature_set_b || !params || !staged) {
+        return LARDON3D_MATCHER_INVALID_ARGUMENT;
+    }
+    std::memset(staged, 0, sizeof(*staged));
+    char assets[4096], matches_dir[4096];
+    if (!join_path(assets, project_path, "assets") || !ensure_directory(assets) ||
+        !join_path(matches_dir, assets, "matches") || !ensure_directory(matches_dir)) {
+        return LARDON3D_MATCHER_IO_ERROR;
+    }
+    int written = std::snprintf(staged->temporary_path, sizeof(staged->temporary_path),
+                                "%s/.match-XXXXXX", matches_dir);
+    if (written <= 0 || static_cast<size_t>(written) >= sizeof(staged->temporary_path)) {
+        staged->temporary_path[0] = '\0';
+        return LARDON3D_MATCHER_IO_ERROR;
+    }
+    int fd = mkstemp(staged->temporary_path);
+    if (fd < 0 || close(fd) != 0) {
+        lardon3d_matcher_discard_staged(staged);
+        return LARDON3D_MATCHER_IO_ERROR;
+    }
+    Lardon3DMatcherResult computed = lardon3d_matcher_run_with_backend(
+        project_path, feature_set_a, feature_set_b, params, staged->temporary_path,
+        backend, &staged->stats);
+    if (computed != LARDON3D_MATCHER_OK) {
+        lardon3d_matcher_discard_staged(staged);
+    }
+    return computed;
+}
+
 extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_with_backend(
     const char *project_path,
     Lardon3DProjectDb *database,
@@ -607,29 +658,40 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_with_backend
         return LARDON3D_MATCHER_IO_ERROR;
     }
 
-    /* Write to temp file */
+    /* Write to temp file, or consume a Task-private precomputed stage. */
     char tmp_path[4096];
-    int n = snprintf(tmp_path, sizeof(tmp_path), "%s/.match-XXXXXX", matches_dir);
-    if (n <= 0 || (size_t)n >= sizeof(tmp_path)) {
-        return LARDON3D_MATCHER_IO_ERROR;
-    }
-    int tmp_fd = mkstemp(tmp_path);
-    if (tmp_fd < 0) {
-        return LARDON3D_MATCHER_IO_ERROR;
-    }
-
-    /* matcher_run reopens the named temp with O_TRUNC. */
-    if (close(tmp_fd) != 0) {
-        (void)unlink(tmp_path);
-        return LARDON3D_MATCHER_IO_ERROR;
-    }
-
     Lardon3DMatcherStats stats;
-    Lardon3DMatcherResult run_result = lardon3d_matcher_run_with_backend(
-        project_path, feature_set_a, feature_set_b, params, tmp_path, backend, &stats);
-    if (run_result != LARDON3D_MATCHER_OK) {
-        unlink(tmp_path);
-        return run_result;
+    int n = 0;
+    if (matcher_publication_stage && matcher_publication_stage->temporary_path[0] != '\0') {
+        n = snprintf(tmp_path, sizeof(tmp_path), "%s",
+                     matcher_publication_stage->temporary_path);
+        if (n <= 0 || (size_t)n >= sizeof(tmp_path)) {
+            return LARDON3D_MATCHER_IO_ERROR;
+        }
+        stats = matcher_publication_stage->stats;
+        matcher_publication_stage->temporary_path[0] = '\0';
+    } else {
+        n = snprintf(tmp_path, sizeof(tmp_path), "%s/.match-XXXXXX", matches_dir);
+        if (n <= 0 || (size_t)n >= sizeof(tmp_path)) {
+            return LARDON3D_MATCHER_IO_ERROR;
+        }
+        int tmp_fd = mkstemp(tmp_path);
+        if (tmp_fd < 0) {
+            return LARDON3D_MATCHER_IO_ERROR;
+        }
+
+        /* matcher_run reopens the named temp with O_TRUNC. */
+        if (close(tmp_fd) != 0) {
+            (void)unlink(tmp_path);
+            return LARDON3D_MATCHER_IO_ERROR;
+        }
+
+        Lardon3DMatcherResult run_result = lardon3d_matcher_run_with_backend(
+            project_path, feature_set_a, feature_set_b, params, tmp_path, backend, &stats);
+        if (run_result != LARDON3D_MATCHER_OK) {
+            unlink(tmp_path);
+            return run_result;
+        }
     }
     if (profile) *profile = stats;
 
@@ -758,6 +820,27 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_with_backend
         profile->total_ns = elapsed_ns(total_start);
     }
     return LARDON3D_MATCHER_OK;
+}
+
+extern "C" Lardon3DMatcherResult lardon3d_matcher_publish_staged(
+    const char *project_path, Lardon3DProjectDb *database,
+    const Lardon3DProjectDbCandidatePair *pair,
+    const Lardon3DProjectDbFeatureSet *feature_set_a,
+    const Lardon3DProjectDbFeatureSet *feature_set_b,
+    const Lardon3DMatcherParams *params, Lardon3DMatcherStagedResult *staged,
+    Lardon3DProjectDbMatchResult *result) {
+    if (!staged || staged->temporary_path[0] == '\0' || matcher_publication_stage) {
+        return LARDON3D_MATCHER_INVALID_ARGUMENT;
+    }
+    matcher_publication_stage = staged;
+    Lardon3DMatcherResult published = lardon3d_matcher_match_and_publish_with_backend(
+        project_path, database, pair, feature_set_a, feature_set_b, params, nullptr,
+        result, nullptr);
+    matcher_publication_stage = nullptr;
+    /* Reuse and validation failures can return before the normal publication
+     * path takes ownership. In all cases the operation-owned temp ends here. */
+    lardon3d_matcher_discard_staged(staged);
+    return published;
 }
 
 extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish(

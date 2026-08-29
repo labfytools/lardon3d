@@ -31,11 +31,19 @@ lardon3d_app_run(void)
         || !lardon3d_resource_policy_default(
             &state.hardware_profile,
             &resource_policy
-        )
-        || !lardon3d_feature_opencv_configure_threads(
-            state.hardware_profile.logical_cpu_count
-                - resource_policy.system_cpu_reserve
         )) {
+        return EXIT_FAILURE;
+    }
+    unsigned int feature_threads = state.hardware_profile.logical_cpu_count
+        - resource_policy.system_cpu_reserve;
+    if (feature_threads > 12) {
+        feature_threads = 12;
+    }
+    /* OpenCV owns an internal process-wide pool. Configure it once, before
+     * Queue workers exist, to the empirically audited part of the host-reserved
+     * CPU budget. Feature Tasks request the same count from the Governor. This
+     * operational ceiling is not part of a fingerprint or FeatureSet identity. */
+    if (!lardon3d_feature_opencv_configure_threads(feature_threads)) {
         return EXIT_FAILURE;
     }
     state.resource_governor = lardon3d_resource_governor_create(

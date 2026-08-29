@@ -1,6 +1,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -118,12 +119,63 @@ static bool write_pgm(const char *path, bool uniform) {
   return fclose(f) == 0;
 }
 
+static bool write_dense_pgm(const char *path) {
+  FILE *f = fopen(path, "wb");
+  if (!f) {
+    return false;
+  }
+  if (fprintf(f, "P5\n256 256\n255\n") <= 0) {
+    fclose(f);
+    return false;
+  }
+  uint32_t state = 0x4c33444fU;
+  for (unsigned int index = 0; index < 256U * 256U; ++index) {
+    state ^= state << 13U;
+    state ^= state >> 17U;
+    state ^= state << 5U;
+    unsigned char value = (unsigned char)state;
+    if (fwrite(&value, 1, 1, f) != 1) {
+      fclose(f);
+      return false;
+    }
+  }
+  return fclose(f) == 0;
+}
+
 static uint64_t read_u64_le(const unsigned char *bytes) {
   uint64_t value = 0;
   for (unsigned int index = 0; index < 8; ++index) {
     value |= (uint64_t)bytes[index] << (8U * index);
   }
   return value;
+}
+
+static bool extracted_features_equal(const Lardon3DExtractedFeatures *a,
+                                     const Lardon3DExtractedFeatures *b) {
+  if (!a || !b || a->image_width != b->image_width || a->image_height != b->image_height ||
+      a->feature_count != b->feature_count || a->descriptor_bytes != b->descriptor_bytes) {
+    return false;
+  }
+  for (uint32_t index = 0; index < a->feature_count; ++index) {
+    const Lardon3DFeatureKeypoint *ka = &a->keypoints[index];
+    const Lardon3DFeatureKeypoint *kb = &b->keypoints[index];
+    if (memcmp(&ka->x, &kb->x, sizeof(ka->x)) != 0 ||
+        memcmp(&ka->y, &kb->y, sizeof(ka->y)) != 0 ||
+        memcmp(&ka->size, &kb->size, sizeof(ka->size)) != 0 ||
+        memcmp(&ka->angle_degrees, &kb->angle_degrees, sizeof(ka->angle_degrees)) != 0 ||
+        memcmp(&ka->response, &kb->response, sizeof(ka->response)) != 0 ||
+        ka->octave != kb->octave) {
+      return false;
+    }
+  }
+  return a->descriptor_bytes == 0 ||
+         memcmp(a->descriptors, b->descriptors, a->descriptor_bytes) == 0;
+}
+
+static void print_sha256(const unsigned char sha256[32]) {
+  for (size_t index = 0; index < 32; ++index) {
+    printf("%02x", sha256[index]);
+  }
 }
 
 static bool restore_file(const char *path, const unsigned char *bytes, size_t size) {
@@ -156,10 +208,10 @@ static bool expect_reader_result(const char *root, const Lardon3DProjectDbFeatur
 static bool run_test(void) {
   char root[] = "/tmp/lardon3d-feature-store-XXXXXX";
   CHECK(mkdtemp(root));
-  char dbpath[PATH_MAX], structured[PATH_MAX], uniform[PATH_MAX];
+  char dbpath[PATH_MAX], structured[PATH_MAX], uniform[PATH_MAX], dense[PATH_MAX];
   CHECK(join_path(dbpath, root, "project.db") && join_path(structured, root, "structured.pgm") &&
-        join_path(uniform, root, "uniform.pgm"));
-  CHECK(write_pgm(structured, false) && write_pgm(uniform, true));
+        join_path(uniform, root, "uniform.pgm") && join_path(dense, root, "dense.pgm"));
+  CHECK(write_pgm(structured, false) && write_pgm(uniform, true) && write_dense_pgm(dense));
   Lardon3DProjectDb *db = NULL;
   char error[256];
   CHECK(lardon3d_project_db_open(dbpath, &db, error) == LARDON3D_PROJECT_DB_OK);
@@ -180,6 +232,83 @@ static bool run_test(void) {
         aa.asset_id == ab.asset_id);
   CHECK(lardon3d_image_catalog_import_file(&state, a.scanset_id, uniform, 0, &iu, &au) ==
         LARDON3D_IMAGE_CATALOG_IMPORTED);
+
+  /* This fixture proves that OpenCV's supported process-wide thread counts do not change
+   * FeatureSet order, durable keypoint fields, descriptor rows, or serialized asset bytes.
+   * Separate image identities avoid reusing an already-published immutable FeatureSet. */
+  const unsigned int audit_threads[] = {1, 2, 4, 8, 12};
+  Lardon3DProjectDbImage audit_images[5];
+  for (size_t index = 0; index < 5; ++index) {
+    char name[32];
+    CHECK(snprintf(name, sizeof(name), "thread-audit-%u", audit_threads[index]) > 0);
+    Lardon3DProjectDbScanSet scan_set;
+    Lardon3DProjectDbImageAsset asset;
+    CHECK(lardon3d_image_catalog_create_scanset(&state, name, &scan_set) &&
+          lardon3d_image_catalog_import_file(&state, scan_set.scanset_id, dense, 0,
+                                             &audit_images[index], &asset) ==
+              LARDON3D_IMAGE_CATALOG_IMPORTED);
+  }
+  unsigned int original_threads = lardon3d_feature_opencv_thread_count();
+  Lardon3DFeatureExtractorParameters audit_orb_parameters = {1024, 8, 12};
+  Lardon3DSiftExtractorParameters audit_sift_parameters =
+      lardon3d_sift_precision_classic_v1(false);
+  unsigned char audit_sift_fingerprint[32];
+  lardon3d_sift_extractor_parameter_fingerprint(&audit_sift_parameters,
+                                                 audit_sift_fingerprint);
+  const uint32_t audit_capabilities =
+      LARDON3D_FEATURE_HAS_SCALE | LARDON3D_FEATURE_HAS_ORIENTATION |
+      LARDON3D_FEATURE_HAS_RESPONSE | LARDON3D_FEATURE_HAS_OCTAVE;
+  Lardon3DExtractedFeatures reference_orb = {0}, reference_sift = {0};
+  Lardon3DProjectDbFeatureSet reference_orb_set = {0}, reference_sift_set = {0};
+  for (size_t index = 0; index < 5; ++index) {
+    Lardon3DExtractedFeatures orb = {0}, sift_audit = {0};
+    Lardon3DProjectDbFeatureSet orb_set, sift_audit_set;
+    CHECK(lardon3d_feature_opencv_configure_threads(audit_threads[index]) &&
+          lardon3d_feature_opencv_thread_count() == audit_threads[index] &&
+          lardon3d_feature_extract_orb(dense, &audit_orb_parameters, &orb) ==
+              LARDON3D_FEATURE_EXTRACT_OK &&
+          lardon3d_feature_extract_sift(dense, &audit_sift_parameters, &sift_audit) ==
+              LARDON3D_FEATURE_EXTRACT_OK &&
+          orb.feature_count > 0 && sift_audit.feature_count > 0);
+    if (index == 0) {
+      reference_orb = orb;
+      reference_sift = sift_audit;
+    } else {
+      CHECK(extracted_features_equal(&reference_orb, &orb) &&
+            extracted_features_equal(&reference_sift, &sift_audit));
+    }
+    CHECK(lardon3d_feature_store_publish(&state, audit_images[index].image_id, 0,
+                                         &audit_orb_parameters, &orb, &orb_set) ==
+              LARDON3D_FEATURE_STORE_OK &&
+          lardon3d_feature_store_publish_v2(
+              &state, audit_images[index].image_id, 0, LARDON3D_SIFT_EXTRACTOR_KIND,
+              LARDON3D_FEATURE_EXTRACTOR_VERSION, audit_sift_fingerprint,
+              LARDON3D_FEATURE_DESCRIPTOR_F32, 128, audit_capabilities, &sift_audit,
+              &sift_audit_set) == LARDON3D_FEATURE_STORE_OK);
+    if (index == 0) {
+      reference_orb_set = orb_set;
+      reference_sift_set = sift_audit_set;
+    } else {
+      CHECK(orb_set.feature_asset_id == reference_orb_set.feature_asset_id &&
+            orb_set.asset.size_bytes == reference_orb_set.asset.size_bytes &&
+            memcmp(orb_set.asset.sha256, reference_orb_set.asset.sha256, 32) == 0 &&
+            sift_audit_set.feature_asset_id == reference_sift_set.feature_asset_id &&
+            sift_audit_set.asset.size_bytes == reference_sift_set.asset.size_bytes &&
+            memcmp(sift_audit_set.asset.sha256, reference_sift_set.asset.sha256, 32) == 0);
+      lardon3d_extracted_features_destroy(&orb);
+      lardon3d_extracted_features_destroy(&sift_audit);
+    }
+    printf("THREAD_AUDIT threads=%u orb_count=%u orb_size=%" PRIu64 " orb_sha256=",
+           audit_threads[index], orb_set.feature_count, orb_set.asset.size_bytes);
+    print_sha256(orb_set.asset.sha256);
+    printf(" sift_count=%u sift_size=%" PRIu64 " sift_sha256=", sift_audit_set.feature_count,
+           sift_audit_set.asset.size_bytes);
+    print_sha256(sift_audit_set.asset.sha256);
+    putchar('\n');
+  }
+  CHECK(lardon3d_feature_opencv_configure_threads(original_threads));
+  lardon3d_extracted_features_destroy(&reference_orb);
+  lardon3d_extracted_features_destroy(&reference_sift);
   Lardon3DFeatureExtractorParameters p = {
       .max_features = 512, .pyramid_levels = 4, .fast_threshold = 10};
   CHECK(lardon3d_feature_extractor_parameters_valid(&p));
@@ -206,6 +335,14 @@ static bool run_test(void) {
   Lardon3DExtractedFeatures f;
   CHECK(lardon3d_feature_extract_orb(structured, &p, &f) == LARDON3D_FEATURE_EXTRACT_OK &&
         f.feature_count > 0 && f.feature_count <= 512);
+  Lardon3DExtractedFeatures bounded;
+  Lardon3DFeatureExtractorParameters small = {
+      .max_features = 7, .pyramid_levels = 8, .fast_threshold = 20};
+  /* OpenCV 5 produces eight ORB points for this fixture despite nfeatures=7. */
+  CHECK(lardon3d_feature_extract_orb(dense, &small, &bounded) ==
+            LARDON3D_FEATURE_EXTRACT_OK &&
+        bounded.feature_count == 7 && bounded.descriptor_bytes == 7U * 32U);
+  lardon3d_extracted_features_destroy(&bounded);
   Lardon3DProjectDbFeatureSet sa, same, sb;
   CHECK(lardon3d_feature_store_publish(&state, ia.image_id, 0, &p, &f, &sa) ==
         LARDON3D_FEATURE_STORE_OK);

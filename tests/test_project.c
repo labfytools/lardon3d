@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <lardon3d/project.h>
@@ -66,6 +67,49 @@ checkpoint_thread(void *userdata)
     CheckpointThread *context = userdata;
     context->result = lardon3d_project_checkpoint_task(context->state, context->task);
     return NULL;
+}
+
+typedef struct {
+    Lardon3DAppState *state;
+    const Lardon3DTaskKindRegistry *registry;
+    Lardon3DProjectRecoveryEntry entry;
+    size_t count;
+    Lardon3DProjectDbResult result;
+} RecoveryThread;
+
+static void *
+recovery_thread(void *userdata)
+{
+    RecoveryThread *context = userdata;
+    context->result = lardon3d_project_list_recoverable(
+        context->state, context->registry, 0, &context->entry, 1, &context->count);
+    return NULL;
+}
+
+static bool
+checkpoint_rendezvous(int sockets[2], const char *variable)
+{
+    char descriptor[32];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0
+        || snprintf(descriptor, sizeof(descriptor), "%d", sockets[1]) <= 0
+        || setenv(variable, descriptor, 1) != 0) {
+        return false;
+    }
+    return true;
+}
+
+static bool
+wait_rendezvous(int socket)
+{
+    unsigned char token = 0;
+    return read(socket, &token, sizeof(token)) == (ssize_t)sizeof(token);
+}
+
+static bool
+release_rendezvous(int socket)
+{
+    const unsigned char token = 1;
+    return write(socket, &token, sizeof(token)) == (ssize_t)sizeof(token);
 }
 
 static bool
@@ -136,9 +180,9 @@ run_test(void)
     CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE);
     CHECK(unsetenv("LARDON3D_TEST_CHECKPOINT_SYNC_DIRECTORY_FAILURE") == 0);
     CHECK(lardon3d_project_db_load_task(state.project_db, 1, &db_task) == LARDON3D_PROJECT_DB_OK);
-    CHECK(db_task.checkpoint.durability == LARDON3D_DB_CHECKPOINT_PUBLISHED_NOT_DURABLE);
+    CHECK(db_task.checkpoint.durability == LARDON3D_DB_CHECKPOINT_DURABLE);
     CHECK(lardon3d_project_list_recoverable(&state, &registry, 0, entries, 2, &count) == LARDON3D_PROJECT_DB_OK);
-    CHECK(count == 1 && entries[0].status == LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE);
+    CHECK(count == 1 && entries[0].status == LARDON3D_PROJECT_RECOVERABLE);
 
     CHECK(lardon3d_task_set_progress(task, 20, "frontière 20"));
     CHECK(setenv("LARDON3D_TEST_CHECKPOINT_PREPUBLICATION_FAILURE", "1", 1) == 0);
@@ -160,20 +204,71 @@ run_test(void)
     CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_DB_BUSY);
     CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_BUSY_CHECKPOINT") == 0);
     CHECK(lardon3d_task_checkpoint_load(checkpoint_path, &disk_snapshot, &version) == LARDON3D_TASK_CHECKPOINT_OK);
-    CHECK(disk_snapshot.progress == 25);
+    CHECK(disk_snapshot.progress == 10);
+    CHECK(lardon3d_task_checkpoint_load_staged(checkpoint_path, &disk_snapshot, &version)
+        == LARDON3D_TASK_CHECKPOINT_OK && disk_snapshot.progress == 25);
     CHECK(lardon3d_project_db_load_task(state.project_db, 1, &db_task) == LARDON3D_PROJECT_DB_OK && db_task.progress == 10);
+    /* DB=S0 retains canonical S0 despite a fully durable, stale staged S1. */
+    CHECK(lardon3d_project_list_recoverable(&state, &registry, 0, entries, 2, &count)
+        == LARDON3D_PROJECT_DB_OK && count == 1
+        && entries[0].status == LARDON3D_PROJECT_RECOVERABLE
+        && entries[0].snapshot.progress == 10);
     CHECK(lardon3d_task_set_progress(task, 20, "frontière 20"));
 
     CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_CHECKPOINT", "1", 1) == 0);
     CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_DB_ERROR);
     CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_FAIL_CHECKPOINT") == 0);
     CHECK(lardon3d_task_checkpoint_load(checkpoint_path, &disk_snapshot, &version) == LARDON3D_TASK_CHECKPOINT_OK);
-    CHECK(disk_snapshot.progress == 20);
+    CHECK(disk_snapshot.progress == 10);
+    CHECK(lardon3d_task_checkpoint_load_staged(checkpoint_path, &disk_snapshot, &version)
+        == LARDON3D_TASK_CHECKPOINT_OK && disk_snapshot.progress == 20);
     CHECK(lardon3d_project_db_load_task(state.project_db, 1, &db_task) == LARDON3D_PROJECT_DB_OK && db_task.progress == 10);
     CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_OK);
 
+    /* Forced interruption after the DB transaction leaves DB=S1, canonical
+     * S0, and staged S1.  Reopen/list recovery must accept only staged S1 and
+     * repair canonical publication without any database reconciliation. */
+    CHECK(lardon3d_task_set_progress(task, 30, "frontière 30"));
+    CHECK(setenv("LARDON3D_TEST_PROJECT_CHECKPOINT_AFTER_DB_COMMIT", "1", 1) == 0);
+    CHECK(lardon3d_project_checkpoint_task(&state, task)
+        == LARDON3D_PROJECT_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE);
+    CHECK(unsetenv("LARDON3D_TEST_PROJECT_CHECKPOINT_AFTER_DB_COMMIT") == 0);
+    CHECK(lardon3d_project_db_load_task(state.project_db, 1, &db_task)
+        == LARDON3D_PROJECT_DB_OK && db_task.progress == 30);
+    CHECK(lardon3d_task_checkpoint_load(checkpoint_path, &disk_snapshot, NULL)
+        == LARDON3D_TASK_CHECKPOINT_OK && disk_snapshot.progress == 20);
+    CHECK(lardon3d_task_checkpoint_load_staged(checkpoint_path, &disk_snapshot, NULL)
+        == LARDON3D_TASK_CHECKPOINT_OK && disk_snapshot.progress == 30);
+    lardon3d_project_close(&state);
+    CHECK(lardon3d_project_open(&state, "Projet Cycle"));
+    CHECK(lardon3d_project_list_recoverable(&state, &registry, 0, entries, 2, &count)
+        == LARDON3D_PROJECT_DB_OK && count == 1
+        && entries[0].snapshot.progress == 30);
+    CHECK(lardon3d_task_checkpoint_load(checkpoint_path, &disk_snapshot, NULL)
+        == LARDON3D_TASK_CHECKPOINT_OK && disk_snapshot.progress == 30);
+
     CHECK(lardon3d_project_list_recoverable(&state, &registry, 0, entries, 2, &count) == LARDON3D_PROJECT_DB_OK);
-    CHECK(count == 1 && entries[0].status == LARDON3D_PROJECT_RECOVERABLE && entries[0].snapshot.progress == 20);
+    CHECK(count == 1 && entries[0].status == LARDON3D_PROJECT_RECOVERABLE && entries[0].snapshot.progress == 30);
+
+    /* Recovery enumerates S0 before waiting. The writer then publishes S1;
+     * recovery must reload S1 under .chk.lock rather than validate S0. */
+    int stale_row_sockets[2];
+    CHECK(checkpoint_rendezvous(stale_row_sockets,
+        "LARDON3D_TEST_RECOVERY_BEFORE_CHECKPOINT_LOCK_FD"));
+    RecoveryThread stale_row = {.state = &state, .registry = &registry};
+    pthread_t stale_row_thread;
+    CHECK(pthread_create(&stale_row_thread, NULL, recovery_thread, &stale_row) == 0);
+    CHECK(wait_rendezvous(stale_row_sockets[0]));
+    CHECK(lardon3d_task_set_progress(task, 35, "frontière 35"));
+    CHECK(lardon3d_project_checkpoint_task(&state, task) == LARDON3D_PROJECT_TASK_CHECKPOINT_OK);
+    CHECK(release_rendezvous(stale_row_sockets[0]));
+    CHECK(pthread_join(stale_row_thread, NULL) == 0);
+    CHECK(unsetenv("LARDON3D_TEST_RECOVERY_BEFORE_CHECKPOINT_LOCK_FD") == 0);
+    CHECK(close(stale_row_sockets[0]) == 0 && close(stale_row_sockets[1]) == 0);
+    CHECK(stale_row.result == LARDON3D_PROJECT_DB_OK && stale_row.count == 1
+        && stale_row.entry.status == LARDON3D_PROJECT_RECOVERABLE
+        && stale_row.entry.snapshot.progress == 35);
+
     CHECK(lardon3d_project_list_recoverable(&state, &registry, 0, entries, 257, &count) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
 
     CHECK(unlink(checkpoint_path) == 0);
@@ -206,7 +301,10 @@ run_test(void)
     pthread_t threads[2]; CHECK(pthread_create(&threads[0], NULL, checkpoint_thread, &contexts[0]) == 0);
     CHECK(pthread_create(&threads[1], NULL, checkpoint_thread, &contexts[1]) == 0);
     CHECK(pthread_join(threads[0], NULL) == 0 && pthread_join(threads[1], NULL) == 0);
-    CHECK(contexts[0].result == LARDON3D_PROJECT_TASK_CHECKPOINT_OK && contexts[1].result == LARDON3D_PROJECT_TASK_CHECKPOINT_OK);
+    CHECK((contexts[0].result == LARDON3D_PROJECT_TASK_CHECKPOINT_OK
+           || contexts[0].result == LARDON3D_PROJECT_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE)
+        && (contexts[1].result == LARDON3D_PROJECT_TASK_CHECKPOINT_OK
+            || contexts[1].result == LARDON3D_PROJECT_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE));
 
     Lardon3DTask *terminal = lardon3d_task_create_typed(
         "Terminale", &estimate, "test.persisted", 1,
@@ -257,7 +355,7 @@ run_test(void)
     Lardon3DTaskSnapshot restored_snapshot;
     CHECK(restored && lardon3d_task_snapshot(restored, &restored_snapshot));
     CHECK(restored_snapshot.id == 1 && restored_snapshot.state == TASK_PENDING
-        && restored_snapshot.progress == 20
+        && restored_snapshot.progress == 35
         && lardon3d_task_sequence_count(restored) == 0);
     lardon3d_task_destroy(restored);
 
@@ -344,8 +442,13 @@ run_test(void)
     CHECK(unlink(checkpoint_path) == 0); CHECK(unlink(terminal_checkpoint) == 0);
     CHECK(unlink(unknown_checkpoint) == 0); CHECK(unlink(future_kind_checkpoint) == 0);
     CHECK(unlink(legacy_path) == 0);
-    CHECK(unlink(database_path) == 0); CHECK(unlink(ini_path) == 0);
     char path[512];
+    const unsigned int locked_task_ids[] = {1, 2, 3, 4, 5};
+    for (size_t index = 0; index < sizeof(locked_task_ids) / sizeof(locked_task_ids[0]); ++index) {
+        CHECK(snprintf(path, sizeof(path), "%s/.lardon3d/checkpoints/%u.chk.lock", project_path,
+            locked_task_ids[index]) > 0 && unlink(path) == 0);
+    }
+    CHECK(unlink(database_path) == 0); CHECK(unlink(ini_path) == 0);
     CHECK(snprintf(path, sizeof(path), "%s/.lardon3d/checkpoints", project_path) > 0 && rmdir(path) == 0);
     CHECK(snprintf(path, sizeof(path), "%s/.lardon3d", project_path) > 0 && rmdir(path) == 0);
     const char *directories[] = {"images", "reconstruction", "exports", "logs"};

@@ -293,8 +293,12 @@ lardon3d_project_create_feature_extract_task(Lardon3DAppState *state, uint64_t i
                                        .memory_bytes_per_item = 512ULL * 1024 * 1024,
                                        .minimum_batch_size = 1,
                                        .maximum_batch_size = 1,
-                                       .desired_cpu_threads =
-                                           lardon3d_feature_opencv_thread_count(),
+                                       /* Request the audited operational ceiling, not OpenCV's
+                                        * mutable current value: Matcher temporarily sets that
+                                        * process-wide value to one inside its Queue callback. The
+                                        * Governor reduces twelve to the host-reserved CPU budget,
+                                        * matching the stable startup configuration. */
+                                       .desired_cpu_threads = 12,
                                        .desired_io_slots = 1,
                                        .task_class = LARDON3D_RESOURCE_TASK_CPU};
   Lardon3DTask *task = lardon3d_task_create_typed("Extraction de features", &estimate,

@@ -140,6 +140,33 @@ bool estimate_fundamental(const std::vector<cv::Point2d> &points_a,
   return true;
 }
 
+bool has_minimal_support(const Lardon3DMatchFileEntry *entries, size_t count,
+                         uint32_t feature_count_a, uint32_t feature_count_b) {
+  // These per-pair maps are operational scratch owned until this bounded core
+  // call returns. Feature Store caps each side at 8192 entries, so v2 adds at
+  // most 16 KiB and does not impose a new scientific dataset-size limit.
+  std::vector<unsigned char> observed_a(feature_count_a, 0);
+  std::vector<unsigned char> observed_b(feature_count_b, 0);
+  uint32_t distinct_a = 0;
+  uint32_t distinct_b = 0;
+  for (size_t index = 0; index < count; ++index) {
+    const auto &entry = entries[index];
+    if (entry.feature_index_a >= feature_count_a ||
+        entry.feature_index_b >= feature_count_b)
+      return false;
+    if (!observed_a[entry.feature_index_a]) {
+      observed_a[entry.feature_index_a] = 1;
+      ++distinct_a;
+    }
+    if (!observed_b[entry.feature_index_b]) {
+      observed_b[entry.feature_index_b] = 1;
+      ++distinct_b;
+    }
+  }
+  return distinct_a >= LARDON3D_GEOMETRIC_VERIFIER_MINIMUM_MATCHES &&
+         distinct_b >= LARDON3D_GEOMETRIC_VERIFIER_MINIMUM_MATCHES;
+}
+
 } // namespace
 
 #ifdef LARDON3D_GEOMETRIC_VERIFIER_TESTING
@@ -149,6 +176,24 @@ extern "C" void lardon3d_geometric_verifier_test_reset_estimator_calls(void) {
 
 extern "C" uint32_t lardon3d_geometric_verifier_test_estimator_calls(void) {
   return estimator_calls;
+}
+
+extern "C" bool lardon3d_geometric_verifier_test_has_minimal_support(
+    const uint32_t *indices_a, const uint32_t *indices_b, size_t count,
+    uint32_t feature_count_a, uint32_t feature_count_b) {
+  try {
+    if (!indices_a || !indices_b)
+      return false;
+    std::vector<Lardon3DMatchFileEntry> entries(count);
+    for (size_t index = 0; index < count; ++index) {
+      entries[index].feature_index_a = indices_a[index];
+      entries[index].feature_index_b = indices_b[index];
+    }
+    return has_minimal_support(entries.data(), count, feature_count_a,
+                               feature_count_b);
+  } catch (...) {
+    return false;
+  }
 }
 #endif
 
@@ -212,15 +257,25 @@ extern "C" bool lardon3d_geometric_verifier_fingerprint_bytes(
 
 extern "C" void lardon3d_geometric_verifier_fingerprint(
     const Lardon3DGeometricVerifierParameters *p, unsigned char output[32]) {
+  (void)lardon3d_geometric_verifier_fingerprint_for_version(
+      p, LARDON3D_GEOMETRIC_VERIFIER_VERSION, output);
+}
+
+extern "C" bool lardon3d_geometric_verifier_fingerprint_for_version(
+    const Lardon3DGeometricVerifierParameters *p, uint32_t verifier_version,
+    unsigned char output[32]) {
   if (!output)
-    return;
+    return false;
   std::memset(output, 0, 32);
   unsigned char bytes[LARDON3D_GEOMETRIC_VERIFIER_FINGERPRINT_SIZE];
   if (!lardon3d_geometric_verifier_fingerprint_bytes(
           p, LARDON3D_GEOMETRIC_ALGORITHM_USAC_MAGSAC,
-          LARDON3D_GEOMETRIC_VERIFIER_VERSION, bytes))
-    return;
-  (void)digest(bytes, sizeof(bytes), output);
+          verifier_version, bytes) ||
+      (verifier_version != LARDON3D_GEOMETRIC_VERIFIER_VERSION_V1 &&
+       verifier_version != LARDON3D_GEOMETRIC_VERIFIER_VERSION_V2 &&
+       verifier_version != LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3))
+    return false;
+  return digest(bytes, sizeof(bytes), output);
 }
 
 extern "C" uint32_t
@@ -267,16 +322,31 @@ lardon3d_geometric_verifier_verify_and_publish(
     const char *project_path, Lardon3DProjectDb *db, uint64_t match_id,
     const Lardon3DGeometricVerifierParameters *p,
     Lardon3DProjectDbGeometricVerificationResult *result, bool *reused) {
+  return lardon3d_geometric_verifier_verify_and_publish_version(
+      project_path, db, match_id, p, LARDON3D_GEOMETRIC_VERIFIER_VERSION,
+      result, reused);
+}
+
+extern "C" Lardon3DGeometricVerifierResult
+lardon3d_geometric_verifier_verify_and_publish_version(
+    const char *project_path, Lardon3DProjectDb *db, uint64_t match_id,
+    const Lardon3DGeometricVerifierParameters *p, uint32_t verifier_version,
+    Lardon3DProjectDbGeometricVerificationResult *result, bool *reused) {
   if (!project_path || !db || match_id == 0 || !p || !result || !reused ||
-      !lardon3d_geometric_verifier_parameters_valid(p))
+      !lardon3d_geometric_verifier_parameters_valid(p) ||
+      (verifier_version != LARDON3D_GEOMETRIC_VERIFIER_VERSION_V1 &&
+       verifier_version != LARDON3D_GEOMETRIC_VERIFIER_VERSION_V2 &&
+       verifier_version != LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3))
     return LARDON3D_GEOMETRIC_VERIFIER_INVALID_ARGUMENT;
   *reused = false;
   unsigned char fingerprint[32];
-  lardon3d_geometric_verifier_fingerprint(p, fingerprint);
+  if (!lardon3d_geometric_verifier_fingerprint_for_version(
+          p, verifier_version, fingerprint))
+    return LARDON3D_GEOMETRIC_VERIFIER_INVALID_ARGUMENT;
   Lardon3DProjectDbResult found =
       lardon3d_project_db_find_geometric_verification_result(
           db, match_id, LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL,
-          LARDON3D_GEOMETRIC_VERIFIER_VERSION, fingerprint, result);
+          verifier_version, fingerprint, result);
   if (found == LARDON3D_PROJECT_DB_OK) {
     *reused = true;
     return LARDON3D_GEOMETRIC_VERIFIER_OK;
@@ -334,7 +404,23 @@ lardon3d_geometric_verifier_verify_and_publish(
     }
     cv::Mat mask;
     cv::Mat model;
-    if (count >= LARDON3D_GEOMETRIC_VERIFIER_MINIMUM_MATCHES) {
+    // Raw Matcher rows remain immutable evidence in their original order. V2
+    // and v3 measure the minimal Fundamental sample from canonical observation
+    // identities on both sides; neither policy deduplicates estimator input.
+    const bool minimal_support =
+        verifier_version == LARDON3D_GEOMETRIC_VERIFIER_VERSION_V1
+            ? count >= LARDON3D_GEOMETRIC_VERIFIER_MINIMUM_MATCHES
+            : has_minimal_support(entries.data(), entries.size(),
+                                  set_a.feature_count, set_b.feature_count);
+    // V3 may reject only when acceptance is mathematically impossible: no
+    // estimator mask over N raw rows can contain min_inlier_count>N inliers.
+    // This is parameter-derived acceptance feasibility, not a hardware bound,
+    // degeneracy heuristic, or recovery path for estimator exceptions.
+    const bool acceptance_feasible =
+        verifier_version != LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3 ||
+        count >= p->min_inlier_count;
+    const bool sufficient_support = minimal_support && acceptance_feasible;
+    if (sufficient_support) {
       uint32_t seed = lardon3d_geometric_verifier_seed(
           parent.match_asset_sha256, fingerprint);
       if (!estimate_fundamental(points_a, points_b, p, seed, model, mask))
@@ -382,7 +468,7 @@ lardon3d_geometric_verifier_verify_and_publish(
     Lardon3DProjectDbResult created =
         lardon3d_project_db_create_geometric_verification_result(
             db, match_id, LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL,
-            LARDON3D_GEOMETRIC_VERIFIER_VERSION, fingerprint,
+            verifier_version, fingerprint,
             accepted ? LARDON3D_GEOMETRIC_VERIFIED
                      : LARDON3D_GEOMETRIC_REJECTED,
             inliers, bitset.data(), bitset.size(),
@@ -391,7 +477,7 @@ lardon3d_geometric_verifier_verify_and_publish(
       Lardon3DProjectDbResult concurrent =
           lardon3d_project_db_find_geometric_verification_result(
               db, match_id, LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL,
-              LARDON3D_GEOMETRIC_VERIFIER_VERSION, fingerprint, result);
+              verifier_version, fingerprint, result);
       if (concurrent == LARDON3D_PROJECT_DB_OK) {
         *reused = true;
         return LARDON3D_GEOMETRIC_VERIFIER_OK;
@@ -401,6 +487,9 @@ lardon3d_geometric_verifier_verify_and_publish(
     return created == LARDON3D_PROJECT_DB_OK
                ? LARDON3D_GEOMETRIC_VERIFIER_OK
                : LARDON3D_GEOMETRIC_VERIFIER_DATABASE_ERROR;
+  // This catch set governs the complete public C entry point: unexpected
+  // OpenCV/malformed estimator behavior is execution failure and can never
+  // escape the ABI or be converted into a persisted scientific rejection.
   } catch (const std::bad_alloc &) {
     return LARDON3D_GEOMETRIC_VERIFIER_OUT_OF_MEMORY;
   } catch (const cv::Exception &) {

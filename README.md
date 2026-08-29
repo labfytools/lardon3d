@@ -33,7 +33,8 @@ persistante, enrichissable et versionnable.
 - **Feature Store v1/v2** : ORB U8×32, SIFT/RootSIFT F32×128 et lecture typée bornée
 - **Image View** : vues triées et filtrées pour la TUI
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
-- **Task Checkpoint v1** : snapshot durable, fichier atomique et reprise sûre
+- **Task Checkpoint v1** : snapshot durable, protocole `.chk.next` → SQLite →
+  `.chk` sous verrou par tâche, et reprise sûre
 - **Project Database v22** : fondations v20/v21 préservées, avec snapshot
   d'exécution sélectionnée, publication bornée des représentations, attache de
   scope de calibration et tâche durable mince `raw.develop` — PASS / FROZEN
@@ -61,8 +62,11 @@ persistante, enrichissable et versionnable.
   OpenMVS binaire little-endian validé (en-tête <= 1 MiB en octets bruts,
   LF/CRLF acceptés, CR seul malformé rejeté, ligne <= 64 KiB), fusionné en
   mode 0 — PASS / FROZEN
-- **Geometric Verification Model v1** : identité, masque d'inliers et modèle 3×3 persistants
-- **Geometric Verifier v1** : Fundamental USAC/MAGSAC, reprise et lots resource-aware
+- **Geometric Verification Model** : identité, masque d'inliers et modèle 3×3
+  persistants pour les policies Verifier v1/v2 historiques et v3 courante
+- **Geometric Verifier v3** : Fundamental USAC/MAGSAC, reprise et lots resource-aware
+- **Internal Parallelism + Compute Resources v1** : parallélisme interne borné,
+  sorties canoniques et admission Governor — PASS / FROZEN
 - **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
 - **Recovery projet** : reprise automatique sélective et bornée des imports récupérables
 - **Task Queue** : file FIFO avec sélection adaptative et backpressure
@@ -144,6 +148,7 @@ Acquisitions
 - [Registry des types de tâches](docs/architecture/task_kind_registry.md)
 - [File de tâches](docs/architecture/task_queue.md)
 - [Resource Governor](docs/architecture/resource_governor.md)
+- [Parallélisme interne borné](docs/architecture/internal_parallelism.md)
 - [Pipeline sensible aux ressources](docs/architecture/resource_aware_pipeline.md)
 - [Intégration Scheduler ↔ Governor](docs/architecture/scheduler_resource_integration.md)
 - [Pipeline de reconstruction](docs/architecture/reconstruction_pipeline.md)
@@ -199,8 +204,8 @@ Pour les changements sensibles à la mémoire ou à la concurrence, ajouter ASan
 ## Statut
 
 Lardon3D est en développement actif. La persistance des tâches, le catalogue,
-le Feature Store multipasse, le Visual Index ORB, Candidate Pair Generator
-Matcher v1, Geometric Verification Model v1 et Geometric Verifier Fundamental v1
+le Feature Store multipasse, le Visual Index ORB, Candidate Pair Generator,
+Matcher v1, Geometric Verification Model et Geometric Verifier Fundamental v3
 sont implémentés. Le runtime Feature + Matcher + Verifier emploie des tâches durables,
 de petits lots, le Resource Governor interactif et un hot path Vulkan ORB exact avec
 fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ; ces deux matchers

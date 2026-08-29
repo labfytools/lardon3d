@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
@@ -666,6 +667,41 @@ static bool checkpoint_paths(const Lardon3DAppState *state, uint64_t task_id,
          join_path(absolute, PATH_MAX, state->project_path, relative);
 }
 
+static int checkpoint_lock_acquire(const char *checkpoint_path) {
+  char lock_path[PATH_MAX];
+  int written = snprintf(lock_path, sizeof(lock_path), "%s.lock", checkpoint_path);
+  if (written < 0 || (size_t)written >= sizeof(lock_path)) {
+    return -1;
+  }
+  int lock = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+  if (lock < 0 || flock(lock, LOCK_EX) != 0) {
+    if (lock >= 0) {
+      (void)close(lock);
+    }
+    return -1;
+  }
+  return lock;
+}
+
+#ifdef LARDON3D_CHECKPOINT_TESTING
+static void checkpoint_test_rendezvous(const char *variable) {
+  const char *value = getenv(variable);
+  if (!value || !value[0]) {
+    return;
+  }
+  char *end = NULL;
+  errno = 0;
+  long descriptor = strtol(value, &end, 10);
+  if (errno != 0 || !end || *end != '\0' || descriptor < 0 || descriptor > INT_MAX) {
+    return;
+  }
+  unsigned char token = 1;
+  if (write((int)descriptor, &token, sizeof(token)) == (ssize_t)sizeof(token)) {
+    (void)read((int)descriptor, &token, sizeof(token));
+  }
+}
+#endif
+
 static Lardon3DProjectTaskCheckpointResult
 checkpoint_task_internal(Lardon3DAppState *state, const Lardon3DTask *task,
                          const char *image_import_source, uint64_t image_import_scanset_id,
@@ -695,23 +731,40 @@ checkpoint_task_internal(Lardon3DAppState *state, const Lardon3DTask *task,
   if (!checkpoint_paths(state, snapshot.id, relative, absolute)) {
     return LARDON3D_PROJECT_TASK_CHECKPOINT_IO_ERROR;
   }
-  Lardon3DTaskCheckpointResult saved = lardon3d_task_checkpoint_save(absolute, &snapshot);
-  if (saved == LARDON3D_TASK_CHECKPOINT_INVALID) {
-    return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
-  }
-  if (saved != LARDON3D_TASK_CHECKPOINT_OK &&
-      saved != LARDON3D_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE) {
+  /* Serialize the fixed .next slot per task through stage, DB commit, and
+   * promotion.  The advisory lock is process-owned and is released by kernel
+   * close on crash, so it cannot become a durable recovery dependency. */
+  int checkpoint_lock = checkpoint_lock_acquire(absolute);
+  if (checkpoint_lock < 0) {
     return LARDON3D_PROJECT_TASK_CHECKPOINT_IO_ERROR;
+  }
+#define CHECKPOINT_RETURN(value) do { (void)close(checkpoint_lock); return (value); } while (0)
+  /* DB and filesystem durability are independent: changing their write order
+   * cannot make S1 atomic.  Keep .next durable across the DB commit window so
+   * recovery always has an explicitly published representation to compare. */
+  Lardon3DTaskCheckpointResult saved = lardon3d_task_checkpoint_stage(absolute, &snapshot);
+  if (saved == LARDON3D_TASK_CHECKPOINT_INVALID) {
+    CHECKPOINT_RETURN(LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK);
+  }
+  /* S1 must be directory-durable before SQLite may publish S1.  A staged
+   * namespace with an uncertain parent-directory sync is not a safe recovery
+   * representation, even when its file descriptor itself was synced. */
+  if (saved == LARDON3D_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE) {
+    CHECKPOINT_RETURN(LARDON3D_PROJECT_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE);
+  }
+  if (saved != LARDON3D_TASK_CHECKPOINT_OK) {
+    CHECKPOINT_RETURN(LARDON3D_PROJECT_TASK_CHECKPOINT_IO_ERROR);
   }
   struct timespec now;
   if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
-    return LARDON3D_PROJECT_TASK_CHECKPOINT_DB_ERROR;
+    CHECKPOINT_RETURN(LARDON3D_PROJECT_TASK_CHECKPOINT_DB_ERROR);
   }
   Lardon3DProjectDbCheckpoint checkpoint = {
       .format_version = LARDON3D_TASK_CHECKPOINT_VERSION,
-      .durability = saved == LARDON3D_TASK_CHECKPOINT_OK
-                        ? LARDON3D_DB_CHECKPOINT_DURABLE
-                        : LARDON3D_DB_CHECKPOINT_PUBLISHED_NOT_DURABLE,
+      /* A fully synced .next is the durable checkpoint representation during
+       * the DB-to-canonical handoff, even though checkpoint.path names the
+       * legacy canonical location for v22 compatibility. */
+      .durability = LARDON3D_DB_CHECKPOINT_DURABLE,
       .updated_at = now.tv_sec,
   };
   (void)snprintf(checkpoint.path, sizeof(checkpoint.path), "%s", relative);
@@ -759,14 +812,26 @@ checkpoint_task_internal(Lardon3DAppState *state, const Lardon3DTask *task,
           : lardon3d_project_db_record_task(state->project_db, &snapshot, task_kind,
                                             task_kind_version, &checkpoint, now.tv_sec);
   if (recorded == LARDON3D_PROJECT_DB_BUSY) {
-    return LARDON3D_PROJECT_TASK_CHECKPOINT_DB_BUSY;
+    CHECKPOINT_RETURN(LARDON3D_PROJECT_TASK_CHECKPOINT_DB_BUSY);
   }
   if (recorded != LARDON3D_PROJECT_DB_OK) {
-    return LARDON3D_PROJECT_TASK_CHECKPOINT_DB_ERROR;
+    CHECKPOINT_RETURN(LARDON3D_PROJECT_TASK_CHECKPOINT_DB_ERROR);
   }
-  return saved == LARDON3D_TASK_CHECKPOINT_OK
+#ifdef LARDON3D_CHECKPOINT_TESTING
+  /* Deterministic crash boundary: production recovery must select .next after
+   * the SQLite FULL transaction is durable but before canonical promotion. */
+  const char *stop_after_db_commit = getenv("LARDON3D_TEST_PROJECT_CHECKPOINT_AFTER_DB_COMMIT");
+  if (stop_after_db_commit && strcmp(stop_after_db_commit, "1") == 0) {
+    CHECKPOINT_RETURN(LARDON3D_PROJECT_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE);
+  }
+#endif
+  Lardon3DTaskCheckpointResult promoted = lardon3d_task_checkpoint_promote_staged(absolute);
+  Lardon3DProjectTaskCheckpointResult result = promoted == LARDON3D_TASK_CHECKPOINT_OK
              ? LARDON3D_PROJECT_TASK_CHECKPOINT_OK
              : LARDON3D_PROJECT_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE;
+#undef CHECKPOINT_RETURN
+  (void)close(checkpoint_lock);
+  return result;
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_task(Lardon3DAppState *state,
@@ -933,26 +998,96 @@ Lardon3DProjectDbResult lardon3d_project_list_recoverable(Lardon3DAppState *stat
                  strcmp(relative, tasks[index].checkpoint.path) != 0) {
         entry->status = LARDON3D_PROJECT_RECOVERY_INVALID_CHECKPOINT;
       } else {
+        /* Writer and recovery take this lock before touching SQLite.  Recovery
+         * must hold it across staged validation and promotion: otherwise a
+         * writer could replace .next after it matched the DB-stored task
+         * summary fields.
+         * Reload the DB row only after acquiring the lock, because the paged
+         * row above may have become stale while recovery waited for a writer. */
+#ifdef LARDON3D_CHECKPOINT_TESTING
+        /* Test-only rendezvous proves that the paged row is never used after
+         * another writer advances it before recovery obtains .chk.lock. */
+        checkpoint_test_rendezvous("LARDON3D_TEST_RECOVERY_BEFORE_CHECKPOINT_LOCK_FD");
+#endif
+        int checkpoint_lock = checkpoint_lock_acquire(absolute);
+        if (checkpoint_lock < 0) {
+          entry->status = LARDON3D_PROJECT_RECOVERY_CHECKPOINT_IO_ERROR;
+          cursor = entry->task_id;
+          ++*count;
+          continue;
+        }
+        Lardon3DProjectDbTask durable_task;
+        Lardon3DProjectDbResult loaded_task =
+            lardon3d_project_db_load_task(state->project_db, entry->task_id, &durable_task);
+        if (loaded_task != LARDON3D_PROJECT_DB_OK) {
+          (void)close(checkpoint_lock);
+          return loaded_task;
+        }
+        /* Pagination is only a candidate discovery mechanism. A writer may
+         * have made this task terminal while recovery waited, so do not emit a
+         * recoverable entry unless the locked, authoritative row is pending. */
+        if (durable_task.recovery_state != TASK_PENDING || !durable_task.has_checkpoint ||
+            !durable_task.has_task_kind || strcmp(relative, durable_task.checkpoint.path) != 0) {
+          (void)close(checkpoint_lock);
+          cursor = entry->task_id;
+          continue;
+        }
+        entry->durability = durable_task.checkpoint.durability;
+        (void)snprintf(entry->name, sizeof(entry->name), "%s", durable_task.name);
+        if (durable_task.has_task_kind) {
+          (void)snprintf(entry->task_kind, sizeof(entry->task_kind), "%s", durable_task.task_kind);
+          entry->task_kind_version = durable_task.task_kind_version;
+        }
         uint32_t version = 0;
+        Lardon3DTaskCheckpointResult promotion = LARDON3D_TASK_CHECKPOINT_OK;
+        /* A codec-valid canonical checkpoint whose DB-stored task-summary
+         * fields match wins. A stale or corrupt .next is ignored in that
+         * case; the DB deliberately does not duplicate the full snapshot. */
         Lardon3DTaskCheckpointResult loaded =
             lardon3d_task_checkpoint_load(absolute, &entry->snapshot, &version);
-        if (loaded == LARDON3D_TASK_CHECKPOINT_NOT_FOUND) {
+        bool canonical_match = loaded == LARDON3D_TASK_CHECKPOINT_OK
+            && version == durable_task.checkpoint.format_version
+            && coherent_recovery(&durable_task, &entry->snapshot);
+        if (!canonical_match) {
+          Lardon3DTaskDurableSnapshot staged_snapshot;
+          uint32_t staged_version = 0;
+          Lardon3DTaskCheckpointResult staged = lardon3d_task_checkpoint_load_staged(
+              absolute, &staged_snapshot, &staged_version);
+          if (staged == LARDON3D_TASK_CHECKPOINT_OK
+              && staged_version == durable_task.checkpoint.format_version
+              && coherent_recovery(&durable_task, &staged_snapshot)) {
+            entry->snapshot = staged_snapshot;
+#ifdef LARDON3D_CHECKPOINT_TESTING
+            checkpoint_test_rendezvous("LARDON3D_TEST_RECOVERY_AFTER_STAGED_MATCH_FD");
+#endif
+            /* The same lock protects this re-read/promote helper from a
+             * replacement of .next between DB-summary validation and rename. */
+            promotion = lardon3d_task_checkpoint_promote_staged(absolute);
+            if (promotion == LARDON3D_TASK_CHECKPOINT_OK ||
+                promotion == LARDON3D_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE) {
+              loaded = LARDON3D_TASK_CHECKPOINT_OK;
+              version = staged_version;
+              canonical_match = true;
+            }
+          }
+        }
+        if (!canonical_match && loaded == LARDON3D_TASK_CHECKPOINT_NOT_FOUND) {
           entry->status = LARDON3D_PROJECT_RECOVERY_MISSING_CHECKPOINT;
-        } else if (loaded == LARDON3D_TASK_CHECKPOINT_UNSUPPORTED_VERSION) {
+        } else if (!canonical_match && loaded == LARDON3D_TASK_CHECKPOINT_UNSUPPORTED_VERSION) {
           entry->status = LARDON3D_PROJECT_RECOVERY_UNSUPPORTED_CHECKPOINT;
-        } else if (loaded == LARDON3D_TASK_CHECKPOINT_INVALID) {
+        } else if (!canonical_match && loaded == LARDON3D_TASK_CHECKPOINT_INVALID) {
           entry->status = LARDON3D_PROJECT_RECOVERY_INVALID_CHECKPOINT;
-        } else if (loaded != LARDON3D_TASK_CHECKPOINT_OK ||
-                   version != tasks[index].checkpoint.format_version ||
-                   !coherent_recovery(&tasks[index], &entry->snapshot)) {
+        } else if (!canonical_match) {
           entry->status = loaded == LARDON3D_TASK_CHECKPOINT_IO_ERROR
                               ? LARDON3D_PROJECT_RECOVERY_CHECKPOINT_IO_ERROR
                               : LARDON3D_PROJECT_RECOVERY_INVALID_CHECKPOINT;
         } else {
-          entry->status = entry->durability == LARDON3D_DB_CHECKPOINT_PUBLISHED_NOT_DURABLE
+          entry->status = promotion == LARDON3D_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE ||
+                                  entry->durability == LARDON3D_DB_CHECKPOINT_PUBLISHED_NOT_DURABLE
                               ? LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE
                               : LARDON3D_PROJECT_RECOVERABLE;
         }
+        (void)close(checkpoint_lock);
       }
       cursor = entry->task_id;
       ++*count;

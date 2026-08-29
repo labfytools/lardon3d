@@ -1404,6 +1404,22 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
   return LARDON3D_PROJECT_DB_OK;
 }
 
+bool lardon3d_project_db_copy_path(
+    Lardon3DProjectDb *database,
+    char path[LARDON3D_PROJECT_DB_PATH_CAPACITY]) {
+  if (!database || !path) return false;
+  path[0] = '\0';
+  if (pthread_mutex_lock(&database->mutex) != 0) return false;
+  const char *opened_path = sqlite3_db_filename(database->connection, "main");
+  size_t length = opened_path
+                      ? strnlen(opened_path, LARDON3D_PROJECT_DB_PATH_CAPACITY)
+                      : 0;
+  bool valid = length > 0 && length < LARDON3D_PROJECT_DB_PATH_CAPACITY;
+  if (valid) memcpy(path, opened_path, length + 1);
+  (void)pthread_mutex_unlock(&database->mutex);
+  return valid;
+}
+
 void lardon3d_project_db_close(Lardon3DProjectDb *database) {
   if (!database) {
     return;
@@ -5968,6 +5984,99 @@ Lardon3DProjectDbResult lardon3d_project_db_list_visual_index_pending(
     }
     if (result == LARDON3D_PROJECT_DB_OK && code != SQLITE_DONE && *count < capacity) {
       result = sqlite_result(db, code, "list pending visual index features");
+    }
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_list_visual_index_memberships(
+    Lardon3DProjectDb *db, uint64_t index_id, uint64_t after, uint64_t *ids,
+    size_t capacity, size_t *count) {
+  if (count) {
+    *count = 0;
+  }
+  if (!db || !valid_catalog_id(index_id) || after > INT64_MAX || !ids || !count ||
+      capacity == 0 || capacity > LARDON3D_PROJECT_DB_CATALOG_PAGE_MAX) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  (void)pthread_mutex_lock(&db->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      db,
+      "SELECT m.feature_set_id FROM visual_indexes v LEFT JOIN "
+      "visual_index_memberships m ON m.visual_index_id=v.visual_index_id AND "
+      "m.feature_set_id>?2 WHERE v.visual_index_id=?1 ORDER BY m.feature_set_id LIMIT ?3",
+      &statement);
+  bool index_found = false;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)index_id);
+    sqlite3_bind_int64(statement, 2, (sqlite3_int64)after);
+    sqlite3_bind_int64(statement, 3, (sqlite3_int64)capacity);
+    int code = SQLITE_DONE;
+    while (*count < capacity && (code = sqlite3_step(statement)) == SQLITE_ROW) {
+      index_found = true;
+      if (sqlite3_column_type(statement, 0) == SQLITE_NULL) {
+        continue;
+      }
+      sqlite3_int64 id = sqlite3_column_int64(statement, 0);
+      if (id <= 0) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      ids[(*count)++] = (uint64_t)id;
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && code != SQLITE_DONE && *count < capacity) {
+      result = sqlite_result(db, code, "list visual index memberships");
+    } else if (result == LARDON3D_PROJECT_DB_OK && !index_found) {
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    }
+    sqlite3_finalize(statement);
+  }
+  (void)pthread_mutex_unlock(&db->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_project_db_visual_index_membership_progress(
+    Lardon3DProjectDb *db, uint64_t index_id, uint64_t after,
+    uint64_t *completed_count, uint64_t *total_count) {
+  if (completed_count) {
+    *completed_count = 0;
+  }
+  if (total_count) {
+    *total_count = 0;
+  }
+  if (!db || !valid_catalog_id(index_id) || after > INT64_MAX || !completed_count ||
+      !total_count) {
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  }
+  (void)pthread_mutex_lock(&db->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      db,
+      "SELECT (SELECT count(*) FROM visual_index_memberships m WHERE "
+      "m.visual_index_id=v.visual_index_id AND m.feature_set_id<=?2),"
+      "(SELECT count(*) FROM visual_index_memberships m WHERE "
+      "m.visual_index_id=v.visual_index_id) FROM visual_indexes v WHERE v.visual_index_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)index_id);
+    sqlite3_bind_int64(statement, 2, (sqlite3_int64)after);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_ROW) {
+      sqlite3_int64 completed = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 total = sqlite3_column_int64(statement, 1);
+      if (completed < 0 || total < 0 || completed > total) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else {
+        *completed_count = (uint64_t)completed;
+        *total_count = (uint64_t)total;
+      }
+    } else if (code == SQLITE_DONE) {
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    } else {
+      result = sqlite_result(db, code, "count visual index memberships");
     }
     sqlite3_finalize(statement);
   }

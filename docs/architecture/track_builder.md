@@ -66,6 +66,12 @@ The selector is exactly the FROZEN Track Model tuple
 only when its status is `GEOMETRIC_VERIFIED` and all three fields match
 exactly. `latest`, timestamps, greatest IDs and insertion order are forbidden.
 
+Geometric Verifier v1, v2, and v3 are consequently separate evidence lineages.
+A selector for any one version rejects every GVR from either other version,
+even when they share a Match Result or numerical estimator parameters. The
+current input selects exact v3 VERIFIED IDs and never mixes historical v1/v2
+evidence. No fallback or cross-version equivalence is inferred by Track Builder.
+
 ## Input Scope
 
 The explicit supplied IDs are sorted numerically, unique, counted, and hashed

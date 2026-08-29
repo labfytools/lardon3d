@@ -14,6 +14,7 @@
 #include <lardon3d/feature_store.h>
 #include <lardon3d/matcher_task.h>
 #include <lardon3d/project.h>
+#include <lardon3d/task_checkpoint.h>
 #include <lardon3d/task_queue.h>
 
 #define CHECK(condition)                                                       \
@@ -29,6 +30,10 @@ enum {
   PAIR_COUNT = IMAGE_COUNT - 1,
   PERSISTED_PAIR_COUNT = PAIR_COUNT - 1,
 };
+
+void lardon3d_matcher_task_test_reset_backend_counters(void);
+size_t lardon3d_matcher_task_test_vulkan_uses(void);
+size_t lardon3d_matcher_task_test_forced_fallbacks(void);
 
 typedef struct {
   char root[PATH_MAX];
@@ -76,6 +81,20 @@ static bool query_integer(const char *path, const char *sql,
     (void)sqlite3_close(connection);
   }
   return success;
+}
+
+static bool candidate_results_have_one_evidence(const char *path,
+                                                uint64_t candidate_pair_id) {
+  char sql[512];
+  int written = snprintf(
+      sql, sizeof(sql),
+      "SELECT count(*) FROM (SELECT candidate_pair_id FROM match_results "
+      "WHERE candidate_pair_id=%lu GROUP BY candidate_pair_id HAVING "
+      "count(DISTINCT result_status||':'||match_count||':'||"
+      "ifnull(hex(match_asset_sha256),''))<>1)",
+      (unsigned long)candidate_pair_id);
+  return written > 0 && (size_t)written < sizeof(sql) &&
+         query_integer(path, sql, 0);
 }
 
 static bool downgrade_project_to_historical_v10(const char *database_path) {
@@ -217,24 +236,42 @@ static bool register_image(Fixture *fixture, unsigned char seed, size_t index) {
 }
 
 static bool publish_features(Fixture *fixture, size_t image_index) {
-  unsigned char descriptor[32];
-  memset(descriptor, (int)image_index, sizeof(descriptor));
-  Lardon3DFeatureKeypoint keypoint = {
-      .size = 1.0F,
-  };
+  uint32_t feature_count = image_index < 2 ? 769U : 1U;
+  Lardon3DFeatureKeypoint *keypoints =
+      calloc(feature_count, sizeof(*keypoints));
+  unsigned char *descriptors = calloc(feature_count, 32);
+  if (!keypoints || !descriptors) {
+    free(keypoints);
+    free(descriptors);
+    return false;
+  }
+  for (uint32_t index = 0; index < feature_count; ++index) {
+    keypoints[index].size = 1.0F;
+    /* The first pair is identical and has more than 768 descriptors per side,
+     * forcing the audited Vulkan dispatch boundary while retaining a unique
+     * zero-distance nearest neighbor for exact CPU/file parity. */
+    uint32_t value = image_index < 2 ? index : (uint32_t)image_index;
+    for (size_t byte = 0; byte < 32; ++byte) {
+      descriptors[(size_t)index * 32 + byte] =
+          (unsigned char)((value >> (8U * (byte % 4))) ^ (uint32_t)(byte * 29));
+    }
+  }
   Lardon3DExtractedFeatures features = {
       .image_width = 64,
       .image_height = 64,
-      .feature_count = 1,
-      .keypoints = &keypoint,
-      .descriptors = descriptor,
-      .descriptor_bytes = sizeof(descriptor),
+      .feature_count = feature_count,
+      .keypoints = keypoints,
+      .descriptors = descriptors,
+      .descriptor_bytes = (size_t)feature_count * 32,
   };
   Lardon3DProjectDbFeatureSet feature_set;
-  return lardon3d_feature_store_publish_v2(
+  bool success = lardon3d_feature_store_publish_v2(
              &fixture->state, fixture->images[image_index].image_id, 0, "orb",
              1, fixture->feature_fingerprint, LARDON3D_FEATURE_DESCRIPTOR_U8,
              32, 0, &features, &feature_set) == LARDON3D_FEATURE_STORE_OK;
+  free(keypoints);
+  free(descriptors);
+  return success;
 }
 
 static bool fixture_create(Fixture *fixture) {
@@ -352,6 +389,77 @@ static bool count_results(Fixture *fixture, size_t *count) {
   }
 }
 
+static bool same_estimate(const Lardon3DResourceEstimate *a,
+                          const Lardon3DResourceEstimate *b) {
+  return a->memory_fixed_bytes == b->memory_fixed_bytes &&
+         a->gpu_memory_fixed_bytes == b->gpu_memory_fixed_bytes &&
+         a->memory_bytes_per_item == b->memory_bytes_per_item &&
+         a->gpu_memory_bytes_per_item == b->gpu_memory_bytes_per_item &&
+         a->minimum_batch_size == b->minimum_batch_size &&
+         a->maximum_batch_size == b->maximum_batch_size &&
+         a->desired_cpu_threads == b->desired_cpu_threads &&
+         a->desired_gpu_slots == b->desired_gpu_slots &&
+         a->desired_io_slots == b->desired_io_slots &&
+         a->task_class == b->task_class;
+}
+
+static bool run_completed_with_threads(Fixture *fixture,
+                                       Lardon3DMatcherTaskConfiguration settings,
+                                       unsigned int threads) {
+  char value[16];
+  (void)snprintf(value, sizeof(value), "%u", threads);
+  if (setenv("LARDON3D_TEST_MATCHER_CPU_THREADS", value, 1) != 0) return false;
+  uint64_t task_id = 0;
+  Lardon3DTaskSnapshot snapshot;
+  Lardon3DProjectDbTask durable;
+  bool success = lardon3d_project_enqueue_matcher_task(&fixture->state, &settings,
+                                                       &task_id) &&
+                 wait_state(fixture->state.task_queue, task_id, TASK_COMPLETED,
+                            &snapshot) &&
+                 snapshot.progress == 100 &&
+                 wait_durable_state(fixture->state.project_db, task_id,
+                                    TASK_COMPLETED, &durable);
+  return unsetenv("LARDON3D_TEST_MATCHER_CPU_THREADS") == 0 && success;
+}
+
+static bool run_failed_at_pair(Fixture *fixture,
+                               Lardon3DMatcherTaskConfiguration settings,
+                               const char *failure_variable,
+                               uint64_t failed_pair_id, size_t expected_prefix,
+                               uint64_t expected_cursor) {
+  size_t before = 0;
+  if (!count_results(fixture, &before)) return false;
+  char value[32];
+  (void)snprintf(value, sizeof(value), "%lu", (unsigned long)failed_pair_id);
+  if (setenv(failure_variable, value, 1) != 0 ||
+      setenv("LARDON3D_TEST_MATCHER_CPU_THREADS", "4", 1) != 0) {
+    return false;
+  }
+  uint64_t task_id = 0;
+  Lardon3DTaskSnapshot snapshot;
+  bool failed = lardon3d_project_enqueue_matcher_task(&fixture->state, &settings,
+                                                      &task_id) &&
+                wait_state(fixture->state.task_queue, task_id, TASK_FAILED,
+                           &snapshot);
+  (void)unsetenv(failure_variable);
+  (void)unsetenv("LARDON3D_TEST_MATCHER_CPU_THREADS");
+  size_t after = 0;
+  Lardon3DProjectDbMatcherTask saved;
+  bool cursor_saved = false;
+  for (size_t attempt = 0; attempt < 2000000; ++attempt) {
+    if (lardon3d_project_db_load_matcher_task(fixture->state.project_db, task_id,
+                                              &saved) == LARDON3D_PROJECT_DB_OK &&
+        saved.after_candidate_pair_id == expected_cursor) {
+      cursor_saved = true;
+      break;
+    }
+    sched_yield();
+  }
+  return failed && cursor_saved && count_results(fixture, &after) &&
+         after == before + expected_prefix &&
+         saved.after_candidate_pair_id == expected_cursor;
+}
+
 static bool run_test(void) {
   Fixture fixture;
   CHECK(fixture_create(&fixture));
@@ -466,7 +574,7 @@ static bool run_test(void) {
                    &snapshot));
   Lardon3DResourcePolicy pressure_policy = interactive_policy();
   pressure_policy.system_memory_reserve_bytes =
-      fixture.state.hardware_profile.memory_total_bytes - 16ULL * 1024 * 1024;
+      fixture.state.hardware_profile.memory_total_bytes - 96ULL * 1024 * 1024;
   pressure_policy.emergency_memory_floor_bytes =
       pressure_policy.system_memory_reserve_bytes;
   CHECK(lardon3d_resource_governor_set_policy(fixture.state.resource_governor,
@@ -488,15 +596,265 @@ static bool run_test(void) {
   CHECK(wait_state(fixture.state.task_queue, pressure_id, TASK_COMPLETED,
                    &snapshot));
 
+  /* Thread-count changes are operational only: all three runs must publish
+   * the same Candidate Pair cardinality and identical raw Match evidence. */
+  size_t equivalence_before = 0;
+  CHECK(count_results(&fixture, &equivalence_before));
+  Lardon3DMatcherTaskConfiguration one = settings;
+  one.matcher.ratio_threshold = 0.80F;
+  CHECK(run_completed_with_threads(&fixture, one, 1));
+  Lardon3DMatcherTaskConfiguration two = settings;
+  two.matcher.ratio_threshold = 0.81F;
+  CHECK(run_completed_with_threads(&fixture, two, 2));
+  Lardon3DMatcherTaskConfiguration four = settings;
+  four.matcher.ratio_threshold = 0.82F;
+  CHECK(run_completed_with_threads(&fixture, four, 4));
+  Lardon3DMatcherTaskConfiguration eight = settings;
+  eight.matcher.ratio_threshold = 0.84F;
+  CHECK(run_completed_with_threads(&fixture, eight, 8));
+  size_t equivalence_after = 0;
+  CHECK(count_results(&fixture, &equivalence_after));
+  CHECK(equivalence_after == equivalence_before + 4 * PERSISTED_PAIR_COUNT);
+  CHECK(candidate_results_have_one_evidence(
+      database_path, fixture.pairs[0].candidate_pair_id));
+
+  /* Explicit GPU selection is operational only. A real Queue admission must
+   * reserve the exact GPU shape and dispatch the first 769x769 ORB pair to
+   * Vulkan; all Match evidence remains byte-identical to the CPU runs above. */
+#ifdef LARDON3D_MATCHER_TASK_VULKAN
+  lardon3d_matcher_task_test_reset_backend_counters();
+  Lardon3DMatcherTaskConfiguration gpu = settings;
+  gpu.matcher.ratio_threshold = 0.68F;
+  uint64_t gpu_id = 0;
+  CHECK(lardon3d_project_enqueue_matcher_task_with_mode(
+      &fixture.state, &gpu, LARDON3D_MATCHER_TASK_MODE_ORB_VULKAN, &gpu_id));
+  CHECK(wait_state(fixture.state.task_queue, gpu_id, TASK_COMPLETED, &snapshot));
+  Lardon3DProjectDbTask gpu_durable;
+  CHECK(wait_durable_state(fixture.state.project_db, gpu_id, TASK_COMPLETED,
+                           &gpu_durable));
+  CHECK(lardon3d_matcher_task_test_vulkan_uses() >= 1);
+  CHECK(candidate_results_have_one_evidence(
+      database_path, fixture.pairs[0].candidate_pair_id));
+  /* Runtime backend failure after valid GPU admission falls back through the
+   * exact CPU implementation; it never changes the immutable estimate or the
+   * scientific Match identity. */
+  CHECK(setenv("LARDON3D_TEST_MATCHER_FORCE_FALLBACK", "1", 1) == 0);
+  lardon3d_matcher_task_test_reset_backend_counters();
+  Lardon3DMatcherTaskConfiguration fallback = settings;
+  fallback.matcher.ratio_threshold = 0.67F;
+  uint64_t fallback_id = 0;
+  CHECK(lardon3d_project_enqueue_matcher_task_with_mode(
+      &fixture.state, &fallback, LARDON3D_MATCHER_TASK_MODE_ORB_VULKAN,
+      &fallback_id));
+  CHECK(wait_state(fixture.state.task_queue, fallback_id, TASK_COMPLETED,
+                   &snapshot));
+  Lardon3DProjectDbTask fallback_durable;
+  CHECK(wait_durable_state(fixture.state.project_db, fallback_id,
+                           TASK_COMPLETED, &fallback_durable));
+  CHECK(lardon3d_matcher_task_test_forced_fallbacks() >= 1);
+  CHECK(lardon3d_matcher_task_test_vulkan_uses() == 0);
+  CHECK(unsetenv("LARDON3D_TEST_MATCHER_FORCE_FALLBACK") == 0);
+  CHECK(candidate_results_have_one_evidence(
+      database_path, fixture.pairs[0].candidate_pair_id));
+#else
+  /* The supported Vulkan-disabled build exposes no backend. An explicit GPU
+   * request must fail before Task-ID allocation instead of becoming CPU work. */
+  Lardon3DMatcherTaskConfiguration gpu = settings;
+  gpu.matcher.ratio_threshold = 0.68F;
+  uint64_t gpu_id = 99;
+  CHECK(lardon3d_project_enqueue_matcher_task_with_mode(
+            &fixture.state, &gpu, LARDON3D_MATCHER_TASK_MODE_ORB_VULKAN,
+            &gpu_id) == false &&
+        gpu_id == 0);
+#endif
+
+  /* The request remains eight, but only two CPUs are available after host
+   * headroom. Successful completion exercises the reduced Governor contract. */
+  Lardon3DResourcePolicy reduced_policy = interactive_policy();
+  reduced_policy.system_cpu_reserve = 14;
+  CHECK(lardon3d_resource_governor_set_policy(fixture.state.resource_governor,
+                                              &reduced_policy));
+  Lardon3DMatcherTaskConfiguration reduced = settings;
+  reduced.matcher.ratio_threshold = 0.83F;
+  uint64_t reduced_id = 0;
+  CHECK(lardon3d_project_enqueue_matcher_task(&fixture.state, &reduced,
+                                              &reduced_id));
+  CHECK(wait_state(fixture.state.task_queue, reduced_id, TASK_COMPLETED,
+                   &snapshot));
+  Lardon3DResourcePolicy restored_policy = interactive_policy();
+  CHECK(lardon3d_resource_governor_set_policy(fixture.state.resource_governor,
+                                              &restored_policy));
+
+  /* A failed computation seals the ordered suffix. The finished checkpoint
+   * may retain only the already durable contiguous prefix. */
+  Lardon3DMatcherTaskConfiguration fail_first = settings;
+  fail_first.matcher.ratio_threshold = 0.70F;
+  CHECK(run_failed_at_pair(&fixture, fail_first,
+                           "LARDON3D_TEST_MATCHER_FAIL_COMPUTE_PAIR_ID",
+                           fixture.pairs[0].candidate_pair_id, 0, 0));
+  Lardon3DMatcherTaskConfiguration fail_middle = settings;
+  fail_middle.matcher.ratio_threshold = 0.71F;
+  CHECK(run_failed_at_pair(&fixture, fail_middle,
+                           "LARDON3D_TEST_MATCHER_FAIL_COMPUTE_PAIR_ID",
+                           fixture.pairs[5].candidate_pair_id, 4,
+                           fixture.pairs[4].candidate_pair_id));
+  Lardon3DMatcherTaskConfiguration fail_last = settings;
+  fail_last.matcher.ratio_threshold = 0.72F;
+  CHECK(run_failed_at_pair(&fixture, fail_last,
+                           "LARDON3D_TEST_MATCHER_FAIL_COMPUTE_PAIR_ID",
+                           fixture.pairs[PAIR_COUNT - 1].candidate_pair_id,
+                           PERSISTED_PAIR_COUNT - 1,
+                           fixture.pairs[PAIR_COUNT - 2].candidate_pair_id));
+  Lardon3DMatcherTaskConfiguration publish_first = settings;
+  publish_first.matcher.ratio_threshold = 0.73F;
+  CHECK(run_failed_at_pair(&fixture, publish_first,
+                           "LARDON3D_TEST_MATCHER_FAIL_PUBLISH_PAIR_ID",
+                           fixture.pairs[0].candidate_pair_id, 0, 0));
+  Lardon3DMatcherTaskConfiguration publish_middle = settings;
+  publish_middle.matcher.ratio_threshold = 0.74F;
+  CHECK(run_failed_at_pair(&fixture, publish_middle,
+                           "LARDON3D_TEST_MATCHER_FAIL_PUBLISH_PAIR_ID",
+                           fixture.pairs[5].candidate_pair_id, 4,
+                           fixture.pairs[4].candidate_pair_id));
+  Lardon3DMatcherTaskConfiguration publish_last = settings;
+  publish_last.matcher.ratio_threshold = 0.76F;
+  CHECK(run_failed_at_pair(&fixture, publish_last,
+                           "LARDON3D_TEST_MATCHER_FAIL_PUBLISH_PAIR_ID",
+                           fixture.pairs[PAIR_COUNT - 1].candidate_pair_id,
+                           PERSISTED_PAIR_COUNT - 1,
+                           fixture.pairs[PAIR_COUNT - 2].candidate_pair_id));
+
   uint64_t estimate_task_id = 0;
   Lardon3DTask *estimate_task = lardon3d_project_create_matcher_task(
       &fixture.state, &settings, &estimate_task_id);
   Lardon3DTaskDurableSnapshot estimate_snapshot;
   CHECK(estimate_task != NULL && estimate_task_id != 0);
   CHECK(lardon3d_task_durable_snapshot(estimate_task, &estimate_snapshot));
-  CHECK(estimate_snapshot.estimate.gpu_memory_fixed_bytes ==
-        LARDON3D_ORB_VULKAN_PERMANENT_BUFFER_BYTES);
-  CHECK(estimate_snapshot.estimate.desired_gpu_slots == 1);
+  /* Parallel Matcher execution is permanently CPU-only even if admission
+   * later grants one thread; its immutable estimate must reserve no GPU. */
+  CHECK(estimate_snapshot.estimate.desired_cpu_threads > 1);
+  CHECK(estimate_snapshot.estimate.gpu_memory_fixed_bytes == 0);
+  CHECK(estimate_snapshot.estimate.desired_gpu_slots == 0);
+  Lardon3DTaskDurableSnapshot current_cpu = estimate_snapshot;
+  Lardon3DTaskDurableSnapshot current_gpu = current_cpu;
+  current_gpu.estimate.gpu_memory_fixed_bytes =
+      LARDON3D_ORB_VULKAN_PERMANENT_BUFFER_BYTES;
+  current_gpu.estimate.desired_cpu_threads = 1;
+  current_gpu.estimate.desired_gpu_slots = 1;
+  lardon3d_task_destroy(estimate_task);
+  estimate_task = NULL;
+
+#ifdef LARDON3D_MATCHER_TASK_VULKAN
+  estimate_task = lardon3d_project_create_matcher_task_with_mode(
+      &fixture.state, &settings, LARDON3D_MATCHER_TASK_MODE_ORB_VULKAN,
+      &estimate_task_id);
+  CHECK(estimate_task != NULL &&
+        lardon3d_task_durable_snapshot(estimate_task, &estimate_snapshot));
+  CHECK(same_estimate(&estimate_snapshot.estimate, &current_gpu.estimate));
+#endif
+
+  /* Selection failures occur before Task-ID allocation and cannot silently
+   * become CPU work. The existing create API remains CPU-parallel. */
+  Lardon3DMatcherTaskConfiguration wrong_kind = settings;
+  wrong_kind.matcher.kind = LARDON3D_MATCHER_SIFT_BF;
+  (void)snprintf(wrong_kind.feature_extractor_kind,
+                 sizeof(wrong_kind.feature_extractor_kind), "sift");
+  uint64_t rejected_id = 99;
+  CHECK(lardon3d_project_create_matcher_task_with_mode(
+            &fixture.state, &wrong_kind,
+            LARDON3D_MATCHER_TASK_MODE_ORB_VULKAN, &rejected_id) == NULL &&
+        rejected_id == 0);
+  rejected_id = 99;
+  CHECK(lardon3d_project_create_matcher_task_with_mode(
+            &fixture.state, &settings, (Lardon3DMatcherTaskMode)99,
+            &rejected_id) == NULL &&
+        rejected_id == 0);
+  bool gpu_available = fixture.state.hardware_profile.gpu_available;
+  fixture.state.hardware_profile.gpu_available = false;
+  rejected_id = 99;
+  CHECK(lardon3d_project_create_matcher_task_with_mode(
+            &fixture.state, &settings,
+            LARDON3D_MATCHER_TASK_MODE_ORB_VULKAN, &rejected_id) == NULL &&
+        rejected_id == 0);
+  fixture.state.hardware_profile.gpu_available = gpu_available;
+  Lardon3DOrbVulkanBackend *backend = fixture.state.orb_vulkan_backend;
+  fixture.state.orb_vulkan_backend = NULL;
+  rejected_id = 99;
+  CHECK(lardon3d_project_create_matcher_task_with_mode(
+            &fixture.state, &settings,
+            LARDON3D_MATCHER_TASK_MODE_ORB_VULKAN, &rejected_id) == NULL &&
+        rejected_id == 0);
+  fixture.state.orb_vulkan_backend = backend;
+
+  /* Reconstruction accepts only the two current and two historical complete
+   * shapes. CPU12 signatures are normalized ephemerally for Task admission;
+   * neighboring shapes are corruption, not mode inference. */
+  Lardon3DTaskReconstructionContext reconstruction = {
+      .project_path = fixture.state.project_path,
+      .project_db = fixture.state.project_db,
+      .resource_governor = fixture.state.resource_governor,
+      .orb_vulkan_backend = fixture.state.orb_vulkan_backend,
+  };
+  Lardon3DTaskDurableSnapshot historical_cpu = current_cpu;
+  historical_cpu.estimate.memory_fixed_bytes = 10U * 1024U * 1024U;
+  historical_cpu.estimate.memory_bytes_per_item = 0;
+  historical_cpu.estimate.desired_cpu_threads = 12;
+  Lardon3DTaskDurableSnapshot historical_gpu = current_gpu;
+  historical_gpu.estimate.memory_fixed_bytes = 10U * 1024U * 1024U;
+  historical_gpu.estimate.memory_bytes_per_item = 0;
+  historical_gpu.estimate.desired_cpu_threads = 12;
+  char reconciled_path[PATH_MAX];
+  CHECK(snprintf(reconciled_path, sizeof(reconciled_path),
+                 "%s/.lardon3d/checkpoints/%lu.chk",
+                 fixture.state.project_path,
+                 (unsigned long)estimate_task_id) > 0 &&
+        lardon3d_task_checkpoint_save(reconciled_path, &historical_gpu) ==
+            LARDON3D_TASK_CHECKPOINT_OK);
+  const Lardon3DTaskDurableSnapshot *accepted[] = {
+      &current_cpu, &current_gpu, &historical_cpu, &historical_gpu};
+  for (size_t index = 0; index < sizeof(accepted) / sizeof(accepted[0]); ++index) {
+    Lardon3DTask *restored = NULL;
+    CHECK(lardon3d_task_kind_registry_restore(
+              lardon3d_task_kind_registry_production(),
+              LARDON3D_MATCHER_TASK_KIND, LARDON3D_MATCHER_TASK_KIND_VERSION,
+              accepted[index], &reconstruction, &restored) ==
+              LARDON3D_TASK_KIND_OK &&
+          restored);
+    Lardon3DResourceEstimate restored_estimate;
+    CHECK(lardon3d_task_resource_estimate(restored, &restored_estimate));
+    const Lardon3DResourceEstimate *expected =
+        index == 2 ? &current_cpu.estimate
+                   : index == 3 ? &current_gpu.estimate
+                                : &accepted[index]->estimate;
+    CHECK(same_estimate(&restored_estimate, expected));
+    lardon3d_task_destroy(restored);
+  }
+  Lardon3DTaskDurableSnapshot reconciled_snapshot;
+  uint32_t reconciled_version = 0;
+  CHECK(lardon3d_task_checkpoint_load(reconciled_path, &reconciled_snapshot,
+                                      &reconciled_version) ==
+            LARDON3D_TASK_CHECKPOINT_OK &&
+        reconciled_version == LARDON3D_TASK_CHECKPOINT_VERSION &&
+        same_estimate(&reconciled_snapshot.estimate, &historical_gpu.estimate));
+  char staged_path[PATH_MAX];
+  CHECK(snprintf(staged_path, sizeof(staged_path), "%s.next",
+                 reconciled_path) > 0 &&
+        access(staged_path, F_OK) != 0 && errno == ENOENT);
+  Lardon3DTaskDurableSnapshot malformed[4] = {
+      historical_cpu, historical_cpu, historical_gpu, historical_gpu};
+  malformed[0].estimate.memory_fixed_bytes--;
+  malformed[1].estimate.memory_bytes_per_item = 1;
+  malformed[2].estimate.gpu_memory_fixed_bytes++;
+  malformed[3].estimate.desired_cpu_threads = 11;
+  for (size_t index = 0; index < sizeof(malformed) / sizeof(malformed[0]); ++index) {
+    Lardon3DTask *restored = NULL;
+    CHECK(lardon3d_task_kind_registry_restore(
+              lardon3d_task_kind_registry_production(),
+              LARDON3D_MATCHER_TASK_KIND, LARDON3D_MATCHER_TASK_KIND_VERSION,
+              &malformed[index], &reconstruction, &restored) ==
+              LARDON3D_TASK_KIND_RECONSTRUCTION_FAILED &&
+          restored == NULL);
+  }
   lardon3d_task_destroy(estimate_task);
 
   stop_runtime(&fixture);

@@ -457,7 +457,15 @@ bool task_reconstruct_impl(
                    p.scanset_id, r, blob.data(), p.request_size);
   if (!c)
     return false;
-  *b = {run, c, destroy, finished, c};
+  // This Task kind has no legacy operational-resource reconciliation. Keep
+  // every optional Registry hook explicit so a future binding extension
+  // cannot accidentally inherit non-null recovery behavior.
+  *b = {};
+  b->callback = run;
+  b->userdata = c;
+  b->userdata_destroy = destroy;
+  b->finished_callback = finished;
+  b->finished_userdata = c;
   return true;
 }
 

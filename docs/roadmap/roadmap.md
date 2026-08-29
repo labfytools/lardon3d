@@ -181,21 +181,76 @@ présumer que chaque RAW a un JPEG sibling. La revue TUI détaillée, la guidanc
 de capture et les keyframes vidéo restent des intégrations ultérieures qui
 réutiliseront ce même chemin de qualité, sans second pipeline.
 
-## NEXT REAL-DATA MILESTONE — SELECTED SCIENTIFIC EXECUTION ON ENGINE BAY INPUTS
+## NEXT REAL-DATA MILESTONE — SELECTED SCIENTIFIC EXECUTION ON ENGINE BAY INPUTS — IMPLEMENTATION / VALIDATION IN PROGRESS
 
-Après validation de Photo Quality Triage / Acquisition Selection, l'intégration
-scientifique porte uniquement sur les acquisitions sélectionnées :
+L'intégration réelle opt-in porte uniquement sur les acquisitions sélectionnées
+des campagnes Engine Bay et s'arrête à la frontière pré-SfM validable. Pour
+chaque campagne, un exécutable éphémère crée un projet temporaire Project DB v22
+distinct : Visual Index v1 est borné à 4096 images, tandis que l'ensemble
+A6000+S21 en compte 4497. Cette séparation est opérationnelle ; elle ne redéfinit
+ni Capture, ni Asset, ni `image_id`, ni l'identité scientifique des acquisitions.
 
-1. matérialiser leurs représentations scientifiques ;
-2. exécuter features, candidats, matching, vérification, tracks et Sparse SfM ;
-3. évaluer la qualité de la reconstruction sparse multi-campagne ;
-4. exécuter MVS/dense avec budgets et scratch contrôlés ;
-5. publier durablement nuage dense et mesh ;
-6. comparer le résultat aux tentatives photogrammétriques antérieures.
+Le runner compose les API durables existantes, dans cet ordre :
 
-Ce milestone est une intégration réelle, pas une nouvelle série de micro-gates
-S3. Les antécédents d'OOM/SIGSEGV OpenMVS, pression swap, grands intermédiaires
-et temps longs imposent reprise, progression et contrôle de ressources.
+```text
+qualité
+→ campagne d'acquisition
+→ snapshot immuable de la sélection
+→ représentation (A6000 `raw.develop`, S21 JPEG SOURCE)
+→ features ORB
+→ Visual Index
+→ candidats du même ScanSet
+→ matching ORB
+→ GV gelée
+→ tracks
+```
+
+Il rouvre ensuite le Project DB afin de rapporter l'évidence durable produite.
+Il n'introduit ni coordinateur réutilisable, ni DAG, ni sidecar, ni scheduler,
+ni version Project DB v23 : Task, Queue, Scheduler et Resource Governor existants
+conservent leurs responsabilités.
+
+Le Sparse SfM réel final reste `BLOCKED_BY_KNOWN_CALIBRATION_DATA` pour ces
+campagnes ; aucune pseudo-calibration, interpolation de métadonnées ou inférence
+d'identité ne le contourne. Dense, mesh et publication aval ne font pas partie de
+ce jalon pré-SfM. Ce milestone est une intégration réelle, pas une nouvelle série
+de micro-gates S3, et son statut ne revendique encore ni implémentation achevée,
+ni validation réussie, ni PASS/FROZEN.
+
+## INTERNAL PARALLELISM + COMPUTE RESOURCES v1 — PASS / FROZEN
+
+La fondation scientifique pré-SfM courante comprend le parallélisme interne
+borné des étapes Candidate, Matcher et Visual Index, l'audit du threading des
+features, et l'admission/libération des ressources par le Resource Governor
+existant. Elle ne crée ni parallélisme inter-Tasks, ni pool global, ni second
+Scheduler, ni second Governor, ni persistance parallèle. Le contrat gelé est
+celui du [parallélisme interne borné](../architecture/internal_parallelism.md).
+
+L'audit GPU vérifie les coutures réellement disponibles, les coûts UMA, les
+réservations et la préservation des sorties canoniques. Il ne présume pas qu'un
+GPU soit approprié ni qu'une sortie GPU partage automatiquement l'identité
+scientifique CPU. Le gel ne revendique pas de comparaison de débit durable
+CPU-versus-GPU sur corpus : la pression hôte a contaminé cette mesure.
+
+Un éventuel **GPU COMPUTE v1** est postérieur et optionnel. Il ne peut être
+ouvert que si un audit futur et une preuve d'équivalence à la frontière concernée
+le justifient ; sinon le chemin CPU demeure le chemin retenu. Il ne modifie pas
+les contrats scientifiques, les résultats canoniques ni l'unique gouvernance des
+ressources.
+
+L'ordre de travail autorisé à court terme est :
+
+```text
+fondation scientifique pré-SfM courante
+→ INTERNAL PARALLELISM + COMPUTE RESOURCES v1
+  (Candidate, Matcher, Visual Index, audit feature threading,
+   correction progression/Resource Governor, audit GPU)
+→ GPU COMPUTE v1 optionnel, seulement si audit et équivalence le justifient
+→ poursuite pré-SfM réelle complète de S21
+→ acquisition dédiée de calibration
+→ Sparse SfM réel
+→ Dense / MVS
+```
 
 ## NEAR TERM
 
@@ -504,9 +559,13 @@ L'ordre demeure sans ambiguïté :
 
 ```text
 CURRENT NEXT
-  acquisition physique dédiée de calibration
+  fondation scientifique pré-SfM courante
+  → INTERNAL PARALLELISM + COMPUTE RESOURCES v1
+  → GPU COMPUTE v1 optionnel si audit/équivalence le justifient
+  → poursuite pré-SfM réelle complète de S21
+  → acquisition physique dédiée de calibration
   → calibration connue validée → Sparse SfM réel multi-campagne
-  → dense/mesh → publication
+  → dense / MVS → publication
 → LATER
   Coverage Analysis → Coverage Viewer → suggestions de points de vue
   → localisation live → intégration HDMI/USB → Capture Guidance / Live Coverage

@@ -368,6 +368,27 @@ void run_revalidation_and_duplicate_scope() {
 void run_remaining_matrix() {
   {
     Fixture fixture;
+    auto v1 = fixture.add_gvr(0, 1, {{0, 0, 0.1F}}, {0x01});
+    auto v2 = fixture.add_gvr(1, 2, {{0, 0, 0.1F}}, {0x01});
+    char sql[512];
+    std::snprintf(
+        sql, sizeof(sql),
+        "UPDATE geometric_verification_results SET verifier_version=2,"
+        "parameter_fingerprint=X'4343434343434343434343434343434343434343434343434343434343434343' "
+        "WHERE geometric_verification_result_id=%llu",
+        static_cast<unsigned long long>(v2));
+    execute_sql(fixture.db_path, sql);
+    uint64_t mixed_ids[] = {v1, v2};
+    auto request = fixture.request(mixed_ids, 2);
+    Lardon3DTrackBuilderProjectResult result{};
+    CHECK(lardon3d_track_builder_build_project(&request, &result) !=
+              LARDON3D_TRACK_BUILDER_PROJECT_OK &&
+          track_set_count(fixture.db_path) == 0);
+    std::puts("GV-V1/V2 SELECTOR: PASS (mixed lineage rejected)");
+  }
+
+  {
+    Fixture fixture;
     auto gvr = fixture.add_gvr(0, 1, {{0, 0, 0.1F}}, {0x01});
     uint64_t ids[] = {gvr};
     auto request = fixture.request(ids, 1);

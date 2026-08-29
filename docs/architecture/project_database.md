@@ -539,7 +539,11 @@ Project Database miniature.
 La stratégie v1 retient un résumé logique interrogable dans SQLite et une
 référence vers le fichier checkpoint. Le fichier checkpoint validé reste la
 source complète pour `lardon3d_task_restore()` ; la DB seule ne reconstruit
-jamais une tâche. Un écart ou un fichier invalide interdit la reprise.
+jamais une tâche. La cohérence compare uniquement les champs que la DB stocke
+dans `tasks` : `task_id`, nom, états saved/recovery, progression et compteur de
+séquences. Elle ne prétend pas comparer l'estimation complète ni les timestamps
+du snapshot. Une divergence de ce résumé ou un fichier invalide interdit la
+reprise.
 
 ## Schéma v7 implémenté
 
@@ -1050,9 +1054,21 @@ DB existante sans ligne projet ne peut être initialisée que si l'INI possède
 déjà son identité.
 
 Les checkpoints sont référencés par chemins relatifs portables :
-`.lardon3d/checkpoints/<task_id>.chk`. L'inventaire projet pagine les tâches DB,
-résout ce chemin sous la racine, charge le checkpoint et vérifie la cohérence du
-snapshot avec le résumé DB.
+`.lardon3d/checkpoints/<task_id>.chk`. Leur publication générique met d'abord
+en durabilité `.chk.next`, commit ensuite SQLite, puis promeut `.next` vers le
+canonique sous `.chk.lock`. Le verrou est consultatif et vivant seulement pour
+le processus ; il sérialise writer et reprise, mais n'est pas une donnée de
+récupération.
+
+L'inventaire projet utilise sa page DB seulement comme découverte. Après avoir
+obtenu `.chk.lock`, il recharge la ligne DB, car elle peut avoir changé pendant
+l'attente. Il choisit le canonique codec/version valide dont les champs du
+résumé DB correspondent exactement. Ce choix est prioritaire et ignore une
+`.next` périmée ou corrompue. Si le canonique ne correspond pas, une `.next`
+codec/version valide dont le même résumé correspond est promue sous le verrou
+puis utilisée. L'absence de `.next` reste normale pour un projet v22 legacy
+contenant seulement `.chk`; toute autre absence, corruption, version future ou
+divergence classe seulement la tâche comme non récupérable.
 
 Après copie du record hors mutex SQLite, l'inventaire consulte la registry. Il
 distingue `LEGACY_UNTYPED`, `UNKNOWN_TASK_KIND` et

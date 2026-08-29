@@ -219,9 +219,9 @@ La fonction retourne le dernier FeatureSet traité.
 
 ### Unité de travail
 
-Un FeatureSet source et sa requête Visual Index associée. Chaque séquence
-traite un lot borné de FeatureSets (1 à 64 selon le contrat Governor),
-page par page (PAGE_SIZE = 64).
+Un membership FeatureSet source du Visual Index et sa requête associée. Chaque
+séquence traite un lot borné de memberships (1 à 64 selon le contrat Governor),
+en ordre croissant d'ID sans supposer des IDs contigus.
 
 ### Checkpoint
 
@@ -236,10 +236,20 @@ DB, et les paires déjà persistées sont ignorées par `find avant create`.
 À l'ouverture du projet, la tâche est automatiquement restaurée via la
 registry production et resoumise à la queue.
 
+Les anciens snapshots v1 produits avec l'estimation opérationnelle exacte
+128 Kio fixes, 64 Kio par item, lot 1–64, CPU 1, IO 1 et GPU 0 sont normalisés
+éphémèrement par la registry à la forme courante CPU12 avant admission. Le
+snapshot durable original reste la source du reconstructeur ; aucun checkpoint
+d'estimation seule n'est stagé, promu ou publié sous le même résumé. Une panne
+pré-terminale répète donc cette normalisation exacte. Aucun autre snapshot,
+curseur ou paramètre scientifique n'est réinterprété.
+
 ### Intégration scheduler
 
 La tâche utilise le scheduler générique via le pattern standard :
-- Estimation immuable (128 Kio fixes, 256 Kio par item, lot 1–64)
+- Estimation opérationnelle (256 Kio fixes, 64 Kio par item, lot 1–64).
+  La Queue conserve un callback ; jusqu'à douze participants CPU admis peuvent
+  calculer une fenêtre interne bornée sans modifier l'identité scientifique.
 - Réservation CPU + IO avant exécution
 - `lardon3d_task_sequence_break()` entre chaque lot pour réadmission Governor
 - Callback terminal checkpoint après `COMPLETED`/`FAILED`/`CANCELLED`
@@ -263,21 +273,23 @@ bool lardon3d_candidate_pair_generate_reconstruct(
 
 ### Garantie actuelle
 
-Le generator s'exécute sur un seul FeatureSet à la fois.
-Le mutex DB protège les création concurrentes.
+La Queue conserve un callback actif. À l'intérieur de la Task, jusqu'à douze
+threads CPU admis calculent en parallèle une fenêtre d'au plus deux sources par
+thread. Chaque participant possède un handle DB de lecture privé. Le thread
+propriétaire publie ensuite seul et dans l'ordre canonique des sources. Voir le
+[contrat de parallélisme interne](internal_parallelism.md).
 
 ### Atomicité
 
-Deux workers créant simultanément la même paire :
-- Ne corrompent pas la DB
-- Ne créent pas deux lignes (UNIQUE constraint)
-- Retournent OK pour l'un, NOT_FOUND→create pour l'autre
+Les workers internes ne créent aucune paire. Après leur jointure, le
+propriétaire applique seul `find avant create`. La contrainte UNIQUE reste une
+protection persistante, pas un mécanisme d'ordonnancement parallèle.
 
 ### Limites
 
-Le pattern `find + create` n'est pas atomique entre les deux appels.
-Avec un seul worker, c'est suffisant. Avec plusieurs workers,
-la contrainte UNIQUE assure l'unicité mais peut causer un retry.
+Le pattern `find + create` n'est pas atomique entre les deux appels. Le chemin
+de Task n'introduit aucun writer concurrent ; la sémantique existante reste
+inchangée pour les autres appelants éventuels.
 
 ## Bornes et ressources
 
@@ -287,8 +299,9 @@ la contrainte UNIQUE assure l'unicité mais peut causer un retry.
 
 ### Mémoire
 
-Allocation par requête : `256 * sizeof(Lardon3DVisualIndexCandidate)`
-≈ 256 * 40 = 10 240 octets (10 Kio).
+Allocation de requête bornée par le top-K, plus un résultat de propositions
+borné par le même maximum. La Task limite sa fenêtre à 24 sources et annonce
+256 Kio fixes plus 64 Kio par item au Governor.
 
 ### Complexité
 

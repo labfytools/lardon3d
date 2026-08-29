@@ -83,14 +83,21 @@ flottante ne garantit pas le top-2 OpenCV sur les égalités adversariales et le
 gain n'est présent que sur les grandes paires carrées. Ils restent intégralement
 sur BFMatcher CPU.
 
-`matcher.run` v1 orchestre le Matcher sans connaître son backend interne. La
+**IMPLEMENTATION IN PROGRESS — parallélisme interne P4.** `matcher.run` v1
+orchestre le Matcher sans connaître son backend interne. La
 tâche persiste uniquement la configuration, l'identité des Feature Sets à
 sélectionner et un curseur Candidate Pair. Une paire est atomique et publiée
 immédiatement. Les lots 1/2/4/8 sont séparés par checkpoint et
 `task_sequence_break()`. La tâche utilise l'unique Resource Governor avec une
 estimation couvrant ce working set ; aucune seconde logique de budget n'est
-introduite. Sa ligne durable `matcher_tasks` appartient au schéma Project DB
-v11 ; le Match Result reste le contrat publié en v10.
+introduite. Dans un lot, des fenêtres bornées calculent au plus deux paires par
+thread CPU effectivement admis, avec un plafond de huit. Le callback Queue
+compte comme un participant, joint au plus `cpu_threads - 1` enfants, puis
+publie seul les stages en ordre `candidate_pair_id`. OpenCV reste à un thread
+interne pendant cette séquence, ce qui interdit un fan-out BFMatcher imbriqué.
+Le curseur ne suit que le préfixe contigu durable ; le premier échec scelle tout
+le suffixe calculé. Sa ligne durable `matcher_tasks` appartient au schéma
+Project DB v11 ; le Match Result reste le contrat publié en v10.
 
 Project DB v12 ajoute un enfant `Geometric Verification Result` référencé par
 `match_result_id`. Le Matcher ne calcule, ne stocke et ne valide aucun inlier
@@ -105,8 +112,20 @@ canonicalisation et persistance restent communs. Sur Radeon 780M, la parité
 top-2 avec OpenCV est exacte et le gain warm est supérieur à 90 % à 4096/8192.
 Le backend de production conserve exactement cette frontière. Sa parité entière
 permet au CPU et à Vulkan de partager l'identité persistante. La sélection est
-une politique runtime ; le CPU reste le fallback portable. Le contrat détaillé
-est décrit dans [vulkan_matcher.md](vulkan_matcher.md).
+une politique runtime explicite ; le CPU reste le fallback portable. Les APIs
+historiques de création/soumission choisissent toujours le mode CPU parallèle.
+Les variantes additives `*_with_mode` permettent de demander ORB Vulkan avant
+l'admission ; elles refusent SIFT/RootSIFT, un profil sans GPU sélectionné ou
+un backend absent. Ce mode immutable demande exactement CPU 1, GPU 1 et
+640 Kio GPU/UMA. Un échec Vulkan pendant une exécution déjà admise reprend le
+top-2 CPU exact sans changer fingerprint ni résultat. Le contrat détaillé est
+décrit dans [vulkan_matcher.md](vulkan_matcher.md).
+
+La reprise reconnaît uniquement quatre estimations complètes : CPU8/GPU0 et
+CPU1/GPU1/640 Kio courantes, plus CPU12/GPU0 et CPU12/GPU1/640 Kio
+historiques. Les deux formes CPU12 sont normalisées éphémèrement vers leur
+forme courante avant admission, sans checkpoint d'estimation seule.
+Une forme voisine est rejetée ; aucun champ isolé ne sert à deviner le backend.
 
 ## Déterminisme et fingerprint
 
@@ -117,4 +136,4 @@ mêmes paires attendues, l'ordre et la sérialisation stables. Aucune promesse
 bit-à-bit cross-platform n'est faite pour les distances L2 flottantes.
 ORB/Hamming bénéficie d'une garantie plus forte grâce à sa distance entière.
 
-NEXT: GEOMETRIC VERIFIER v1
+NEXT: GEOMETRIC VERIFIER v3

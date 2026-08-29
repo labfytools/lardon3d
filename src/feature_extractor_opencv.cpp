@@ -290,12 +290,18 @@ lardon3d_feature_extract_orb(const char *path, const Lardon3DFeatureExtractorPar
     std::vector<cv::KeyPoint> points;
     cv::Mat descriptors;
     extractor->detectAndCompute(image, cv::noArray(), points, descriptors);
-    if (points.size() > parameters->max_features ||
-        points.size() > std::numeric_limits<uint32_t>::max() ||
+    if (points.size() > std::numeric_limits<uint32_t>::max() ||
         (!points.empty() && (descriptors.rows != static_cast<int>(points.size()) ||
                              descriptors.cols != LARDON3D_FEATURE_DESCRIPTOR_DIMENSION ||
                              descriptors.type() != CV_8UC1))) {
       return LARDON3D_FEATURE_EXTRACT_ERROR;
+    }
+    if (points.size() > parameters->max_features) {
+      /* OpenCV documents nfeatures as a requested maximum but may return one extra
+       * point while distributing per-level quotas. The Feature Set contract is an
+       * exact bound, so retain OpenCV's deterministic prefix and matching rows. */
+      points.resize(parameters->max_features);
+      descriptors = descriptors.rowRange(0, static_cast<int>(parameters->max_features));
     }
     size_t count = points.size();
     Lardon3DFeatureKeypoint *keypoints =

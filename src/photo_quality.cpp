@@ -33,6 +33,7 @@ constexpr double kSobelLowTextureMagnitude = 0.035;  // Low-gradient normalized 
  * dimensions. This is parser resource admission, not a scientific image-size
  * limit: every byte read or skipped consumes the same finite work budget. */
 constexpr uint64_t kJpegStructuralByteLimit = 64ULL * 1024ULL * 1024ULL;
+constexpr size_t kJpegMaximumContainerImages = 8;
 
 bool jpeg_dimensions(const char *path, uint32_t &width, uint32_t &height) {
   std::FILE *file = std::fopen(path, "rb");
@@ -63,101 +64,146 @@ bool jpeg_dimensions(const char *path, uint32_t &width, uint32_t &height) {
     structural_bytes += count;
     return true;
   };
-  if (read_byte() != 0xff || read_byte() != 0xd8) {
-    close();
-    return false;
-  }
   bool have_dimensions = false;
-  bool in_entropy = false;
-  int marker = -1;
-  for (;;) {
-    if (marker < 0) {
-      int prefix = read_byte();
-      if (in_entropy) {
-        while (prefix != EOF) {
+  bool primary_has_mpf = false;
+  bool soi_consumed = false;
+  for (size_t image_index = 0; image_index < kJpegMaximumContainerImages; ++image_index) {
+    if (!soi_consumed && (read_byte() != 0xff || read_byte() != 0xd8)) {
+      close();
+      return false;
+    }
+    soi_consumed = false;
+    bool image_has_dimensions = false;
+    bool image_has_mpf = false;
+    bool in_entropy = false;
+    int marker = -1;
+    for (;;) {
+      if (marker < 0) {
+        int prefix = read_byte();
+        if (in_entropy) {
+          while (prefix != EOF) {
+            if (prefix != 0xff) {
+              prefix = read_byte();
+              continue;
+            }
+            marker = read_byte();
+            while (marker == 0xff)
+              marker = read_byte();
+            if (marker == 0x00 || (marker >= 0xd0 && marker <= 0xd7)) {
+              prefix = read_byte();
+              continue;
+            }
+            break;
+          }
+        } else {
           if (prefix != 0xff) {
-            prefix = read_byte();
-            continue;
+            close();
+            return false;
           }
           marker = read_byte();
-          while (marker == 0xff)
-            marker = read_byte();
-          if (marker == 0x00 || (marker >= 0xd0 && marker <= 0xd7)) {
-            prefix = read_byte();
-            continue;
-          }
-          break;
         }
-      } else {
-        if (prefix != 0xff) {
+      }
+      while (marker == 0xff)
+        marker = read_byte();
+      if (marker == EOF || marker == 0x00 || marker == 0xd8 ||
+          (!in_entropy && marker >= 0xd0 && marker <= 0xd7)) {
+        close();
+        return false;
+      }
+      in_entropy = false;
+      if (marker == 0xd9)
+        break;
+      if (marker == 0x01) {
+        marker = -1;
+        continue;
+      }
+      const int high = read_byte();
+      const int low = read_byte();
+      if (high == EOF || low == EOF) {
+        close();
+        return false;
+      }
+      const unsigned length = (static_cast<unsigned>(high) << 8) |
+                              static_cast<unsigned>(low);
+      if (length < 2) {
+        close();
+        return false;
+      }
+      if (marker == 0xe2 && length >= 6) {
+        unsigned char identifier[4];
+        if (!read_exact(identifier, sizeof(identifier))) {
           close();
           return false;
         }
-        marker = read_byte();
+        image_has_mpf = image_has_mpf ||
+                        std::memcmp(identifier, "MPF\0", sizeof(identifier)) == 0;
+        if (!skip(length - 6)) {
+          close();
+          return false;
+        }
+      } else {
+        const bool sof = (marker >= 0xc0 && marker <= 0xcf && marker != 0xc4 &&
+                          marker != 0xc8 && marker != 0xcc);
+        if (sof) {
+          unsigned char header[6];
+          if (length < 8 || !read_exact(header, sizeof(header))) {
+            close();
+            return false;
+          }
+          const uint32_t image_height = (static_cast<uint32_t>(header[1]) << 8) | header[2];
+          const uint32_t image_width = (static_cast<uint32_t>(header[3]) << 8) | header[4];
+          if (image_width == 0 || image_height == 0 || image_has_dimensions ||
+              !skip(length - 8)) {
+            close();
+            return false;
+          }
+          if (image_index == 0) {
+            width = image_width;
+            height = image_height;
+            have_dimensions = true;
+          }
+          image_has_dimensions = true;
+        } else if (!skip(length - 2)) {
+          close();
+          return false;
+        }
       }
-    }
-    while (marker == 0xff)
-      marker = read_byte();
-    if (marker == EOF || marker == 0x00 || marker == 0xd8 ||
-        (!in_entropy && marker >= 0xd0 && marker <= 0xd7)) {
-      close();
-      return false;
-    }
-    in_entropy = false;
-    if (marker == 0xd9) {
-      const int trailing = read_byte();
-      close();
-      return have_dimensions && trailing == EOF;
-    }
-    if (marker == 0x01) {
+      if (marker == 0xda) {
+        if (!image_has_dimensions) {
+          close();
+          return false;
+        }
+        in_entropy = true;
+      }
       marker = -1;
-      continue;
     }
-    int high = read_byte();
-    int low = read_byte();
-    if (high == EOF || low == EOF) {
+    if (image_index == 0)
+      primary_has_mpf = image_has_mpf;
+
+    /* The frozen MPF contract treats physical bytes after primary EOI as a
+     * bounded container, never as pixels: only zero gaps, structurally valid
+     * secondary JPEGs, and a zero-only trailer are accepted. */
+    int trailing = read_byte();
+    while (trailing == 0)
+      trailing = read_byte();
+    if (trailing == EOF) {
+      const bool valid = have_dimensions && std::ferror(file) == 0;
+      close();
+      return valid;
+    }
+    if (!primary_has_mpf || trailing != 0xff) {
       close();
       return false;
     }
-    const unsigned length = (static_cast<unsigned>(high) << 8) |
-                            static_cast<unsigned>(low);
-    if (length < 2) {
+    const int soi = read_byte();
+    if (soi != 0xd8) {
       close();
       return false;
     }
-    const bool sof = (marker >= 0xc0 && marker <= 0xcf && marker != 0xc4 &&
-                      marker != 0xc8 && marker != 0xcc);
-    if (sof) {
-      unsigned char header[6];
-      if (length < 8 || !read_exact(header, sizeof(header))) {
-        close();
-        return false;
-      }
-      height = (static_cast<uint32_t>(header[1]) << 8) | header[2];
-      width = (static_cast<uint32_t>(header[3]) << 8) | header[4];
-      if (width == 0 || height == 0 || have_dimensions ||
-          !skip(length - 8)) {
-        close();
-        return false;
-      }
-      have_dimensions = true;
-    } else if (!skip(length - 2)) {
-      close();
-      return false;
-    }
-    if (marker == 0xda) {
-      if (!have_dimensions) {
-        close();
-        return false;
-      }
-      in_entropy = true;
-    }
-    marker = -1;
-    if (std::ferror(file)) {
-      close();
-      return false;
-    }
+    soi_consumed = true;
   }
+  close();
+  return false;
 }
 
 int reduced_grayscale_flag(uint32_t maximum_dimension) {

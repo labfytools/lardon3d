@@ -31,6 +31,16 @@ transfert, la registry nettoie le userdata sur toute erreur ; après restauratio
 réussie, `Lardon3DTask` en devient propriétaire et le détruit une fois après la
 fin de l'exécution. Le constructeur métier n'est jamais appelé sous mutex DB.
 
+La registry peut normaliser une ancienne estimation opérationnelle connue. Le
+reconstructeur reçoit toujours le snapshot durable original afin de valider le
+mode exact ; la registry applique ensuite l'estimation effective uniquement à
+la copie privée transmise à la restauration de `Task`. Cette normalisation est
+éphémère et déterministe : elle ne stage, ne promeut et ne publie aucun
+checkpoint contenant seulement une estimation différente sous le même résumé.
+Une panne pré-terminale peut donc répéter la normalisation exacte. Cette couture
+ne peut modifier ni identité, paramètres scientifiques, progression ou curseur
+métier, et toute forme voisine est rejetée.
+
 ## Persistance et legacy
 
 Le checkpoint générique reste en version 1. Project Database v7 conserve le
@@ -62,13 +72,27 @@ depuis `image_id` et ses paramètres bornés.
 **IMPLEMENTED** — `candidate_pair.generate`, version 1, recharge
 `visual_index_id + after_feature_set_id + top_k + minimum_evidence_count
 + scanset_filter + exclude_same_asset` depuis `candidate_pair_generate_tasks`
-et reconstruit un contexte boundé.
+et reconstruit un contexte boundé. La restauration reconnaît uniquement le
+snapshot opérationnel sériel historique v1 exact et remplace éphémèrement sa
+demande d'un thread CPU par douze avant admission. Le checkpoint historique et
+le curseur typé restent inchangés. Les snapshots Candidate courants et tous les
+autres kinds restent inchangés.
 
 **IMPLEMENTED** — `matcher.run`, version 1, recharge la configuration Matcher,
 l'identité Feature Set et le curseur `after_candidate_pair_id`. Il traite une
 Candidate Pair atomique à la fois dans des lots bornés à huit, checkpoint le
 curseur et repasse par le Governor entre les lots. La table durable
 `matcher_tasks` est introduite par Project DB v11, après le Match Result v10.
+Son reconstructeur accepte les formes opérationnelles exactes CPU8/GPU0 et
+CPU1/GPU1/640 Kio, puis normalise éphémèrement leurs deux prédécesseurs CPU12
+vers la forme courante correspondante avant l'admission. Une forme
+voisine échoue au lieu de servir d'indice de backend ; le payload Project DB ne
+change pas et ne persiste aucune identité matérielle.
+
+**IMPLEMENTED** — `features.extract.sift` et `features.extract.rootsift`
+acceptent leur forme CPU12 courante et normalisent uniquement leur forme CPU1
+historique exacte. Cette compatibilité opérationnelle n'altère ni fingerprint,
+Feature Set, checkpoint durable, ni politique scientifique.
 
 **IMPLEMENTED** — `geometric_verifier.run`, version 1, recharge la configuration
 Fundamental immuable, en revalide le fingerprint et reprend `after_match_result_id`.

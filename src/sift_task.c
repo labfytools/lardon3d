@@ -200,7 +200,13 @@ bool lardon3d_sift_extract_reconstruct(const Lardon3DTaskDurableSnapshot *snapsh
   if (memcmp(fingerprint, parameters.parameter_fingerprint, 32) != 0) return false;
   SiftTaskContext *context = make_context(runtime, &parameters);
   if (!context) return false;
-  *binding = (Lardon3DTaskKindBinding){run, context, destroy_context, finished, context};
+  *binding = (Lardon3DTaskKindBinding){
+      .callback = run,
+      .userdata = context,
+      .userdata_destroy = destroy_context,
+      .finished_callback = finished,
+      .finished_userdata = context,
+  };
   return true;
 }
 
@@ -246,7 +252,10 @@ Lardon3DTask *lardon3d_project_create_sift_extract_task(
                                        .memory_bytes_per_item = 1024ULL * 1024 * 1024,
                                        .minimum_batch_size = 1,
                                        .maximum_batch_size = 1,
-                                       .desired_cpu_threads = 1,
+                                       /* Keep the immutable estimate independent of Matcher's
+                                        * temporary process-wide single-thread setting. Governor
+                                        * reduction makes this ceiling equal the startup pool. */
+                                       .desired_cpu_threads = 12,
                                        .desired_io_slots = 1,
                                        .task_class = LARDON3D_RESOURCE_TASK_CPU};
   const char *kind = parameters->rootsift ? LARDON3D_ROOTSIFT_EXTRACT_TASK_KIND

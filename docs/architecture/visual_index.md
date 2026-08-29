@@ -56,9 +56,12 @@ ou endianness hôte n'intervient. `visual_index_id` est une identité SQLite
 
 Au plus `max_features_per_set` features sont indexées. La sélection v1 retient
 le préfixe de `feature_index` croissant. Les postings conservent l'indice
-original. Un Feature Set vide est
-membre valide sans posting. Le build ne garde qu'un Feature Set et une tranche
-Feature Reader de 256 descripteurs en mémoire.
+original. Un Feature Set vide est membre valide sans posting. Le build Task
+peut lire en parallèle jusqu'à douze Feature Files, avec un reader et une
+tranche de 256 descripteurs privés par participant effectivement admis. Chaque
+Feature Set écrit dans une tranche privée de la capacité de postings déjà
+réservée pour le segment ; le propriétaire compacte ensuite les tranches dans
+l'ordre de sélection et applique seul l'ordre total persistant.
 
 ## Segments introduits en Project Database v6, conservés en v7
 
@@ -157,17 +160,36 @@ coopératives entre lectures et avant publication ; un segment déjà READY rest
 valide. La reprise recommence au dernier curseur commité et l'unicité des
 memberships rend le rejeu idempotent.
 
-L'estimation réserve un thread CPU, un slot I/O, GPU zéro, 8 Mio fixes et 2 Mio
-par Feature Set, lot 1..16. `record_batch` reçoit le nombre de Feature Sets
-réellement commités, la durée réelle et `peak_memory_bytes=0` (inconnue).
+**IMPLEMENTED — parallélisme interne borné.** La Queue exécute toujours un seul
+callback. L'estimation demande jusqu'à douze threads CPU, un slot I/O, GPU zéro,
+8 Mio fixes et 2 Mio par Feature Set, lot 1..16. Le callback compte comme un
+participant et crée au plus `cpu_threads - 1` enfants. Chaque enfant lit
+exclusivement des Feature Files immuables et écrit une tranche privée ; il ne
+touche ni au handle Project DB partagé, ni au fichier de segment, ni au curseur.
+Tous les enfants sont joints avant tri, sérialisation, publication asset et
+transaction SQLite.
+
+La réduction emploie l'ordre total v1
+`table_id,key24,feature_set_id,feature_index`. Le fichier, son SHA-256, le
+chemin, les memberships, la génération, le fingerprint et les résultats de
+requête sont donc exactement identiques à un build avec un participant. Une
+erreur de lecture dans une tranche interdit toute publication ; une création
+de thread refusée est remplacée par le calcul de cette tranche sur le callback,
+sans changer la réduction. Le curseur n'avance qu'après la publication
+transactionnelle du segment, puis le checkpoint existant reste le seul point
+de reprise Task. `record_batch` reçoit le nombre de Feature Sets réellement
+commités, la durée réelle et `peak_memory_bytes=0` (inconnue).
 
 ## Complexité et limites
 
 Pour `D` descriptors échantillonnés, construction et disque sont `O(6D)`.
 Une requête effectue `O(6Q log P + H)` par segment (`Q<=1024`, `H` hits bornés),
-pas `O(images²)`. La mémoire build est bornée par huit métadonnées, 256
-descripteurs et les postings d'un segment; la mémoire query par 4096 candidats,
-256 postings et 256 résultats. À 3700 images et 512 features, environ 11,4
+pas `O(images²)`. La mémoire build est bornée par les métadonnées, les tranches
+de 256 descripteurs privées des participants et les postings d'un segment ; les
+tranches privées partitionnent le buffer de postings existant et ne le
+dupliquent pas. Chaque participant garde au plus un reader/FD de Feature File.
+La mémoire query est bornée par 4096 candidats, 256 postings et 256 résultats.
+À 3700 images et 512 features, environ 11,4
 millions de postings sont produits. Un test structurel persiste 50 000 Feature Sets puis
 confirme la pagination par 16 et le refus propre après 4096 memberships. Un index unique
 ne couvre donc pas encore 50 000 images : le risque principal est le nombre de segments

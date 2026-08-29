@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <openssl/evp.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -14,12 +15,15 @@
 #include <lardon3d/feature_store.h>
 #include <lardon3d/visual_index.h>
 
+#include "visual_index_internal.h"
+
 enum {
   SEGMENT_HEADER_SIZE = 128,
   POSTING_SIZE = 24,
   DESCRIPTOR_SIZE = 32,
   SEGMENT_POSTING_MAX = LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX * 1024 *
                         LARDON3D_VISUAL_INDEX_TABLE_COUNT,
+  FEATURE_SET_POSTING_MAX = 1024 * LARDON3D_VISUAL_INDEX_TABLE_COUNT,
 };
 
 typedef struct {
@@ -208,6 +212,92 @@ static Lardon3DVisualIndexResult append_feature_postings(
   return LARDON3D_VISUAL_INDEX_OK;
 }
 
+typedef struct {
+  const char *project_path;
+  const Lardon3DProjectDbFeatureSet *sets;
+  uint32_t maximum_features;
+  Posting *postings;
+  size_t set_count;
+  size_t first_set;
+  size_t stride;
+  size_t *posting_counts;
+  Lardon3DVisualIndexResult *results;
+} PostingBuildJob;
+
+static void *build_posting_slices(void *userdata) {
+  PostingBuildJob *job = userdata;
+  for (size_t i = job->first_set; i < job->set_count; i += job->stride) {
+    size_t count = 0;
+    job->results[i] = append_feature_postings(
+        job->project_path, &job->sets[i], job->maximum_features,
+        job->postings + i * FEATURE_SET_POSTING_MAX, FEATURE_SET_POSTING_MAX, &count);
+    job->posting_counts[i] = count;
+  }
+  return NULL;
+}
+
+static Lardon3DVisualIndexResult build_postings(
+    const char *project_path, const Lardon3DProjectDbFeatureSet *sets, size_t set_count,
+    uint32_t maximum_features, unsigned int cpu_threads, Posting *postings,
+    size_t *posting_count) {
+  size_t counts[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX] = {0};
+  Lardon3DVisualIndexResult results[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX];
+  for (size_t i = 0; i < set_count; ++i) {
+    results[i] = LARDON3D_VISUAL_INDEX_IO_ERROR;
+  }
+  size_t participants = cpu_threads < set_count ? cpu_threads : set_count;
+  PostingBuildJob jobs[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX];
+  pthread_t children[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX - 1];
+  bool created[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX - 1] = {false};
+  for (size_t participant = 0; participant < participants; ++participant) {
+    jobs[participant] = (PostingBuildJob){.project_path = project_path,
+                                          .sets = sets,
+                                          .maximum_features = maximum_features,
+                                          .postings = postings,
+                                          .set_count = set_count,
+                                          .first_set = participant,
+                                          .stride = participants,
+                                          .posting_counts = counts,
+                                          .results = results};
+  }
+  for (size_t participant = 1; participant < participants; ++participant) {
+    created[participant - 1] =
+        pthread_create(&children[participant - 1], NULL, build_posting_slices,
+                       &jobs[participant]) == 0;
+  }
+  (void)build_posting_slices(&jobs[0]);
+  bool joined = true;
+  for (size_t participant = 1; participant < participants; ++participant) {
+    if (created[participant - 1] && pthread_join(children[participant - 1], NULL) != 0) {
+      joined = false;
+    }
+  }
+  if (!joined) {
+    return LARDON3D_VISUAL_INDEX_IO_ERROR;
+  }
+  /* A failed pthread_create does not change results: the owner computes only
+   * the missing disjoint slices after all successfully created children join. */
+  for (size_t participant = 1; participant < participants; ++participant) {
+    if (!created[participant - 1]) {
+      (void)build_posting_slices(&jobs[participant]);
+    }
+  }
+  size_t compact_count = 0;
+  for (size_t i = 0; i < set_count; ++i) {
+    if (results[i] != LARDON3D_VISUAL_INDEX_OK) {
+      return results[i];
+    }
+    /* Completion order is deliberately discarded. Each source owns a fixed
+     * private slice, then the owner compacts in feature_set_id selection order;
+     * create_segment_file applies the persisted total posting order. */
+    memmove(postings + compact_count, postings + i * FEATURE_SET_POSTING_MAX,
+            counts[i] * sizeof(*postings));
+    compact_count += counts[i];
+  }
+  *posting_count = compact_count;
+  return LARDON3D_VISUAL_INDEX_OK;
+}
+
 static bool write_exact(int descriptor, const void *data, size_t size) {
   const unsigned char *bytes = data;
   while (size > 0) {
@@ -372,7 +462,8 @@ static Lardon3DVisualIndexResult create_segment_file(
 static Lardon3DVisualIndexResult update_once_internal(
     const char *project_path, Lardon3DProjectDb *database, uint64_t index_id,
     uint64_t producer_task_id, uint64_t after, size_t maximum_feature_sets, uint64_t *last,
-    size_t *indexed_count, void (*after_select)(void *), void *hook_userdata) {
+    size_t *indexed_count, unsigned int cpu_threads, void (*after_select)(void *),
+    void *hook_userdata) {
   if (last) {
     *last = after;
   }
@@ -381,7 +472,8 @@ static Lardon3DVisualIndexResult update_once_internal(
   }
   if (!project_path || !database || index_id == 0 || maximum_feature_sets == 0 ||
       maximum_feature_sets > LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX || !last ||
-      !indexed_count) {
+      !indexed_count || cpu_threads == 0 ||
+      cpu_threads > LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX) {
     return LARDON3D_VISUAL_INDEX_INVALID_ARGUMENT;
   }
   Lardon3DProjectDbVisualIndex index;
@@ -420,11 +512,13 @@ static Lardon3DVisualIndexResult update_once_internal(
   size_t posting_count = 0;
   Lardon3DVisualIndexResult result = LARDON3D_VISUAL_INDEX_OK;
   uint64_t ids[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX];
-  for (size_t i = 0; i < set_count && result == LARDON3D_VISUAL_INDEX_OK; ++i) {
+  for (size_t i = 0; i < set_count; ++i) {
     ids[i] = sets[i].feature_set_id;
-    result = append_feature_postings(project_path, &sets[i], index.max_features_per_set, postings,
-                                     SEGMENT_POSTING_MAX, &posting_count);
   }
+  /* All parallel work ends before the deterministic sort, asset publication,
+   * and membership transaction. A failed slice therefore publishes nothing. */
+  result = build_postings(project_path, sets, set_count, index.max_features_per_set,
+                          cpu_threads, postings, &posting_count);
   unsigned char hash[32];
   char path[4096];
   uint64_t size = 0;
@@ -472,7 +566,15 @@ Lardon3DVisualIndexResult lardon3d_visual_index_update_once(
     uint64_t producer_task_id, uint64_t after, size_t maximum_feature_sets, uint64_t *last,
     size_t *indexed_count) {
   return update_once_internal(project_path, database, index_id, producer_task_id, after,
-                              maximum_feature_sets, last, indexed_count, NULL, NULL);
+                              maximum_feature_sets, last, indexed_count, 1, NULL, NULL);
+}
+
+Lardon3DVisualIndexResult lardon3d_visual_index_update_once_parallel(
+    const char *project_path, Lardon3DProjectDb *database, uint64_t index_id,
+    uint64_t producer_task_id, uint64_t after, size_t maximum_feature_sets,
+    unsigned int cpu_threads, uint64_t *last, size_t *indexed_count) {
+  return update_once_internal(project_path, database, index_id, producer_task_id, after,
+                              maximum_feature_sets, last, indexed_count, cpu_threads, NULL, NULL);
 }
 
 #ifdef LARDON3D_VISUAL_INDEX_TESTING
@@ -482,7 +584,7 @@ Lardon3DVisualIndexResult lardon3d_visual_index_test_update_once(
     size_t *indexed_count, Lardon3DVisualIndexAfterSelectHook after_select,
     void *hook_userdata) {
   return update_once_internal(project_path, database, index_id, producer_task_id, after,
-                              maximum_feature_sets, last, indexed_count, after_select,
+                              maximum_feature_sets, last, indexed_count, 1, after_select,
                               hook_userdata);
 }
 #endif

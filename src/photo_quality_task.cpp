@@ -202,7 +202,12 @@ extern "C" bool lardon3d_photo_quality_task_reconstruct(const Lardon3DTaskDurabl
     auto *context = make_context(rt->project_path, rt->project_db, rt->resource_governor,
         persisted.scanset_id, request, blob.data(), persisted.request_size);
     if (!context) return false;
-    *binding = {run, context, destroy, finished, context};
+    *binding = {};
+    binding->callback = run;
+    binding->userdata = context;
+    binding->userdata_destroy = destroy;
+    binding->finished_callback = finished;
+    binding->finished_userdata = context;
     return true;
   } catch (...) { return false; }
 }

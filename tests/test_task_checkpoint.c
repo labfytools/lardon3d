@@ -246,6 +246,22 @@ run_test(void)
         == LARDON3D_TASK_CHECKPOINT_OK);
     CHECK(loaded.id == 99 && loaded.saved_state == TASK_COMPLETED);
 
+    /* .next is independently durable and may coexist with a valid canonical
+     * checkpoint until the Project DB snapshot has committed. */
+    durable.id = 101;
+    CHECK(lardon3d_task_checkpoint_stage(path, &durable)
+        == LARDON3D_TASK_CHECKPOINT_OK);
+    CHECK(lardon3d_task_checkpoint_load(path, &loaded, NULL)
+        == LARDON3D_TASK_CHECKPOINT_OK && loaded.id == 99);
+    CHECK(lardon3d_task_checkpoint_load_staged(path, &loaded, NULL)
+        == LARDON3D_TASK_CHECKPOINT_OK && loaded.id == 101);
+    CHECK(lardon3d_task_checkpoint_promote_staged(path)
+        == LARDON3D_TASK_CHECKPOINT_OK);
+    CHECK(lardon3d_task_checkpoint_load(path, &loaded, NULL)
+        == LARDON3D_TASK_CHECKPOINT_OK && loaded.id == 101);
+    CHECK(lardon3d_task_checkpoint_load_staged(path, &loaded, NULL)
+        == LARDON3D_TASK_CHECKPOINT_NOT_FOUND);
+
     CHECK(mkdir(uncertain_directory, 0700) == 0);
     Lardon3DTaskDurableSnapshot previous = durable;
     previous.id = 98;

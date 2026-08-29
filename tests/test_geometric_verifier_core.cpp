@@ -127,6 +127,10 @@ static bool publish_features(Fixture *fixture,
       keypoints[index].x -= 5.0F;
     keypoints[index].size = 1.0F;
   }
+  // Distinct observation IDs may legitimately share coordinates; v2 support
+  // must count identities rather than unique Point2d values.
+  keypoints[1].x = keypoints[0].x;
+  keypoints[1].y = keypoints[0].y;
   Lardon3DExtractedFeatures features = {};
   features.image_width = 1024;
   features.image_height = 768;
@@ -216,8 +220,9 @@ static void put_u32(unsigned char bytes[4], uint32_t value) {
     bytes[index] = static_cast<unsigned char>(value >> (8U * index));
 }
 
-static bool create_parent(Fixture *fixture, uint32_t count,
-                          uint64_t *parent_id) {
+static bool create_parent_with_entries(
+    Fixture *fixture, const std::vector<Lardon3DMatchFileEntry> &entries,
+    uint64_t *parent_id) {
   ++fixture->parent_sequence;
   char relative[64];
   char full[PATH_MAX];
@@ -226,12 +231,7 @@ static bool create_parent(Fixture *fixture, uint32_t count,
   if (length <= 0 || length >= static_cast<int>(sizeof(relative)) ||
       !join_path(full, fixture->root, relative))
     return false;
-  std::vector<Lardon3DMatchFileEntry> entries(count);
-  for (uint32_t index = 0; index < count; ++index) {
-    entries[index].feature_index_a = index;
-    entries[index].feature_index_b = count == 0 ? 0 : (index * 7U) % count;
-    entries[index].distance = static_cast<float>(index + 1U);
-  }
+  const uint32_t count = static_cast<uint32_t>(entries.size());
   int descriptor = open(full, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
   if (descriptor < 0)
     return false;
@@ -260,6 +260,18 @@ static bool create_parent(Fixture *fixture, uint32_t count,
   return true;
 }
 
+static bool create_parent(Fixture *fixture, uint32_t count,
+                          uint64_t *parent_id) {
+  std::vector<Lardon3DMatchFileEntry> entries(count);
+  for (uint32_t index = 0; index < count; ++index) {
+    entries[index].feature_index_a = index;
+    entries[index].feature_index_b =
+        count == 0 ? 0 : (index * (count == 7 ? 1U : 7U)) % count;
+    entries[index].distance = static_cast<float>(index + 1U);
+  }
+  return create_parent_with_entries(fixture, entries, parent_id);
+}
+
 static std::string mask_bits(uint32_t count, uint32_t inliers,
                              uint32_t stride = 1) {
   std::string bits(count, '0');
@@ -277,10 +289,17 @@ static void test_parameters_and_fingerprint() {
   Lardon3DGeometricVerifierParameters parameters =
       lardon3d_geometric_verifier_default_parameters();
   CHECK(lardon3d_geometric_verifier_parameters_valid(&parameters));
-  unsigned char first[32], second[32], changed[32];
+  unsigned char first[32], second[32], changed[32], v1[32], v2[32], v3[32];
   lardon3d_geometric_verifier_fingerprint(&parameters, first);
   lardon3d_geometric_verifier_fingerprint(&parameters, second);
   CHECK(std::memcmp(first, second, sizeof(first)) == 0);
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &parameters, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V1, v1));
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &parameters, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V2, v2));
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &parameters, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3, v3));
+  CHECK(std::memcmp(first, v1, sizeof(first)) != 0);
   auto differs = [&](Lardon3DGeometricVerifierParameters changed_parameters) {
     lardon3d_geometric_verifier_fingerprint(&changed_parameters, changed);
     return std::memcmp(first, changed, sizeof(first)) != 0;
@@ -345,7 +364,7 @@ static void test_parameters_and_fingerprint() {
   char encoded_hex[2 * LARDON3D_GEOMETRIC_VERIFIER_FINGERPRINT_SIZE + 1];
   char fingerprint_hex[65];
   to_hex(default_bytes, sizeof(default_bytes), encoded_hex);
-  to_hex(first, sizeof(first), fingerprint_hex);
+  to_hex(v1, sizeof(v1), fingerprint_hex);
   CHECK(std::strcmp(
             encoded_hex,
             "4c3344475646503101000000010000000100000001000000000000000000f83f"
@@ -356,6 +375,18 @@ static void test_parameters_and_fingerprint() {
           fingerprint_hex,
           "ddb44bb070c62be66c405946e89cbb49c084f8f30a21d6f408dc239225b7bbd0") ==
       0);
+  to_hex(v2, sizeof(v2), fingerprint_hex);
+  CHECK(std::strcmp(
+            fingerprint_hex,
+            "7868a893437ee611a10008a093286997212fa8bd80b2afd2bb1d11f04f01c5ae") ==
+        0);
+  to_hex(v3, sizeof(v3), fingerprint_hex);
+  CHECK(std::strcmp(
+            fingerprint_hex,
+            "6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c") ==
+        0);
+  CHECK(std::memcmp(first, v3, sizeof(first)) == 0);
+  CHECK(LARDON3D_GEOMETRIC_VERIFIER_VERSION == 3);
 }
 
 static void test_seed() {
@@ -370,9 +401,21 @@ static void test_seed() {
   Lardon3DGeometricVerifierParameters parameters =
       lardon3d_geometric_verifier_default_parameters();
   unsigned char production_fingerprint[32];
-  lardon3d_geometric_verifier_fingerprint(&parameters, production_fingerprint);
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &parameters, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V1,
+      production_fingerprint));
   CHECK(lardon3d_geometric_verifier_seed(match, production_fingerprint) ==
         1910542150U);
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &parameters, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V2,
+      production_fingerprint));
+  CHECK(lardon3d_geometric_verifier_seed(match, production_fingerprint) ==
+        1528046088U);
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &parameters, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3,
+      production_fingerprint));
+  CHECK(lardon3d_geometric_verifier_seed(match, production_fingerprint) ==
+        188721673U);
 }
 
 static void test_canonicalization() {
@@ -532,6 +575,143 @@ static void test_scientific_boundaries(Fixture *fixture) {
   }
 }
 
+static void test_v2_observation_support(Fixture *fixture) {
+  const uint32_t a_insufficient[] = {0, 1, 2, 3, 4, 5, 0, 1};
+  const uint32_t b_sufficient[] = {0, 1, 2, 3, 4, 5, 6, 7};
+  const uint32_t both_a[] = {0, 1, 2, 3, 4, 5};
+  const uint32_t both_b[] = {0, 1, 2, 3, 4, 5};
+  CHECK(!lardon3d_geometric_verifier_test_has_minimal_support(
+      a_insufficient, b_sufficient, 8, 8, 8));
+  CHECK(!lardon3d_geometric_verifier_test_has_minimal_support(
+      both_a, both_b, 6, 8, 8));
+
+  Lardon3DGeometricVerifierParameters parameters =
+      lardon3d_geometric_verifier_default_parameters();
+  std::vector<Lardon3DMatchFileEntry> repeated_b(10);
+  for (uint32_t index = 0; index < repeated_b.size(); ++index) {
+    repeated_b[index] = {index, index % 3U, static_cast<float>(index)};
+  }
+  uint64_t parent = 0;
+  CHECK(create_parent_with_entries(fixture, repeated_b, &parent));
+  CHECK(setenv("LARDON3D_TEST_GEOMETRIC_ESTIMATOR", "error", 1) == 0);
+  lardon3d_geometric_verifier_test_reset_estimator_calls();
+  Lardon3DProjectDbGeometricVerificationResult v2;
+  bool reused = false;
+  CHECK(lardon3d_geometric_verifier_verify_and_publish_version(
+            fixture->root, fixture->state.project_db, parent, &parameters,
+            LARDON3D_GEOMETRIC_VERIFIER_VERSION_V2, &v2,
+            &reused) == LARDON3D_GEOMETRIC_VERIFIER_OK);
+  CHECK(!reused && v2.verifier_version == 2 &&
+        v2.status == LARDON3D_GEOMETRIC_REJECTED && v2.inlier_count == 0 &&
+        !v2.has_model && v2.inlier_mask_size == 2 && v2.inlier_mask[0] == 0 &&
+        v2.inlier_mask[1] == 0 &&
+        lardon3d_geometric_verifier_test_estimator_calls() == 0);
+
+  // Historical v1 deliberately uses raw row count. Publishing it on the same
+  // parent proves that v2 did not reinterpret or overwrite the v1 identity.
+  CHECK(lardon3d_geometric_verifier_verify_and_publish_version(
+            fixture->root, fixture->state.project_db, parent, &parameters,
+            LARDON3D_GEOMETRIC_VERIFIER_VERSION_V1, &v2,
+            &reused) == LARDON3D_GEOMETRIC_VERIFIER_ESTIMATOR_ERROR);
+  CHECK(lardon3d_geometric_verifier_test_estimator_calls() == 1);
+  CHECK(unsetenv("LARDON3D_TEST_GEOMETRIC_ESTIMATOR") == 0);
+
+  std::vector<Lardon3DMatchFileEntry> exact(7);
+  for (uint32_t index = 0; index < exact.size(); ++index)
+    exact[index] = {index, index, static_cast<float>(index)};
+  CHECK(create_parent_with_entries(fixture, exact, &parent));
+  parameters.min_inlier_count = 1;
+  parameters.min_inlier_ratio = 0.0;
+  CHECK(setenv("LARDON3D_TEST_GEOMETRIC_ESTIMATOR", "controlled", 1) == 0);
+  CHECK(setenv("LARDON3D_TEST_GEOMETRIC_MASK", "1111111", 1) == 0);
+  lardon3d_geometric_verifier_test_reset_estimator_calls();
+  CHECK(lardon3d_geometric_verifier_verify_and_publish_version(
+            fixture->root, fixture->state.project_db, parent, &parameters,
+            LARDON3D_GEOMETRIC_VERIFIER_VERSION_V2, &v2,
+            &reused) == LARDON3D_GEOMETRIC_VERIFIER_OK);
+  CHECK(!reused && v2.status == LARDON3D_GEOMETRIC_VERIFIED &&
+        v2.inlier_count == 7 &&
+        lardon3d_geometric_verifier_test_estimator_calls() == 1);
+  CHECK(unsetenv("LARDON3D_TEST_GEOMETRIC_ESTIMATOR") == 0);
+  CHECK(unsetenv("LARDON3D_TEST_GEOMETRIC_MASK") == 0);
+}
+
+static void test_v3_acceptance_feasibility(Fixture *fixture) {
+  Lardon3DGeometricVerifierParameters parameters =
+      lardon3d_geometric_verifier_default_parameters();
+  Lardon3DProjectDbGeometricVerificationResult result;
+  bool reused = false;
+
+  // V3's raw-count preflight is exactly the acceptance proof N<min_inliers.
+  // The neighboring N==min_inliers case must remain estimator-eligible.
+  uint64_t below = 0;
+  uint64_t exact = 0;
+  CHECK(create_parent(fixture, parameters.min_inlier_count - 1U, &below));
+  CHECK(create_parent(fixture, parameters.min_inlier_count, &exact));
+  CHECK(setenv("LARDON3D_TEST_GEOMETRIC_ESTIMATOR", "error", 1) == 0);
+  lardon3d_geometric_verifier_test_reset_estimator_calls();
+  CHECK(lardon3d_geometric_verifier_verify_and_publish_version(
+            fixture->root, fixture->state.project_db, below, &parameters,
+            LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3, &result,
+            &reused) == LARDON3D_GEOMETRIC_VERIFIER_OK);
+  CHECK(!reused && result.status == LARDON3D_GEOMETRIC_REJECTED &&
+        result.inlier_count == 0 && !result.has_model &&
+        lardon3d_geometric_verifier_test_estimator_calls() == 0);
+  CHECK(lardon3d_geometric_verifier_verify_and_publish_version(
+            fixture->root, fixture->state.project_db, exact, &parameters,
+            LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3, &result,
+            &reused) == LARDON3D_GEOMETRIC_VERIFIER_ESTIMATOR_ERROR);
+  CHECK(lardon3d_geometric_verifier_test_estimator_calls() == 1);
+
+  parameters.min_inlier_count = 9;
+  CHECK(create_parent(fixture, 8, &below));
+  CHECK(create_parent(fixture, 9, &exact));
+  lardon3d_geometric_verifier_test_reset_estimator_calls();
+  CHECK(lardon3d_geometric_verifier_verify_and_publish_version(
+            fixture->root, fixture->state.project_db, below, &parameters,
+            LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3, &result,
+            &reused) == LARDON3D_GEOMETRIC_VERIFIER_OK);
+  CHECK(lardon3d_geometric_verifier_test_estimator_calls() == 0);
+  CHECK(lardon3d_geometric_verifier_verify_and_publish_version(
+            fixture->root, fixture->state.project_db, exact, &parameters,
+            LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3, &result,
+            &reused) == LARDON3D_GEOMETRIC_VERIFIER_ESTIMATOR_ERROR);
+  CHECK(lardon3d_geometric_verifier_test_estimator_calls() == 1);
+
+  parameters = lardon3d_geometric_verifier_default_parameters();
+  std::vector<Lardon3DMatchFileEntry> repeated_b(20);
+  for (uint32_t index = 0; index < repeated_b.size(); ++index)
+    repeated_b[index] = {index, index % 3U, static_cast<float>(index)};
+  CHECK(create_parent_with_entries(fixture, repeated_b, &below));
+  lardon3d_geometric_verifier_test_reset_estimator_calls();
+  CHECK(lardon3d_geometric_verifier_verify_and_publish_version(
+            fixture->root, fixture->state.project_db, below, &parameters,
+            LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3, &result,
+            &reused) == LARDON3D_GEOMETRIC_VERIFIER_OK);
+  CHECK(result.status == LARDON3D_GEOMETRIC_REJECTED &&
+        lardon3d_geometric_verifier_test_estimator_calls() == 0);
+  CHECK(unsetenv("LARDON3D_TEST_GEOMETRIC_ESTIMATOR") == 0);
+
+  // Acceptance impossibility never bypasses Match asset validation. This
+  // deliberately corrupt N<min_inliers parent must fail, not publish REJECTED.
+  uint64_t corrupt = 0;
+  CHECK(create_parent(fixture, parameters.min_inlier_count - 1U, &corrupt));
+  char corrupt_path[PATH_MAX];
+  char corrupt_relative[64];
+  CHECK(std::snprintf(corrupt_relative, sizeof(corrupt_relative),
+                      "matches-%u.bin", fixture->parent_sequence) > 0);
+  CHECK(join_path(corrupt_path, fixture->root, corrupt_relative));
+  int corrupt_fd = open(corrupt_path, O_WRONLY | O_CLOEXEC);
+  CHECK(corrupt_fd >= 0);
+  const unsigned char changed = 0xff;
+  CHECK(pwrite(corrupt_fd, &changed, 1, 0) == 1);
+  CHECK(close(corrupt_fd) == 0);
+  CHECK(lardon3d_geometric_verifier_verify_and_publish_version(
+            fixture->root, fixture->state.project_db, corrupt, &parameters,
+            LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3, &result,
+            &reused) == LARDON3D_GEOMETRIC_VERIFIER_CORRUPT);
+}
+
 static void test_mask_boundaries(Fixture *fixture) {
   Lardon3DGeometricVerifierParameters parameters =
       lardon3d_geometric_verifier_default_parameters();
@@ -584,7 +764,8 @@ static void test_failures(Fixture *fixture) {
     lardon3d_geometric_verifier_fingerprint(&parameters, fingerprint);
     CHECK(lardon3d_project_db_find_geometric_verification_result(
               fixture->state.project_db, parent,
-              LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL, 1, fingerprint,
+              LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL,
+              LARDON3D_GEOMETRIC_VERIFIER_VERSION, fingerprint,
               &result) == LARDON3D_PROJECT_DB_NOT_FOUND);
   }
 
@@ -607,7 +788,8 @@ static void test_failures(Fixture *fixture) {
   lardon3d_geometric_verifier_fingerprint(&parameters, fingerprint);
   CHECK(lardon3d_project_db_find_geometric_verification_result(
             fixture->state.project_db, publication_parent,
-            LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL, 1, fingerprint,
+            LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL,
+            LARDON3D_GEOMETRIC_VERIFIER_VERSION, fingerprint,
             &result) == LARDON3D_PROJECT_DB_NOT_FOUND);
   CHECK(run_controlled(fixture, publication_parent, bits, &parameters, &result,
                        &reused));
@@ -794,6 +976,8 @@ int main() {
   if (fixture.state.project_db) {
     test_e2e_and_reuse(&fixture);
     test_scientific_boundaries(&fixture);
+  test_v2_observation_support(&fixture);
+  test_v3_acceptance_feasibility(&fixture);
     test_mask_boundaries(&fixture);
     test_failures(&fixture);
     test_parent_and_asset_failures(&fixture);

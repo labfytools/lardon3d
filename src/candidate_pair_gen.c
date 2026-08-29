@@ -10,6 +10,8 @@
 
 #include <openssl/sha.h>
 
+#include "candidate_pair_gen_internal.h"
+
 static Lardon3DVisualIndexResult db_result(Lardon3DProjectDbResult result) {
   switch (result) {
   case LARDON3D_PROJECT_DB_OK:
@@ -29,17 +31,15 @@ static Lardon3DVisualIndexResult db_result(Lardon3DProjectDbResult result) {
   }
 }
 
-Lardon3DVisualIndexResult lardon3d_candidate_pair_generate(
+Lardon3DVisualIndexResult lardon3d_candidate_pair_compute(
     const char *project_path, Lardon3DProjectDb *database, uint64_t visual_index_id,
     uint64_t source_feature_set_id, const Lardon3DVisualIndexQueryOptions *query_options,
-    Lardon3DCandidatePairGenStats *stats) {
-  if (stats) {
-    stats->generated_count = 0;
-    stats->skipped_count = 0;
-    stats->queried_count = 0;
+    Lardon3DCandidatePairComputation *computed) {
+  if (computed) {
+    memset(computed, 0, sizeof(*computed));
   }
   if (!project_path || !database || visual_index_id == 0 || source_feature_set_id == 0 ||
-      !query_options || !stats || query_options->top_k == 0 ||
+      !query_options || !computed || query_options->top_k == 0 ||
       query_options->top_k > LARDON3D_VISUAL_INDEX_TOP_K_MAX ||
       query_options->minimum_evidence_count > 1024 ||
       query_options->scanset_filter > LARDON3D_VISUAL_INDEX_OTHER_SCANSETS) {
@@ -63,12 +63,8 @@ Lardon3DVisualIndexResult lardon3d_candidate_pair_generate(
     free(candidates);
     return result;
   }
-  stats->queried_count = (uint32_t)result_count;
-  time_t now = time(NULL);
-  if (now < 0) {
-    free(candidates);
-    return LARDON3D_VISUAL_INDEX_IO_ERROR;
-  }
+  computed->source_feature_set_id = source_feature_set_id;
+  computed->queried_count = (uint32_t)result_count;
   for (size_t i = 0; i < result_count; ++i) {
     uint64_t candidate_image_id = candidates[i].image_id;
     if (candidate_image_id == source_set.image_id) {
@@ -78,27 +74,68 @@ Lardon3DVisualIndexResult lardon3d_candidate_pair_generate(
                                                                 : source_set.image_id;
     uint64_t image_b = candidate_image_id < source_set.image_id ? source_set.image_id
                                                                 : candidate_image_id;
+    computed->proposals[computed->proposal_count++] =
+        (Lardon3DCandidatePairProposal){.image_id_a = image_a, .image_id_b = image_b};
+  }
+  free(candidates);
+  return LARDON3D_VISUAL_INDEX_OK;
+}
+
+Lardon3DVisualIndexResult lardon3d_candidate_pair_publish(
+    Lardon3DProjectDb *database, const Lardon3DCandidatePairComputation *computed,
+    Lardon3DCandidatePairGenStats *stats) {
+  if (stats) {
+    memset(stats, 0, sizeof(*stats));
+  }
+  if (!database || !computed || !stats || computed->source_feature_set_id == 0 ||
+      computed->proposal_count > LARDON3D_VISUAL_INDEX_TOP_K_MAX) {
+    return LARDON3D_VISUAL_INDEX_INVALID_ARGUMENT;
+  }
+  stats->queried_count = computed->queried_count;
+  time_t now = time(NULL);
+  if (now < 0) {
+    return LARDON3D_VISUAL_INDEX_IO_ERROR;
+  }
+  /* Publication deliberately preserves proposal order, including duplicates.
+   * The established find-before-create behavior therefore retains its exact
+   * generated/skipped accounting while the UNIQUE key remains the authority. */
+  for (size_t i = 0; i < computed->proposal_count; ++i) {
     Lardon3DProjectDbCandidatePair pair;
-    Lardon3DProjectDbResult found =
-        lardon3d_project_db_find_candidate_pair(database, image_a, image_b, &pair);
+    Lardon3DProjectDbResult found = lardon3d_project_db_find_candidate_pair(
+        database, computed->proposals[i].image_id_a, computed->proposals[i].image_id_b, &pair);
     if (found == LARDON3D_PROJECT_DB_OK) {
       ++stats->skipped_count;
     } else if (found == LARDON3D_PROJECT_DB_NOT_FOUND) {
-      Lardon3DProjectDbResult created =
-          lardon3d_project_db_create_candidate_pair(database, image_a, image_b, (int64_t)now,
-                                                    &pair);
+      Lardon3DProjectDbResult created = lardon3d_project_db_create_candidate_pair(
+          database, computed->proposals[i].image_id_a, computed->proposals[i].image_id_b,
+          (int64_t)now, &pair);
       if (created != LARDON3D_PROJECT_DB_OK) {
-        free(candidates);
         return db_result(created);
       }
       ++stats->generated_count;
     } else {
-      free(candidates);
       return db_result(found);
     }
   }
-  free(candidates);
   return LARDON3D_VISUAL_INDEX_OK;
+}
+
+Lardon3DVisualIndexResult lardon3d_candidate_pair_generate(
+    const char *project_path, Lardon3DProjectDb *database, uint64_t visual_index_id,
+    uint64_t source_feature_set_id, const Lardon3DVisualIndexQueryOptions *query_options,
+    Lardon3DCandidatePairGenStats *stats) {
+  if (stats) {
+    memset(stats, 0, sizeof(*stats));
+  }
+  if (!stats) {
+    return LARDON3D_VISUAL_INDEX_INVALID_ARGUMENT;
+  }
+  Lardon3DCandidatePairComputation computed;
+  Lardon3DVisualIndexResult result = lardon3d_candidate_pair_compute(
+      project_path, database, visual_index_id, source_feature_set_id, query_options, &computed);
+  return result == LARDON3D_VISUAL_INDEX_OK
+             ? lardon3d_candidate_pair_publish(database, &computed, stats)
+             : result;
 }
 
 Lardon3DVisualIndexResult lardon3d_candidate_pair_generate_batch(

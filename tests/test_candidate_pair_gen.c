@@ -9,11 +9,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <sqlite3.h>
+
 #include <lardon3d/candidate_pair_gen.h>
 #include <lardon3d/feature_store.h>
 #include <lardon3d/image_catalog.h>
 #include <lardon3d/project_db.h>
 #include <lardon3d/visual_index.h>
+
+#include "../src/candidate_pair_gen_internal.h"
 
 #define CHECK(condition)                                                                           \
   do {                                                                                             \
@@ -104,6 +108,25 @@ static bool pair_exists(const Lardon3DProjectDbCandidatePair *pairs, size_t coun
     }
   }
   return false;
+}
+
+static bool retain_sparse_memberships(const char *database_path, uint64_t index_id,
+                                      uint64_t first_id, uint64_t last_id) {
+  sqlite3 *database = NULL;
+  if (sqlite3_open_v2(database_path, &database, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+    sqlite3_close(database);
+    return false;
+  }
+  char sql[256];
+  int n = snprintf(sql, sizeof(sql),
+                   "DELETE FROM visual_index_memberships WHERE visual_index_id=%lu "
+                   "AND feature_set_id NOT IN(%lu,%lu)",
+                   (unsigned long)index_id, (unsigned long)first_id,
+                   (unsigned long)last_id);
+  bool ok = n > 0 && (size_t)n < sizeof(sql) &&
+            sqlite3_exec(database, sql, NULL, NULL, NULL) == SQLITE_OK;
+  sqlite3_close(database);
+  return ok;
 }
 
 static bool run_test(void) {
@@ -298,6 +321,23 @@ static bool run_test(void) {
   CHECK(lardon3d_candidate_pair_generate(root, database, index_id, 999999, &options, &stats) ==
         LARDON3D_VISUAL_INDEX_NOT_FOUND);
 
+  /* A staged duplicate retains the established find-before-create semantics:
+   * the first proposal creates and the second is accounted as skipped. */
+  uint64_t duplicate_a = images[0].image_id < images[4].image_id
+                             ? images[0].image_id : images[4].image_id;
+  uint64_t duplicate_b = images[0].image_id < images[4].image_id
+                             ? images[4].image_id : images[0].image_id;
+  Lardon3DCandidatePairComputation duplicate = {
+      .source_feature_set_id = feature_sets[0].feature_set_id,
+      .queried_count = 2,
+      .proposal_count = 2,
+      .proposals = {{duplicate_a, duplicate_b}, {duplicate_a, duplicate_b}},
+  };
+  CHECK(lardon3d_candidate_pair_publish(database, &duplicate, &stats) ==
+            LARDON3D_VISUAL_INDEX_OK &&
+        stats.queried_count == 2 && stats.generated_count == 1 &&
+        stats.skipped_count == 1);
+
   /* Génération batch : tous les FeatureSets. */
   Lardon3DCandidatePairGenStats batch_stats;
   uint64_t last_feature_set_id = 0;
@@ -323,6 +363,32 @@ static bool run_test(void) {
   CHECK(lardon3d_project_db_find_candidate_pair(database, images[1].image_id, images[0].image_id,
                                                  &found) == LARDON3D_PROJECT_DB_OK &&
         found.image_id_a == images[0].image_id && found.image_id_b == images[1].image_id);
+  lardon3d_project_db_close(database);
+
+  /* Membership progress is a row rank, not arithmetic on sparse IDs. This
+   * fixture intentionally retains only the first and last indexed source. */
+  CHECK(retain_sparse_memberships(database_path, index_id,
+                                  feature_sets[0].feature_set_id,
+                                  feature_sets[5].feature_set_id) &&
+        lardon3d_project_db_open(database_path, &database, error) ==
+            LARDON3D_PROJECT_DB_OK);
+  uint64_t membership_ids[4] = {0};
+  size_t membership_count = 0;
+  uint64_t completed = 0, total = 0;
+  CHECK(lardon3d_project_db_list_visual_index_memberships(
+            database, index_id, 0, membership_ids, 4, &membership_count) ==
+            LARDON3D_PROJECT_DB_OK &&
+        membership_count == 2 &&
+        membership_ids[0] == feature_sets[0].feature_set_id &&
+        membership_ids[1] == feature_sets[5].feature_set_id);
+  CHECK(lardon3d_project_db_visual_index_membership_progress(
+            database, index_id, feature_sets[0].feature_set_id, &completed, &total) ==
+            LARDON3D_PROJECT_DB_OK &&
+        completed == 1 && total == 2);
+  CHECK(lardon3d_project_db_visual_index_membership_progress(
+            database, index_id, feature_sets[5].feature_set_id, &completed, &total) ==
+            LARDON3D_PROJECT_DB_OK &&
+        completed == 2 && total == 2);
   lardon3d_project_db_close(database);
   CHECK(remove_tree(root));
   return true;

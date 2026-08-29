@@ -2,8 +2,12 @@
 
 ## Scope
 
-Geometric Verification Model v1 est le contrat scientifique persistant placé après le Matcher.
-Il stocke un résultat terminé, compact et immutable. Il n'est ni un moteur de calcul ni une tâche.
+Geometric Verification Model est le contrat persistant placé après le Matcher.
+Sa représentation stocke les identités scientifiques Geometric Verifier v1/v2
+historiques et v3 courantes, sans changement de schéma : `verifier_version` et
+`parameter_fingerprint` appartiennent déjà à l'identité exacte. Il stocke un
+résultat terminé, compact et immutable. Il n'est ni un moteur de calcul ni une
+tâche.
 Aucun RANSAC, USAC, MAGSAC, calcul d'inliers ou backend géométrique n'appartient à ce ticket.
 
 ## Position in reconstruction pipeline
@@ -43,7 +47,7 @@ binaires, little-endian. Aucun timestamp, résultat, PID, durée ou identifiant 
 
 ## Verifier kind
 
-v1 supporte uniquement `FUNDAMENTAL`, valeur persistante stable 1. Aucun comportement fictif
+Le modèle supporte uniquement `FUNDAMENTAL`, valeur persistante stable 1. Aucun comportement fictif
 `ESSENTIAL` ou `HOMOGRAPHY` n'est réservé dans l'API publique.
 
 ## Persistent states
@@ -82,9 +86,10 @@ jusqu'à 32 fois plus grande au cas dense et aurait un encodage supplémentaire 
 - kind, version et fingerprint ont une sérialisation stable ;
 - une ligne publiée est complète et immutable.
 
-Exemple : pour 100 matches, FUNDAMENTAL v1/fingerprint X peut publier REJECTED avec 23 inliers,
-un masque de 13 octets et aucun modèle. Une autre identité peut publier VERIFIED avec 67 inliers,
-le même format de masque et une matrice 3×3 finie.
+Exemple : pour 100 matches, une identité FUNDAMENTAL v1, v2 ou v3/fingerprint
+X peut publier REJECTED avec 23 inliers, un masque de 13 octets et aucun modèle.
+Une autre identité peut publier VERIFIED avec 67 inliers, le même format de
+masque et une matrice 3×3 finie.
 
 ## Persistence semantics
 
@@ -149,9 +154,9 @@ Après commit, le résultat est complet et réutilisable après réouverture. Av
 ne laisse aucune ligne partielle. Un loader rejette toute ligne incohérente comme corruption au
 lieu de réparer ou d'interpréter au mieux.
 
-## Future verifier execution contract
+## Verifier execution contract
 
-Le prochain ticket prendra un Match Result et son Match File borné. L'accès nécessaire existe via
+L'exécution prend un Match Result et son Match File borné. L'accès nécessaire existe via
 `lardon3d_feature_reader_keypoints()`, borné à 256 keypoints par appel ; l'intégration devra relier
 les deux Feature Sets et les indices du Match File sans modifier le Feature Store. Le verifier
 estimera hors transaction, dérivera état/masque/modèle, publiera en une courte transaction,
@@ -165,8 +170,8 @@ fingerprint. Aucun nombre de threads ou hardware ID n'est un paramètre scientif
 
 ## Explicitly out of scope
 
-Le calcul géométrique, le choix RANSAC/USAC/MAGSAC, OpenCV geometry, GPU, Vulkan, OpenCL, shader,
-task kind, worker, checkpoint et nouvelle orchestration sont explicitement hors périmètre.
+GPU, Vulkan, OpenCL, shader et nouvelle orchestration restent hors périmètre de ce contrat de
+persistance.
 
 ## Versioning
 

@@ -286,6 +286,79 @@ sync_parent_directory(const char *path)
     return close(descriptor) == 0 && synced;
 }
 
+static bool
+staged_path(const char *path, char output[4096])
+{
+    int length = snprintf(output, 4096, "%s.next", path);
+    return length >= 0 && length < 4096;
+}
+
+Lardon3DTaskCheckpointResult
+lardon3d_task_checkpoint_stage(
+    const char *path,
+    const Lardon3DTaskDurableSnapshot *snapshot
+)
+{
+    char staged[4096];
+    if (!path || !path[0] || !staged_path(path, staged)) {
+        return LARDON3D_TASK_CHECKPOINT_INVALID;
+    }
+    return lardon3d_task_checkpoint_save(staged, snapshot);
+}
+
+Lardon3DTaskCheckpointResult
+lardon3d_task_checkpoint_load_staged(
+    const char *path,
+    Lardon3DTaskDurableSnapshot *snapshot,
+    uint32_t *format_version
+)
+{
+    char staged[4096];
+    if (!path || !path[0] || !staged_path(path, staged)) {
+        return LARDON3D_TASK_CHECKPOINT_INVALID;
+    }
+    return lardon3d_task_checkpoint_load(staged, snapshot, format_version);
+}
+
+Lardon3DTaskCheckpointResult
+lardon3d_task_checkpoint_discard_staged(const char *path)
+{
+    char staged[4096];
+    if (!path || !path[0] || !staged_path(path, staged)) {
+        return LARDON3D_TASK_CHECKPOINT_INVALID;
+    }
+    if (unlink(staged) != 0) {
+        return errno == ENOENT ? LARDON3D_TASK_CHECKPOINT_OK
+            : LARDON3D_TASK_CHECKPOINT_IO_ERROR;
+    }
+    return sync_parent_directory(staged) ? LARDON3D_TASK_CHECKPOINT_OK
+        : LARDON3D_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE;
+}
+
+Lardon3DTaskCheckpointResult
+lardon3d_task_checkpoint_promote_staged(const char *path)
+{
+    Lardon3DTaskDurableSnapshot snapshot;
+    uint32_t version = 0;
+    Lardon3DTaskCheckpointResult loaded = lardon3d_task_checkpoint_load_staged(
+        path, &snapshot, &version
+    );
+    if (loaded != LARDON3D_TASK_CHECKPOINT_OK) {
+        return loaded;
+    }
+    if (version != LARDON3D_TASK_CHECKPOINT_VERSION) {
+        return LARDON3D_TASK_CHECKPOINT_UNSUPPORTED_VERSION;
+    }
+    /* Do not rename .next over canonical: a crash after that namespace change
+     * could lose the only S1 bytes.  Saving from the validated staged snapshot
+     * keeps .next as the exact-recovery representation through directory fsync. */
+    Lardon3DTaskCheckpointResult saved = lardon3d_task_checkpoint_save(path, &snapshot);
+    if (saved != LARDON3D_TASK_CHECKPOINT_OK) {
+        return saved;
+    }
+    return lardon3d_task_checkpoint_discard_staged(path);
+}
+
 Lardon3DTaskCheckpointResult
 lardon3d_task_checkpoint_save(
     const char *path,

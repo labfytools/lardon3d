@@ -170,7 +170,7 @@ static bool seed_reusable_parents(const char *path,
             "geometric_verification_results(match_result_id,verifier_kind,"
             "verifier_version,parameter_fingerprint,status,inlier_count,inlier_"
             "mask,created_at) "
-            "VALUES(?1,1,1,?2,1,0,zeroblob(2),1)",
+            "VALUES(?1,1,3,?2,1,0,zeroblob(2),1)",
             -1, &result, NULL) == SQLITE_OK);
   for (int index = 0; index < fixture_parent_count(); ++index) {
     char kind[32];
@@ -198,6 +198,7 @@ static bool seed_reusable_parents(const char *path,
 }
 
 static bool add_reusable_results(const char *path,
+                                 uint32_t verifier_version,
                                  const unsigned char fingerprint[32]) {
   sqlite3 *db = NULL;
   sqlite3_stmt *statement = NULL;
@@ -209,9 +210,10 @@ static bool add_reusable_results(const char *path,
           "geometric_verification_results(match_result_id,verifier_kind,"
           "verifier_version,parameter_fingerprint,status,inlier_count,inlier_"
           "mask,created_at) "
-          "SELECT match_result_id,1,1,?1,1,0,zeroblob(2),2 FROM match_results",
+          "SELECT match_result_id,1,?1,?2,1,0,zeroblob(2),2 FROM match_results",
           -1, &statement, NULL) == SQLITE_OK);
-  sqlite3_bind_blob(statement, 1, fingerprint, 32, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(statement, 1, verifier_version);
+  sqlite3_bind_blob(statement, 2, fingerprint, 32, SQLITE_TRANSIENT);
   int code = sqlite3_step(statement);
   if (code != SQLITE_DONE) {
     (void)fprintf(stderr, "Insertion reuse: %s\n", sqlite3_errmsg(db));
@@ -219,6 +221,113 @@ static bool add_reusable_results(const char *path,
   CHECK(code == SQLITE_DONE);
   CHECK(sqlite3_finalize(statement) == SQLITE_OK);
   return sqlite3_close(db) == SQLITE_OK;
+}
+
+static bool update_task_fingerprint(const char *path, uint64_t task_id,
+                                    const unsigned char fingerprint[32]) {
+  sqlite3 *db = NULL;
+  sqlite3_stmt *statement = NULL;
+  bool ok = sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK &&
+            sqlite3_prepare_v2(
+                db,
+                "UPDATE geometric_verifier_tasks SET parameter_fingerprint=?1 "
+                "WHERE task_id=?2",
+                -1, &statement, NULL) == SQLITE_OK;
+  if (ok) {
+    sqlite3_bind_blob(statement, 1, fingerprint, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 2, (sqlite3_int64)task_id);
+    ok = sqlite3_step(statement) == SQLITE_DONE && sqlite3_changes(db) == 1;
+  }
+  if (statement) {
+    ok = sqlite3_finalize(statement) == SQLITE_OK && ok;
+  }
+  return sqlite3_close(db) == SQLITE_OK && ok;
+}
+
+static bool run_task_mid_batch_failure_regression_test(void) {
+  char root[] = "/tmp/lardon3d-geometric-task-fail-XXXXXX";
+  CHECK(mkdtemp(root) != NULL);
+  char internal[4096];
+  char checkpoints[4096];
+  char database_path[4096];
+  (void)snprintf(internal, sizeof(internal), "%s/.lardon3d", root);
+  (void)snprintf(checkpoints, sizeof(checkpoints), "%s/checkpoints", internal);
+  (void)snprintf(database_path, sizeof(database_path), "%s/project.sqlite3",
+                 internal);
+  CHECK(mkdir(internal, 0700) == 0 && mkdir(checkpoints, 0700) == 0);
+
+  Lardon3DAppState state;
+  lardon3d_app_state_init(&state);
+  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
+  CHECK(lardon3d_project_db_open(database_path, &state.project_db, error) ==
+        LARDON3D_PROJECT_DB_OK);
+  state.project_loaded = true;
+  (void)snprintf(state.project_path, sizeof(state.project_path), "%s", root);
+  state.hardware_profile = (Lardon3DHardwareProfile){
+      .logical_cpu_count = 16,
+      .page_size_bytes = 4096,
+      .memory_total_bytes = 16ULL * 1024 * 1024 * 1024,
+      .cpu_architecture = "test",
+  };
+  Lardon3DResourcePolicy resource_policy = policy();
+  state.resource_governor = lardon3d_resource_governor_create(
+      &state.hardware_profile, &resource_policy);
+  state.task_queue = lardon3d_task_queue_create(state.resource_governor, 16);
+  CHECK(state.resource_governor && state.task_queue);
+
+  Lardon3DGeometricVerifierTaskConfiguration configuration = {
+      .verifier = lardon3d_geometric_verifier_default_parameters(),
+  };
+  unsigned char fingerprint[32];
+  lardon3d_geometric_verifier_fingerprint(&configuration.verifier, fingerprint);
+  CHECK(setenv("LARDON3D_TEST_GEOMETRIC_PARENT_COUNT", "12", 1) == 0);
+  CHECK(seed_reusable_parents(database_path, fingerprint));
+  CHECK(unsetenv("LARDON3D_TEST_GEOMETRIC_PARENT_COUNT") == 0);
+
+  CHECK(exec_sql(
+      database_path,
+      "DELETE FROM geometric_verification_results WHERE "
+      "match_result_id != (SELECT MIN(match_result_id) FROM "
+      "geometric_verification_results);"));
+
+  CHECK(setenv("LARDON3D_TEST_GEOMETRIC_ESTIMATOR", "error", 1) == 0);
+
+  uint64_t task_id = 0;
+  CHECK(lardon3d_project_enqueue_geometric_verifier_task(&state, &configuration,
+                                                        &task_id));
+  Lardon3DTaskSnapshot snapshot;
+  CHECK(wait_state(state.task_queue, task_id, TASK_FAILED, &snapshot));
+  CHECK(snapshot.message[0] != '\0' &&
+        strstr(snapshot.message, "Contrat de lot") == NULL);
+
+  for (size_t attempt = 0; attempt < 2000000; ++attempt) {
+    if (query_integer(database_path,
+                      "SELECT after_match_result_id FROM "
+                      "geometric_verifier_tasks",
+                      1)) {
+      break;
+    }
+    sched_yield();
+  }
+  CHECK(query_integer(database_path,
+                     "SELECT after_match_result_id FROM "
+                     "geometric_verifier_tasks",
+                     1));
+
+  CHECK(query_integer(database_path,
+                     "SELECT COUNT(*) FROM geometric_verification_results", 1));
+  CHECK(query_integer(
+      database_path,
+      "SELECT COUNT(*) FROM geometric_verification_results WHERE "
+      "match_result_id > 1",
+      0));
+  CHECK(unsetenv("LARDON3D_TEST_GEOMETRIC_ESTIMATOR") == 0);
+
+  lardon3d_task_queue_destroy(state.task_queue);
+  lardon3d_resource_governor_destroy(state.resource_governor);
+  lardon3d_project_db_close(state.project_db);
+  CHECK(remove_tree(root));
+  return true;
 }
 
 static bool run_task_test(void) {
@@ -277,8 +386,19 @@ static bool run_task_test(void) {
         memcmp(durable.parameter_fingerprint, fingerprint, 32) == 0);
 
   configuration.verifier.threshold_pixels = 1.6;
-  lardon3d_geometric_verifier_fingerprint(&configuration.verifier, fingerprint);
-  CHECK(add_reusable_results(database_path, fingerprint));
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &configuration.verifier, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V2,
+      fingerprint));
+  CHECK(add_reusable_results(database_path,
+                             LARDON3D_GEOMETRIC_VERIFIER_VERSION_V2,
+                             fingerprint));
+  unsigned char current_fingerprint[32];
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &configuration.verifier, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3,
+      current_fingerprint));
+  CHECK(add_reusable_results(database_path,
+                             LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3,
+                             current_fingerprint));
   CHECK(setenv("LARDON3D_TEST_GEOMETRIC_PAUSE_AFTER_PUBLICATION", "1", 1) == 0);
   CHECK(lardon3d_project_enqueue_geometric_verifier_task(&state, &configuration,
                                                          &task_id));
@@ -292,6 +412,15 @@ static bool run_task_test(void) {
   state.task_queue = NULL;
   lardon3d_project_db_close(state.project_db);
   state.project_db = NULL;
+  // Simulate a historical v1 durable row at the crash boundary. Recovery must
+  // derive v1 from this exact fingerprint without a schema-version column.
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &configuration.verifier, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V1,
+      fingerprint));
+  CHECK(update_task_fingerprint(database_path, task_id, fingerprint));
+  CHECK(add_reusable_results(database_path,
+                             LARDON3D_GEOMETRIC_VERIFIER_VERSION_V1,
+                             fingerprint));
   CHECK(lardon3d_project_db_open(database_path, &state.project_db, error) ==
         LARDON3D_PROJECT_DB_OK);
   state.task_queue = lardon3d_task_queue_create(state.resource_governor, 16);
@@ -316,8 +445,49 @@ static bool run_task_test(void) {
         durable.after_match_result_id == (uint64_t)fixture_parent_count());
 
   configuration.verifier.threshold_pixels = 1.7;
-  lardon3d_geometric_verifier_fingerprint(&configuration.verifier, fingerprint);
-  CHECK(add_reusable_results(database_path, fingerprint));
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &configuration.verifier, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V2,
+      fingerprint));
+  CHECK(add_reusable_results(database_path,
+                             LARDON3D_GEOMETRIC_VERIFIER_VERSION_V2,
+                             fingerprint));
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &configuration.verifier, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3,
+      current_fingerprint));
+  CHECK(add_reusable_results(database_path,
+                             LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3,
+                             current_fingerprint));
+  CHECK(setenv("LARDON3D_TEST_GEOMETRIC_PAUSE_AFTER_PUBLICATION", "1", 1) == 0);
+  CHECK(lardon3d_project_enqueue_geometric_verifier_task(&state, &configuration,
+                                                         &task_id));
+  CHECK(wait_state(state.task_queue, task_id, TASK_PAUSED, &snapshot));
+  CHECK(setenv("LARDON3D_TEST_GEOMETRIC_SKIP_FINISHED_CHECKPOINT", "1", 1) ==
+        0);
+  lardon3d_task_queue_destroy(state.task_queue);
+  state.task_queue = NULL;
+  lardon3d_project_db_close(state.project_db);
+  state.project_db = NULL;
+  // Historical v2 reconstruction uses its exact immutable fingerprint; the
+  // current v3 task identity must never relabel this durable row.
+  CHECK(update_task_fingerprint(database_path, task_id, fingerprint));
+  CHECK(lardon3d_project_db_open(database_path, &state.project_db, error) ==
+        LARDON3D_PROJECT_DB_OK);
+  state.task_queue = lardon3d_task_queue_create(state.resource_governor, 16);
+  CHECK(state.task_queue != NULL);
+  CHECK(unsetenv("LARDON3D_TEST_GEOMETRIC_PAUSE_AFTER_PUBLICATION") == 0);
+  CHECK(unsetenv("LARDON3D_TEST_GEOMETRIC_SKIP_FINISHED_CHECKPOINT") == 0);
+  recovery_result = lardon3d_project_resume_recoverable_tasks(
+      &state, lardon3d_task_kind_registry_production(), &recovery);
+  CHECK(recovery_result == LARDON3D_PROJECT_DB_OK && recovery.resumed == 1);
+  CHECK(wait_durable(state.project_db, task_id, TASK_COMPLETED));
+
+  configuration.verifier.threshold_pixels = 1.8;
+  CHECK(lardon3d_geometric_verifier_fingerprint_for_version(
+      &configuration.verifier, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3,
+      fingerprint));
+  CHECK(add_reusable_results(database_path,
+                             LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3,
+                             fingerprint));
   CHECK(setenv("LARDON3D_TEST_GEOMETRIC_PAUSE_AFTER_PUBLICATION", "1", 1) == 0);
   CHECK(lardon3d_project_enqueue_geometric_verifier_task(&state, &configuration,
                                                          &task_id));
@@ -375,4 +545,8 @@ static bool run_task_test(void) {
   return true;
 }
 
-int main(void) { return run_task_test() ? EXIT_SUCCESS : EXIT_FAILURE; }
+int main(void) {
+  return (run_task_test() && run_task_mid_batch_failure_regression_test()) ?
+         EXIT_SUCCESS :
+         EXIT_FAILURE;
+}

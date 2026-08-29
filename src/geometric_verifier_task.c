@@ -21,6 +21,7 @@ typedef struct {
   Lardon3DProjectDb *database;
   Lardon3DResourceGovernor *governor;
   Lardon3DProjectDbGeometricVerifierTask durable;
+  uint32_t verifier_version;
 } Lardon3DGeometricVerifierTaskContext;
 
 static void destroy_context(void *userdata) { free(userdata); }
@@ -87,10 +88,14 @@ static bool process_parent(Lardon3DTask *task,
       parameters_from_durable(&context->durable);
   Lardon3DProjectDbGeometricVerificationResult result;
   bool reused = false;
-  if (lardon3d_geometric_verifier_verify_and_publish(
+  if (lardon3d_geometric_verifier_verify_and_publish_version(
           context->project_path, context->database, parent->match_result_id,
-          &parameters, &result, &reused) != LARDON3D_GEOMETRIC_VERIFIER_OK) {
-    return lardon3d_task_fail(task, "Vérification géométrique impossible.");
+          &parameters, context->verifier_version, &result,
+          &reused) != LARDON3D_GEOMETRIC_VERIFIER_OK) {
+    // Failure transition success does not imply callback success: once an
+    // estimate fails for this parent, processing must stop before checkpointing.
+    (void)lardon3d_task_fail(task, "Vérification géométrique impossible.");
+    return false;
   }
 #ifdef LARDON3D_GEOMETRIC_VERIFIER_TASK_TESTING
   const char *pause = getenv("LARDON3D_TEST_GEOMETRIC_PAUSE_AFTER_PUBLICATION");
@@ -153,6 +158,9 @@ static bool run(Lardon3DTask *task, void *userdata) {
       if (!process_parent(task, context, &page[index])) {
         return false;
       }
+      // Publication/reuse must be durable before the business cursor advances.
+      // Restart may repeat an already published parent, but exact identity
+      // reuse makes that retry converge without duplicating or guessing GVRs.
       context->durable.after_match_result_id = page[index].match_result_id;
       ++processed;
     }
@@ -187,10 +195,24 @@ make_context(const Lardon3DTaskReconstructionContext *runtime,
   Lardon3DGeometricVerifierParameters parameters =
       parameters_from_durable(durable);
   unsigned char fingerprint[32];
-  lardon3d_geometric_verifier_fingerprint(&parameters, fingerprint);
-  if (!lardon3d_geometric_verifier_parameters_valid(&parameters) ||
-      memcmp(fingerprint, durable->parameter_fingerprint,
-             sizeof(fingerprint)) != 0) {
+  uint32_t verifier_version = 0;
+  if (!lardon3d_geometric_verifier_parameters_valid(&parameters)) {
+    return NULL;
+  }
+  // Project DB v22 intentionally has no duplicate verifier-version column in
+  // this task payload. The exact versioned fingerprint unambiguously recovers
+  // historical v1/v2 or current v3 while keeping all identities immutable.
+  for (uint32_t candidate = LARDON3D_GEOMETRIC_VERIFIER_VERSION_V1;
+       candidate <= LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3; ++candidate) {
+    if (lardon3d_geometric_verifier_fingerprint_for_version(
+            &parameters, candidate, fingerprint) &&
+        memcmp(fingerprint, durable->parameter_fingerprint,
+               sizeof(fingerprint)) == 0) {
+      verifier_version = candidate;
+      break;
+    }
+  }
+  if (verifier_version == 0) {
     return NULL;
   }
   Lardon3DGeometricVerifierTaskContext *context = calloc(1, sizeof(*context));
@@ -206,6 +228,7 @@ make_context(const Lardon3DTaskReconstructionContext *runtime,
   context->database = runtime->project_db;
   context->governor = runtime->resource_governor;
   context->durable = *durable;
+  context->verifier_version = verifier_version;
   return context;
 }
 
@@ -265,8 +288,11 @@ Lardon3DTask *lardon3d_project_create_geometric_verifier_task(
       .canonicalization_version =
           configuration->verifier.canonicalization_version,
   };
-  lardon3d_geometric_verifier_fingerprint(&configuration->verifier,
-                                          durable.parameter_fingerprint);
+  if (!lardon3d_geometric_verifier_fingerprint_for_version(
+          &configuration->verifier, LARDON3D_GEOMETRIC_VERIFIER_VERSION,
+          durable.parameter_fingerprint)) {
+    return NULL;
+  }
   Lardon3DTaskReconstructionContext runtime = {
       .project_path = state->project_path,
       .project_db = state->project_db,

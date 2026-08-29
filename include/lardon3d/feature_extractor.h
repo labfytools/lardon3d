@@ -68,8 +68,13 @@ typedef enum {
   LARDON3D_FEATURE_EXTRACT_ERROR
 } Lardon3DFeatureExtractResult;
 
-/* Configuration OpenCV process-wide. À appeler avant le démarrage des workers. */
+/* Configure OpenCV's process-wide internal CPU-thread limit before workers start.
+ * `threads` must be in 1..INT_MAX. The setting is operational: it does not alter
+ * extractor fingerprints or FeatureSet identity. Callers must not race this API
+ * with extraction; the application runtime owns configuration and nested users
+ * must restore the preceding value before releasing their Task reservation. */
 bool lardon3d_feature_opencv_configure_threads(unsigned int threads);
+/* Return OpenCV's current process-wide limit, normalized to at least one thread. */
 unsigned int lardon3d_feature_opencv_thread_count(void);
 
 bool lardon3d_feature_extractor_parameters_valid(

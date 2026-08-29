@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +8,23 @@
 #include <lardon3d/task_kind_registry.h>
 
 #include "resource_snapshot_test_utils.h"
+
+typedef struct {
+    Lardon3DTaskCallback callback;
+    void *userdata;
+    Lardon3DTaskUserdataDestroy userdata_destroy;
+    Lardon3DTaskFinishedCallback finished_callback;
+    void *finished_userdata;
+} HistoricalTaskKindBinding;
+
+/* The registry binding is public C17 ABI. Legacy estimate normalization must
+ * remain private and must not append fields to this established layout. */
+_Static_assert(sizeof(Lardon3DTaskKindBinding) ==
+                   sizeof(HistoricalTaskKindBinding),
+               "Lardon3DTaskKindBinding ABI size changed");
+_Static_assert(offsetof(Lardon3DTaskKindBinding, finished_userdata) ==
+                   offsetof(HistoricalTaskKindBinding, finished_userdata),
+               "Lardon3DTaskKindBinding ABI layout changed");
 
 #define CHECK(condition) do { if (!(condition)) { \
     (void)fprintf(stderr, "Échec ligne %d : %s\n", __LINE__, #condition); return false; \

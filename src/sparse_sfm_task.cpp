@@ -590,7 +590,12 @@ extern "C" bool lardon3d_sparse_sfm_task_reconstruct(
       delete context;
       return false;
     }
-    *binding = {run, context, destroy_context, finished, context};
+    *binding = {};
+    binding->callback = run;
+    binding->userdata = context;
+    binding->userdata_destroy = destroy_context;
+    binding->finished_callback = finished;
+    binding->finished_userdata = context;
     return true;
   } catch (...) {
     return false;

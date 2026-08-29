@@ -4,6 +4,100 @@
 
 #include <lardon3d/task_kind_registry.h>
 
+enum {
+    CANDIDATE_LEGACY_FIXED_BYTES = 128 * 1024,
+    CANDIDATE_CURRENT_FIXED_BYTES = 256 * 1024,
+    CANDIDATE_PER_ITEM_BYTES = 64 * 1024,
+    MATCHER_LEGACY_FIXED_BYTES = 10 * 1024 * 1024,
+    MATCHER_CURRENT_PER_ITEM_BYTES = 10 * 1024 * 1024,
+    MATCHER_GPU_FIXED_BYTES = 640 * 1024,
+    SIFT_FIXED_BYTES = 64 * 1024 * 1024,
+};
+
+static bool
+estimate_equals(const Lardon3DResourceEstimate *left,
+                const Lardon3DResourceEstimate *right)
+{
+    return left->memory_fixed_bytes == right->memory_fixed_bytes
+        && left->gpu_memory_fixed_bytes == right->gpu_memory_fixed_bytes
+        && left->memory_bytes_per_item == right->memory_bytes_per_item
+        && left->gpu_memory_bytes_per_item == right->gpu_memory_bytes_per_item
+        && left->minimum_batch_size == right->minimum_batch_size
+        && left->maximum_batch_size == right->maximum_batch_size
+        && left->desired_cpu_threads == right->desired_cpu_threads
+        && left->desired_gpu_slots == right->desired_gpu_slots
+        && left->desired_io_slots == right->desired_io_slots
+        && left->task_class == right->task_class;
+}
+
+static bool
+normalize_known_legacy_estimate(const char *kind,
+                                const Lardon3DResourceEstimate *durable,
+                                Lardon3DResourceEstimate *effective)
+{
+    Lardon3DResourceEstimate current = {0};
+    Lardon3DResourceEstimate historical = {0};
+    if (strcmp(kind, "candidate_pair.generate") == 0) {
+        current = (Lardon3DResourceEstimate) {
+            .memory_fixed_bytes = CANDIDATE_CURRENT_FIXED_BYTES,
+            .memory_bytes_per_item = CANDIDATE_PER_ITEM_BYTES,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 64,
+            .desired_cpu_threads = 12,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_CPU,
+        };
+        historical = current;
+        historical.memory_fixed_bytes = CANDIDATE_LEGACY_FIXED_BYTES;
+        historical.desired_cpu_threads = 1;
+    } else if (strcmp(kind, "matcher.run") == 0) {
+        const bool gpu = durable->desired_gpu_slots == 1;
+        current = (Lardon3DResourceEstimate) {
+            .gpu_memory_fixed_bytes = gpu ? MATCHER_GPU_FIXED_BYTES : 0,
+            .memory_bytes_per_item = MATCHER_CURRENT_PER_ITEM_BYTES,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 8,
+            .desired_cpu_threads = gpu ? 1U : 8U,
+            .desired_gpu_slots = gpu ? 1U : 0U,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_CPU,
+        };
+        historical = current;
+        historical.memory_fixed_bytes = MATCHER_LEGACY_FIXED_BYTES;
+        historical.memory_bytes_per_item = 0;
+        historical.desired_cpu_threads = 12;
+    } else if (strcmp(kind, "features.extract.sift") == 0
+               || strcmp(kind, "features.extract.rootsift") == 0) {
+        current = (Lardon3DResourceEstimate) {
+            .memory_fixed_bytes = SIFT_FIXED_BYTES,
+            .memory_bytes_per_item = UINT64_C(1024) * 1024 * 1024,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 1,
+            .desired_cpu_threads = 12,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_CPU,
+        };
+        historical = current;
+        historical.desired_cpu_threads = 1;
+    } else {
+        *effective = *durable;
+        return true;
+    }
+    if (estimate_equals(durable, &current)) {
+        *effective = *durable;
+        return true;
+    }
+    if (!estimate_equals(durable, &historical)) {
+        return false;
+    }
+    /* These exact signatures are historical operational policy, not scientific
+     * identity. Normalization is deliberately ephemeral: a pre-terminal crash
+     * may repeat it, while persistence retains one unambiguous checkpoint
+     * summary until ordinary Task progress advances it. */
+    *effective = current;
+    return true;
+}
+
 bool
 lardon3d_task_kind_registry_init(
     Lardon3DTaskKindRegistry *registry,
@@ -98,8 +192,16 @@ lardon3d_task_kind_registry_restore(
         }
         return LARDON3D_TASK_KIND_RECONSTRUCTION_FAILED;
     }
+    Lardon3DTaskDurableSnapshot effective_snapshot = *snapshot;
+    if (!normalize_known_legacy_estimate(kind, &snapshot->estimate,
+                                         &effective_snapshot.estimate)) {
+        if (binding.userdata_destroy) {
+            binding.userdata_destroy(binding.userdata);
+        }
+        return LARDON3D_TASK_KIND_RECONSTRUCTION_FAILED;
+    }
     *task = lardon3d_task_restore_typed(
-        snapshot,
+        &effective_snapshot,
         kind,
         kind_version,
         binding.callback,

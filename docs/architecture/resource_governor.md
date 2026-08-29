@@ -2,10 +2,12 @@
 
 ## SIFT v1A
 
-Une extraction SIFT réserve séparément un slot CPU et un slot IO, aucun GPU,
-pour une image. L'estimation structurelle conservatrice est environ 1,06 Gio
-(décodage, pyramides, candidats et F32×128), lot 1, pic de record batch zéro.
-OpenCV peut employer son parallélisme interne ; aucun état global n'est modifié.
+Une extraction SIFT demande jusqu'à douze threads CPU, un slot IO, aucun GPU,
+pour une image. Le Governor réduit ce plafond au budget hôte, identique à la
+limite OpenCV process-wide configurée avant les workers. L'estimation
+structurelle conservatrice est environ 1,06 Gio (décodage,
+pyramides, candidats et F32×128), lot 1, pic de record batch zéro. La
+réservation couvre ainsi le fan-out interne sans créer un second pool runtime.
 
 ## Responsabilité
 
@@ -126,29 +128,59 @@ monitoring live n'appartient à Gate G core.
   l'échantillon peut conserver taille/durée mais n'alimente jamais l'adaptation
   mémoire.
 - Pas de communication inter-classes de tâches
-- `features.extract` réserve un lot de 1, un thread CPU et un slot I/O, avec
+- `features.extract` réserve un lot de 1, demande jusqu'à douze threads CPU et
+  un slot I/O, avec
   64 Mio fixes et 512 Mio par image. Cette estimation conservatrice couvre le
   chemin actuel sans prétendre mesurer les allocations internes d'OpenCV.
   `record_batch` couvre la validation source, le décodage, ORB, la publication
   et la finalisation DB ; `peak_memory_bytes == 0` signifie « mesure inconnue ».
-- `visual_index.update` réserve un thread CPU, un slot I/O, 8 Mio fixes et
-  2 Mio par Feature Set, par lots de 1 à 16. Le GPU vaut zéro. `record_batch`
-  compte uniquement les memberships commités et conserve la mémoire inconnue à zéro.
-- `candidate_pair.generate` réserve un thread CPU, un slot I/O, 128 Kio fixes
-  et 256 Kio par Feature Set, par lots de 1 à 64. Le GPU vaut zéro.
+- `visual_index.update` demande jusqu'à douze threads CPU, un slot I/O, 8 Mio
+  fixes et 2 Mio par Feature Set, par lots de 1 à 16. Le GPU vaut zéro. Le
+  callback compte comme participant et crée au plus `cpu_threads - 1` enfants,
+  tous joints avant publication et rupture de séquence. Chaque participant
+  possède au plus un reader/FD Feature File ; les tranches de postings privées
+  partitionnent le buffer borné du segment. `record_batch` compte uniquement
+  les memberships commités et conserve la mémoire inconnue à zéro.
+- `candidate_pair.generate` demande jusqu'à douze threads CPU, un slot I/O,
+  256 Kio fixes et 64 Kio par Feature Set, par lots de 1 à 64. Le GPU vaut
+  zéro. La reconstruction reconnaît uniquement l'ancienne estimation exacte
+  (128 Kio fixes, 64 Kio par item, un thread CPU, un slot I/O, aucun GPU, lots
+  1 à 64, classe CPU) et la normalise éphémèrement vers l'estimation courante
+  complète ; aucun checkpoint d'estimation seule n'est publié et une forme
+  voisine n'est jamais réinterprétée comme legacy.
   `record_batch` compte le nombre de paires générées par séquence et la durée
   réelle du lot ; `peak_memory_bytes == 0` signifie « mesure inconnue ».
-  Chaque séquence interroge le Visual Index pour jusqu'à 64 Feature Sets et
-  persiste les paires candidates avec idempotence.
-- `matcher.run` réserve douze threads CPU, un slot IO et un working set
-  contrôlé inférieur à environ 10 Mio au
+  Chaque séquence interroge le Visual Index pour jusqu'à 64 memberships. Le
+  calcul emploie des fenêtres internes d'au plus deux sources par thread admis
+  et 24 sources au total ; le propriétaire de Task persiste ensuite seul et en
+  ordre canonique. Cette estimation opérationnelle ne limite pas la taille
+  scientifique du dataset.
+- `matcher.run` demande jusqu'à huit threads CPU, un slot IO et 10 Mio par
+  Candidate Pair admise, correspondant au working set contrôlé inférieur à
+  environ 10 Mio par paire au
   maximum SIFT/RootSIFT (8 Mio de descripteurs contigus, KNN `k=2`, sorties et
   fichier bornés), hors scratch interne OpenCV. Ses lots sont bornés à 1, 2, 4
-  ou 8 Candidate Pairs et chaque paire libère ses buffers avant la suivante.
-  Quand le profil détecte un GPU et que le runtime possède le backend ORB, la
-  réservation ajoute un slot GPU et 640 Kio. Sur UMA ces 640 Kio sont aussi
-  débités du budget RAM. Sans GPU/backend, l'estimation reste CPU-only afin que
-  le fallback portable ne soit jamais refusé artificiellement.
+  ou 8 Candidate Pairs. **IMPLEMENTATION IN PROGRESS — P4 :** une fenêtre
+  contient au plus deux paires par thread CPU effectivement admis et huit
+  paires au total. Le callback Queue est un participant, crée au plus
+  `cpu_threads - 1` enfants et les joint avant publication et libération de la
+  réservation. Chaque paire conserve ses buffers dans un stage privé jusqu'à
+  sa publication ordonnée ou son nettoyage ; OpenCV reste à un thread interne
+  pour éviter une sursouscription imbriquée. Le Governor réserve donc au plus
+  80 Mio contrôlés pour un lot de huit ; cette borne opérationnelle ne limite
+  pas la cardinalité scientifique du dataset.
+  Le mode d'exécution est fixé par l'estimation immutable avant admission. Le
+  mode parallèle par défaut est CPU-only et ne réserve aucun GPU, même si le
+  Governor réduit ensuite son admission à un thread. Un mode explicitement
+  sériel ORB, avec profil GPU et backend runtime disponibles, demande exactement
+  un thread CPU, un slot GPU et 640 Kio ; sur UMA ces 640 Kio sont aussi débités
+  du budget RAM. Sa reconstruction conserve ce mode à partir de l'estimation
+  durable, sans sélection tardive d'une ressource non réservée.
+  La reprise accepte les formes courantes exactes CPU8/GPU0 et
+  CPU1/GPU1/640 Kio ainsi que leurs prédécesseurs exacts CPU12. Elle normalise
+  éphémèrement CPU12 vers la forme courante du même mode avant admission. Toute
+  forme voisine est rejetée ; cette compatibilité opérationnelle ne persiste ni
+  ne déduit une identité backend dans Project DB.
 - `track_builder.run` réserve un worker CPU, aucun GPU et aucun fan-out GVR.
   L'estimation est `4 MiB + raw_inlier_edges * (48 + 2*160)` avec facteur 2
   sous 400000 arêtes et facteur 8 au-delà, après vérification d'overflow. Le

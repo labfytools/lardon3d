@@ -136,7 +136,12 @@ extern "C" bool lardon3d_raw_development_task_reconstruct(
     Context *context = make_context(runtime_context, persisted.capture_id,
                                     persisted.source_asset_id);
     if (!context) return false;
-    *binding = {run, context, destroy, finished, context};
+    *binding = {};
+    binding->callback = run;
+    binding->userdata = context;
+    binding->userdata_destroy = destroy;
+    binding->finished_callback = finished;
+    binding->finished_userdata = context;
     return true;
   } catch (...) {
     return false;

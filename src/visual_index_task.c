@@ -11,6 +11,10 @@
 #include <lardon3d/visual_index.h>
 #include <lardon3d/visual_index_task.h>
 
+#include "visual_index_internal.h"
+
+enum { VISUAL_INDEX_TASK_CPU_THREADS = 12 };
+
 typedef struct {
   char project_path[PATH_MAX];
   Lardon3DProjectDb *database;
@@ -64,7 +68,8 @@ static bool run(Lardon3DTask *task, void *userdata) {
     }
     Lardon3DTaskExecutionContract contract;
     if (!lardon3d_task_execution_contract(task, &contract) || contract.batch_size == 0 ||
-        contract.batch_size > LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX) {
+        contract.batch_size > LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX ||
+        contract.cpu_threads == 0 || contract.cpu_threads > VISUAL_INDEX_TASK_CPU_THREADS) {
       return lardon3d_task_fail(task, "Contrat Visual Index invalide.");
     }
     struct timespec begin;
@@ -72,10 +77,10 @@ static bool run(Lardon3DTask *task, void *userdata) {
     clock_gettime(CLOCK_MONOTONIC, &begin);
     uint64_t last = context->parameters.after_feature_set_id;
     size_t indexed = 0;
-    Lardon3DVisualIndexResult result = lardon3d_visual_index_update_once(
+    Lardon3DVisualIndexResult result = lardon3d_visual_index_update_once_parallel(
         context->project_path, context->database, context->parameters.visual_index_id,
         lardon3d_task_id(task), context->parameters.after_feature_set_id, contract.batch_size,
-        &last, &indexed);
+        contract.cpu_threads, &last, &indexed);
     clock_gettime(CLOCK_MONOTONIC, &end);
     if (result == LARDON3D_VISUAL_INDEX_NO_CHANGE) {
       return lardon3d_task_set_progress(task, 100, "Visual Index à jour.");
@@ -190,7 +195,7 @@ Lardon3DTask *lardon3d_project_create_visual_index_update_task(
                                        .memory_bytes_per_item = 2ULL * 1024 * 1024,
                                        .minimum_batch_size = 1,
                                        .maximum_batch_size = 16,
-                                       .desired_cpu_threads = 1,
+                                       .desired_cpu_threads = VISUAL_INDEX_TASK_CPU_THREADS,
                                        .desired_io_slots = 1,
                                        .task_class = LARDON3D_RESOURCE_TASK_CPU};
   Lardon3DTask *task = lardon3d_task_create_typed(

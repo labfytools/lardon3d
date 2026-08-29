@@ -56,11 +56,23 @@ validé. Après crash, la registry statique reconstruit le même `task_id`; l'im
 est recommencée, sans micro-checkpoint trompeur. Aucun Feature Set partiel ne
 devient READY. Le SHA-256 de l'Image Asset géré est vérifié avant décodage.
 
-L'estimation SIFT réserve un slot CPU, un slot IO, aucun GPU et environ
-1,06 Gio structurels : image décodée, pyramides OpenCV, candidats et
-descriptors. Le pic de lot est zéro. OpenCV peut utiliser son backend parallèle
-interne ; Lardon3D ne modifie aucun état global OpenCV. Le scheduler v1 reste à
-un worker, ce qui borne actuellement l'oversubscription entre tâches.
+L'estimation SIFT demande jusqu'à douze threads CPU ; le Governor réduit ce
+plafond à la limite interne OpenCV configurée au démarrage. Elle réserve aussi
+un slot IO, aucun GPU et environ 1,06 Gio structurels :
+image décodée, pyramides OpenCV, candidats et descriptors. Le pic de lot est
+zéro. Le Resource Governor admet donc le fan-out OpenCV complet ; la Queue
+conserve un seul callback actif et ne superpose pas un second pool SIFT.
+
+Le nombre de threads reste opérationnel et absent du fingerprint SIFT/RootSIFT.
+La reprise accepte la forme CPU12 courante et normalise uniquement l'ancienne
+forme CPU1 complète et exacte dans la copie privée restaurée. Elle ne publie
+aucun checkpoint d'estimation seule ; une forme voisine est rejetée.
+L'audit contrôlé OpenCV 5.0.0 à 1, 2, 4, 8 et 12 threads compare exactement le
+count, l'ordre et les valeurs binary32 des champs keypoint persistés, les
+octaves, toutes les lignes/octets F32×128 et le SHA-256 du Feature File v2.
+Toutes les configurations convergent vers les mêmes octets durables. Le champ
+OpenCV `class_id`, non transporté par le record FeatureSet gelé, n'est ni
+persisté ni utilisé comme identité scientifique.
 
 Le modèle n'est pas présenté comme un RSS mesuré : l'image grayscale atteint
 100 MB à la limite post-décodage, le plafond défensif de candidats représente

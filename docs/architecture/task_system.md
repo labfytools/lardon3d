@@ -51,10 +51,39 @@ une opération de réadmission, pas un état supplémentaire.
 | `lardon3d_task_restore_typed()` | Restaure une tâche typée et transfère l'ownership du userdata |
 | `lardon3d_task_checkpoint_save()` | Publie atomiquement un snapshot v1 |
 | `lardon3d_task_checkpoint_load()` | Lit et valide un checkpoint borné |
+| `lardon3d_task_checkpoint_stage()` / `promote_staged()` | Publie d'abord `<path>.next`, puis promeut sous le verrou par tâche |
 
 Après `rename`, un échec du `fsync` du répertoire retourne
 `LARDON3D_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE` : la publication est visible,
 mais sa durabilité après crash n'est pas confirmée.
+
+### Publication et reprise projet
+
+Le protocole générique par tâche emploie le chemin canonique
+`.lardon3d/checkpoints/<task_id>.chk`, sa représentation staged `.chk.next` et
+le verrou consultatif `.chk.lock`. Le verrou sérialise un writer et la reprise
+sur le slot staged fixe ; il est détenu pour la séquence entière et sa fermeture
+par le noyau après crash ne constitue pas un état durable.
+
+L'ordre de publication est strictement : codec durable de `.next`, commit
+SQLite du résumé de tâche et de la référence checkpoint, puis promotion de
+`.next` vers le fichier canonique et durabilité du répertoire. DB et système de
+fichiers ne forment pas une transaction unique : si la promotion échoue ou sa
+durabilité est incertaine après le commit SQLite, `.next` reste la
+représentation de récupération possible.
+
+La reprise acquiert d'abord `.lock`, puis recharge la ligne SQLite : la page de
+découverte peut être devenue périmée pendant l'attente. Elle valide le codec et
+la version du canonique et compare seulement les champs effectivement stockés
+dans le résumé DB — `task_id`, nom, états saved/recovery, progression et
+compteur de séquences. Les timestamps et l'estimation complète ne sont pas
+dupliqués par la DB et ne participent donc pas à ce test. Un canonique valide
+dont ce résumé correspond est prioritaire ; une `.next` absente, périmée ou
+corrompue est alors ignorée. Sinon, une `.next` valide qui correspond au même
+résumé est promue sous le même verrou puis reprise. Un ancien projet v22 qui ne
+possède que `.chk` reste ainsi récupérable. Toute autre absence, version non
+supportée, corruption ou divergence interdit la reprise de cette tâche sans
+affecter les autres entrées de l'inventaire.
 
 ## Invariants
 
@@ -165,9 +194,11 @@ ni estimation sérialisée complète, ni callback, ni réservation, et ne rempla
 pas la validation du fichier checkpoint avant `task_restore()`.
 
 `lardon3d_project_checkpoint_task()` est la frontière runtime : elle capture le
-snapshot, publie le fichier hors mutex de tâche, puis met à jour la DB. L'API
-d'inventaire retourne des snapshots durables validés, mais ne peut pas appeler
-`task_restore()` que via un descriptor connu ; aucun pointeur n'est persistant.
+snapshot, stage le fichier hors mutex de tâche, met à jour la DB, puis promeut
+le fichier canonique sous le verrou par tâche. L'API d'inventaire retourne des
+snapshots dont le codec/version et le résumé DB ont été validés, mais ne peut
+appeler `task_restore()` que via un descriptor connu ; aucun pointeur n'est
+persistant.
 
 ## Limites
 

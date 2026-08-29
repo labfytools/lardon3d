@@ -21,6 +21,7 @@
 #include <lardon3d/project.h>
 #include <lardon3d/precision_features.h>
 #include <lardon3d/sift_task.h>
+#include <lardon3d/task_checkpoint.h>
 #include <lardon3d/task_queue.h>
 
 #define CHECK(x)                                                                                   \
@@ -280,6 +281,76 @@ static bool run_test(void) {
                                              rootsift_fingerprint, &rootsift_set) ==
             LARDON3D_PROJECT_DB_OK &&
         rootsift_set.feature_set_id != sift_set.feature_set_id);
+  /* SIFT and RootSIFT CPU1 checkpoints are exact historical operational
+   * signatures. Recovery uses CPU12 in memory without publishing an
+   * estimate-only checkpoint; a neighboring CPU2 shape is corruption. */
+  const uint64_t precision_task_ids[2] = {sift_task_id, rootsift_task_id};
+  const char *precision_kinds[2] = {LARDON3D_SIFT_EXTRACT_TASK_KIND,
+                                    LARDON3D_ROOTSIFT_EXTRACT_TASK_KIND};
+  Lardon3DTaskReconstructionContext precision_reconstruction = {
+      .project_path = state.project_path,
+      .project_db = state.project_db,
+      .resource_governor = state.resource_governor,
+      .orb_vulkan_backend = state.orb_vulkan_backend,
+  };
+  for (size_t precision_index = 0; precision_index < 2; ++precision_index) {
+    char precision_checkpoint[PATH_MAX];
+    char precision_staged[PATH_MAX];
+    CHECK(snprintf(precision_checkpoint, sizeof(precision_checkpoint),
+                   "%s/.lardon3d/checkpoints/%lu.chk", state.project_path,
+                   (unsigned long)precision_task_ids[precision_index]) > 0 &&
+          snprintf(precision_staged, sizeof(precision_staged), "%s.next",
+                   precision_checkpoint) > 0);
+    Lardon3DTaskDurableSnapshot current_precision;
+    CHECK(lardon3d_task_checkpoint_load(precision_checkpoint,
+                                        &current_precision, NULL) ==
+          LARDON3D_TASK_CHECKPOINT_OK);
+    Lardon3DTaskDurableSnapshot historical_precision = current_precision;
+    historical_precision.estimate.desired_cpu_threads = 1;
+    historical_precision.progress = 50;
+    historical_precision.saved_state = TASK_RUNNING;
+    historical_precision.recovery_state = TASK_PENDING;
+    historical_precision.finished_at = (struct timespec){0};
+    CHECK(lardon3d_task_checkpoint_save(precision_checkpoint,
+                                        &historical_precision) ==
+          LARDON3D_TASK_CHECKPOINT_OK);
+    Lardon3DTask *restored_precision = NULL;
+    Lardon3DTaskKindResult precision_restore =
+        lardon3d_task_kind_registry_restore(
+            lardon3d_task_kind_registry_production(),
+            precision_kinds[precision_index],
+            LARDON3D_SIFT_EXTRACT_TASK_KIND_VERSION,
+            &historical_precision, &precision_reconstruction,
+            &restored_precision);
+    if (precision_restore != LARDON3D_TASK_KIND_OK) {
+      fprintf(stderr, "precision restore %zu failed: %d\n", precision_index,
+              (int)precision_restore);
+    }
+    CHECK(precision_restore == LARDON3D_TASK_KIND_OK &&
+          restored_precision);
+    Lardon3DResourceEstimate effective_precision;
+    CHECK(lardon3d_task_resource_estimate(restored_precision,
+                                          &effective_precision) &&
+          effective_precision.desired_cpu_threads == 12);
+    lardon3d_task_destroy(restored_precision);
+    Lardon3DTaskDurableSnapshot durable_precision;
+    CHECK(lardon3d_task_checkpoint_load(precision_checkpoint,
+                                        &durable_precision, NULL) ==
+              LARDON3D_TASK_CHECKPOINT_OK &&
+          durable_precision.estimate.desired_cpu_threads == 1 &&
+          access(precision_staged, F_OK) != 0 && errno == ENOENT);
+    Lardon3DTaskDurableSnapshot malformed_precision = historical_precision;
+    malformed_precision.estimate.desired_cpu_threads = 2;
+    restored_precision = NULL;
+    CHECK(lardon3d_task_kind_registry_restore(
+              lardon3d_task_kind_registry_production(),
+              precision_kinds[precision_index],
+              LARDON3D_SIFT_EXTRACT_TASK_KIND_VERSION,
+              &malformed_precision, &precision_reconstruction,
+              &restored_precision) ==
+              LARDON3D_TASK_KIND_RECONSTRUCTION_FAILED &&
+          restored_precision == NULL);
+  }
   CHECK(lardon3d_feature_reader_open(state.project_path, &rootsift_set, &reader, &metadata) ==
         LARDON3D_FEATURE_STORE_OK);
   if (metadata.feature_count > 0) {

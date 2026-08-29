@@ -17,6 +17,8 @@
 #include <lardon3d/image_catalog.h>
 #include <lardon3d/visual_index.h>
 
+#include "../src/visual_index_internal.h"
+
 #define CHECK(condition)                                                                           \
   do {                                                                                             \
     if (!(condition)) {                                                                            \
@@ -300,6 +302,33 @@ static bool replace_segment_metadata(const char *database_path, uint64_t segment
   return sqlite3_close(connection) == SQLITE_OK && ok;
 }
 
+static bool reset_visual_index_fixture(const char *database_path, uint64_t index_id) {
+  sqlite3 *connection = NULL;
+  sqlite3_stmt *memberships = NULL;
+  sqlite3_stmt *segments = NULL;
+  bool ok = sqlite3_open(database_path, &connection) == SQLITE_OK &&
+            sqlite3_exec(connection, "PRAGMA foreign_keys=ON;BEGIN IMMEDIATE", NULL, NULL,
+                         NULL) == SQLITE_OK &&
+            sqlite3_prepare_v2(connection,
+                               "DELETE FROM visual_index_memberships WHERE visual_index_id=?1",
+                               -1, &memberships, NULL) == SQLITE_OK &&
+            sqlite3_prepare_v2(connection,
+                               "DELETE FROM visual_index_segments WHERE visual_index_id=?1", -1,
+                               &segments, NULL) == SQLITE_OK;
+  if (ok) {
+    sqlite3_bind_int64(memberships, 1, (sqlite3_int64)index_id);
+    sqlite3_bind_int64(segments, 1, (sqlite3_int64)index_id);
+    ok = sqlite3_step(memberships) == SQLITE_DONE && sqlite3_step(segments) == SQLITE_DONE &&
+         sqlite3_exec(connection, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
+  }
+  if (!ok && connection) {
+    (void)sqlite3_exec(connection, "ROLLBACK", NULL, NULL, NULL);
+  }
+  sqlite3_finalize(memberships);
+  sqlite3_finalize(segments);
+  return connection && sqlite3_close(connection) == SQLITE_OK && ok;
+}
+
 static bool publish_mutated_segment(const char *root, const char *database_path,
                                     const Lardon3DProjectDbVisualIndexSegment *segment,
                                     const unsigned char *bytes, size_t size, char path[PATH_MAX],
@@ -515,6 +544,74 @@ static bool run_test(void) {
   CHECK(lardon3d_visual_index_update_once(root, database, index_id, 0, 0, 16, &last, &indexed) ==
             LARDON3D_VISUAL_INDEX_OK &&
         indexed == 5 && last == empty_feature.feature_set_id);
+  /* The parallel builder may complete Feature Files in any order, but its
+   * canonical reduction must publish the exact serial segment and queries. */
+  Lardon3DProjectDbVisualIndexSegment serial_segment;
+  Lardon3DProjectDbVisualIndexSegment parallel_segment;
+  size_t serial_segment_count = 0;
+  CHECK(lardon3d_project_db_list_visual_index_segments(database, index_id, 0, &serial_segment, 1,
+                                                        &serial_segment_count) ==
+            LARDON3D_PROJECT_DB_OK &&
+        serial_segment_count == 1);
+  uint64_t serial_memberships[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX];
+  uint64_t parallel_memberships[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX];
+  size_t serial_membership_count = 0;
+  CHECK(lardon3d_project_db_list_visual_index_memberships(
+            database, index_id, 0, serial_memberships,
+            LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX, &serial_membership_count) ==
+        LARDON3D_PROJECT_DB_OK);
+  Lardon3DVisualIndexQueryOptions equality_options = {
+      .top_k = 4,
+      .minimum_evidence_count = 1,
+      .scanset_filter = LARDON3D_VISUAL_INDEX_ANY_SCANSET,
+  };
+  Lardon3DVisualIndexCandidate serial_candidates[4];
+  size_t serial_candidate_count = 0;
+  CHECK(lardon3d_visual_index_query(root, database, index_id, feature_a.feature_set_id,
+                                    &equality_options, serial_candidates, 4,
+                                    &serial_candidate_count) == LARDON3D_VISUAL_INDEX_OK &&
+        reset_visual_index_fixture(database_path, index_id));
+  uint64_t parallel_last = 0;
+  size_t parallel_indexed = 0;
+  size_t parallel_segment_count = 0;
+  size_t parallel_membership_count = 0;
+  Lardon3DVisualIndexCandidate parallel_candidates[4];
+  size_t parallel_candidate_count = 0;
+  CHECK(lardon3d_visual_index_update_once_parallel(root, database, index_id, 0, 0, 16, 4,
+                                                   &parallel_last, &parallel_indexed) ==
+            LARDON3D_VISUAL_INDEX_OK &&
+        parallel_indexed == indexed && parallel_last == last &&
+        lardon3d_project_db_list_visual_index_segments(database, index_id, 0, &parallel_segment,
+                                                        1, &parallel_segment_count) ==
+            LARDON3D_PROJECT_DB_OK &&
+        parallel_segment_count == 1 &&
+        lardon3d_project_db_list_visual_index_memberships(
+            database, index_id, 0, parallel_memberships,
+            LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX, &parallel_membership_count) ==
+            LARDON3D_PROJECT_DB_OK &&
+        lardon3d_visual_index_query(root, database, index_id, feature_a.feature_set_id,
+                                    &equality_options, parallel_candidates, 4,
+                                    &parallel_candidate_count) == LARDON3D_VISUAL_INDEX_OK &&
+        serial_segment.generation == parallel_segment.generation &&
+        serial_segment.size_bytes == parallel_segment.size_bytes &&
+        serial_segment.posting_count == parallel_segment.posting_count &&
+        serial_segment.feature_set_count == parallel_segment.feature_set_count &&
+        serial_segment.durability == parallel_segment.durability &&
+        memcmp(serial_segment.sha256, parallel_segment.sha256,
+               sizeof(serial_segment.sha256)) == 0 &&
+        strcmp(serial_segment.path, parallel_segment.path) == 0 &&
+        serial_membership_count == parallel_membership_count &&
+        memcmp(serial_memberships, parallel_memberships,
+               serial_membership_count * sizeof(*serial_memberships)) == 0 &&
+        serial_candidate_count == parallel_candidate_count);
+  for (size_t i = 0; i < serial_candidate_count; ++i) {
+    CHECK(serial_candidates[i].feature_set_id == parallel_candidates[i].feature_set_id &&
+          serial_candidates[i].image_id == parallel_candidates[i].image_id &&
+          serial_candidates[i].scanset_id == parallel_candidates[i].scanset_id &&
+          serial_candidates[i].score == parallel_candidates[i].score &&
+          serial_candidates[i].evidence_count == parallel_candidates[i].evidence_count &&
+          serial_candidates[i].same_image_asset == parallel_candidates[i].same_image_asset);
+  }
   CHECK(lardon3d_visual_index_update_once(root, database, index_id, 0, last, 16, &last, &indexed) ==
             LARDON3D_VISUAL_INDEX_NO_CHANGE &&
         indexed == 0);
