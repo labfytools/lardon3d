@@ -49,7 +49,7 @@ or persistence format.
 
 Historical references to older Project DB versions remain valid when they
 describe the actual historical contract or migration path. Do not rewrite
-legitimate v16/v17/v18/v19 history merely because v20 is current.
+legitimate v16/v17/v18/v19 history merely because v22 is current.
 
 When a ticket declares `NO_NEW_SUBSYSTEM`, do not introduce an unrelated:
 
@@ -552,7 +552,7 @@ Persistence changes require explicit attention to:
 
 For Project DB:
 
-- preserve current v20 semantics unless a ticket explicitly authorizes a schema
+- preserve current v22 semantics unless a ticket explicitly authorizes a schema
   change;
 - schema-version changes require explicit human authorization;
 - migrations must be additive unless a different migration is explicitly

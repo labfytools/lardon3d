@@ -4,6 +4,22 @@
 
 #include <lardon3d/task_kind_registry.h>
 
+#include "task_internal.h"
+
+/* Production Matcher provides this private post-reconstruction hook. Minimal
+ * Registry-only targets intentionally omit it; weak absence preserves the
+ * universal fixed-envelope default without adding a public descriptor field. */
+#if defined(__GNUC__) || defined(__clang__)
+extern bool lardon3d_matcher_task_internal_configure_restored(
+    Lardon3DTask *task,
+    void *userdata
+) __attribute__((weak));
+extern bool lardon3d_acquisition_campaign_task_internal_configure_restored(
+    Lardon3DTask *task,
+    void *userdata
+) __attribute__((weak));
+#endif
+
 enum {
     CANDIDATE_LEGACY_FIXED_BYTES = 128 * 1024,
     CANDIDATE_CURRENT_FIXED_BYTES = 256 * 1024,
@@ -37,6 +53,8 @@ normalize_known_legacy_estimate(const char *kind,
 {
     Lardon3DResourceEstimate current = {0};
     Lardon3DResourceEstimate historical = {0};
+    Lardon3DResourceEstimate oldest = {0};
+    bool has_oldest = false;
     if (strcmp(kind, "candidate_pair.generate") == 0) {
         current = (Lardon3DResourceEstimate) {
             .memory_fixed_bytes = CANDIDATE_CURRENT_FIXED_BYTES,
@@ -56,16 +74,33 @@ normalize_known_legacy_estimate(const char *kind,
             .gpu_memory_fixed_bytes = gpu ? MATCHER_GPU_FIXED_BYTES : 0,
             .memory_bytes_per_item = MATCHER_CURRENT_PER_ITEM_BYTES,
             .minimum_batch_size = 1,
-            .maximum_batch_size = 8,
-            .desired_cpu_threads = gpu ? 1U : 8U,
+            .maximum_batch_size = 12,
+            .desired_cpu_threads = gpu ? 1U : 12U,
             .desired_gpu_slots = gpu ? 1U : 0U,
             .desired_io_slots = 1,
             .task_class = LARDON3D_RESOURCE_TASK_CPU,
         };
         historical = current;
-        historical.memory_fixed_bytes = MATCHER_LEGACY_FIXED_BYTES;
-        historical.memory_bytes_per_item = 0;
-        historical.desired_cpu_threads = 12;
+        /* CPU8/GPU0 and CPU1/GPU1 are the immediately preceding durable
+         * operational forms. They are normalized only in memory: thread
+         * count is not Matcher scientific identity and no estimate-only
+         * checkpoint is published during recovery. */
+        historical.maximum_batch_size = 8;
+        historical.desired_cpu_threads = gpu ? 1U : 8U;
+        oldest = current;
+        oldest.memory_fixed_bytes = MATCHER_LEGACY_FIXED_BYTES;
+        oldest.memory_bytes_per_item = 0;
+        oldest.maximum_batch_size = 8;
+        oldest.desired_cpu_threads = 12;
+        has_oldest = true;
+        Lardon3DResourceEstimate automatic = current;
+        automatic.task_class = LARDON3D_RESOURCE_TASK_MIXED;
+        if (!gpu && estimate_equals(durable, &automatic)) {
+            /* MIXED is the truthful durable signature for new normal AUTO:
+             * execution may consume either its CPU or Vulkan capability. */
+            *effective = *durable;
+            return true;
+        }
     } else if (strcmp(kind, "features.extract.sift") == 0
                || strcmp(kind, "features.extract.rootsift") == 0) {
         current = (Lardon3DResourceEstimate) {
@@ -87,7 +122,8 @@ normalize_known_legacy_estimate(const char *kind,
         *effective = *durable;
         return true;
     }
-    if (!estimate_equals(durable, &historical)) {
+    if (!estimate_equals(durable, &historical)
+        && (!has_oldest || !estimate_equals(durable, &oldest))) {
         return false;
     }
     /* These exact signatures are historical operational policy, not scientific
@@ -212,6 +248,28 @@ lardon3d_task_kind_registry_restore(
         if (binding.userdata_destroy) {
             binding.userdata_destroy(binding.userdata);
         }
+        return LARDON3D_TASK_KIND_RESTORE_FAILED;
+    }
+    bool capabilities_configured =
+        lardon3d_task_internal_enable_known_capabilities(*task);
+#if defined(__GNUC__) || defined(__clang__)
+    if (capabilities_configured && strcmp(kind, "matcher.run") == 0
+        && lardon3d_matcher_task_internal_configure_restored) {
+        capabilities_configured =
+            lardon3d_matcher_task_internal_configure_restored(
+                *task, binding.userdata);
+    }
+    if (capabilities_configured
+        && strcmp(kind, "acquisition_campaign.run") == 0
+        && lardon3d_acquisition_campaign_task_internal_configure_restored) {
+        capabilities_configured =
+            lardon3d_acquisition_campaign_task_internal_configure_restored(
+                *task, binding.userdata);
+    }
+#endif
+    if (!capabilities_configured) {
+        lardon3d_task_destroy(*task);
+        *task = NULL;
         return LARDON3D_TASK_KIND_RESTORE_FAILED;
     }
     if (binding.finished_callback

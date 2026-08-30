@@ -87,8 +87,11 @@ affecter les autres entrées de l'inventaire.
 
 ## Invariants
 
-1. **Estimation immuable** : une fois créée, l'estimation d'une tâche ne change
-   jamais. Elle est copiée en lecture seule lors de la réservation.
+1. **Estimation durable immuable** : l'estimation stockée dans la Task courante
+   ne change jamais. Compute Governor v2 utilise une enveloppe privée de
+   capacités, distincte de ce snapshot et non persistée comme identité. Le
+   contrat choisi pour une séquence est lui aussi immutable jusqu'à sa
+   libération ; seule une séquence suivante peut être adaptée.
 2. **Transitions d'état validées** : le cycle nominal est
    `PENDING → RUNNING → COMPLETED/FAILED/CANCELLED`, avec pause coopérative.
 3. **Pause et annulation coopératives** : le callback appelle périodiquement
@@ -105,7 +108,147 @@ affecter les autres entrées de l'inventaire.
 - **task_queue** : la file gère l'ordre d'exécution et invoque les callbacks.
 - **resource_governor** : l'estimation est utilisée pour la réservation avant
   exécution.
-- **scheduler** : le scheduler transmet l'estimation lors de la soumission.
+- **scheduler** : ses responsabilités restent représentées par le runtime et
+  l'unique Queue existants ; aucun second scheduler n'est introduit.
+
+### Frontière Compute Governor v2
+
+**COMPUTE_GOVERNOR_V2 — PASS / FROZEN.** Chaque kind de production
+reste propriétaire d'une Task et passe par l'unique Queue à un worker, puis par
+l'unique Resource Governor, même lorsque CPU, lot, mémoire, I/O et GPU sont
+tous fixes. Une dimension fixe n'autorise jamais à contourner l'admission.
+
+Le code conserve une `Lardon3DResourceEstimate` canonique immutable pour la
+durabilité. Derrière les types opaques, chaque Task possède désormais une
+enveloppe privée bornée : par défaut une capacité fixe exactement égale à cette
+estimation ; seuls les kinds possédant des alternatives réelles en ajoutent.
+Queue et `sequence_break()` demandent au Governor de choisir et réserver une
+capacité depuis un seul snapshot courant. L'exécution reçoit ce contrat
+immutable et ne le renégocie pas en cours de séquence. Cette couture n'étend ni
+le descriptor public du Task Kind Registry, ni le checkpoint, ni le payload
+Project DB et n'ajoute aucune dimension d'identité scientifique.
+
+Le Governor possède aussi la politique CPU hôte privée. Depuis le masque
+permis et la topologie package/core, il dérive un compute-pool par coeurs
+physiques complets ; un caller déjà précontraint fournit directement son pool.
+Sans topologie exploitable, le budget portable subsiste avec affinité inactive.
+Seul le worker lourd de Queue applique et vérifie son propre masque (`pid=0`)
+avant les callbacks, donc le creator/main/TUI reste libre. Le Governor ne mute
+jamais un TID auxiliaire énuméré : un `PIDFD_THREAD` ne stabilise pas le numéro
+TID consommé par `sched_setaffinity(tid)`. Le démarrage établit plutôt
+`MESA_SHADER_CACHE_DISABLE=true` avant tout pthread applicatif et toute
+initialisation Vulkan. Une absence prend ce défaut sûr ; `true`/`1` explicites
+sont conservés, tandis qu'une valeur explicite fausse ou malformée est respectée
+mais entraîne un refus de démarrage. Cette politique opérationnelle, sans état
+Task durable ni identité scientifique, supprime les helpers de cache Mesa
+observés qui élargissaient leur masque. Il n'existe plus de sweep post-init,
+latch de Task ou retry de recontrainte auxiliaire ; les diagnostics indiquent
+l'état et la raison de la politique sans prétendre une activité auxiliaire.
+Le nombre du pool borne toute admission CPU. Cette couture
+n'ajoute ni scheduler, ni worker, ni champ durable ou ABI publique.
+
+Le comportement de production normal ORB est `AUTO` Governor-owned. Les modes
+CPU/Vulkan explicites sont réservés au debug, benchmark et à la
+reproductibilité. Une Task normale nouvelle persiste une classe `MIXED`
+sémantiquement honnête ; cette signature reconstruit AUTO, tandis que toute
+signature CPU ORB ancienne ou courante reconstruit un CPU fixe et que Vulkan
+reste fixe. Création et reprise n'initialisent pas Vulkan sur le caller ; le
+premier begin appartient au worker Queue contraint. Le choix matériel ne
+devient ni payload ni identité. Seule une reprise AUTO établit la disponibilité
+Vulkan partagée ; les reprises fixes et historiques sont sans effet global,
+donc leur ordre ne dégrade pas AUTO. Une panne backend est publiée avant tout
+fallback ou sortie précoce ; une inéligibilité de paire reste locale et ne
+possède aucun handle à terminer. Le Governor conserve une télémétrie fixe et
+bornée par kind/backend (dernière durée, travail durable, débit, backend
+sélectionné/réel, contrat, pression et raison) et aucune grande histoire
+persistante. L'adaptation générique utilise deux observations de référence et
+deux du palier d'essai. Le lot ORB Vulkan, plus bruité, exige huit séquences
+pures consécutives pour chacune de ces fenêtres avant toute décision ; une
+observation Matcher mesure la cadence de bout en bout depuis la réadmission
+réussie jusqu'au checkpoint générique durable, et non le seul callback de
+calcul. Le temps de calcul seul reste diagnostique. Ainsi le Governor apprend
+le coût de séquence amorti par le lot et un checkpoint échoué ne l'entraîne pas.
+Une
+admission adaptative encore permise sous pression installe
+CPU1, lot minimum et inflight minimum avant sa réservation. Inflight ORB normal
+reste fixé à 1; helpers reste 0. Les callbacks atomiques n'annoncent
+un item que si extraction et publication propre sont durables ; READY,
+`ALREADY_PRESENT` et `PUBLISHED_NOT_DURABLE` sont des observations zéro qui
+n'avancent pas la rampe.
+L'A/B forcé ABBA a mesuré seulement +2,077617 % à depth 2
+(54,661652238 contre 55,797311953 paires/s), sous le deadband 5 %, avec digest identique,
+quatre séquences de fallback local par exécution et zéro panne/discard. Depth 2 est donc
+**REJECTED_WITH_MEASURED_REASON** pour AUTO normal. Compute Governor v2 reste
+en cours jusqu'aux réconciliations restantes.
+
+Pour Matcher Vulkan, le lease privé de capacité matérialise le contrat de la
+séquence seulement après son admission. Il alloue un ou deux payloads de
+640 Kio sans requête pending, les conserve jusqu'au nettoyage complet de la
+séquence, puis rend depth 2 à depth 1 avant `sequence_break()`. Une allocation
+depth 2 échouée ne modifie pas le contrat scientifique et conduit à la paire CPU
+complète; elle ne laisse ni réservation suivante sous-facturée, ni résultat
+Vulkan partiel.
+
+Cette boucle est maintenant `observe → choose → execute → measure → adapt next`.
+Les CPU réductibles progressent uniquement par `1/2/4/8/12`, bornés par le
+compute-pool ; CPU et lot ne sont jamais essayés ensemble. Les observations
+hôte privées comprennent utilisation du pool, mémoire/PSI/swap actif, GPU busy
+et RSS observé, sans confondre RSS et réservation. Le dernier diagnostic peut
+être tiré par numéro de série ou formaté dans un buffer borné ; le runtime ne
+l'imprime pas directement dans le TUI. Le contrat déjà installé demeure
+immutable même si une nouvelle observation arrive pendant son exécution.
+Un agrégat privé de taille fixe complète ce dernier diagnostic : il compte les
+admissions et séquences effectivement enregistrées et somme leurs métriques en
+saturant, afin qu'un poller lent ne transforme pas des changements coalescés en
+fausse histoire exhaustive. Il vit uniquement avec le Governor courant.
+Pour la matrice forcée du runner, cet agrégat sépare les fallbacks par
+inéligibilité locale, panne backend et raison autre/inconnue, à la fois par
+séquence diagnostique et par item exact. Le compte d'items avance une seule fois
+après la publication durable du fallback CPU complet; le travail d'une
+séquence sélectionnée CPU reste à zéro. Ce commit opérationnel immédiat survit à
+l'échec ou l'annulation d'une paire suivante, mais ne crée ni séquence réussie,
+ni débit durable, ni adaptation. Un high-water mark non persisté le rend
+idempotent pendant la vie de la Task. La Task n'expose alors qu'une capacité
+Vulkan aux batch/depth demandés : absence de GPU/backend/mémoire ne peut donc
+pas devenir une admission CPU. Une panne backend tardive laisse la publication
+CPU complète déjà durable mais fait échouer la Task de benchmark après
+checkpoint; seul le compte d'items localement inéligibles, égal entre cohortes
+comparées même lorsque leur batch diffère, reste admissible pour l'évidence.
+Les anciens logs batch 2/4, à quatre contre trois séquences locales pour les
+mêmes items/digest, sont préliminaires et ne déterminent aucun débit utile. La
+matrice item-valide suivante mesure batch 2/4/8/12 à
+54,180767704/66,094373197/74,784998723/76,755814095 paires/s. Les deux premiers
+gains de palier dépassent le deadband, celui de 8 à 12 vaut seulement
++2,635308425 % : AUTO normal s'arrête à batch 8 et batch 12 reste un contrôle
+privé sûr rejeté pour la politique normale.
+Le run sans override `short-auto-batch8-governor-v2.stdout.jsonl` valide ensuite
+la Task réelle : `1 → 2 → 4 → 8`, 4113/4113 résultats, 76,072 paires/s, digest
+identique, six items locaux et aucune panne/discard. La cadence de séquence
+inclut réadmission et checkpoint durable; inflight reste 1 et helpers 0.
+Le run S21 final crée ensuite la Task normale 2831 en mode AUTO, sans option
+backend/lot/inflight. Ses 21 630 admissions sont toutes Vulkan; la Task publie
+172 741/172 741 résultats, termine `COMPLETE` à 100 %, avec zéro doublon et
+curseur complet. La seule admission YELLOW produit un contrat batch 1, puis
+les admissions GREEN suivantes remontent de façon bornée jusqu'à batch 8. Le
+contrat actif n'est jamais muté sous le callback : chaque changement appartient
+à la séquence suivante.
+
+Le runner d'évidence réel crée les nouvelles Tasks Matcher normales par l'API
+AUTO. Son contrôle `synchronous` est un flag de contexte compilé seulement dans
+le target benchmark/test : il ne modifie ni Task durable, ni envelope, ni
+contrat installé, ni callback de production. Puisque ce flag n'est pas
+checkpointé, le runner refuse expressément de l'appliquer à une reprise Matcher
+pendante. Le chemin rolling/recovery normal reste inchangé.
+
+Dans ce même target seulement, `--matcher-inflight 1|2` reconstruit avant la
+création d'une Task neuve une enveloppe AUTO Vulkan à profondeur fixe et batch
+2 par défaut. `--matcher-batch 2|4|8|12`, valable seulement avec inflight et
+rolling AUTO, fixe aussi le lot. Ces contrôles ne remplacent pas le Governor : l'admission, la mémoire
+par slot, l'UMA et la réservation de séquence restent identiques. Le contrôle
+est refusé pour les modes explicites, pour synchronous depth 2 et pour une Task
+pendante. Une garde de processus restaure les tokens privés sur toute sortie;
+aucun token, champ de contexte, payload ou comportement correspondant n'est
+compilé dans `lardon3d`.
 
 ## Statut
 
@@ -134,11 +277,25 @@ candidates avec idempotence, checkpoint après chaque lot et repasse par le
 Governor via `sequence_break`. La reprise est idempotente avec le curseur
 `after_feature_set_id` rechargé depuis la DB.
 
-**IMPLEMENTED** — `matcher.run` traite une Candidate Pair atomique à la fois,
-par lots adaptatifs de 1, 2, 4 ou 8. Il persiste le curseur
+**PASS / FROZEN — Compute Governor v2.** `matcher.run` traite une
+Candidate Pair atomique à la fois, par lots opérationnels bornés jusqu'à 12.
+Le code courant consomme honnêtement CPU, lot et GPU du contrat choisi. Feature,
+SIFT et RootSIFT appliquent l'admission OpenCV `1..12`; RAW et Photo Quality
+restent CPU1. Pour ORB normal, le Governor choisit GPU-first ou CPU complet pour la prochaine
+séquence, sans mutation pendant son exécution. Ces dimensions ne changent ni
+identité scientifique ni publication. Le callback persiste le curseur
 `after_candidate_pair_id`, checkpoint après publication de chaque lot et
 effectue une rupture de séquence avant le suivant. Une paire repassée après un
-crash est réutilisée par son Match Result.
+crash est réutilisée par son Match Result. La soumission Vulkan rolling est
+privée et request-bound; le contrat normal de séquence fige inflight 1. Deux slots
+maximum restent disponibles à la couture privée de sûreté/benchmark et portent
+chacun command/fence/buffers/query et un handle exact tandis
+que device/pipeline/layout/cache restent partagés. Le propriétaire soumet
+jusqu'à la profondeur admise, finit le plus ancien et publie toujours le
+préfixe canonique contigu; toute sortie, annulation ou exception nettoie les
+handles encore privés. Les buffers du second slot ne sont mappés que pendant
+une séquence depth 2 admise et sont libérés avant la rupture suivante. Helpers
+reste 0 et le contrôle synchrone force depth 1.
 
 **IMPLEMENTED** — `geometric_verifier.run` v1 traite un Match Result atomique à
 la fois, par lots adaptatifs de 1, 2, 4 ou 8. Project DB v13 conserve sa

@@ -14,6 +14,7 @@
 #include <lardon3d/task_queue.h>
 
 #include "candidate_pair_gen_internal.h"
+#include "task_internal.h"
 
 enum {
     CANDIDATE_PAIR_MINIMUM_BATCH = 1,
@@ -339,6 +340,8 @@ static bool run(Lardon3DTask *task, void *userdata) {
         (void)lardon3d_resource_governor_record_batch(
             context->governor, LARDON3D_RESOURCE_TASK_CPU,
             (size_t)seq_generated, elapsed_ns(begin, end), 0);
+        (void)lardon3d_task_internal_record_sequence(
+            task, elapsed_ns(begin, end), processed_in_sequence);
 
         Lardon3DAppState state;
         runtime_state(context, &state);

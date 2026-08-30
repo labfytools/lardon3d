@@ -50,6 +50,57 @@ read_file(const char *path, char *buffer, size_t capacity)
 }
 
 static bool
+read_exact_decimal_u64(const char *path, uint64_t *value)
+{
+    if (!path || !value) return false;
+    int descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) return false;
+    char buffer[64];
+    size_t total = 0;
+    bool success = true;
+    while (total + 1 < sizeof(buffer)) {
+        ssize_t count = read(descriptor, buffer + total,
+            sizeof(buffer) - total - 1);
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0) {
+            success = false;
+            break;
+        }
+        if (count == 0) break;
+        total += (size_t)count;
+    }
+    if (success && total + 1 == sizeof(buffer)) {
+        char extra;
+        ssize_t count;
+        do {
+            count = read(descriptor, &extra, 1);
+        } while (count < 0 && errno == EINTR);
+        success = count == 0;
+    }
+    if (close(descriptor) != 0) success = false;
+    if (!success || total == 0) return false;
+    buffer[total] = '\0';
+    const unsigned char *cursor = (const unsigned char *)buffer;
+    uint64_t parsed = 0;
+    size_t digits = 0;
+    while (*cursor >= '0' && *cursor <= '9') {
+        uint64_t digit = (uint64_t)(*cursor - '0');
+        if (parsed > (UINT64_MAX - digit) / 10U) return false;
+        parsed = parsed * 10U + digit;
+        ++cursor;
+        ++digits;
+    }
+    if (digits == 0) return false;
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\n'
+        || *cursor == '\r' || *cursor == '\f' || *cursor == '\v') {
+        ++cursor;
+    }
+    if (*cursor) return false;
+    *value = parsed;
+    return true;
+}
+
+static bool
 meminfo_bytes(const char *buffer, const char *key, uint64_t *bytes)
 {
     const char *line = buffer;
@@ -163,18 +214,12 @@ lardon3d_resource_snapshot_capture_gpu_at_root(
     if (written < 0 || (size_t)written >= sizeof(path)) {
         return;
     }
-    char buffer[64];
-    if (!read_file(path, buffer, sizeof(buffer))) {
-        return;
-    }
-    errno = 0;
-    char *end;
-    unsigned long long used = strtoull(buffer, &end, 10);
-    if (errno == 0 && end != buffer
-        && (uint64_t)used <= profile->gpu_memory_total_bytes) {
+    uint64_t used;
+    if (read_exact_decimal_u64(path, &used)
+        && used <= profile->gpu_memory_total_bytes) {
         snapshot->gpu_memory_available_known = true;
         snapshot->gpu_memory_available_bytes =
-            profile->gpu_memory_total_bytes - (uint64_t)used;
+            profile->gpu_memory_total_bytes - used;
     }
 }
 

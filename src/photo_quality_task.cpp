@@ -5,6 +5,8 @@ extern "C" {
 #include <lardon3d/task_queue.h>
 }
 
+#include "opencv_task_thread_guard.h"
+
 #include <cstdio>
 #include <memory>
 #include <new>
@@ -119,7 +121,15 @@ bool run_impl(Lardon3DTask *task, void *value) {
 }
 
 bool run(Lardon3DTask *task, void *value) noexcept {
-  try { return run_impl(task, value); }
+  try {
+    Lardon3DOpenCvTaskThreadGuard threads(task);
+    if (!threads.valid())
+      return lardon3d_task_fail(task, "Contrat CPU OpenCV triage invalide.");
+    bool result = run_impl(task, value);
+    if (!threads.restore())
+      return lardon3d_task_fail(task, "Restauration OpenCV triage impossible.");
+    return result;
+  }
   catch (const std::bad_alloc &) { return lardon3d_task_fail(task, "Mémoire insuffisante."); }
   catch (...) { return lardon3d_task_fail(task, "Erreur interne du triage photo."); }
 }

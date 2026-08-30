@@ -41,6 +41,72 @@ Une panne pré-terminale peut donc répéter la normalisation exacte. Cette cout
 ne peut modifier ni identité, paramètres scientifiques, progression ou curseur
 métier, et toute forme voisine est rejetée.
 
+## Inventaire production et entrées runtime
+
+`src/task_kinds.c::lardon3d_task_kind_registry_production()` enregistre les
+14 kinds v1 du profil de production courant. La colonne « reprise » nomme le
+reconstructeur du binding ; « callback » nomme l'entrée runtime privée dans le
+même fichier. Le détail chiffré des capacités est centralisé dans l'[audit des
+14 kinds](resource_governor.md#audit-des-14-kinds-de-production).
+
+| Kind v1 | Source, reprise et callback | Réconciliation pré-admission courante |
+| --- | --- | --- |
+| `raw.develop` | `raw_development_task.cpp`; `lardon3d_raw_development_task_reconstruct`; `run` | Aucune |
+| `photo_quality.triage` | `photo_quality_task.cpp`; `lardon3d_photo_quality_task_reconstruct`; `run` | Aucune |
+| `acquisition_campaign.run` | `acquisition_campaign_task.cpp`; `lardon3d_acquisition_campaign_task_reconstruct`; `run` | Aucune |
+| `import.images` | `import_task.c`; `lardon3d_image_import_reconstruct`; `run_image_import` | Aucune |
+| `features.extract` | `feature_task.c`; `lardon3d_feature_extract_reconstruct`; `run` | Durable CPU12; admission/runtime OpenCV 1..12 |
+| `features.extract.sift` | `sift_task.c`; `lardon3d_sift_extract_reconstruct`; `run` | CPU1 historique exact → durable CPU12; runtime 1..12 |
+| `features.extract.rootsift` | `sift_task.c`; `lardon3d_sift_extract_reconstruct`; `run` | CPU1 historique exact → durable CPU12; runtime 1..12 |
+| `visual_index.update` | `visual_index_task.c`; `lardon3d_visual_index_update_reconstruct`; `run` | CPU runtime 1..12 ; feedback par segment durable |
+| `candidate_pair.generate` | `candidate_pair_task.c`; `lardon3d_candidate_pair_generate_reconstruct`; `run` | Forme sérielle historique exacte → CPU12 ; runtime CPU 1..12 et lot 1..64 |
+| `matcher.run` | `matcher_task.c`; `lardon3d_matcher_task_reconstruct`; `run` | Signatures CPU/Vulkan historiques exactes → formes courantes en mémoire |
+| `geometric_verifier.run` | `geometric_verifier_task.c`; `lardon3d_geometric_verifier_task_reconstruct`; `run` | Aucune |
+| `track_builder.run` | `track_builder_task.cpp`; `lardon3d_track_builder_task_reconstruct`; `run` | Aucune |
+| `sparse_sfm.run` | `sparse_sfm_task.cpp`; `lardon3d_sparse_sfm_task_reconstruct`; `run` | Aucune |
+| `incremental_reconstruction.run` | `incremental_reconstruction_task.cpp`; `lardon3d_incremental_reconstruction_task_reconstruct`; `run` | Aucune |
+
+## Couture privée Compute Governor v2
+
+**COMPUTE_GOVERNOR_V2 — PASS / FROZEN.** Le descriptor C public
+reste limité à kind, version et reconstructeur. L'enveloppe de capacités est
+intégrée sans changement d'ABI dans le `struct Lardon3DTask` opaque et les
+coutures privées `src/task_internal.h` / `src/resource_governor_internal.h`.
+Les coutures d'admission sont `src/task_queue.c::select_admissible()`,
+`src/task.c::lardon3d_task_sequence_break()` et, côté Governor,
+la sélection multi-capacité sur un snapshot unique. La normalisation historique
+exacte reste dans `src/task_kind_registry.c::normalize_known_legacy_estimate()`.
+
+Cette enveloppe n'est ni une identité scientifique, ni un nouveau payload
+Project DB, ni un nouveau scheduler. Le Governor possède l'admission de tous
+les kinds, y compris les formes entièrement fixes. Le contrat choisi est
+immutable pendant une séquence et seule la suivante peut être adaptée. Une Task
+sans alternative reçoit automatiquement une capacité égale à son estimation
+durable. Le Governor conserve un état borné par kind/backend et un dernier
+diagnostic ; ni l'enveloppe ni ce choix ne sont persistés.
+
+La politique CPU hôte reste privée au Governor : masque permis, groupes
+package/core/SMT, compute-pool et résultat d'application du worker Queue. Le
+compute-pool borne l'admission de chaque kind, y compris une capacité durable
+CPU12. Feature/SIFT/RootSIFT consomment le compte immutable 1..12 dans OpenCV ;
+les kinds CPU1 restent fixes. Aucun ID CPU ou choix d'affinité n'entre dans le
+descriptor, le checkpoint ou le Project DB.
+
+Le feedback ne requalifie pas un succès de reprise en travail durable : les
+kinds Feature/SIFT/RootSIFT comptent un item seulement après extraction et
+publication durable propre. READY, collision `ALREADY_PRESENT` ou publication
+incertaine compte zéro ; Visual Index compte pareillement zéro pour un segment
+`PUBLISHED_NOT_DURABLE`.
+
+L'état privé par kind/backend coordonne désormais une seule dimension d'essai.
+Les CPU validés slow-startent `1/2/4/8/12`; après deux observations de baseline,
+deux observations à au moins +5 % sont nécessaires pour accepter le palier.
+Une fois CPU stabilisé, seuls les kinds dont le callback consomme réellement
+son lot peuvent ouvrir un essai de lot. `features.extract`, SIFT et RootSIFT
+enregistrent une observation atomique réussie partagée entre Tasks ; Visual
+Index, Candidate et Matcher enregistrent chaque séquence. Les autres formes ou
+dimensions non adaptables restent égales à leur capacité fixe honnête.
+
 ## Persistance et legacy
 
 Le checkpoint générique reste en version 1. Project Database v7 conserve le
@@ -78,21 +144,95 @@ demande d'un thread CPU par douze avant admission. Le checkpoint historique et
 le curseur typé restent inchangés. Les snapshots Candidate courants et tous les
 autres kinds restent inchangés.
 
-**IMPLEMENTED** — `matcher.run`, version 1, recharge la configuration Matcher,
-l'identité Feature Set et le curseur `after_candidate_pair_id`. Il traite une
-Candidate Pair atomique à la fois dans des lots bornés à huit, checkpoint le
-curseur et repasse par le Governor entre les lots. La table durable
-`matcher_tasks` est introduite par Project DB v11, après le Match Result v10.
-Son reconstructeur accepte les formes opérationnelles exactes CPU8/GPU0 et
-CPU1/GPU1/640 Kio, puis normalise éphémèrement leurs deux prédécesseurs CPU12
-vers la forme courante correspondante avant l'admission. Une forme
-voisine échoue au lieu de servir d'indice de backend ; le payload Project DB ne
-change pas et ne persiste aucune identité matérielle.
+**PASS / FROZEN — Compute Governor v2.** `matcher.run`, version 1,
+recharge la configuration Matcher, l'identité Feature Set et le curseur
+`after_candidate_pair_id`. Il traite une Candidate Pair atomique à la fois dans
+des lots bornés à douze, checkpoint le curseur et repasse par le Governor entre
+les lots. La table durable `matcher_tasks` est introduite par Project DB v11,
+après le Match Result v10. Son reconstructeur accepte les formes courantes
+CPU12/GPU0 et CPU1/GPU1/640 Kio à lot `1..12`, les signatures historiques
+CPU8/GPU0 et Vulkan à lot maximal 8, puis les formes CPU12
+pré-estimation-par-paire. La normalisation reste en mémoire. Une forme voisine
+échoue au lieu de servir d'indice de backend ; le payload Project DB ne change
+pas et ne persiste aucune identité matérielle. Les nouvelles Tasks ORB normales
+ont une signature de classe `MIXED`, dont les autres champs restent une demande
+de ressources réelle ; elle seule reconstruit la politique Governor `AUTO`.
+Toutes les formes ORB de classe `CPU`, anciennes ou courantes, reconstruisent
+un CPU fixe pour préserver les overrides explicites et une compatibilité sûre ;
+une forme Vulkan restaurée reste fixe Vulkan. Un build portable reconstruit la
+même politique `MIXED` mais n'expose que sa capacité CPU. Les snapshots tout à
+zéro Candidate/SIFT/RootSIFT sont explicitement corrompus ; seules leurs
+signatures historiques complètes exactes sont acceptées. Seule la forme AUTO
+restaurée établit la disponibilité Vulkan partagée. Restaurer ensuite CPU,
+Vulkan ou une signature historique fixe n'écrit rien dans cet état : la
+co-restauration est indépendante de l'ordre. Aucun nouvel état de
+backend n'est persisté.
+
+Pour une Task AUTO, la Registry reconstruit aussi l'enveloppe privée Vulkan
+CPU1/GPU1, lot opérationnel `1..8`, helpers 0 et inflight 1. La signature
+durable historique reste à lot `1..12`; la signature 640 Kio
+reste la forme depth-1 minimale et n'est pas mutée; l'admission normale facture
+exactement 640 Kio une seule fois sur UMA. Le choix inflight est immutable dans
+la séquence et ne devient ni payload, ni fingerprint, ni indice de reprise.
+Vulkan explicite reste depth 1. La capacité privée de sûreté/benchmark peut
+forcer deux slots et 1,25 Mio sans changer la reconstruction normale.
+Le backend ne mappe pas le maximum de l'enveloppe à sa création : il retient
+exactement un slot à depth 1 et deux seulement sous une séquence depth 2 admise,
+puis libère le second avant l'admission suivante. La signature durable 640 Kio
+reste donc inchangée sans sous-facturer une allocation depth 2 forcée.
+
+L'A/B forcé ABBA a mesuré 54,661652238 paires/s à depth 1 et 55,797311953 à
+depth 2, soit +2,077617 %, sous le deadband 5 %, avec digest identique, quatre
+séquences de fallback local par exécution et zéro panne/discard. La Registry conserve donc
+`DEPTH_MAX_VALIDATED_SAFETY=2` pour les seules coutures privées, mais la
+capacité AUTO normale suit `DEPTH_MAX_USEFUL=1` : depth 2 est
+**REJECTED_WITH_MEASURED_REASON**, sans nouvelle signature durable.
+
+La télémétrie privée de `matcher.run` conserve les classes de fallback par
+séquence et compte aussi les items exacts local-ineligible/backend-failure/other
+après leur publication durable. Ce détail opérationnel n'ajoute aucun kind,
+champ durable ou identité et empêche le regroupement batch de devenir un
+comparateur scientifique. Le commit immédiat par item reste acquis si une
+paire suivante avorte, tandis que le feedback de séquence n'est pas enregistré;
+la déduplication actuelle vit seulement avec la Task reconstruite en mémoire.
+Les logs batch 2/4 antérieurs à ce compteur restent préliminaires et prouvent
+seulement l'invalidité du comparateur par séquences. Les huit runs item-valides
+`forced-batch{2,4,8,12}-items{,-b}.stdout.jsonl` conservent chacun 4113 paires,
+six items locaux, zéro panne/autre et le même digest. Les débits combinés sont
+54,180767704, 66,094373197, 74,784998723 et 76,755814095 paires/s. Les gains
+jusqu'à batch 8 dépassent 5 %, celui de 8 à 12 vaut seulement +2,635308425 % :
+la Registry expose `BATCH_MAX_USEFUL=8` en AUTO normal et réserve batch 12 aux
+preuves privées (`REJECTED_WITH_MEASURED_REASON`).
+Le S21 final confirme l'enveloppe Registry en production : `matcher.run` v1
+reste le même kind durable, AUTO choisit Vulkan pour 21 630 admissions et
+termine 172 741/172 741 résultats à batch 8/inflight 1/helpers 0. Le passage
+transitoire 8 → 1 → 2 → 4 → 8 ne modifie ni signature durable, ni
+fingerprint, ni digest scientifique. Aucun backend ou champ persistant n'est
+ajouté par cette adaptation.
+
+La reconstruction AUTO ne sonde ni n'initialise Vulkan sur le thread
+`project_open()`. Elle expose la capacité depuis les seules métadonnées runtime
+build/backend/GPU ; le Governor possède le dimensionnement exact et
+l'admission UMA sur son snapshot. Le premier begin appartient au worker Queue après son
+affinité. La politique Mesa sûre est déjà établie avant les pthreads et
+l'initialisation du driver ; aucun sweep/latch auxiliaire n'appartient donc au
+contexte Task. Une paire localement inéligible n'initialise pas le backend. Une
+panne réelle produit des paires CPU complètes et rend le backend indisponible
+aux admissions AUTO suivantes sans réécrire le snapshot durable.
+
+Le contrôle de benchmark `synchronous` du runner réel n'étend pas le descriptor
+ni le reconstructeur. Il est compilé hors du binaire production, attaché
+seulement au contexte éphémère d'une nouvelle Task et refusé par le runner si
+une Task Matcher doit être reprise. La Registry continue donc à reconstruire
+uniquement la politique AUTO/fixe déduite de la signature durable, jamais un
+pipeline de benchmark.
 
 **IMPLEMENTED** — `features.extract.sift` et `features.extract.rootsift`
 acceptent leur forme CPU12 courante et normalisent uniquement leur forme CPU1
-historique exacte. Cette compatibilité opérationnelle n'altère ni fingerprint,
-Feature Set, checkpoint durable, ni politique scientifique.
+historique exacte. ORB/SIFT/RootSIFT appliquent ensuite le compte CPU admis dans
+`1..12`; les sorties testées à 1/2/4/8/12 restent égales. Cette compatibilité
+opérationnelle n'altère ni fingerprint, Feature Set, checkpoint durable, ni
+politique scientifique.
 
 **IMPLEMENTED** — `geometric_verifier.run`, version 1, recharge la configuration
 Fundamental immuable, en revalide le fingerprint et reprend `after_match_result_id`.

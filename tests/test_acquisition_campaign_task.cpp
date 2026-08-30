@@ -7,7 +7,12 @@
 extern "C" {
 #include <lardon3d/acquisition_campaign_task.h>
 #include <lardon3d/project_db.h>
+#include "../src/task_internal.h"
 }
+
+extern "C" bool
+lardon3d_acquisition_campaign_task_internal_configure_restored(
+    Lardon3DTask *, void *);
 
 #define CHECK(x)                                                               \
   do {                                                                         \
@@ -173,6 +178,45 @@ int main() {
   CHECK(loaded_task.next_group_id == 1 && loaded_task.group_count == 2 &&
         loaded_task.request_size == encoded.size() &&
         std::memcmp(loaded.data(), encoded.data(), encoded.size()) == 0);
+  snapshot.estimate = Lardon3DResourceEstimate{
+      256 * 1024, 0, 64 * 1024, 0, 1, 1, 1, 0, 1,
+      LARDON3D_RESOURCE_TASK_IMPORT};
+  Lardon3DHardwareProfile profile{16, 4096, UINT64_MAX, false, 0, false,
+                                  false, 0, "test", ""};
+  Lardon3DResourcePolicy policy{};
+  policy.maximum_cpu_load_ratio = 1.0;
+  policy.maximum_io_pressure_avg10 = 100.0;
+  policy.io_slot_capacity = 1;
+  Lardon3DResourceGovernor *governor =
+      lardon3d_resource_governor_create(&profile, &policy);
+  CHECK(governor != nullptr);
+  Lardon3DTaskReconstructionContext valid_reconstruction{
+      "/tmp", database, governor, nullptr};
+  Lardon3DTaskKindBinding recovered{};
+  CHECK(lardon3d_acquisition_campaign_task_reconstruct(
+      &snapshot, &valid_reconstruction, &recovered));
+  Lardon3DTask *restored = lardon3d_task_restore_typed(
+      &snapshot, LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND,
+      LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND_VERSION, recovered.callback,
+      recovered.userdata, recovered.userdata_destroy);
+  CHECK(restored &&
+        lardon3d_acquisition_campaign_task_internal_configure_restored(
+            restored, recovered.userdata));
+  Lardon3DResourceDecision decision{};
+  Lardon3DResourceReservation *reservation = nullptr;
+  CHECK(lardon3d_task_internal_reserve_available(
+      restored, governor, &decision, &reservation));
+  Lardon3DResourceReservationInfo admitted{};
+  CHECK(reservation && lardon3d_resource_reservation_get_active(
+                           governor, reservation, &admitted));
+  CHECK(admitted.memory_bytes > 320 * 1024);
+  Lardon3DTaskDurableSnapshot unchanged{};
+  CHECK(lardon3d_task_durable_snapshot(restored, &unchanged));
+  CHECK(unchanged.estimate.memory_fixed_bytes == 256 * 1024 &&
+        unchanged.estimate.memory_bytes_per_item == 64 * 1024);
+  CHECK(lardon3d_resource_governor_release(governor, reservation));
+  lardon3d_task_destroy(restored);
+  lardon3d_resource_governor_destroy(governor);
   std::vector<char> overlong_project_path(LARDON3D_APP_STATE_PATH_CAPACITY + 1,
                                           'x');
   overlong_project_path.back() = '\0';

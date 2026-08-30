@@ -3,6 +3,7 @@ extern "C" {
 #include <lardon3d/project.h>
 #include <lardon3d/project_db.h>
 #include <lardon3d/task_queue.h>
+#include "task_internal.h"
 }
 
 #include <cstdio>
@@ -184,6 +185,30 @@ struct Context {
   Lardon3DAcquisitionIngestOptions options{};
 };
 
+bool context_owned_bytes(const Context &context, uint64_t &bytes) {
+  uint64_t total = sizeof(Context);
+  const size_t source_count = context.sources.capacity();
+  const size_t confirmation_count = context.confirmations.capacity();
+  if (source_count > UINT64_MAX / sizeof(Lardon3DAcquisitionCampaignSource) ||
+      confirmation_count >
+          UINT64_MAX / sizeof(Lardon3DAcquisitionCampaignConfirmation))
+    return false;
+  const uint64_t retained[] = {
+      static_cast<uint64_t>(source_count) *
+          sizeof(Lardon3DAcquisitionCampaignSource),
+      static_cast<uint64_t>(confirmation_count) *
+          sizeof(Lardon3DAcquisitionCampaignConfirmation),
+      static_cast<uint64_t>(context.encoded.capacity()),
+  };
+  for (uint64_t amount : retained) {
+    if (amount > UINT64_MAX - total)
+      return false;
+    total += amount;
+  }
+  bytes = total;
+  return true;
+}
+
 void destroy(void *p) { delete static_cast<Context *>(p); }
 void runtime(Context *c, Lardon3DAppState &s) {
   lardon3d_app_state_init(&s);
@@ -334,6 +359,32 @@ Context *make_context(const char *path, Lardon3DProjectDb *db,
   return c.release();
 }
 } // namespace
+
+extern "C" bool
+lardon3d_acquisition_campaign_task_internal_configure_restored(
+    Lardon3DTask *task, void *userdata) {
+  try {
+    auto *context = static_cast<Context *>(userdata);
+    uint64_t retained = 0;
+    if (!task || !context || !context_owned_bytes(*context, retained) ||
+        retained > UINT64_MAX - 256 * 1024)
+      return false;
+    Lardon3DTaskCapability capability{};
+    capability.estimate = Lardon3DResourceEstimate{
+        retained + 256 * 1024, 0, 64 * 1024, 0, 1, 1, 1, 0, 1,
+        LARDON3D_RESOURCE_TASK_IMPORT};
+    capability.backend = LARDON3D_RESOURCE_BACKEND_FIXED;
+    capability.inflight_limit = 1;
+    Lardon3DTaskCapabilityEnvelope envelope{};
+    envelope.count = 1;
+    envelope.capabilities[0] = capability;
+    /* Recovery may carry the historical under-estimate, but admission uses the
+     * exact newly reconstructed retained context. Durable bytes stay untouched. */
+    return lardon3d_task_internal_set_capability_envelope(task, &envelope);
+  } catch (...) {
+    return false;
+  }
+}
 
 bool request_encode_impl(
     const Lardon3DAcquisitionCampaignTaskRequest *r, unsigned char *out,
@@ -498,8 +549,16 @@ Lardon3DTask *create_task_impl(
     delete c;
     return nullptr;
   }
+  uint64_t retained = 0;
+  if (!context_owned_bytes(*c, retained) || retained > UINT64_MAX - 256 * 1024) {
+    delete c;
+    return nullptr;
+  }
+  /* The request vectors and inline campaign plan remain live for the Task
+   * lifetime. Charge them before admission; the per-group working estimate is
+   * separate and this operational bound does not limit scientific cardinality. */
   Lardon3DResourceEstimate e{
-      256 * 1024, 0, 64 * 1024, 0, 1,
+      retained + 256 * 1024, 0, 64 * 1024, 0, 1,
       1,          1, 0,         1, LARDON3D_RESOURCE_TASK_IMPORT};
   auto *t = lardon3d_task_create_typed("Campagne d'acquisition", &e,
                                        LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND,

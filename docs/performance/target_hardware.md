@@ -16,17 +16,48 @@ chemins SIMD jusqu'à AVX512-SKX. Il a été compilé avec OpenCL, mais
 `AMD Radeon 780M Graphics (RADV PHOENIX)`, API 1.4.354, avec une file compute
 dédiée et de la mémoire UMA host-visible/cohérente.
 
-Le runtime actuel de Lardon3D possède un worker. Le profil interactif conserve
-12 threads OpenCV process-wide, quatre threads logiques pour le desktop et un
-seul Matcher actif. Lorsque
-les pools multi-workers seront introduits, la cible de départ recommandée est
-deux Matchers avec huit threads OpenCV chacun pour une charge mixte. Les mesures
-montrent toutefois que quatre Matchers à quatre threads favorisent SIFT et les
-cas 4096, tandis que deux à huit favorisent ORB 8192. Le Governor devra donc
-choisir à partir de la classe de charge, pas d'une constante universelle. Le
-nombre de threads OpenCV devra être réglé une fois au démarrage :
-`cv::setNumThreads()` est une configuration globale et ne doit jamais être
-modifiée concurremment par des workers.
+Le sysfs amdgpu de cet hôte expose 512 Mio dans `mem_info_vram_total` et
+7 986 020 352 octets dans `mem_info_gtt_total`. Le profil matériel conserve les
+512 Mio comme capacité de payload observable, mais la combinaison petit
+aperture/GTT à l'échelle de la RAM suffit à classer ce GPU shared/UMA sans
+hardcoder son device ID. Le Governor débite alors les ressources GPU exactement
+une fois de `MemAvailable` et n'utilise jamais cet aperture comme mémoire libre
+séparée pour contourner les objectifs 3 Gio/2 Gio.
+
+Le runtime actuel de Lardon3D possède un worker lourd. Le profil interactif
+établit au démarrage une baseline/plafond OpenCV de 12 threads et réserve quatre
+threads logiques au desktop. Pour chaque séquence, l'unique callback Queue
+applique temporairement le compte CPU immuable admis dans `1..12`, le vérifie et
+restaure la baseline sur toute sortie. `cv::setNumThreads()` reste une
+configuration process-wide : sa mutation concurrente par plusieurs workers
+n'est pas supportée. Un futur pool multi-worker devrait donc changer ce modèle
+explicitement, pas multiplier silencieusement ces mutations globales.
+
+Le worker Queue applique à lui-même le compute-pool `0-5,8-13`, tandis que le
+creator/main reste unrestricted `0-15`. Certains helpers de cache disque Mesa
+observés avaient réélargi leur affinité après l'initialisation lazy. Comme un
+pidfd ne stabilise pas le TID numérique pour `sched_setaffinity(tid)`, Lardon3D
+ne tente aucune mutation auxiliaire. Il établit plutôt
+`MESA_SHADER_CACHE_DISABLE=true` avant toute création de pthread applicatif et
+toute initialisation Vulkan. Une absence prend ce défaut sûr ; les valeurs
+explicites exactes `true`/`1` sont respectées, tandis qu'une valeur explicite
+fausse ou malformée reste inchangée mais interdit le démarrage. Sur la 780M
+validée, les helpers `*:disk$0` sont absents et tous les threads runtime vivants
+observés gardent `0-5,8-13`. Cette politique est opérationnelle et inoffensive
+hors Mesa ; elle n'ajoute ni identité scientifique, ni état durable, ni sweep
+post-init.
+Le backend public ne suppose pas que tout consumer traverse ce démarrage : sa
+première requête Vulkan non vide vérifie `true`/`1` sans modifier
+l'environnement, avant tout appel Mesa. Une valeur absente ou différente
+retourne `UNAVAILABLE`, mémorise l'indisponibilité et ne produit aucune sortie.
+Les benchmarks et la feasibility autonomes établissent le défaut sûr comme
+première action de `main` ; les lectures metadata restent non initialisantes.
+
+Les anciennes mesures exploratoires montrent que quatre Matchers à quatre
+threads favorisent SIFT et les cas 4096, tandis que deux à huit favorisent ORB
+8192. Elles n'établissent pas un pool de production actuel. Tout futur modèle
+devrait être choisi par le Governor à partir de la classe de charge et prouver
+un contrôle de concurrence compatible avec la configuration globale OpenCV.
 
 Quatre Matchers avec un ou deux threads chacun dégradent fortement les grands
 cas ORB. Quatre fois quatre threads augmente le working set et la variance, mais
@@ -65,10 +96,24 @@ environ 0,10, 0,96, 14,7 et 59,6 ms pour BFMatcher CPU lors de la campagne
 production. L'initialisation lazy mesurée vaut environ 129–136 ms. Le seuil
 `feature_count_a × feature_count_b >= 768²` évite le GPU pour les petits travaux.
 
-La mémoire permanente directement contrôlée vaut 640 Kio de payload. Les tests
-de parité couvrent exactement le top-2 jusqu'à 8192, le Match File complet et le
-fallback CPU. Ces nombres décrivent la machine mesurée et ne sont pas un contrat
-portable de latence.
+La mémoire directement contrôlée vaut 640 Kio par slot; rolling AUTO peut
+réserver un ou deux slots, soit au plus 1,25 Mio, débités une fois de la RAM sur
+la 780M UMA. Le backend mappe exactement cette capacité pendant la séquence et
+rend le second slot avant une admission depth 1 suivante. Les tests de parité
+couvrent exactement le top-2 jusqu'à 8192, le Match File complet et le fallback
+CPU. Ces nombres décrivent la machine mesurée et ne sont pas un contrat portable
+de latence.
+
+Le run S21 AUTO final sur cette cible mesure 172 741 résultats durables en
+2 345,444485079 s, soit 73,649/s. Sur les échantillons connus, GPU busy vaut
+26 % en moyenne, 27 % en médiane et 36 % au maximum; l'utilisation moyenne
+connue du compute-pool vaut 9,68 % de ses 12 CPU logiques. Le RSS observé
+culmine à 168 980 480 octets et le HWM à 250 658 816 octets. Le minimum
+`MemAvailable` reste 10 927 390 720 octets, PSI mémoire maximal et deltas swap
+restent nuls. Après le run, Sway répond, Firefox et son flux PipeWire vers le
+casque actif restent présents; PSI mémoire avg10/60/300 est nul. Ces signaux
+objectifs attestent la conservation du desktop, sans prétendre mesurer une
+perception subjective.
 
 ## Geometric Verifier Fundamental — Gate A
 

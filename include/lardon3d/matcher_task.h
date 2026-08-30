@@ -13,7 +13,9 @@
 enum {
   LARDON3D_MATCHER_TASK_KIND_VERSION = 1,
   LARDON3D_MATCHER_TASK_MINIMUM_BATCH = 1,
-  LARDON3D_MATCHER_TASK_MAXIMUM_BATCH = 8,
+  /* This is an operational window and participant ceiling, not a scientific
+   * dataset limit. Every staged pair remains private until ordered publish. */
+  LARDON3D_MATCHER_TASK_MAXIMUM_BATCH = 12,
 };
 
 typedef struct {
@@ -23,11 +25,12 @@ typedef struct {
   Lardon3DMatcherParams matcher;
 } Lardon3DMatcherTaskConfiguration;
 
-/* Selects only the admitted execution resources and runtime backend. Matcher
- * parameters, fingerprints, Match Results, and Match Files are identical
- * across modes. CPU_PARALLEL is portable and is the default used by the
- * existing create/enqueue APIs. ORB_VULKAN requires an ORB configuration, a
- * selected GPU, and an available Vulkan backend when the task is created. */
+/* Selects only an explicit debug/benchmark/reproduction override. Normal
+ * create/enqueue is Governor-owned AUTO: validated ORB Vulkan is preferred
+ * when runtime support and admission are safe, otherwise the complete CPU
+ * implementation is selected. Matcher parameters, fingerprints, Match
+ * Results, and Match Files are identical across operational selections.
+ * SIFT/RootSIFT remain CPU-only. */
 typedef enum {
   LARDON3D_MATCHER_TASK_MODE_CPU_PARALLEL = 0,
   LARDON3D_MATCHER_TASK_MODE_ORB_VULKAN = 1,

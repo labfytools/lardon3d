@@ -38,9 +38,13 @@ chemins de production existants et leur validation finale est terminée.
 
 Les snapshots emploient `CLOCK_MONOTONIC` et leur âge maximal est 1000 ms. Une
 capture complète impossible est une erreur opérationnelle, tandis qu'une PSI
-ou télémétrie swap optionnelle absente reste inconnue. Le modèle cible un hôte
-Linux natif non contraint ; cgroups, limites systemd/RLIMIT, multi-GPU,
-monitoring RSS, scratch et stockage externe restent différés.
+ou télémétrie swap optionnelle absente reste inconnue. Compute Governor v2
+observe maintenant le RSS/HWM courant dans un buffer borné, uniquement comme
+diagnostic du processus : il ne le confond ni avec la réservation Task ni avec
+un coût attribuable. Le modèle cible un hôte Linux natif non contraint ; cgroups,
+limites systemd/RLIMIT, multi-GPU, historique/monitoring RSS long terme,
+redimensionnement d'admission depuis le RSS, scratch et stockage externe restent
+différés.
 
 ## Feature Extraction
 
@@ -49,9 +53,14 @@ publication Feature Store, métadonnées DB, checkpoint terminal et libération 
 buffer. Le batch vaut donc une image et la granularité de reprise est une image.
 Le worker unique et la file bornée fournissent la backpressure actuelle.
 
-OpenCV est configuré une seule fois avant le démarrage des workers. La tâche
-réserve le nombre réel de threads OpenCV au lieu d'annoncer artificiellement un
-thread pendant qu'une primitive interne en utilise davantage.
+Le démarrage configure une baseline et un plafond OpenCV sûrs avant la création
+de Queue. L'unique callback lourd applique ensuite temporairement le compte CPU
+immuable admis pour sa séquence, dans `1..12`, et restaure la baseline sur toute
+sortie, y compris après une mutation suivie d'un échec de vérification. La tâche
+réserve donc le nombre réellement appliqué au lieu d'annoncer artificiellement
+un thread pendant qu'une primitive interne en utilise davantage. Une mutation
+process-wide concurrente par plusieurs workers n'est pas supportée ; Queue
+conserve un seul callback actif.
 
 ## Matcher
 
@@ -82,12 +91,17 @@ slow-start restent exclusivement décidés par Runtime et Governor.
 
 ## GPU et files
 
-La Radeon 780M est UMA : toute mémoire GPU compte aussi comme pression RAM. Un
-backend GPU emploie un unique job actif, des dispatchs courts, puis publie avant
-de continuer. Vulkan 1.4.354 énumère la 780M RADV et une file compute dédiée. Le
-backend ORB top-2 de production possède un contexte lazy réutilisable, 640 Kio
-de buffers bornés et un fallback CPU exact. Le CPU reste le fallback portable
-si Vulkan est absent, incompatible ou désactivé pour la session.
+La Radeon 780M est UMA : toute mémoire GPU compte aussi comme pression RAM.
+Vulkan 1.4.354 énumère la 780M RADV et une file compute dédiée. Le backend ORB
+top-2 de production possède un contexte lazy réutilisable et jusqu'à deux jobs
+privés en vol sur cette file, sans helper hôte. Chaque slot mappé vaut 640 Kio.
+Le backend part de zéro et retient exactement un slot après une initialisation
+ou séquence AUTO normale depth 1. Il n'alloue le second que sous un contrat
+privé de sûreté/benchmark depth 2 déjà admis, puis le libère avant de franchir
+la prochaine admission depth 1. Les
+publications restent strictement ordonnées et le fallback CPU reste exact. Le
+CPU reste le fallback portable si Vulkan est absent, incompatible ou désactivé
+pour la session.
 
 La feasibility SIFT/RootSIFT a borné son prototype Vulkan à 8,125 Mio de
 payload lazy, mais n'a pas franchi la Gate de production. Le Governor ne réserve

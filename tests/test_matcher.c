@@ -11,6 +11,9 @@
 
 #include <lardon3d/match_file.h>
 #include <lardon3d/matcher.h>
+#include <lardon3d/orb_vulkan_backend.h>
+
+#include "../src/matcher_internal.h"
 
 #define CHECK(condition)                                                                           \
   do {                                                                                             \
@@ -495,6 +498,35 @@ static bool test_matcher_default_ratio(void) {
   return true;
 }
 
+static bool test_matcher_private_path_bound(void) {
+  char project_path[4097];
+  memset(project_path, 'x', sizeof(project_path) - 1);
+  project_path[sizeof(project_path) - 1] = '\0';
+  Lardon3DProjectDbFeatureSet feature_set = {
+      .feature_set_id = 1,
+      .feature_count = 769,
+      .descriptor_type = LARDON3D_FEATURE_DESCRIPTOR_U8,
+      .descriptor_dimension = 32,
+  };
+  Lardon3DMatcherParams parameters = {
+      .kind = LARDON3D_MATCHER_ORB_BF,
+      .ratio_threshold = 0.75F,
+  };
+  Lardon3DOrbVulkanBackend *backend = lardon3d_orb_vulkan_backend_create();
+  Lardon3DMatcherPendingVulkanStage *pending =
+      (Lardon3DMatcherPendingVulkanStage *)(uintptr_t)1;
+  bool backend_fault = true;
+  CHECK(backend);
+  Lardon3DMatcherResult expected = lardon3d_orb_vulkan_should_use(769, 769)
+      ? LARDON3D_MATCHER_IO_ERROR : LARDON3D_MATCHER_INVALID_ARGUMENT;
+  CHECK(lardon3d_matcher_begin_vulkan_stage(
+            project_path, &feature_set, &feature_set, &parameters, backend,
+            &pending, &backend_fault) == expected &&
+        pending == NULL && !backend_fault);
+  lardon3d_orb_vulkan_backend_destroy(backend);
+  return true;
+}
+
 static bool run_tests(void) {
   CHECK(test_match_file_write_read());
   CHECK(test_match_file_empty());
@@ -510,6 +542,7 @@ static bool run_tests(void) {
   CHECK(test_matcher_kind_string());
   CHECK(test_matcher_fingerprint());
   CHECK(test_matcher_default_ratio());
+  CHECK(test_matcher_private_path_bound());
   return true;
 }
 

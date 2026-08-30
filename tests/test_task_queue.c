@@ -1,12 +1,20 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include <limits.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include <lardon3d/task_queue.h>
 
 #include "../src/resource_governor_internal.h"
+#include "../src/task_internal.h"
 #include "resource_snapshot_test_utils.h"
 
 #define CHECK(condition) \
@@ -484,11 +492,26 @@ run_test(void)
         &reduced
     );
     uint64_t reduced_id;
-    CHECK(reduced_task);
+    Lardon3DTaskCapabilityEnvelope reduced_envelope = {
+        .count = 1,
+        .capabilities = {{
+            .estimate = reduced_estimate,
+            .backend = LARDON3D_RESOURCE_BACKEND_CPU,
+            .inflight_limit = 1,
+            .cpu_reducible = true,
+        }},
+    };
+    /* This synthetic callback explicitly consumes the contract; unlike a
+     * production kind, it has no registry entry from which to reconstruct the
+     * otherwise private adaptive envelope. */
+    CHECK(reduced_task && lardon3d_task_internal_set_capability_envelope(
+        reduced_task, &reduced_envelope));
     CHECK(lardon3d_task_queue_add(queue, reduced_task, &reduced_id));
     CHECK(wait_terminal(queue, reduced_id, &snapshot));
     CHECK(snapshot.state == TASK_COMPLETED);
-    CHECK(reduced.contract.cpu_threads == 1024);
+    /* CPU-reducible capabilities slow-start at one participant. A later
+     * sequence may grow only after two baseline and two improving samples. */
+    CHECK(reduced.contract.cpu_threads == 1);
     Lardon3DResourceEstimate rejected_estimate = {
         .memory_fixed_bytes = UINT64_MAX,
         .memory_bytes_per_item = 1,
@@ -926,10 +949,363 @@ test_stress_concurrent(Lardon3DResourceGovernor *governor)
     return true;
 }
 
+typedef struct {
+    Lardon3DResourceGovernor *governor;
+    Lardon3DTaskExecutionContract first;
+    Lardon3DTaskExecutionContract unchanged;
+    Lardon3DTaskExecutionContract second;
+    Lardon3DResourceCapabilitySelection first_selection;
+    Lardon3DResourceCapabilitySelection unchanged_selection;
+} ImmutableSequenceWork;
+
+#ifdef __linux__
+typedef struct {
+    cpu_set_t worker_mask;
+    cpu_set_t child_mask;
+    bool child_started;
+} AffinityWork;
+
+static void *
+capture_child_affinity(void *userdata)
+{
+    AffinityWork *work = userdata;
+    work->child_started = sched_getaffinity(
+        0, sizeof(work->child_mask), &work->child_mask) == 0;
+    return NULL;
+}
+
+static bool
+affinity_callback(Lardon3DTask *task, void *userdata)
+{
+    AffinityWork *work = userdata;
+    pthread_t child;
+    if (sched_getaffinity(0, sizeof(work->worker_mask), &work->worker_mask) != 0
+        || pthread_create(&child, NULL, capture_child_affinity, work) != 0
+        || pthread_join(child, NULL) != 0 || !work->child_started) {
+        return false;
+    }
+    return lardon3d_task_set_progress(task, 100, "Affinité observée.");
+}
+
+static bool
+test_worker_only_affinity(void)
+{
+    cpu_set_t main_before;
+    CPU_ZERO(&main_before);
+    if (sched_getaffinity(0, sizeof(main_before), &main_before) != 0) {
+        return true;
+    }
+    Lardon3DResourceCpuTopologyInput topology = {
+        .affinity_available = true,
+        .topology_available = true,
+    };
+    for (unsigned int cpu = 0; cpu < CPU_SETSIZE
+         && cpu < LARDON3D_RESOURCE_CPU_MAX; ++cpu) {
+        if (!CPU_ISSET((size_t)cpu, &main_before)) {
+            continue;
+        }
+        size_t index = topology.allowed_cpu_count++;
+        topology.allowed_cpu_ids[index] = cpu;
+        topology.topology_entries[index] =
+            (Lardon3DResourceCpuTopologyEntry) {
+                .cpu_id = cpu,
+                .package_id = 0,
+                .core_id = (unsigned int)index,
+            };
+    }
+    topology.topology_entry_count = topology.allowed_cpu_count;
+    if (topology.allowed_cpu_count < 2
+        || topology.allowed_cpu_count > UINT_MAX) {
+        return true;
+    }
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = (unsigned int)topology.allowed_cpu_count,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = 16ULL * 1024 * 1024 * 1024,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .system_cpu_reserve = 1,
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 100.0,
+        .io_slot_capacity = 1,
+    };
+    Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+        .task_class = LARDON3D_RESOURCE_TASK_CPU,
+    };
+
+    Lardon3DResourceGovernor *governor =
+        lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(governor
+        && lardon3d_resource_governor_internal_configure_cpu_topology(
+            governor, &topology));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 1);
+    CHECK(queue);
+    Lardon3DResourceCpuPolicyDiagnostic diagnostic;
+    CHECK(lardon3d_resource_governor_internal_cpu_policy(
+        governor, &diagnostic));
+    CHECK(diagnostic.affinity_attempted && diagnostic.affinity_active
+        && diagnostic.compute_cpu_count == topology.allowed_cpu_count - 1);
+    cpu_set_t expected;
+    CPU_ZERO(&expected);
+    for (unsigned int cpu = 0; cpu < CPU_SETSIZE
+         && cpu < LARDON3D_RESOURCE_CPU_MAX; ++cpu) {
+        if ((diagnostic.compute_mask[cpu / 64]
+                & (UINT64_C(1) << (cpu % 64))) != 0) {
+            CPU_SET((size_t)cpu, &expected);
+        }
+    }
+    AffinityWork work = {0};
+    Lardon3DTask *task = lardon3d_task_create_typed(
+        "Affinité worker", &estimate, "test.affinity", 1,
+        affinity_callback, &work, NULL);
+    uint64_t id = 0;
+    CHECK(task && lardon3d_task_queue_add(queue, task, &id));
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(wait_terminal(queue, id, &snapshot)
+        && snapshot.state == TASK_COMPLETED
+        && CPU_EQUAL(&work.worker_mask, &expected)
+        && CPU_EQUAL(&work.child_mask, &expected));
+    cpu_set_t main_after;
+    CPU_ZERO(&main_after);
+    CHECK(sched_getaffinity(0, sizeof(main_after), &main_after) == 0
+        && CPU_EQUAL(&main_before, &main_after));
+    lardon3d_task_queue_destroy(queue);
+    lardon3d_resource_governor_destroy(governor);
+
+    /* An injected application failure must restore/retain the inherited mask,
+     * remain observable, and still permit Queue-owned Task cleanup. */
+    governor = lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(governor
+        && lardon3d_resource_governor_internal_configure_cpu_topology(
+            governor, &topology));
+    lardon3d_resource_governor_internal_force_worker_affinity_failure(
+        governor, true);
+    queue = lardon3d_task_queue_create(governor, 1);
+    CHECK(queue && lardon3d_resource_governor_internal_cpu_policy(
+        governor, &diagnostic));
+    CHECK(diagnostic.affinity_attempted && !diagnostic.affinity_active
+        && strcmp(diagnostic.reason, "worker-affinity-apply-failed") == 0);
+    work = (AffinityWork) {0};
+    task = lardon3d_task_create_typed(
+        "Échec affinité worker", &estimate, "test.affinity.failure", 1,
+        affinity_callback, &work, NULL);
+    id = 0;
+    CHECK(task && lardon3d_task_queue_add(queue, task, &id)
+        && wait_terminal(queue, id, &snapshot)
+        && snapshot.state == TASK_COMPLETED
+        && CPU_EQUAL(&work.worker_mask, &main_before)
+        && CPU_EQUAL(&work.child_mask, &main_before));
+    lardon3d_task_queue_destroy(queue);
+    lardon3d_resource_governor_destroy(governor);
+    return true;
+}
+#else
+static bool test_worker_only_affinity(void) { return true; }
+#endif
+
+static bool
+immutable_sequence_callback(Lardon3DTask *task, void *userdata)
+{
+    ImmutableSequenceWork *work = userdata;
+    if (!lardon3d_task_execution_contract(task, &work->first)
+        || !lardon3d_task_internal_execution_selection(
+            task, &work->first_selection)
+        || work->first.gpu_slots != 1
+        || work->first_selection.inflight_limit != 1
+        || !lardon3d_resource_governor_internal_set_backend_available(
+            work->governor,
+            LARDON3D_RESOURCE_BACKEND_ORB_VULKAN,
+            false
+        )
+        || !lardon3d_task_execution_contract(task, &work->unchanged)
+        || !lardon3d_task_internal_execution_selection(
+            task, &work->unchanged_selection)
+        || work->first.batch_size != work->unchanged.batch_size
+        || work->first.memory_bytes != work->unchanged.memory_bytes
+        || work->first.gpu_memory_bytes != work->unchanged.gpu_memory_bytes
+        || work->first.cpu_threads != work->unchanged.cpu_threads
+        || work->first.gpu_slots != work->unchanged.gpu_slots
+        || work->first.io_slots != work->unchanged.io_slots
+        || work->first_selection.inflight_limit
+            != work->unchanged_selection.inflight_limit) {
+        return false;
+    }
+    Lardon3DResourceReservation *reservation = NULL;
+    return lardon3d_task_sequence_break(
+            task,
+            work->governor,
+            &reservation,
+            &work->second
+        )
+        && work->second.gpu_slots == 0 && work->second.cpu_threads == 1;
+}
+
+static bool
+test_sequence_contract_immutability(void)
+{
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = 8,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = 16ULL * 1024 * 1024 * 1024,
+        .gpu_available = true,
+        .gpu_uses_shared_memory = true,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 100.0,
+        .gpu_slot_capacity = 1,
+        .io_slot_capacity = 1,
+    };
+    Lardon3DResourceGovernor *governor =
+        lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(governor);
+    CHECK(lardon3d_resource_governor_internal_set_backend_available(
+        governor, LARDON3D_RESOURCE_BACKEND_ORB_VULKAN, true));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 1);
+    CHECK(queue);
+    Lardon3DResourceEstimate cpu = {
+        .memory_bytes_per_item = 1024 * 1024,
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 4,
+        .task_class = LARDON3D_RESOURCE_TASK_CPU,
+    };
+    Lardon3DResourceEstimate gpu = cpu;
+    gpu.gpu_memory_fixed_bytes = 0;
+    gpu.desired_cpu_threads = 1;
+    gpu.desired_gpu_slots = 1;
+    Lardon3DTaskCapabilityEnvelope envelope = {
+        .count = 2,
+        .capabilities = {
+            {
+                .estimate = gpu,
+                .backend = LARDON3D_RESOURCE_BACKEND_ORB_VULKAN,
+                .inflight_limit = 2,
+                .minimum_inflight_limit = 1,
+                .gpu_memory_bytes_per_inflight = 640 * 1024,
+                .preferred = true,
+                .inflight_adaptive = true,
+                .requires_runtime_backend = true,
+            },
+            {
+                .estimate = cpu,
+                .backend = LARDON3D_RESOURCE_BACKEND_CPU,
+                .inflight_limit = 1,
+                .cpu_reducible = true,
+            },
+        },
+    };
+    ImmutableSequenceWork work = {.governor = governor};
+    Lardon3DTask *task = lardon3d_task_create_typed(
+        "Contrat immuable",
+        &cpu,
+        "test.sequence",
+        1,
+        immutable_sequence_callback,
+        &work,
+        NULL
+    );
+    CHECK(task && lardon3d_task_internal_set_capability_envelope(task, &envelope));
+    uint64_t id = 0;
+    CHECK(lardon3d_task_queue_add(queue, task, &id));
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(wait_terminal(queue, id, &snapshot));
+    CHECK(snapshot.state == TASK_COMPLETED && work.first.gpu_slots == 1
+        && work.second.gpu_slots == 0);
+    lardon3d_task_queue_destroy(queue);
+    lardon3d_resource_governor_destroy(governor);
+    return true;
+}
+
+typedef struct {
+    bool called;
+    unsigned int cpu_threads;
+} CpuEnvelopeWork;
+
+static bool
+cpu_envelope_callback(Lardon3DTask *task, void *userdata)
+{
+    CpuEnvelopeWork *work = userdata;
+    Lardon3DTaskExecutionContract contract;
+    if (!work || !lardon3d_task_execution_contract(task, &contract)) {
+        return false;
+    }
+    work->called = true;
+    work->cpu_threads = contract.cpu_threads;
+    return true;
+}
+
+static bool
+test_fixed_default_and_validated_cpu_range(void)
+{
+    /* An unknown kind must not acquire CPU adaptation merely because its
+     * durable estimate asks for several threads. Only registered callbacks
+     * whose output was validated across counts may consume a reduced count. */
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = 1024,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = 16ULL * 1024 * 1024 * 1024,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .system_cpu_reserve = 1022,
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 100.0,
+        .io_slot_capacity = 1,
+    };
+    Lardon3DResourceGovernor *governor =
+        lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(governor);
+    Lardon3DResourceEstimate estimate = {
+        .memory_bytes_per_item = 1024,
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 4,
+        .desired_io_slots = 1,
+        .task_class = LARDON3D_RESOURCE_TASK_CPU,
+    };
+    CpuEnvelopeWork fixed_work = {0};
+    Lardon3DTask *fixed = lardon3d_task_create_typed(
+        "Enveloppe fixe", &estimate, "test.fixed", 1,
+        cpu_envelope_callback, &fixed_work, NULL);
+    CHECK(fixed);
+    Lardon3DResourceDecision decision;
+    Lardon3DResourceReservation *reservation = NULL;
+    CHECK(lardon3d_task_internal_reserve_available(
+        fixed, governor, &decision, &reservation));
+    CHECK(decision.kind == LARDON3D_RESOURCE_WAIT && !reservation
+        && !fixed_work.called);
+    lardon3d_task_destroy(fixed);
+
+    CpuEnvelopeWork adaptive_work = {0};
+    Lardon3DTask *adaptive = lardon3d_task_create_typed(
+        "Enveloppe validée", &estimate, "features.extract", 1,
+        cpu_envelope_callback, &adaptive_work, NULL);
+    CHECK(adaptive);
+    CHECK(lardon3d_task_internal_reserve_available(
+        adaptive, governor, &decision, &reservation));
+    CHECK((decision.kind == LARDON3D_RESOURCE_START
+            || decision.kind == LARDON3D_RESOURCE_REDUCE_BATCH)
+        && reservation);
+    CHECK(lardon3d_task_start(adaptive, governor, reservation));
+    CHECK(adaptive_work.called && adaptive_work.cpu_threads == 1);
+    (void)lardon3d_resource_governor_release(governor, reservation);
+    lardon3d_task_destroy(adaptive);
+    lardon3d_resource_governor_destroy(governor);
+    return true;
+}
+
 int
 main(void)
 {
-    if (!run_test()) {
+    if (!run_test() || !test_worker_only_affinity()
+        || !test_sequence_contract_immutability()
+        || !test_fixed_default_and_validated_cpu_range()) {
         return EXIT_FAILURE;
     }
     Lardon3DHardwareProfile profile = {

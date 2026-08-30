@@ -108,11 +108,13 @@ int main() {
   size_t request_probe_size = 0;
   CHECK(lardon3d_photo_quality_request_encode(&request, nullptr, 0, &request_probe_size));
 
+  cv::setNumThreads(3);
   uint64_t task_id = 0;
   CHECK(lardon3d_project_enqueue_photo_quality(&state, scanset.scanset_id, &request, &task_id));
   Lardon3DTaskSnapshot terminal{};
   CHECK(wait_terminal(state.task_queue, task_id, &terminal));
   CHECK(terminal.state == TASK_COMPLETED && terminal.progress == 100);
+  CHECK(cv::getNumThreads() == 3);
   Lardon3DProjectDbPhotoQualityResult paired{}, raw_only{};
   CHECK(lardon3d_project_db_load_photo_quality_result(database, task_id, 1, &paired) ==
         LARDON3D_PROJECT_DB_OK);

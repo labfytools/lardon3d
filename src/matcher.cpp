@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -20,11 +21,49 @@ extern "C" {
 #include <lardon3d/matcher.h>
 
 #include "matcher_internal.h"
+#include "orb_vulkan_backend_internal.h"
 }
 
 static const char matcher_orb_str[] = "orb_bf";
 static const char matcher_sift_str[] = "sift_bf";
 static const char matcher_rootsift_str[] = "rootsift_bf";
+/* The pending object owns only unpublished operational state. GPU submission
+ * has occurred before it escapes begin; the Queue owner later consumes it into
+ * the canonical staged Match File or discards it without DB mutation. */
+struct Lardon3DMatcherPendingVulkanStage {
+    Lardon3DOrbVulkanBackend *backend = nullptr;
+    Lardon3DProjectDbFeatureSet a{};
+    Lardon3DProjectDbFeatureSet b{};
+    Lardon3DMatcherParams params{};
+    char project_path[4096]{};
+    std::vector<Lardon3DOrbTop2> top2;
+    Lardon3DMatcherStats stats{};
+    Lardon3DOrbVulkanRequest request{};
+    bool backend_slot_owned = false;
+
+    ~Lardon3DMatcherPendingVulkanStage() {
+        if (backend_slot_owned && backend) {
+            (void)lardon3d_orb_vulkan_internal_top2_discard(backend,
+                                                            &request);
+        }
+    }
+};
+
+struct MatcherStagedFileGuard {
+    Lardon3DMatcherStagedResult *staged = nullptr;
+    int fd = -1;
+    bool retained = false;
+
+    ~MatcherStagedFileGuard() {
+        if (fd >= 0) {
+            (void)close(fd);
+        }
+        if (!retained && staged) {
+            lardon3d_matcher_discard_staged(staged);
+        }
+    }
+};
+
 
 static uint64_t elapsed_ns(std::chrono::steady_clock::time_point start) {
     auto elapsed = std::chrono::steady_clock::now() - start;
@@ -525,6 +564,10 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_run_with_backend(
         return LARDON3D_MATCHER_FAILED;
     } catch (const std::bad_alloc &) {
         return LARDON3D_MATCHER_FAILED;
+    } catch (...) {
+        /* Public C boundary: mutex/system/runtime exceptions are operational
+         * failures and must never escape into the C Task callback. */
+        return LARDON3D_MATCHER_FAILED;
     }
 }
 
@@ -556,7 +599,7 @@ extern "C" void lardon3d_matcher_discard_staged(Lardon3DMatcherStagedResult *sta
     std::memset(staged, 0, sizeof(*staged));
 }
 
-extern "C" Lardon3DMatcherResult lardon3d_matcher_stage(
+static Lardon3DMatcherResult matcher_stage_impl(
     const char *project_path,
     const Lardon3DProjectDbFeatureSet *feature_set_a,
     const Lardon3DProjectDbFeatureSet *feature_set_b,
@@ -591,7 +634,217 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_stage(
     return computed;
 }
 
-extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_with_backend(
+extern "C" Lardon3DMatcherResult lardon3d_matcher_stage(
+    const char *project_path,
+    const Lardon3DProjectDbFeatureSet *feature_set_a,
+    const Lardon3DProjectDbFeatureSet *feature_set_b,
+    const Lardon3DMatcherParams *params, Lardon3DOrbVulkanBackend *backend,
+    Lardon3DMatcherStagedResult *staged) {
+    if (staged) std::memset(staged, 0, sizeof(*staged));
+    try {
+        return matcher_stage_impl(project_path, feature_set_a, feature_set_b,
+                                  params, backend, staged);
+    } catch (...) {
+        if (staged) lardon3d_matcher_discard_staged(staged);
+        return LARDON3D_MATCHER_FAILED;
+    }
+}
+
+static Lardon3DMatcherResult matcher_begin_vulkan_stage_impl(
+    const char *project_path, const Lardon3DProjectDbFeatureSet *a,
+    const Lardon3DProjectDbFeatureSet *b, const Lardon3DMatcherParams *params,
+    Lardon3DOrbVulkanBackend *backend, Lardon3DMatcherPendingVulkanStage **out,
+    bool *backend_fault) {
+    if (out) *out = nullptr;
+    if (backend_fault) *backend_fault = false;
+    if (!project_path || !a || !b || !params || !backend || !out ||
+        !backend_fault ||
+        params->kind != LARDON3D_MATCHER_ORB_BF ||
+        !std::isfinite(params->ratio_threshold) ||
+        params->ratio_threshold <= 0.0F || params->ratio_threshold >= 1.0F ||
+        a->descriptor_type != LARDON3D_FEATURE_DESCRIPTOR_U8 ||
+        b->descriptor_type != LARDON3D_FEATURE_DESCRIPTOR_U8 ||
+        a->descriptor_dimension != 32 || b->descriptor_dimension != 32 ||
+        !lardon3d_orb_vulkan_should_use(a->feature_count, b->feature_count)) {
+        return LARDON3D_MATCHER_INVALID_ARGUMENT;
+    }
+    std::unique_ptr<Lardon3DMatcherPendingVulkanStage> pending(
+        new (std::nothrow) Lardon3DMatcherPendingVulkanStage());
+    if (!pending) return LARDON3D_MATCHER_FAILED;
+    pending->backend = backend;
+    pending->a = *a;
+    pending->b = *b;
+    pending->params = *params;
+    pending->top2.resize(a->feature_count);
+    int written = std::snprintf(pending->project_path,
+                                sizeof(pending->project_path), "%s",
+                                project_path);
+    if (written <= 0 ||
+        static_cast<size_t>(written) >= sizeof(pending->project_path)) {
+        return LARDON3D_MATCHER_IO_ERROR;
+    }
+    FeatureReaderPair readers;
+    Lardon3DFeatureFileMetadata ma, mb;
+    auto start = std::chrono::steady_clock::now();
+    if (lardon3d_feature_reader_open(project_path, a, &readers.a, &ma) != LARDON3D_FEATURE_STORE_OK ||
+        lardon3d_feature_reader_open(project_path, b, &readers.b, &mb) !=
+            LARDON3D_FEATURE_STORE_OK) {
+        return LARDON3D_MATCHER_IO_ERROR;
+    }
+    std::vector<unsigned char> da, db;
+    if (!fill_descriptors_u8(da, readers.a, a->feature_count, 32) ||
+        !fill_descriptors_u8(db, readers.b, b->feature_count, 32)) {
+        return LARDON3D_MATCHER_IO_ERROR;
+    }
+    pending->stats.descriptor_read_ns = elapsed_ns(start);
+    pending->stats.feature_count_a = a->feature_count;
+    pending->stats.feature_count_b = b->feature_count;
+    if (lardon3d_orb_vulkan_internal_top2_begin(
+            backend, da.data(), a->feature_count, db.data(), b->feature_count,
+            &pending->request
+        ) != LARDON3D_ORB_VULKAN_OK) {
+        *backend_fault = true;
+        return LARDON3D_MATCHER_FAILED;
+    }
+    pending->backend_slot_owned = true;
+    *out = pending.release();
+    return LARDON3D_MATCHER_OK;
+}
+
+extern "C" Lardon3DMatcherResult lardon3d_matcher_begin_vulkan_stage(
+    const char *project_path, const Lardon3DProjectDbFeatureSet *a,
+    const Lardon3DProjectDbFeatureSet *b, const Lardon3DMatcherParams *params,
+    Lardon3DOrbVulkanBackend *backend,
+    Lardon3DMatcherPendingVulkanStage **out, bool *backend_fault) {
+    if (out) *out = nullptr;
+    if (backend_fault) *backend_fault = false;
+    try {
+        return matcher_begin_vulkan_stage_impl(
+            project_path, a, b, params, backend, out, backend_fault);
+    } catch (...) {
+        /* All potentially throwing C++ work precedes the no-throw C backend
+         * begin call or follows a successful return. An exception here is a
+         * local allocation/reader fault, never backend-health evidence. */
+        return LARDON3D_MATCHER_FAILED;
+    }
+}
+
+static Lardon3DMatcherResult matcher_finish_vulkan_stage_impl(
+    Lardon3DMatcherPendingVulkanStage *pending,
+    Lardon3DMatcherStagedResult *staged, bool *backend_fault) {
+    if (backend_fault) *backend_fault = false;
+    if (!pending || !staged || !backend_fault) {
+        return LARDON3D_MATCHER_INVALID_ARGUMENT;
+    }
+    std::unique_ptr<Lardon3DMatcherPendingVulkanStage> owned(pending);
+    std::memset(staged, 0, sizeof(*staged));
+    auto start = std::chrono::steady_clock::now();
+    Lardon3DOrbVulkanResult finished =
+        lardon3d_orb_vulkan_internal_top2_finish(
+            pending->backend, &pending->request, pending->top2.data(),
+            pending->top2.size());
+    /* Internal finish consumes this exact request on every active-handle
+     * result; a backend session failure separately invalidates all slots. */
+    pending->backend_slot_owned = false;
+    if (finished != LARDON3D_ORB_VULKAN_OK) {
+        *backend_fault = true;
+        return LARDON3D_MATCHER_FAILED;
+    }
+    pending->stats.knn_ns = elapsed_ns(start);
+    pending->stats.used_vulkan = true;
+    pending->stats.knn_query_count = pending->a.feature_count;
+    std::vector<MatchEntry> filtered;
+    filtered.reserve(pending->a.feature_count);
+    start = std::chrono::steady_clock::now();
+    for (uint32_t i = 0; i < pending->a.feature_count; ++i) {
+        MatchEntry entry;
+        if (accept_orb_top2(pending->top2[i], i, pending->params.ratio_threshold, &entry)) filtered.push_back(entry);
+    }
+    pending->stats.filter_ns = elapsed_ns(start);
+    start = std::chrono::steady_clock::now();
+    std::sort(filtered.begin(), filtered.end());
+    for (size_t i = 1; i < filtered.size(); ++i) {
+        if (filtered[i].query_idx == filtered[i - 1].query_idx) {
+            return LARDON3D_MATCHER_FAILED;
+        }
+    }
+    if (filtered.size() > LARDON3D_MATCH_FILE_MAX_MATCHES) {
+        return LARDON3D_MATCHER_FAILED;
+    }
+    pending->stats.match_count = (uint32_t)filtered.size();
+    pending->stats.canonicalize_ns = elapsed_ns(start);
+    char assets[4096], matches[4096];
+    if (!join_path(assets, pending->project_path, "assets") ||
+        !ensure_directory(assets) || !join_path(matches, assets, "matches") ||
+        !ensure_directory(matches)) {
+        return LARDON3D_MATCHER_IO_ERROR;
+    }
+    int written = std::snprintf(staged->temporary_path,
+                                sizeof(staged->temporary_path),
+                                "%s/.match-XXXXXX", matches);
+    if (written <= 0 ||
+        static_cast<size_t>(written) >= sizeof(staged->temporary_path)) {
+        staged->temporary_path[0] = '\0';
+        return LARDON3D_MATCHER_IO_ERROR;
+    }
+    int fd = mkstemp(staged->temporary_path);
+    if (fd < 0) {
+        staged->temporary_path[0] = '\0';
+        return LARDON3D_MATCHER_IO_ERROR;
+    }
+    MatcherStagedFileGuard file_guard{staged, fd, false};
+    std::vector<Lardon3DMatchFileEntry> entries(filtered.size());
+    for (size_t i = 0; i < filtered.size(); ++i) {
+        entries[i] = {(uint32_t)filtered[i].query_idx,
+                      (uint32_t)filtered[i].train_idx, filtered[i].distance};
+    }
+    Lardon3DMatchFileResult wr = lardon3d_match_file_write(
+        fd, 1, pending->a.descriptor_dimension, pending->a.feature_set_id,
+        pending->b.feature_set_id, entries.data(),
+        static_cast<uint32_t>(entries.size()));
+    if (wr == LARDON3D_MATCH_FILE_OK && fsync(fd) != 0) wr = LARDON3D_MATCH_FILE_IO_ERROR;
+    if (close(fd) != 0) wr = LARDON3D_MATCH_FILE_IO_ERROR;
+    file_guard.fd = -1;
+    if (wr != LARDON3D_MATCH_FILE_OK) {
+        return LARDON3D_MATCHER_IO_ERROR;
+    }
+    staged->stats = pending->stats;
+    file_guard.retained = true;
+    return LARDON3D_MATCHER_OK;
+}
+
+extern "C" Lardon3DMatcherResult lardon3d_matcher_finish_vulkan_stage(
+    Lardon3DMatcherPendingVulkanStage *pending,
+    Lardon3DMatcherStagedResult *staged, bool *backend_fault) {
+    if (backend_fault) *backend_fault = false;
+    try {
+        return matcher_finish_vulkan_stage_impl(
+            pending, staged, backend_fault);
+    } catch (...) {
+        if (staged) lardon3d_matcher_discard_staged(staged);
+        /* The backend C transaction cannot throw. Exceptions after its
+         * successful return belong to local filtering/staging and must not
+         * disable a healthy shared device. */
+        return LARDON3D_MATCHER_FAILED;
+    }
+}
+
+extern "C" void lardon3d_matcher_discard_vulkan_stage(Lardon3DMatcherPendingVulkanStage *pending) {
+    if (!pending) return;
+    try {
+        std::unique_ptr<Lardon3DMatcherPendingVulkanStage> owned(pending);
+        if (pending->backend_slot_owned) {
+            (void)lardon3d_orb_vulkan_internal_top2_discard(
+                pending->backend, &pending->request);
+            pending->backend_slot_owned = false;
+        }
+    } catch (...) {
+        /* C cancellation seam: the pending destructor performs the same
+         * bounded discard attempt and no C++ exception may escape. */
+    }
+}
+
+static Lardon3DMatcherResult matcher_match_and_publish_with_backend_impl(
     const char *project_path,
     Lardon3DProjectDb *database,
     const Lardon3DProjectDbCandidatePair *pair,
@@ -822,6 +1075,38 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_with_backend
     return LARDON3D_MATCHER_OK;
 }
 
+extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish_with_backend(
+    const char *project_path,
+    Lardon3DProjectDb *database,
+    const Lardon3DProjectDbCandidatePair *pair,
+    const Lardon3DProjectDbFeatureSet *feature_set_a,
+    const Lardon3DProjectDbFeatureSet *feature_set_b,
+    const Lardon3DMatcherParams *params,
+    Lardon3DOrbVulkanBackend *backend,
+    Lardon3DProjectDbMatchResult *result,
+    Lardon3DMatcherStats *profile) {
+    try {
+        return matcher_match_and_publish_with_backend_impl(
+            project_path, database, pair, feature_set_a, feature_set_b, params,
+            backend, result, profile);
+    } catch (...) {
+        if (profile) std::memset(profile, 0, sizeof(*profile));
+        if (result) std::memset(result, 0, sizeof(*result));
+        return LARDON3D_MATCHER_FAILED;
+    }
+}
+
+struct MatcherPublicationStageGuard {
+    Lardon3DMatcherStagedResult *staged;
+
+    ~MatcherPublicationStageGuard() {
+        matcher_publication_stage = nullptr;
+        /* Publication either consumed the path or left it operation-owned.
+         * Both failure and exception paths end that ownership here. */
+        lardon3d_matcher_discard_staged(staged);
+    }
+};
+
 extern "C" Lardon3DMatcherResult lardon3d_matcher_publish_staged(
     const char *project_path, Lardon3DProjectDb *database,
     const Lardon3DProjectDbCandidatePair *pair,
@@ -832,15 +1117,19 @@ extern "C" Lardon3DMatcherResult lardon3d_matcher_publish_staged(
     if (!staged || staged->temporary_path[0] == '\0' || matcher_publication_stage) {
         return LARDON3D_MATCHER_INVALID_ARGUMENT;
     }
-    matcher_publication_stage = staged;
-    Lardon3DMatcherResult published = lardon3d_matcher_match_and_publish_with_backend(
-        project_path, database, pair, feature_set_a, feature_set_b, params, nullptr,
-        result, nullptr);
-    matcher_publication_stage = nullptr;
-    /* Reuse and validation failures can return before the normal publication
-     * path takes ownership. In all cases the operation-owned temp ends here. */
-    lardon3d_matcher_discard_staged(staged);
-    return published;
+    try {
+        matcher_publication_stage = staged;
+        MatcherPublicationStageGuard guard{staged};
+        return lardon3d_matcher_match_and_publish_with_backend(
+            project_path, database, pair, feature_set_a, feature_set_b, params,
+            nullptr, result, nullptr);
+    } catch (...) {
+        /* The guard normally handles cleanup. This catch also protects
+         * construction-time failures before it exists. */
+        matcher_publication_stage = nullptr;
+        lardon3d_matcher_discard_staged(staged);
+        return LARDON3D_MATCHER_FAILED;
+    }
 }
 
 extern "C" Lardon3DMatcherResult lardon3d_matcher_match_and_publish(

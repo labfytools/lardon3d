@@ -10,6 +10,8 @@
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
 
+#include "vulkan_process_startup.h"
+
 static uint32_t random_u32(uint32_t *state) {
   uint32_t value = *state;
   value ^= value << 13;
@@ -165,6 +167,11 @@ static bool benchmark(uint32_t count_a, uint32_t count_b, bool rootsift) {
 }
 
 int main() {
+  if (!lardon3d_vulkan_evidence_process_startup()) {
+    std::fprintf(stderr,
+                 "MESA_SHADER_CACHE_DISABLE must be true for safe CPU affinity\n");
+    return EXIT_FAILURE;
+  }
   cv::setNumThreads(12);
   std::printf("kind,count_a,count_b,cpu_ms,cold_ms,after_orb_ms,warm_ms,gpu_ms,"
               "finalization_ms,gain_with_finalization,final_exact\n");

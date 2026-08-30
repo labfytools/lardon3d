@@ -129,6 +129,7 @@ if matcher_vulkan_enabled
 endif
 
 opencv_test_environment = environment()
+opencv_test_environment.set('MESA_SHADER_CACHE_DISABLE', 'true')
 if get_option('b_sanitize').contains('thread')
     opencv_test_environment.set(
         'TSAN_OPTIONS',
@@ -136,7 +137,7 @@ if get_option('b_sanitize').contains('thread')
     )
 endif
 
-executable(
+lardon3d_app = executable(
     'lardon3d',
     sources: [
         'src/main.c',
@@ -219,6 +220,15 @@ executable(
         ceres,
     ]
         + matcher_backend_dependencies,
+)
+
+# The helper directly execs the production binary and checks its exact early
+# rejection; no shell or ncurses session participates in this boundary test.
+test(
+    'app-driver-policy-unsafe',
+    python,
+    args: [files('tests/test_driver_policy_startup.py'), lardon3d_app.full_path()],
+    timeout: 5,
 )
 
 import_test = executable(
@@ -489,10 +499,7 @@ photo_quality_restart_scan = executable(
 # Opt-in real-data evidence runner. It is intentionally not registered with
 # meson test: invocation requires explicit source roots and a fresh project
 # directory, and may perform bounded but long RAW/ORB/matching work.
-pre_sfm_real_execution = executable(
-    'pre-sfm-real-execution',
-    sources: [
-        'tests/pre_sfm_real_execution.cpp',
+pre_sfm_real_execution_support_sources = [
         'src/app_state.c',
         'src/acquisition_pairing.cpp', 'src/acquisition_ingest.cpp',
         'src/acquisition_campaign.cpp', 'src/acquisition_campaign_task.cpp',
@@ -512,18 +519,44 @@ pre_sfm_real_execution = executable(
         'src/task.c', 'src/task_checkpoint.c', 'src/task_kind_registry.c', 'src/task_kinds.c',
         'src/task_queue.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
         'src/hardware_profile.c',
-    ] + matcher_backend_sources,
+] + matcher_backend_sources
+
+pre_sfm_real_execution = executable(
+    'pre-sfm-real-execution',
+    sources: ['tests/pre_sfm_real_execution.cpp'] +
+        pre_sfm_real_execution_support_sources,
     include_directories: include_directories('include'),
     c_args: [
         '-DLARDON3D_TRACK_BUILDER_TASK_AVAILABLE',
         '-DLARDON3D_ACQUISITION_CAMPAIGN_TASK_AVAILABLE',
         '-DLARDON3D_PHOTO_QUALITY_TASK_AVAILABLE',
         '-DLARDON3D_RAW_DEVELOPMENT_TASK_AVAILABLE',
+        '-DLARDON3D_MATCHER_TASK_BENCHMARK_PIPELINE',
     ],
+    cpp_args: ['-DLARDON3D_MATCHER_TASK_BENCHMARK_PIPELINE'],
     dependencies: [
         threads, sqlite3, openssl, opencv, libraw, libexif, libpng, libdeflate,
     ] + matcher_backend_dependencies,
 )
+
+pre_sfm_runner_options_test = executable(
+    'test-pre-sfm-runner-options',
+    sources: ['tests/test_pre_sfm_runner_options.cpp'] +
+        pre_sfm_real_execution_support_sources,
+    include_directories: include_directories('include'),
+    c_args: [
+        '-DLARDON3D_TRACK_BUILDER_TASK_AVAILABLE',
+        '-DLARDON3D_ACQUISITION_CAMPAIGN_TASK_AVAILABLE',
+        '-DLARDON3D_PHOTO_QUALITY_TASK_AVAILABLE',
+        '-DLARDON3D_RAW_DEVELOPMENT_TASK_AVAILABLE',
+        '-DLARDON3D_MATCHER_TASK_BENCHMARK_PIPELINE',
+    ],
+    cpp_args: ['-DLARDON3D_MATCHER_TASK_BENCHMARK_PIPELINE'],
+    dependencies: [
+        threads, sqlite3, openssl, opencv, libraw, libexif, libpng, libdeflate,
+    ] + matcher_backend_dependencies,
+)
+test('pre-sfm-runner-options', pre_sfm_runner_options_test, timeout: 30)
 
 feature_store_test = executable(
     'test-feature-store',
@@ -627,9 +660,7 @@ candidate_pair_task_test = executable(
 test('candidate-pair-task', candidate_pair_task_test, timeout: 60,
      env: opencv_test_environment)
 
-matcher_task_test = executable(
-    'test-matcher-task',
-    sources: [
+matcher_task_test_sources = [
         'tests/test_matcher_task.c', 'src/app_state.c', 'src/project.c',
         'src/project_db.c', 'src/project_db_sparse_sfm.c', 'src/task.c', 'src/task_checkpoint.c',
         'src/task_kind_registry.c', 'src/task_kinds.c', 'src/task_queue.c',
@@ -643,7 +674,11 @@ matcher_task_test = executable(
         'src/feature_extractor_opencv.cpp', 'src/visual_index.c',
         'src/visual_index_task.c', 'src/candidate_pair_gen.c',
         'src/candidate_pair_task.c',
-    ] + matcher_backend_sources,
+] + matcher_backend_sources
+
+matcher_task_test = executable(
+    'test-matcher-task',
+    sources: matcher_task_test_sources,
     c_args: [
         '-DLARDON3D_PROJECT_DB_TESTING',
         '-DLARDON3D_MATCHER_TASK_TESTING',
@@ -652,6 +687,27 @@ matcher_task_test = executable(
     dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
 test('matcher-task', matcher_task_test, timeout: 60, env: opencv_test_environment)
+
+# This separately named evidence test is the only test-side consumer of the
+# synchronous-fence control. Ordinary Matcher tests compile the same production
+# sources without the macro, matching the production executable boundary.
+matcher_task_benchmark_pipeline_test = executable(
+    'test-matcher-task-benchmark-pipeline',
+    sources: matcher_task_test_sources,
+    c_args: [
+        '-DLARDON3D_PROJECT_DB_TESTING',
+        '-DLARDON3D_MATCHER_TASK_TESTING',
+        '-DLARDON3D_MATCHER_TASK_BENCHMARK_PIPELINE',
+    ] + (matcher_vulkan_enabled ? ['-DLARDON3D_MATCHER_TASK_VULKAN'] : []),
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
+)
+test(
+    'matcher-task-benchmark-pipeline',
+    matcher_task_benchmark_pipeline_test,
+    timeout: 60,
+    env: opencv_test_environment,
+)
 
 feature_task_test = executable(
     'test-feature-task',
@@ -672,8 +728,11 @@ feature_task_test = executable(
     ] + matcher_backend_sources,
     c_args: [
         '-DLARDON3D_PROJECT_DB_TESTING', '-DLARDON3D_FEATURE_TASK_TESTING',
+        '-DLARDON3D_FEATURE_STORE_TESTING',
         '-DLARDON3D_VISUAL_INDEX_TASK_TESTING',
+        '-DLARDON3D_VISUAL_INDEX_TESTING',
     ],
+    cpp_args: ['-DLARDON3D_FEATURE_TASK_TESTING'],
     include_directories: include_directories('include'),
     dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
@@ -737,6 +796,7 @@ task_test = executable(
         'src/resource_governor.c',
         'src/resource_snapshot.c',
     ],
+    c_args: ['-DLARDON3D_TASK_TESTING'],
     include_directories: include_directories('include'),
     dependencies: [threads],
 )
@@ -1060,7 +1120,7 @@ matcher_test = executable(
     dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
 
-test('matcher', matcher_test, timeout: 60)
+test('matcher', matcher_test, timeout: 60, env: opencv_test_environment)
 
 if matcher_vulkan_enabled
     orb_vulkan_backend_test = executable(
@@ -1130,7 +1190,8 @@ matcher_e2e_test = executable(
     dependencies: [threads, sqlite3, openssl, opencv] + matcher_backend_dependencies,
 )
 
-test('matcher-e2e', matcher_e2e_test, timeout: 60)
+test('matcher-e2e', matcher_e2e_test, timeout: 60,
+     env: opencv_test_environment)
 
 executable(
     'benchmark-matcher',

@@ -20,6 +20,8 @@ extern "C" {
 #include <opencv2/features2d.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "vulkan_process_startup.h"
+
 struct Comparison {
   uint64_t queries = 0;
   uint64_t index_divergences = 0;
@@ -39,6 +41,25 @@ static uint32_t random_u32(uint32_t *state) {
 static bool fp64_requested() {
   const char *value = std::getenv("LARDON3D_VULKAN_SIFT_FP64");
   return value && std::strcmp(value, "1") == 0;
+}
+
+static bool driver_policy_gate_rejects_unsafe() {
+  if (setenv("MESA_SHADER_CACHE_DISABLE", "false", 1) != 0) return false;
+  Lardon3DOrbVulkanBackend *backend = lardon3d_orb_vulkan_backend_create();
+  if (!backend) return false;
+  float descriptor[128]{};
+  Lardon3DSiftTop2 output{7, 11, 13.0F, 17, 19.0F};
+  const Lardon3DSiftTop2 unchanged = output;
+  Lardon3DOrbVulkanResult result = lardon3d_sift_vulkan_top2(
+      backend, descriptor, 1, descriptor, 1, &output, 1);
+  Lardon3DOrbVulkanInfo info{};
+  bool ok = result == LARDON3D_ORB_VULKAN_UNAVAILABLE &&
+            std::memcmp(&output, &unchanged, sizeof(output)) == 0 &&
+            lardon3d_orb_vulkan_backend_info(backend, &info) &&
+            info.initialized && !info.available &&
+            std::strcmp(std::getenv("MESA_SHADER_CACHE_DISABLE"), "false") == 0;
+  lardon3d_orb_vulkan_backend_destroy(backend);
+  return setenv("MESA_SHADER_CACHE_DISABLE", "true", 1) == 0 && ok;
 }
 
 static std::vector<float> make_descriptors(uint32_t count, bool rootsift,
@@ -339,6 +360,15 @@ static bool run_distribution(bool rootsift) {
 }
 
 int main() {
+  if (!lardon3d_vulkan_evidence_process_startup()) {
+    std::fprintf(stderr,
+                 "MESA_SHADER_CACHE_DISABLE must be true for safe CPU affinity\n");
+    return EXIT_FAILURE;
+  }
+  if (!driver_policy_gate_rejects_unsafe()) {
+    std::fprintf(stderr, "SIFT Vulkan driver process-policy gate failed\n");
+    return EXIT_FAILURE;
+  }
   cv::setNumThreads(12);
   return run_distribution(false) && run_distribution(true)
              ? EXIT_SUCCESS

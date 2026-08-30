@@ -15,6 +15,9 @@
 #include <lardon3d/project.h>
 #include <lardon3d/task_queue.h>
 
+#include "opencv_task_thread_control.h"
+#include "task_internal.h"
+
 typedef struct {
   char project_path[PATH_MAX];
   Lardon3DProjectDb *database;
@@ -125,13 +128,14 @@ static bool load_validated_source(const Lardon3DFeatureTaskContext *context, cha
   return file_hash(path, actual) && memcmp(actual, asset.sha256, 32) == 0;
 }
 
-static bool run(Lardon3DTask *task, void *userdata) {
+static bool run_body(Lardon3DTask *task, void *userdata, size_t *durable_items) {
   Lardon3DFeatureTaskContext *context = userdata;
+  *durable_items = 0;
   if (!lardon3d_task_checkpoint(task)) {
     return false;
   }
-  struct timespec begin;
-  (void)clock_gettime(CLOCK_MONOTONIC, &begin);
+  struct timespec begin = {0};
+  bool timing_known = clock_gettime(CLOCK_MONOTONIC, &begin) == 0;
   unsigned char fingerprint[32];
   lardon3d_feature_extractor_parameter_fingerprint(
       &(Lardon3DFeatureExtractorParameters){context->parameters.max_features,
@@ -186,11 +190,45 @@ static bool run(Lardon3DTask *task, void *userdata) {
       published != LARDON3D_FEATURE_STORE_PUBLISHED_NOT_DURABLE) {
     return lardon3d_task_fail(task, "Publication Feature Store impossible.");
   }
-  struct timespec end;
-  (void)clock_gettime(CLOCK_MONOTONIC, &end);
-  (void)lardon3d_resource_governor_record_batch(context->governor, LARDON3D_RESOURCE_TASK_CPU, 1,
-                                                elapsed_ns(begin, end), 0);
+  *durable_items = published == LARDON3D_FEATURE_STORE_OK ? 1 : 0;
+  struct timespec end = {0};
+  timing_known = timing_known && clock_gettime(CLOCK_MONOTONIC, &end) == 0;
+  if (*durable_items > 0 && timing_known) {
+    (void)lardon3d_resource_governor_record_batch(
+        context->governor, LARDON3D_RESOURCE_TASK_CPU, *durable_items,
+        elapsed_ns(begin, end), 0);
+  }
   return lardon3d_task_set_progress(task, 100, "Feature Set publié.");
+}
+
+static bool run(Lardon3DTask *task, void *userdata) {
+  struct timespec begin = {0};
+  struct timespec end = {0};
+  bool timing_known = clock_gettime(CLOCK_MONOTONIC, &begin) == 0;
+  Lardon3DOpenCvTaskThreadControl threads;
+  if (!lardon3d_opencv_task_threads_begin(task, 12, &threads)) {
+    return lardon3d_task_fail(task, "Contrat CPU OpenCV Features invalide.");
+  }
+  /* Queue has one callback owner, so this process-wide OpenCV setting cannot
+   * race another Task. The immutable admission selects 1..12, and this guard
+   * applies exactly that count before extraction and restores it on every
+   * return without changing Feature identity. */
+  size_t durable_items = 0;
+  bool result = run_body(task, userdata, &durable_items);
+  if (!lardon3d_opencv_task_threads_end(&threads)) {
+    (void)lardon3d_task_fail(task, "Restauration OpenCV Features impossible.");
+    return false;
+  }
+  timing_known = timing_known && clock_gettime(CLOCK_MONOTONIC, &end) == 0;
+  if (result && timing_known) {
+    /* Only extraction followed by this Task's durable publication contributes
+     * work. READY reuse, an ALREADY_PRESENT collision, and uncertain directory
+     * sync remain successful outcomes, but record zero so feedback can neither
+     * train nor advance the next immutable CPU trial. */
+    (void)lardon3d_task_internal_record_sequence(
+        task, elapsed_ns(begin, end), durable_items);
+  }
+  return result;
 }
 
 static Lardon3DFeatureTaskContext *
@@ -293,11 +331,8 @@ lardon3d_project_create_feature_extract_task(Lardon3DAppState *state, uint64_t i
                                        .memory_bytes_per_item = 512ULL * 1024 * 1024,
                                        .minimum_batch_size = 1,
                                        .maximum_batch_size = 1,
-                                       /* Request the audited operational ceiling, not OpenCV's
-                                        * mutable current value: Matcher temporarily sets that
-                                        * process-wide value to one inside its Queue callback. The
-                                        * Governor reduces twelve to the host-reserved CPU budget,
-                                        * matching the stable startup configuration. */
+                                       /* Canonical durable maximum. Governor admission may select
+                                        * any validated OpenCV count in 1..12 for this execution. */
                                        .desired_cpu_threads = 12,
                                        .desired_io_slots = 1,
                                        .task_class = LARDON3D_RESOURCE_TASK_CPU};

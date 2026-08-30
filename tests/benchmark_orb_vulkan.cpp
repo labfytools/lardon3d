@@ -11,6 +11,8 @@
 #include <iterator>
 #include <vector>
 
+#include "vulkan_process_startup.h"
+
 namespace {
 
 constexpr uint32_t kDescriptorBytes = 32;
@@ -124,6 +126,11 @@ static bool benchmark_sustained(Lardon3DOrbVulkanBackend *backend) {
 }  // namespace
 
 int main(int argc, char **argv) {
+  if (!lardon3d_vulkan_evidence_process_startup()) {
+    std::fprintf(stderr,
+                 "MESA_SHADER_CACHE_DISABLE must be true for safe CPU affinity\n");
+    return 1;
+  }
   Lardon3DOrbVulkanBackend *backend = lardon3d_orb_vulkan_backend_create();
   if (!backend) {
     return 1;

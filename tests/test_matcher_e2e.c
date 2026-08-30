@@ -179,6 +179,7 @@ static bool read_result_asset(const Fixture *fixture, const Lardon3DProjectDbFea
   return read_result == LARDON3D_MATCH_FILE_OK;
 }
 
+#ifdef LARDON3D_MATCHER_E2E_VULKAN
 static bool files_equal(const char *path_a, const char *path_b) {
   int fd_a = open(path_a, O_RDONLY | O_CLOEXEC);
   int fd_b = open(path_b, O_RDONLY | O_CLOEXEC);
@@ -235,7 +236,6 @@ static uint32_t deterministic_random(uint32_t *state) {
   return *state;
 }
 
-#ifdef LARDON3D_MATCHER_E2E_VULKAN
 static bool test_cpu_vulkan_match_file_parity(void) {
   const uint32_t feature_count = 768;
   const size_t bytes = (size_t)feature_count * 32;

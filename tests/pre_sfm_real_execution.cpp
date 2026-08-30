@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <openssl/evp.h>
+#include <sqlite3.h>
 #include <string>
 #include <thread>
 #include <vector>
@@ -22,7 +23,9 @@ extern "C" {
 #include <lardon3d/feature_task.h>
 #include <lardon3d/geometric_verifier_task.h>
 #include <lardon3d/hardware_profile.h>
+#include <lardon3d/match_file.h>
 #include <lardon3d/matcher_task.h>
+#include <lardon3d/orb_vulkan_backend.h>
 #include <lardon3d/photo_quality_task.h>
 #include <lardon3d/project.h>
 #include <lardon3d/raw_development_task.h>
@@ -31,11 +34,17 @@ extern "C" {
 #include <lardon3d/track_builder_task.h>
 #include <lardon3d/visual_index.h>
 #include <lardon3d/visual_index_task.h>
+
+#include "../src/matcher_task_benchmark_internal.h"
+#include "../src/orb_vulkan_backend_internal.h"
+#include "../src/resource_governor_internal.h"
 }
 
 namespace {
 
 enum class Mode { kA6000, kS21 };
+enum class MatcherMode { kAuto, kCpu, kVulkan };
+enum class MatcherPipeline { kRolling, kSynchronous };
 enum class RestartBoundary { kNone, kRepresentations, kFeatures, kGeometry };
 
 struct Options {
@@ -45,6 +54,17 @@ struct Options {
   bool resume_pre_gv_existing{};
   bool resume_candidate_existing{};
   unsigned int cpu_budget{};
+  unsigned int gpu_budget{};
+  bool has_gpu_budget{};
+  MatcherMode matcher_mode{MatcherMode::kAuto};
+  bool has_matcher_mode{};
+  MatcherPipeline matcher_pipeline{MatcherPipeline::kRolling};
+  bool has_matcher_pipeline{};
+  unsigned int matcher_inflight_override{};
+  bool has_matcher_inflight_override{};
+  unsigned int matcher_batch_override{};
+  bool has_matcher_batch_override{};
+  bool stop_after_matcher{};
   std::filesystem::path project_dir;
   std::vector<std::filesystem::path> roots;
   size_t limit{LARDON3D_VISUAL_INDEX_CANDIDATE_MAX};
@@ -61,6 +81,20 @@ struct Runtime {
   std::string project_path;
   std::string database_path;
   unsigned int cpu_budget{};
+  unsigned int gpu_budget{};
+  bool has_gpu_budget{};
+  MatcherMode matcher_mode{MatcherMode::kAuto};
+  MatcherPipeline matcher_pipeline{MatcherPipeline::kRolling};
+  unsigned int matcher_inflight_override{};
+  unsigned int matcher_batch_override{};
+  bool matcher_needed{};
+  bool stop_after_matcher{};
+  bool matcher_evidence_active{};
+  uint64_t matcher_diagnostic_serial{};
+  uint64_t matcher_diagnostic_samples{};
+  std::chrono::steady_clock::time_point matcher_wall_begin{};
+  bool matcher_backend_before_known{};
+  Lardon3DOrbVulkanTelemetry matcher_backend_before{};
 };
 
 struct Evidence {
@@ -73,18 +107,30 @@ struct Evidence {
   size_t tracks{};
 };
 
+struct MatchAudit {
+  char digest_hex[65]{};
+  size_t match_result_count{};
+  size_t match_asset_count{};
+  size_t duplicate_candidate_pair_mappings{};
+  bool candidate_mapping_contiguous{};
+  bool matcher_cursor_complete{};
+};
+
 void usage(const char *program) {
   std::fprintf(
       stderr,
       "Usage: %s --mode a6000|s21 --project-dir ABSOLUTE_EMPTY_DIR "
       "--root ABSOLUTE_DIR [--root ABSOLUTE_DIR ...] [--limit 1..4096] "
       "[--restart-boundary representations|features|geometry]\n"
-      "       %s --resume-geometry-existing --project-dir "
-      "ABSOLUTE_EXISTING_DIR\n"
+      "       %s --resume-geometry-existing --project-dir ABSOLUTE_EXISTING_DIR\n"
       "       %s --resume-pre-gv-existing --project-dir "
-      "ABSOLUTE_EXISTING_DIR\n"
+      "ABSOLUTE_EXISTING_DIR [--cpu-budget 1..12] [--gpu-budget 0..1] "
+      "[--matcher-mode auto|cpu|vulkan] "
+      "[--matcher-pipeline rolling|synchronous] [--matcher-inflight 1|2] "
+      "[--matcher-batch 2|4|8|12] "
+      "[--stop-after-matcher]\n"
       "       %s --resume-candidate-existing --project-dir "
-      "ABSOLUTE_EXISTING_DIR [--cpu-budget 1..12]\n",
+      "ABSOLUTE_EXISTING_DIR [--cpu-budget 1..12] [--gpu-budget 0..1]\n",
       program,
       program,
       program,
@@ -109,6 +155,32 @@ bool parse_cpu_budget(const char *text, unsigned int &value) {
   return true;
 }
 
+bool parse_gpu_budget(const char *text, unsigned int &value) {
+  char *end = nullptr;
+  errno = 0;
+  const unsigned long parsed = std::strtoul(text, &end, 10);
+  if (errno != 0 || end == text || *end != '\0' || parsed > 1) return false;
+  value = static_cast<unsigned int>(parsed);
+  return true;
+}
+
+bool parse_matcher_inflight(const char *text, unsigned int &value) {
+  if (!text || (std::strcmp(text, "1") != 0 && std::strcmp(text, "2") != 0))
+    return false;
+  value = text[0] == '1' ? 1U : 2U;
+  return true;
+}
+
+bool parse_matcher_batch(const char *text, unsigned int &value) {
+  if (!text) return false;
+  if (std::strcmp(text, "2") == 0) value = 2;
+  else if (std::strcmp(text, "4") == 0) value = 4;
+  else if (std::strcmp(text, "8") == 0) value = 8;
+  else if (std::strcmp(text, "12") == 0) value = 12;
+  else return false;
+  return true;
+}
+
 bool parse_options(int argc, char **argv, Options &options) {
   for (int index = 1; index < argc; ++index) {
     const std::string argument(argv[index]);
@@ -130,7 +202,9 @@ bool parse_options(int argc, char **argv, Options &options) {
     }
     if ((argument == "--mode" || argument == "--project-dir" || argument == "--root" ||
          argument == "--limit" || argument == "--restart-boundary" ||
-         argument == "--cpu-budget") &&
+         argument == "--cpu-budget" || argument == "--gpu-budget" ||
+         argument == "--matcher-mode" || argument == "--matcher-pipeline" ||
+         argument == "--matcher-inflight" || argument == "--matcher-batch") &&
         index + 1 >= argc)
       return false;
     if (argument == "--mode") {
@@ -153,6 +227,33 @@ bool parse_options(int argc, char **argv, Options &options) {
       else return false;
     } else if (argument == "--cpu-budget") {
       if (!parse_cpu_budget(argv[++index], options.cpu_budget)) return false;
+    } else if (argument == "--gpu-budget") {
+      if (!parse_gpu_budget(argv[++index], options.gpu_budget)) return false;
+      options.has_gpu_budget = true;
+    } else if (argument == "--matcher-mode") {
+      const std::string value(argv[++index]);
+      if (value == "auto") options.matcher_mode = MatcherMode::kAuto;
+      else if (value == "cpu") options.matcher_mode = MatcherMode::kCpu;
+      else if (value == "vulkan") options.matcher_mode = MatcherMode::kVulkan;
+      else return false;
+      options.has_matcher_mode = true;
+    } else if (argument == "--matcher-pipeline") {
+      const std::string value(argv[++index]);
+      if (value == "rolling") options.matcher_pipeline = MatcherPipeline::kRolling;
+      else if (value == "synchronous")
+        options.matcher_pipeline = MatcherPipeline::kSynchronous;
+      else return false;
+      options.has_matcher_pipeline = true;
+    } else if (argument == "--matcher-inflight") {
+      if (!parse_matcher_inflight(
+              argv[++index], options.matcher_inflight_override)) return false;
+      options.has_matcher_inflight_override = true;
+    } else if (argument == "--matcher-batch") {
+      if (!parse_matcher_batch(argv[++index], options.matcher_batch_override))
+        return false;
+      options.has_matcher_batch_override = true;
+    } else if (argument == "--stop-after-matcher") {
+      options.stop_after_matcher = true;
     } else {
       return false;
     }
@@ -160,15 +261,90 @@ bool parse_options(int argc, char **argv, Options &options) {
   const unsigned int resume_mode_count = options.resume_geometry_existing +
                                          options.resume_pre_gv_existing +
                                          options.resume_candidate_existing;
-  if (resume_mode_count != 0)
-    return !options.has_mode && !options.project_dir.empty() && options.roots.empty() &&
-           options.restart == RestartBoundary::kNone &&
-           resume_mode_count == 1 &&
-           (options.resume_candidate_existing || options.cpu_budget == 0);
-  if (options.cpu_budget != 0) return false;
+  if (resume_mode_count != 0) {
+    if (options.has_mode || options.project_dir.empty() || !options.roots.empty() ||
+        options.restart != RestartBoundary::kNone || resume_mode_count != 1)
+      return false;
+    if (options.resume_pre_gv_existing) {
+      return true;
+    }
+    if (options.resume_candidate_existing)
+      return !options.has_matcher_mode && !options.has_matcher_pipeline &&
+             !options.has_matcher_inflight_override &&
+             !options.has_matcher_batch_override &&
+             !options.stop_after_matcher;
+    return options.cpu_budget == 0 && !options.has_gpu_budget &&
+           !options.has_matcher_mode && !options.has_matcher_pipeline &&
+           !options.has_matcher_inflight_override &&
+           !options.has_matcher_batch_override &&
+           !options.stop_after_matcher;
+  }
+  if (options.cpu_budget != 0 || options.has_gpu_budget ||
+      options.has_matcher_mode || options.has_matcher_pipeline ||
+      options.has_matcher_inflight_override ||
+      options.has_matcher_batch_override ||
+      options.stop_after_matcher) return false;
   return options.has_mode && !options.project_dir.empty() && !options.roots.empty() &&
          options.roots.size() <= LARDON3D_ACQUISITION_CAMPAIGN_MAX_ROOTS;
 }
+
+class ScopedEnvironmentValue {
+ public:
+  explicit ScopedEnvironmentValue(const char *name) : name_(name) {
+    const char *value = std::getenv(name_);
+    existed_ = value != nullptr;
+    if (value) value_ = value;
+  }
+
+  ScopedEnvironmentValue(const ScopedEnvironmentValue &) = delete;
+  ScopedEnvironmentValue &operator=(const ScopedEnvironmentValue &) = delete;
+
+  bool replace(const char *value) {
+    changed_ = true;
+    return value ? setenv(name_, value, 1) == 0 : unsetenv(name_) == 0;
+  }
+
+  ~ScopedEnvironmentValue() {
+    if (!changed_) return;
+    /* Process-owned benchmark controls must not leak into a later in-process
+     * invocation. POSIX setenv/unsetenv are used only before runtime threads;
+     * destruction is the all-exit restoration boundary and never throws. */
+    if (existed_) (void)setenv(name_, value_.c_str(), 1);
+    else (void)unsetenv(name_);
+  }
+
+ private:
+  const char *name_;
+  bool existed_{};
+  bool changed_{};
+  std::string value_;
+};
+
+class ScopedMatcherBenchmarkEnvironment {
+ public:
+  ScopedMatcherBenchmarkEnvironment()
+      : pipeline_(LARDON3D_MATCHER_TASK_BENCHMARK_SYNCHRONOUS_ENV),
+        inflight_(LARDON3D_MATCHER_TASK_BENCHMARK_INFLIGHT_ENV),
+        batch_(LARDON3D_MATCHER_TASK_BENCHMARK_BATCH_ENV) {}
+
+  bool configure(const Options &options) {
+    const char *pipeline = options.matcher_pipeline ==
+            MatcherPipeline::kSynchronous ? "1" : nullptr;
+    const char *inflight = !options.has_matcher_inflight_override
+        ? nullptr : options.matcher_inflight_override == 1 ? "1" : "2";
+    const char *batch = !options.has_matcher_batch_override
+        ? nullptr : options.matcher_batch_override == 2 ? "2"
+            : options.matcher_batch_override == 4 ? "4"
+            : options.matcher_batch_override == 8 ? "8" : "12";
+    return pipeline_.replace(pipeline) && inflight_.replace(inflight) &&
+           batch_.replace(batch);
+  }
+
+ private:
+  ScopedEnvironmentValue pipeline_;
+  ScopedEnvironmentValue inflight_;
+  ScopedEnvironmentValue batch_;
+};
 
 bool prepare_existing_project(const std::filesystem::path &input, Runtime &runtime) {
   if (!input.is_absolute() || input.lexically_normal() != input) return false;
@@ -320,10 +496,13 @@ void stop_runtime(Runtime &runtime) {
   if (runtime.state.task_queue) lardon3d_task_queue_destroy(runtime.state.task_queue);
   if (runtime.state.resource_governor)
     lardon3d_resource_governor_destroy(runtime.state.resource_governor);
+  if (runtime.state.orb_vulkan_backend)
+    lardon3d_orb_vulkan_backend_destroy(runtime.state.orb_vulkan_backend);
   if (runtime.state.project_db) lardon3d_project_db_close(runtime.state.project_db);
   runtime.state.task_queue = nullptr;
   runtime.state.resource_governor = nullptr;
   runtime.state.project_db = nullptr;
+  runtime.state.orb_vulkan_backend = nullptr;
 }
 
 bool start_runtime(Runtime &runtime) {
@@ -356,6 +535,14 @@ bool start_runtime(Runtime &runtime) {
     policy.system_cpu_reserve = runtime.state.hardware_profile.logical_cpu_count -
                                 runtime.cpu_budget;
   }
+  if (runtime.has_gpu_budget) {
+    if (runtime.gpu_budget != 0 && !runtime.state.hardware_profile.gpu_available) {
+      std::fprintf(stderr, "requested GPU budget requires a detected GPU\n");
+      stop_runtime(runtime);
+      return false;
+    }
+    policy.gpu_slot_capacity = runtime.gpu_budget;
+  }
   unsigned int feature_threads = runtime.state.hardware_profile.logical_cpu_count -
                                  policy.system_cpu_reserve;
   if (feature_threads > 12) feature_threads = 12;
@@ -371,6 +558,12 @@ bool start_runtime(Runtime &runtime) {
   }
   runtime.state.resource_governor =
       lardon3d_resource_governor_create(&runtime.state.hardware_profile, &policy);
+  /* AUTO and explicit Vulkan receive only an uninitialized backend object.
+   * Metadata inspection here cannot start driver threads: first initialization
+   * remains on Queue's affinity-constrained worker. Portable AUTO receives the
+   * null stub result and exposes only CPU without a GPU side effect. */
+  if (runtime.matcher_needed && runtime.matcher_mode != MatcherMode::kCpu)
+    runtime.state.orb_vulkan_backend = lardon3d_orb_vulkan_backend_create();
   runtime.state.task_queue = runtime.state.resource_governor
                                  ? lardon3d_task_queue_create(runtime.state.resource_governor, 2)
                                  : nullptr;
@@ -388,8 +581,470 @@ bool start_runtime(Runtime &runtime) {
   return true;
 }
 
+const char *backend_name(Lardon3DResourceBackend backend) {
+  switch (backend) {
+    case LARDON3D_RESOURCE_BACKEND_FIXED: return "fixed";
+    case LARDON3D_RESOURCE_BACKEND_CPU: return "cpu";
+    case LARDON3D_RESOURCE_BACKEND_ORB_VULKAN: return "orb-vulkan";
+    case LARDON3D_RESOURCE_BACKEND_MIXED: return "mixed";
+  }
+  return "invalid";
+}
+
+const char *pressure_name(Lardon3DResourcePressure pressure) {
+  switch (pressure) {
+    case LARDON3D_RESOURCE_PRESSURE_GREEN: return "green";
+    case LARDON3D_RESOURCE_PRESSURE_YELLOW: return "yellow";
+    case LARDON3D_RESOURCE_PRESSURE_RED: return "red";
+  }
+  return "invalid";
+}
+
+void print_json_string(const char *text) {
+  std::putchar('"');
+  for (const unsigned char *cursor =
+           reinterpret_cast<const unsigned char *>(text ? text : "");
+       *cursor; ++cursor) {
+    switch (*cursor) {
+      case '"': std::fputs("\\\"", stdout); break;
+      case '\\': std::fputs("\\\\", stdout); break;
+      case '\b': std::fputs("\\b", stdout); break;
+      case '\f': std::fputs("\\f", stdout); break;
+      case '\n': std::fputs("\\n", stdout); break;
+      case '\r': std::fputs("\\r", stdout); break;
+      case '\t': std::fputs("\\t", stdout); break;
+      default:
+        if (*cursor < 0x20)
+          std::printf("\\u%04x", static_cast<unsigned int>(*cursor));
+        else
+          std::putchar(*cursor);
+    }
+  }
+  std::putchar('"');
+}
+
+void print_known_u64(bool known, uint64_t value) {
+  if (known) std::printf("%llu", static_cast<unsigned long long>(value));
+  else std::fputs("null", stdout);
+}
+
+void print_known_u32(bool known, uint32_t value) {
+  if (known) std::printf("%u", value);
+  else std::fputs("null", stdout);
+}
+
+void emit_matcher_diagnostic_change(Runtime &runtime) {
+  if (!runtime.matcher_evidence_active || !runtime.state.resource_governor) return;
+  Lardon3DResourceSequenceDiagnostic diagnostic{};
+  if (!lardon3d_resource_governor_internal_diagnostic_since(
+          runtime.state.resource_governor, LARDON3D_MATCHER_TASK_KIND,
+          LARDON3D_MATCHER_TASK_KIND_VERSION, runtime.matcher_diagnostic_serial,
+          &diagnostic))
+    return;
+  runtime.matcher_diagnostic_serial = diagnostic.serial;
+  ++runtime.matcher_diagnostic_samples;
+  std::printf(
+      "{\"record\":\"matcher_diagnostic_sample\",\"sampling\":"
+      "\"latest-change-coalescing\",\"serial\":%llu,\"selected_backend\":\"%s\","
+      "\"actual_backend\":\"%s\",\"fallback\":%s,\"pressure\":\"%s\","
+      "\"cpu\":%u,\"gpu\":%u,\"batch\":%zu,\"inflight\":%zu,"
+      "\"helpers\":%u,\"io\":%u,\"host_memory_bytes\":%llu,"
+      "\"gpu_memory_bytes\":%llu,\"uma\":%s,\"wall_ns\":%llu,"
+      "\"items\":%zu,\"durable_rate_milli\":%llu,\"mem_available_bytes\":"
+      , static_cast<unsigned long long>(diagnostic.serial),
+      backend_name(diagnostic.backend), backend_name(diagnostic.actual_backend),
+      diagnostic.backend_fallback ? "true" : "false",
+      pressure_name(diagnostic.pressure), diagnostic.cpu_threads,
+      diagnostic.gpu_slots, diagnostic.batch_size, diagnostic.inflight_limit,
+      diagnostic.helper_limit, diagnostic.io_slots,
+      static_cast<unsigned long long>(diagnostic.memory_bytes),
+      static_cast<unsigned long long>(diagnostic.gpu_memory_bytes),
+      runtime.state.hardware_profile.gpu_uses_shared_memory ? "true" : "false",
+      static_cast<unsigned long long>(diagnostic.previous_wall_time_ns),
+      diagnostic.items_completed,
+      static_cast<unsigned long long>(diagnostic.durable_items_per_second_milli));
+  print_known_u64(diagnostic.host.memory_available_known,
+                  diagnostic.host.memory_available_bytes);
+  std::fputs(",\"memory_psi_some_basis_points\":", stdout);
+  print_known_u32(diagnostic.host.memory_psi_some_known,
+                  diagnostic.host.memory_psi_some_basis_points);
+  std::fputs(",\"memory_psi_full_basis_points\":", stdout);
+  print_known_u32(diagnostic.host.memory_psi_full_known,
+                  diagnostic.host.memory_psi_full_basis_points);
+  std::fputs(",\"io_psi_some_basis_points\":", stdout);
+  print_known_u32(diagnostic.host.io_psi_some_known,
+                  diagnostic.host.io_psi_some_basis_points);
+  std::fputs(",\"io_psi_full_basis_points\":", stdout);
+  print_known_u32(diagnostic.host.io_psi_full_known,
+                  diagnostic.host.io_psi_full_basis_points);
+  std::printf(
+      ",\"swap_delta_known\":%s,\"swap_pages_in_delta\":%llu,"
+      "\"swap_pages_out_delta\":%llu,\"compute_pool_utilization_basis_points\":",
+      diagnostic.host.swap_delta_known ? "true" : "false",
+      static_cast<unsigned long long>(diagnostic.host.swap_pages_in_delta),
+      static_cast<unsigned long long>(diagnostic.host.swap_pages_out_delta));
+  print_known_u32(diagnostic.host.compute_pool_utilization_known,
+                  diagnostic.host.compute_pool_utilization_basis_points);
+  std::fputs(",\"gpu_busy_basis_points\":", stdout);
+  print_known_u32(diagnostic.host.gpu_busy_known,
+                  diagnostic.host.gpu_busy_basis_points);
+  std::fputs(",\"process_rss_bytes\":", stdout);
+  print_known_u64(diagnostic.host.process_rss_known,
+                  diagnostic.host.process_rss_bytes);
+  std::fputs(",\"process_peak_rss_bytes\":", stdout);
+  print_known_u64(diagnostic.host.process_peak_rss_known,
+                  diagnostic.host.process_peak_rss_bytes);
+  std::printf(
+      ",\"vulkan_submits\":%llu,\"vulkan_completions\":%llu,"
+      "\"vulkan_submit_cpu_ns\":%llu,\"vulkan_fence_wait_ns\":%llu,"
+      "\"vulkan_readback_ns\":%llu,\"vulkan_gpu_time_known\":%s,"
+      "\"vulkan_gpu_ns\":%llu,\"vulkan_starvation_ns\":%llu,"
+      "\"matcher_cpu_ns\":%llu,\"publication_ns\":%llu,"
+      "\"local_ineligible_fallback_items\":%llu,"
+      "\"backend_failure_fallback_items\":%llu,"
+      "\"backend_other_fallback_items\":%llu,"
+      "\"fallback_items_saturated\":%s,\"reason\":",
+      static_cast<unsigned long long>(diagnostic.execution.vulkan_submits),
+      static_cast<unsigned long long>(diagnostic.execution.vulkan_completions),
+      static_cast<unsigned long long>(diagnostic.execution.vulkan_submit_cpu_ns),
+      static_cast<unsigned long long>(diagnostic.execution.vulkan_fence_wait_ns),
+      static_cast<unsigned long long>(diagnostic.execution.vulkan_readback_ns),
+      diagnostic.execution.vulkan_gpu_time_known ? "true" : "false",
+      static_cast<unsigned long long>(diagnostic.execution.vulkan_gpu_ns),
+      static_cast<unsigned long long>(diagnostic.execution.vulkan_starvation_ns),
+      static_cast<unsigned long long>(diagnostic.execution.matcher_cpu_ns),
+      static_cast<unsigned long long>(diagnostic.execution.publication_ns),
+      static_cast<unsigned long long>(
+          diagnostic.execution.local_ineligible_fallback_items),
+      static_cast<unsigned long long>(
+          diagnostic.execution.backend_failure_fallback_items),
+      static_cast<unsigned long long>(
+          diagnostic.execution.backend_other_fallback_items),
+      diagnostic.execution.fallback_items_saturated ? "true" : "false");
+  print_json_string(diagnostic.reason);
+  std::fputs(",\"backend_reason\":", stdout);
+  print_json_string(diagnostic.backend_reason);
+  std::fputs("}\n", stdout);
+}
+
+void begin_matcher_evidence(Runtime &runtime) {
+  runtime.matcher_evidence_active = true;
+  runtime.matcher_diagnostic_serial = 0;
+  runtime.matcher_diagnostic_samples = 0;
+  runtime.matcher_wall_begin = std::chrono::steady_clock::now();
+  runtime.matcher_backend_before_known = runtime.state.orb_vulkan_backend &&
+      lardon3d_orb_vulkan_internal_telemetry(
+          runtime.state.orb_vulkan_backend, &runtime.matcher_backend_before);
+}
+
+uint64_t counter_delta(uint64_t before, uint64_t after) {
+  return after >= before ? after - before : 0;
+}
+
+struct MatcherExperimentValidation {
+  bool applicable{};
+  bool valid{};
+  uint64_t local_ineligible_fallback_items{};
+  const char *reason{"not-forced"};
+};
+
+bool counter_partition(uint64_t first, uint64_t second, uint64_t third,
+                       uint64_t fourth, uint64_t total) {
+  if (first > total) return false;
+  total -= first;
+  if (second > total) return false;
+  total -= second;
+  if (third > total) return false;
+  total -= third;
+  return fourth == total;
+}
+
+MatcherExperimentValidation validate_forced_matcher_experiment(
+    const Runtime &runtime, bool aggregate_known,
+    const Lardon3DResourceSequenceAggregate &aggregate, bool last_known,
+    const Lardon3DResourceSequenceDiagnostic &last,
+    bool backend_delta_known, uint64_t backend_failures,
+    uint64_t backend_discards, bool backend_slot_pending) {
+  MatcherExperimentValidation result{};
+  result.applicable = runtime.matcher_inflight_override != 0;
+  if (!result.applicable) return result;
+  const uint64_t depth = runtime.matcher_inflight_override;
+  const uint64_t batch = runtime.matcher_batch_override != 0
+      ? runtime.matcher_batch_override : 2;
+  const uint64_t payload = depth * LARDON3D_ORB_VULKAN_PER_SLOT_BYTES;
+  result.local_ineligible_fallback_items =
+      aggregate.local_ineligible_fallback_items;
+#define INVALID_EXPERIMENT(why)                                                 \
+  do {                                                                          \
+    result.reason = (why);                                                       \
+    return result;                                                               \
+  } while (false)
+  if (!aggregate_known) INVALID_EXPERIMENT("aggregate-unavailable");
+  if (aggregate.saturated) INVALID_EXPERIMENT("aggregate-saturated");
+  if (aggregate.admission_count == 0 || aggregate.sequence_count == 0)
+    INVALID_EXPERIMENT("no-completed-vulkan-sequence");
+  if (aggregate.selected_backend_admissions[
+          LARDON3D_RESOURCE_BACKEND_FIXED] != 0 ||
+      aggregate.selected_backend_admissions[LARDON3D_RESOURCE_BACKEND_CPU] != 0 ||
+      aggregate.selected_backend_admissions[
+          LARDON3D_RESOURCE_BACKEND_MIXED] != 0 ||
+      aggregate.selected_backend_admissions[
+          LARDON3D_RESOURCE_BACKEND_ORB_VULKAN] != aggregate.admission_count)
+    INVALID_EXPERIMENT("selected-contract-not-exclusively-vulkan");
+  if (aggregate.admission_count != aggregate.sequence_count)
+    INVALID_EXPERIMENT("admission-sequence-count-mismatch");
+  if (aggregate.contract_change_count != 0)
+    INVALID_EXPERIMENT("forced-contract-changed");
+  if (!last_known || last.backend != LARDON3D_RESOURCE_BACKEND_ORB_VULKAN ||
+      last.cpu_threads != 1 || last.gpu_slots != 1 ||
+      last.batch_size != batch ||
+      last.inflight_limit != depth || last.helper_limit != 0 ||
+      last.io_slots != 1 ||
+      last.memory_bytes != batch * UINT64_C(10) * 1024 * 1024 ||
+      last.gpu_memory_bytes != payload)
+    INVALID_EXPERIMENT("forced-contract-mismatch");
+  if (!backend_delta_known) INVALID_EXPERIMENT("backend-telemetry-unavailable");
+  if (backend_failures != 0 ||
+      aggregate.backend_failure_fallback_sequences != 0 ||
+      aggregate.backend_failure_fallback_items != 0)
+    INVALID_EXPERIMENT("backend-failure");
+  if (backend_discards != 0) INVALID_EXPERIMENT("backend-discard");
+  if (backend_slot_pending) INVALID_EXPERIMENT("backend-slot-pending");
+  if (aggregate.backend_other_fallback_sequences != 0 ||
+      aggregate.backend_other_fallback_items != 0)
+    INVALID_EXPERIMENT("unclassified-backend-fallback");
+  if (aggregate.local_ineligible_fallback_items > aggregate.durable_items ||
+      aggregate.backend_ineligible_fallback_sequences >
+          aggregate.local_ineligible_fallback_items ||
+      ((aggregate.local_ineligible_fallback_items == 0) !=
+       (aggregate.backend_ineligible_fallback_sequences == 0)))
+    INVALID_EXPERIMENT("fallback-item-classification-mismatch");
+  if (!counter_partition(
+          aggregate.backend_ineligible_fallback_sequences,
+          aggregate.backend_failure_fallback_sequences,
+          aggregate.backend_other_fallback_sequences, 0,
+          aggregate.backend_fallback_sequences))
+    INVALID_EXPERIMENT("fallback-classification-mismatch");
+  if (!counter_partition(
+          aggregate.actual_backend_sequences[LARDON3D_RESOURCE_BACKEND_FIXED],
+          aggregate.actual_backend_sequences[LARDON3D_RESOURCE_BACKEND_CPU],
+          aggregate.actual_backend_sequences[
+              LARDON3D_RESOURCE_BACKEND_ORB_VULKAN],
+          aggregate.actual_backend_sequences[LARDON3D_RESOURCE_BACKEND_MIXED],
+          aggregate.sequence_count))
+    INVALID_EXPERIMENT("actual-backend-count-mismatch");
+  if (aggregate.actual_backend_sequences[LARDON3D_RESOURCE_BACKEND_FIXED] != 0 ||
+      !counter_partition(
+          aggregate.actual_backend_sequences[LARDON3D_RESOURCE_BACKEND_CPU],
+          aggregate.actual_backend_sequences[LARDON3D_RESOURCE_BACKEND_MIXED],
+          0, 0, aggregate.backend_ineligible_fallback_sequences) ||
+      !counter_partition(
+          aggregate.actual_backend_sequences[
+              LARDON3D_RESOURCE_BACKEND_ORB_VULKAN],
+          aggregate.backend_ineligible_fallback_sequences, 0, 0,
+          aggregate.sequence_count))
+    INVALID_EXPERIMENT("nonlocal-cpu-fallback");
+  if (aggregate.vulkan_submits != aggregate.vulkan_completions)
+    INVALID_EXPERIMENT("vulkan-submit-completion-mismatch");
+  result.valid = true;
+  result.reason = "valid-forced-vulkan-cohort";
+#undef INVALID_EXPERIMENT
+  return result;
+}
+
+void print_cpu_mask(const uint64_t mask[LARDON3D_RESOURCE_CPU_MASK_WORDS]) {
+  std::putchar('[');
+  bool first = true;
+  for (unsigned int cpu = 0; cpu < LARDON3D_RESOURCE_CPU_MAX; ++cpu) {
+    if ((mask[cpu / 64] & (UINT64_C(1) << (cpu % 64))) == 0) continue;
+    std::printf("%s%u", first ? "" : ",", cpu);
+    first = false;
+  }
+  std::putchar(']');
+}
+
+bool end_matcher_evidence(Runtime &runtime) {
+  if (!runtime.matcher_evidence_active)
+    return runtime.matcher_inflight_override == 0;
+  emit_matcher_diagnostic_change(runtime);
+  const uint64_t wall_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - runtime.matcher_wall_begin).count());
+  Lardon3DResourceSequenceAggregate aggregate{};
+  const bool aggregate_known =
+      lardon3d_resource_governor_internal_sequence_aggregate(
+          runtime.state.resource_governor, LARDON3D_MATCHER_TASK_KIND,
+          LARDON3D_MATCHER_TASK_KIND_VERSION, &aggregate);
+  Lardon3DResourceSequenceDiagnostic last{};
+  const bool last_known = lardon3d_resource_governor_internal_last_diagnostic(
+      runtime.state.resource_governor, LARDON3D_MATCHER_TASK_KIND,
+      LARDON3D_MATCHER_TASK_KIND_VERSION, &last);
+  Lardon3DResourceCpuPolicyDiagnostic cpu_policy{};
+  const bool cpu_policy_known = lardon3d_resource_governor_internal_cpu_policy(
+      runtime.state.resource_governor, &cpu_policy);
+  Lardon3DOrbVulkanTelemetry backend_after{};
+  const bool backend_after_known = runtime.state.orb_vulkan_backend &&
+      lardon3d_orb_vulkan_internal_telemetry(runtime.state.orb_vulkan_backend,
+                                             &backend_after);
+  const bool backend_delta_known = runtime.matcher_backend_before_known &&
+                                   backend_after_known;
+  const uint64_t backend_failures = backend_delta_known
+      ? counter_delta(runtime.matcher_backend_before.failures,
+                      backend_after.failures) : 0;
+  const uint64_t backend_discards = backend_delta_known
+      ? counter_delta(runtime.matcher_backend_before.discards,
+                      backend_after.discards) : 0;
+  const bool backend_slot_pending = backend_after_known &&
+                                    backend_after.slot_pending;
+  const MatcherExperimentValidation experiment =
+      validate_forced_matcher_experiment(
+          runtime, aggregate_known, aggregate, last_known, last,
+          backend_delta_known, backend_failures, backend_discards,
+          backend_slot_pending);
+  uint64_t durable_rate_milli = 0;
+  if (aggregate_known && aggregate.durable_items > 0 && wall_ns > 0 &&
+      aggregate.durable_items <= UINT64_MAX / UINT64_C(1000000000000))
+    durable_rate_milli = aggregate.durable_items * UINT64_C(1000000000000) / wall_ns;
+  std::printf(
+      "{\"record\":\"matcher_evidence_aggregate\",\"aggregate_scope\":"
+      "\"governor-recorded-sequences\",\"diagnostic_sampling\":"
+      "\"latest-change-coalescing\",\"diagnostic_samples\":%llu,"
+      "\"wall_ns\":%llu,\"durable_pairs\":%llu,"
+      "\"durable_pairs_per_second_milli\":%llu,\"admissions\":%llu,"
+      "\"sequences\":%llu,\"contract_changes\":%llu,"
+      "\"selected_cpu_admissions\":%llu,\"selected_vulkan_admissions\":%llu,"
+      "\"actual_cpu_sequences\":%llu,\"actual_vulkan_sequences\":%llu,"
+      "\"actual_mixed_sequences\":%llu,\"fallback_sequences\":%llu,"
+      "\"local_ineligible_fallback_sequences\":%llu,"
+      "\"backend_failure_fallback_sequences\":%llu,"
+      "\"backend_other_fallback_sequences\":%llu,"
+      "\"local_ineligible_fallback_items\":%llu,"
+      "\"backend_failure_fallback_items\":%llu,"
+      "\"backend_other_fallback_items\":%llu,"
+      "\"sequence_wall_ns\":%llu,\"min_mem_available_bytes\":",
+      static_cast<unsigned long long>(runtime.matcher_diagnostic_samples),
+      static_cast<unsigned long long>(wall_ns),
+      static_cast<unsigned long long>(aggregate.durable_items),
+      static_cast<unsigned long long>(durable_rate_milli),
+      static_cast<unsigned long long>(aggregate.admission_count),
+      static_cast<unsigned long long>(aggregate.sequence_count),
+      static_cast<unsigned long long>(aggregate.contract_change_count),
+      static_cast<unsigned long long>(aggregate.selected_backend_admissions[
+          LARDON3D_RESOURCE_BACKEND_CPU]),
+      static_cast<unsigned long long>(aggregate.selected_backend_admissions[
+          LARDON3D_RESOURCE_BACKEND_ORB_VULKAN]),
+      static_cast<unsigned long long>(aggregate.actual_backend_sequences[
+          LARDON3D_RESOURCE_BACKEND_CPU]),
+      static_cast<unsigned long long>(aggregate.actual_backend_sequences[
+          LARDON3D_RESOURCE_BACKEND_ORB_VULKAN]),
+      static_cast<unsigned long long>(aggregate.actual_backend_sequences[
+          LARDON3D_RESOURCE_BACKEND_MIXED]),
+      static_cast<unsigned long long>(aggregate.backend_fallback_sequences),
+      static_cast<unsigned long long>(
+          aggregate.backend_ineligible_fallback_sequences),
+      static_cast<unsigned long long>(
+          aggregate.backend_failure_fallback_sequences),
+      static_cast<unsigned long long>(
+          aggregate.backend_other_fallback_sequences),
+      static_cast<unsigned long long>(
+          aggregate.local_ineligible_fallback_items),
+      static_cast<unsigned long long>(
+          aggregate.backend_failure_fallback_items),
+      static_cast<unsigned long long>(
+          aggregate.backend_other_fallback_items),
+      static_cast<unsigned long long>(aggregate.total_wall_time_ns));
+  print_known_u64(aggregate_known && aggregate.memory_available_known,
+                  aggregate.minimum_memory_available_bytes);
+  std::fputs(",\"max_gpu_busy_basis_points\":", stdout);
+  print_known_u32(aggregate_known && aggregate.gpu_busy_known,
+                  aggregate.maximum_gpu_busy_basis_points);
+  std::fputs(",\"max_process_rss_bytes\":", stdout);
+  print_known_u64(aggregate_known && aggregate.process_rss_known,
+                  aggregate.maximum_process_rss_bytes);
+  std::fputs(",\"max_process_peak_rss_bytes\":", stdout);
+  print_known_u64(aggregate_known && aggregate.process_peak_rss_known,
+                  aggregate.maximum_process_peak_rss_bytes);
+  std::printf(
+      ",\"publication_ns\":%llu,\"vulkan_submits\":%llu,"
+      "\"vulkan_completions\":%llu,\"vulkan_submit_cpu_ns\":%llu,"
+      "\"vulkan_fence_wait_ns\":%llu,"
+      "\"vulkan_readback_ns\":%llu,\"known_vulkan_gpu_ns\":%llu,"
+      "\"vulkan_gpu_known_sequences\":%llu,\"vulkan_starvation_ns\":%llu,"
+      "\"matcher_cpu_ns\":%llu,\"aggregate_saturated\":%s,"
+      "\"backend_counter_delta_known\":%s,\"backend_failures\":%llu,"
+      "\"backend_discards\":%llu,\"backend_slot_pending\":%s,"
+      "\"affinity_known\":%s,\"affinity_active\":%s,"
+      "\"runtime_thread_policy_active\":%s,"
+      "\"mesa_shader_cache_disabled\":%s,"
+      "\"compute_cpu_count\":%u,\"reserved_cpu_count\":%u,"
+      "\"compute_mask\":",
+      static_cast<unsigned long long>(aggregate.publication_ns),
+      static_cast<unsigned long long>(aggregate.vulkan_submits),
+      static_cast<unsigned long long>(aggregate.vulkan_completions),
+      static_cast<unsigned long long>(aggregate.vulkan_submit_cpu_ns),
+      static_cast<unsigned long long>(aggregate.vulkan_fence_wait_ns),
+      static_cast<unsigned long long>(aggregate.vulkan_readback_ns),
+      static_cast<unsigned long long>(aggregate.vulkan_gpu_ns),
+      static_cast<unsigned long long>(aggregate.vulkan_gpu_known_sequences),
+      static_cast<unsigned long long>(aggregate.vulkan_starvation_ns),
+      static_cast<unsigned long long>(aggregate.matcher_cpu_ns),
+      aggregate.saturated ? "true" : "false",
+      backend_delta_known ? "true" : "false",
+      static_cast<unsigned long long>(backend_failures),
+      static_cast<unsigned long long>(backend_discards),
+      backend_slot_pending ? "true" : "false",
+      cpu_policy_known ? "true" : "false",
+      cpu_policy_known && cpu_policy.affinity_active ? "true" : "false",
+      cpu_policy_known && cpu_policy.runtime_thread_policy_active
+          ? "true" : "false",
+      cpu_policy_known && cpu_policy.mesa_shader_cache_disabled
+          ? "true" : "false",
+      cpu_policy.compute_cpu_count, cpu_policy.reserved_cpu_count);
+  print_cpu_mask(cpu_policy.compute_mask);
+  std::fputs(",\"reserved_mask\":", stdout);
+  print_cpu_mask(cpu_policy.reserved_mask);
+  std::fputs(",\"runtime_thread_policy_reason\":", stdout);
+  print_json_string(cpu_policy_known
+      ? cpu_policy.runtime_thread_policy_reason : "unknown");
+  std::fputs(",\"matcher_inflight_override\":", stdout);
+  print_known_u32(runtime.matcher_inflight_override != 0,
+                  runtime.matcher_inflight_override);
+  std::fputs(",\"matcher_batch_override\":", stdout);
+  print_known_u32(runtime.matcher_batch_override != 0,
+                  runtime.matcher_batch_override);
+  std::fputs(",\"experiment_valid\":", stdout);
+  if (experiment.applicable)
+    std::fputs(experiment.valid ? "true" : "false", stdout);
+  else
+    std::fputs("null", stdout);
+  std::fputs(",\"experiment_reason\":", stdout);
+  if (experiment.applicable) print_json_string(experiment.reason);
+  else std::fputs("null", stdout);
+  std::fputs(
+      ",\"comparison_requires_equal_local_ineligible_fallback_items\":",
+      stdout);
+  if (experiment.applicable) std::fputs("true", stdout);
+  else std::fputs("null", stdout);
+  std::printf(",\"uma\":%s,\"last_contract_known\":%s",
+              runtime.state.hardware_profile.gpu_uses_shared_memory ? "true" : "false",
+              last_known ? "true" : "false");
+  if (last_known) {
+    std::printf(",\"last_selected_backend\":\"%s\",\"last_actual_backend\":\"%s\","
+                "\"last_cpu\":%u,\"last_gpu\":%u,\"last_batch\":%zu,"
+                "\"last_inflight\":%zu,\"last_helpers\":%u,\"last_reason\":",
+                backend_name(last.backend), backend_name(last.actual_backend),
+                last.cpu_threads, last.gpu_slots, last.batch_size,
+                last.inflight_limit, last.helper_limit);
+    print_json_string(last.reason);
+  }
+  std::fputs("}\n", stdout);
+  runtime.matcher_evidence_active = false;
+  return !experiment.applicable || experiment.valid;
+}
+
 bool wait_completed(Runtime &runtime, uint64_t task_id, const char *phase) {
   for (;;) {
+    emit_matcher_diagnostic_change(runtime);
     Lardon3DTaskSnapshot snapshot{};
     if (!lardon3d_task_queue_get(runtime.state.task_queue, task_id, &snapshot)) return false;
     if (snapshot.state == TASK_COMPLETED || snapshot.state == TASK_FAILED ||
@@ -404,6 +1059,7 @@ bool wait_completed(Runtime &runtime, uint64_t task_id, const char *phase) {
                        lardon3d_task_state_name(snapshot.state), snapshot.message);
           return false;
         }
+        emit_matcher_diagnostic_change(runtime);
         return lardon3d_task_queue_remove(runtime.state.task_queue, task_id);
       }
     }
@@ -665,6 +1321,7 @@ bool collect_verified_ids(Runtime &runtime, const unsigned char verifier_fingerp
 
 bool downstream(Runtime &runtime, const std::vector<Lardon3DProjectDbFeatureSet> &feature_sets,
                 const Lardon3DFeatureExtractorParameters &orb, uint64_t &geometry_task_id,
+                uint64_t &matcher_task_id,
                 std::vector<uint64_t> &verified_ids) {
   Lardon3DVisualIndexConfiguration index_configuration{
       LARDON3D_VISUAL_INDEX_VERSION, 1024, 256};
@@ -693,9 +1350,14 @@ bool downstream(Runtime &runtime, const std::vector<Lardon3DProjectDbFeatureSet>
   lardon3d_feature_extractor_parameter_fingerprint(&orb, matcher.feature_parameter_fingerprint);
   matcher.matcher.kind = LARDON3D_MATCHER_ORB_BF;
   matcher.matcher.ratio_threshold = lardon3d_matcher_default_ratio(LARDON3D_MATCHER_ORB_BF);
-  if (!lardon3d_project_enqueue_matcher_task(&runtime.state, &matcher, &task_id) ||
-      !wait_completed(runtime, task_id, "matcher.run"))
+  begin_matcher_evidence(runtime);
+  const bool matcher_ok =
+      lardon3d_project_enqueue_matcher_task(&runtime.state, &matcher, &task_id) &&
+      wait_completed(runtime, task_id, "matcher.run");
+  const bool matcher_experiment_valid = end_matcher_evidence(runtime);
+  if (!matcher_ok || !matcher_experiment_valid)
     return false;
+  matcher_task_id = task_id;
   Lardon3DGeometricVerifierTaskConfiguration verifier{
       lardon3d_geometric_verifier_default_parameters()};
   if (!lardon3d_project_enqueue_geometric_verifier_task(&runtime.state, &verifier,
@@ -836,6 +1498,260 @@ bool collect_evidence(Runtime &runtime, uint64_t execution_id, Evidence &evidenc
                                            &track_set_count) != LARDON3D_PROJECT_DB_OK)
     return false;
   for (size_t index = 0; index < track_set_count; ++index) evidence.tracks += tracks[index].track_count;
+  return true;
+}
+
+bool digest_update(EVP_MD_CTX *context, const void *bytes, size_t size) {
+  return EVP_DigestUpdate(context, bytes, size) == 1;
+}
+
+bool digest_u32(EVP_MD_CTX *context, uint32_t value) {
+  unsigned char encoded[4];
+  for (size_t index = 0; index < sizeof(encoded); ++index) {
+    encoded[index] = static_cast<unsigned char>(value & 0xffU);
+    value >>= 8U;
+  }
+  return digest_update(context, encoded, sizeof(encoded));
+}
+
+bool digest_u64(EVP_MD_CTX *context, uint64_t value) {
+  unsigned char encoded[8];
+  for (size_t index = 0; index < sizeof(encoded); ++index) {
+    encoded[index] = static_cast<unsigned char>(value & 0xffU);
+    value >>= 8U;
+  }
+  return digest_update(context, encoded, sizeof(encoded));
+}
+
+bool digest_string(EVP_MD_CTX *context, const char *text, size_t capacity) {
+  const size_t length = strnlen(text, capacity);
+  return length < capacity && length <= UINT32_MAX &&
+         digest_u32(context, static_cast<uint32_t>(length)) &&
+         digest_update(context, text, length);
+}
+
+struct CandidateStream {
+  uint64_t cursor{};
+  Lardon3DProjectDbCandidatePair page[64]{};
+  size_t count{};
+  size_t index{};
+  bool exhausted{};
+};
+
+bool next_candidate(Lardon3DProjectDb *database, CandidateStream &stream,
+                    Lardon3DProjectDbCandidatePair &candidate, bool &has_value) {
+  has_value = false;
+  if (stream.exhausted) return true;
+  if (stream.index == stream.count) {
+    stream.index = 0;
+    stream.count = 0;
+    if (lardon3d_project_db_list_candidate_pairs(database, stream.cursor,
+                                                  stream.page, 64,
+                                                  &stream.count) !=
+        LARDON3D_PROJECT_DB_OK)
+      return false;
+    if (stream.count == 0) {
+      stream.exhausted = true;
+      return true;
+    }
+  }
+  candidate = stream.page[stream.index++];
+  if (candidate.candidate_pair_id <= stream.cursor) return false;
+  stream.cursor = candidate.candidate_pair_id;
+  has_value = true;
+  return true;
+}
+
+struct MatchStream {
+  uint64_t cursor{};
+  Lardon3DProjectDbMatchResult page[64]{};
+  size_t count{};
+  size_t index{};
+  bool exhausted{};
+};
+
+bool next_match(Lardon3DProjectDb *database, MatchStream &stream,
+                Lardon3DProjectDbMatchResult &match, bool &has_value) {
+  has_value = false;
+  if (stream.exhausted) return true;
+  if (stream.index == stream.count) {
+    stream.index = 0;
+    stream.count = 0;
+    if (lardon3d_project_db_list_match_results(database, stream.cursor,
+                                                stream.page, 64,
+                                                &stream.count) !=
+        LARDON3D_PROJECT_DB_OK)
+      return false;
+    if (stream.count == 0) {
+      stream.exhausted = true;
+      return true;
+    }
+  }
+  match = stream.page[stream.index++];
+  if (match.match_result_id <= stream.cursor) return false;
+  stream.cursor = match.match_result_id;
+  has_value = true;
+  return true;
+}
+
+bool query_match_audit_sql(const Runtime &runtime, uint64_t &latest_matcher_task_id,
+                           size_t &duplicate_mappings) {
+  latest_matcher_task_id = 0;
+  duplicate_mappings = 0;
+  sqlite3 *database = nullptr;
+  sqlite3_stmt *statement = nullptr;
+  if (sqlite3_open_v2(runtime.database_path.c_str(), &database,
+                      SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nullptr) != SQLITE_OK) {
+    if (database) sqlite3_close(database);
+    return false;
+  }
+  bool ok = sqlite3_prepare_v2(
+                database,
+                "SELECT task_id FROM matcher_tasks ORDER BY task_id DESC LIMIT 1",
+                -1, &statement, nullptr) == SQLITE_OK &&
+            sqlite3_step(statement) == SQLITE_ROW;
+  if (ok) {
+    const sqlite3_int64 task_id = sqlite3_column_int64(statement, 0);
+    ok = task_id > 0;
+    if (ok) latest_matcher_task_id = static_cast<uint64_t>(task_id);
+  }
+  if (statement) sqlite3_finalize(statement);
+  statement = nullptr;
+  ok = ok && sqlite3_prepare_v2(
+                 database,
+                 "SELECT COALESCE(SUM(n-1),0) FROM (SELECT COUNT(*) AS n "
+                 "FROM match_results GROUP BY candidate_pair_id HAVING COUNT(*)>1)",
+                 -1, &statement, nullptr) == SQLITE_OK &&
+       sqlite3_step(statement) == SQLITE_ROW;
+  if (ok) {
+    const sqlite3_int64 duplicates = sqlite3_column_int64(statement, 0);
+    ok = duplicates >= 0 && static_cast<uint64_t>(duplicates) <= SIZE_MAX;
+    if (ok) duplicate_mappings = static_cast<size_t>(duplicates);
+  }
+  if (statement) sqlite3_finalize(statement);
+  return sqlite3_close(database) == SQLITE_OK && ok;
+}
+
+bool validate_match_asset(const Runtime &runtime,
+                          const Lardon3DProjectDbMatchResult &match) {
+  if (match.result_status == LARDON3D_MATCH_RESULT_STATUS_NO_MATCH)
+    return match.match_count == 0 && !match.has_match_asset &&
+           match.match_asset_path[0] == '\0' && match.match_asset_size_bytes == 0;
+  if (match.result_status != LARDON3D_MATCH_RESULT_STATUS_MATCHED ||
+      match.match_count == 0 || !match.has_match_asset ||
+      match.match_asset_path[0] == '\0' || match.match_asset_size_bytes == 0)
+    return false;
+  const std::filesystem::path relative(match.match_asset_path);
+  if (relative.is_absolute() || relative.lexically_normal() != relative) return false;
+  for (const auto &component : relative)
+    if (component == "..") return false;
+  Lardon3DProjectDbFeatureSet feature_a{};
+  Lardon3DProjectDbFeatureSet feature_b{};
+  if (lardon3d_project_db_load_feature_set(runtime.state.project_db,
+                                            match.feature_set_id_a,
+                                            &feature_a) != LARDON3D_PROJECT_DB_OK ||
+      lardon3d_project_db_load_feature_set(runtime.state.project_db,
+                                            match.feature_set_id_b,
+                                            &feature_b) != LARDON3D_PROJECT_DB_OK)
+    return false;
+  const std::string full_path =
+      (std::filesystem::path(runtime.project_path) / relative).string();
+  Lardon3DMatchFileHeader header{};
+  return lardon3d_match_file_validate_asset(
+             full_path.c_str(), match.match_asset_sha256,
+             match.match_asset_size_bytes, &header, match.feature_set_id_a,
+             match.feature_set_id_b, feature_a.feature_count,
+             feature_b.feature_count) == LARDON3D_MATCH_FILE_OK &&
+         header.match_count == match.match_count;
+}
+
+bool audit_match_results(Runtime &runtime, uint64_t &matcher_task_id,
+                         MatchAudit &audit) {
+  uint64_t latest_matcher_task_id = 0;
+  if (!query_match_audit_sql(runtime, latest_matcher_task_id,
+                             audit.duplicate_candidate_pair_mappings) ||
+      audit.duplicate_candidate_pair_mappings != 0)
+    return false;
+  if (matcher_task_id == 0) matcher_task_id = latest_matcher_task_id;
+  if (matcher_task_id == 0) return false;
+  Lardon3DProjectDbTask durable_task{};
+  Lardon3DProjectDbMatcherTask durable_matcher{};
+  if (lardon3d_project_db_load_task(runtime.state.project_db, matcher_task_id,
+                                     &durable_task) != LARDON3D_PROJECT_DB_OK ||
+      durable_task.saved_state != TASK_COMPLETED ||
+      lardon3d_project_db_load_matcher_task(runtime.state.project_db,
+                                             matcher_task_id,
+                                             &durable_matcher) !=
+          LARDON3D_PROJECT_DB_OK)
+    return false;
+
+  using DigestContext = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
+  DigestContext digest(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+  static constexpr unsigned char format_tag[8] = {
+      'L', '3', 'D', 'M', 'R', 'D', '1', '\0'};
+  if (!digest || EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) != 1 ||
+      !digest_update(digest.get(), format_tag, sizeof(format_tag)))
+    return false;
+
+  CandidateStream candidates;
+  MatchStream matches;
+  uint64_t last_candidate_id = 0;
+  for (;;) {
+    Lardon3DProjectDbCandidatePair candidate{};
+    Lardon3DProjectDbMatchResult match{};
+    bool has_candidate = false;
+    bool has_match = false;
+    if (!next_candidate(runtime.state.project_db, candidates, candidate,
+                        has_candidate) ||
+        !next_match(runtime.state.project_db, matches, match, has_match) ||
+        has_candidate != has_match)
+      return false;
+    if (!has_candidate) break;
+    if (candidate.candidate_pair_id != match.candidate_pair_id ||
+        !validate_match_asset(runtime, match))
+      return false;
+    const size_t matcher_kind_length =
+        strnlen(match.matcher_kind, sizeof(match.matcher_kind));
+    if (matcher_kind_length == sizeof(match.matcher_kind)) return false;
+    const unsigned char has_asset = match.has_match_asset ? 1U : 0U;
+    unsigned char zero_sha[32]{};
+    if (!digest_u64(digest.get(), match.candidate_pair_id) ||
+        !digest_u64(digest.get(), match.feature_set_id_a) ||
+        !digest_u64(digest.get(), match.feature_set_id_b) ||
+        !digest_string(digest.get(), match.matcher_kind,
+                       sizeof(match.matcher_kind)) ||
+        !digest_u32(digest.get(), match.matcher_version) ||
+        !digest_update(digest.get(), match.parameter_fingerprint,
+                       sizeof(match.parameter_fingerprint)) ||
+        !digest_u32(digest.get(), static_cast<uint32_t>(match.result_status)) ||
+        !digest_u32(digest.get(), match.match_count) ||
+        !digest_update(digest.get(), &has_asset, sizeof(has_asset)) ||
+        !digest_update(digest.get(), match.has_match_asset
+                           ? match.match_asset_sha256 : zero_sha,
+                       sizeof(zero_sha)) ||
+        !digest_u64(digest.get(), match.match_asset_size_bytes))
+      return false;
+    ++audit.match_result_count;
+    if (match.has_match_asset) ++audit.match_asset_count;
+    last_candidate_id = candidate.candidate_pair_id;
+  }
+  audit.candidate_mapping_contiguous = true;
+  audit.matcher_cursor_complete =
+      durable_matcher.after_candidate_pair_id == last_candidate_id;
+  if (!audit.matcher_cursor_complete ||
+      !digest_u64(digest.get(), static_cast<uint64_t>(audit.match_result_count)))
+    return false;
+  unsigned char output[EVP_MAX_MD_SIZE]{};
+  unsigned int output_size = 0;
+  if (EVP_DigestFinal_ex(digest.get(), output, &output_size) != 1 ||
+      output_size != 32)
+    return false;
+  static constexpr char digits[] = "0123456789abcdef";
+  for (size_t index = 0; index < 32; ++index) {
+    audit.digest_hex[2 * index] = digits[output[index] >> 4U];
+    audit.digest_hex[2 * index + 1] = digits[output[index] & 0x0fU];
+  }
+  audit.digest_hex[64] = '\0';
   return true;
 }
 
@@ -1060,13 +1976,29 @@ bool run_existing_pre_gv(Runtime &runtime) {
   }
   if (pending_matcher_task_id != 0) matcher_task_id = pending_matcher_task_id;
 
+  if ((runtime.matcher_pipeline == MatcherPipeline::kSynchronous ||
+       runtime.matcher_inflight_override != 0 ||
+       runtime.matcher_batch_override != 0) &&
+      matcher_task_id != 0) {
+    /* Pipeline is deliberately absent from Task identity/checkpoints. Refuse a
+     * recovered Matcher rather than pretending a non-persisted benchmark
+     * control survived restart. Rolling production recovery remains normal. */
+    std::fprintf(stderr,
+                 "benchmark Matcher pipeline/inflight controls require a new "
+                 "Matcher task; a pending Matcher cannot retain them\n");
+    stop_runtime(runtime);
+    return false;
+  }
+
   Lardon3DProjectRecoverySummary matcher_recovery{};
   const char *matcher_action = "already_complete";
+  begin_matcher_evidence(runtime);
   if (after_candidate.matches < after_candidate.pairs) {
     if (matcher_task_id != 0) {
       if (!recover_one_pre_gv_task(runtime, matcher_task_id,
                                    "matcher.run recovered",
                                    matcher_recovery)) {
+        end_matcher_evidence(runtime);
         stop_runtime(runtime);
         return false;
       }
@@ -1083,9 +2015,21 @@ bool run_existing_pre_gv(Runtime &runtime) {
       matcher.matcher.kind = LARDON3D_MATCHER_ORB_BF;
       matcher.matcher.ratio_threshold =
           lardon3d_matcher_default_ratio(LARDON3D_MATCHER_ORB_BF);
-      if (!lardon3d_project_enqueue_matcher_task(&runtime.state, &matcher,
-                                                  &matcher_task_id) ||
+      bool enqueued = false;
+      if (runtime.matcher_mode == MatcherMode::kAuto) {
+        enqueued = lardon3d_project_enqueue_matcher_task(
+            &runtime.state, &matcher, &matcher_task_id);
+      } else {
+        const Lardon3DMatcherTaskMode matcher_mode =
+            runtime.matcher_mode == MatcherMode::kVulkan
+                ? LARDON3D_MATCHER_TASK_MODE_ORB_VULKAN
+                : LARDON3D_MATCHER_TASK_MODE_CPU_PARALLEL;
+        enqueued = lardon3d_project_enqueue_matcher_task_with_mode(
+            &runtime.state, &matcher, matcher_mode, &matcher_task_id);
+      }
+      if (!enqueued ||
           !wait_completed(runtime, matcher_task_id, "matcher.run existing")) {
+        end_matcher_evidence(runtime);
         stop_runtime(runtime);
         return false;
       }
@@ -1094,17 +2038,27 @@ bool run_existing_pre_gv(Runtime &runtime) {
   } else if (matcher_task_id != 0) {
     std::fprintf(stderr,
                  "complete Match Results coexist with a pending Matcher task\n");
+    end_matcher_evidence(runtime);
     stop_runtime(runtime);
     return false;
   }
+  const bool matcher_experiment_valid = end_matcher_evidence(runtime);
 
   Evidence after{};
-  const bool ok = collect_evidence(runtime, 0, after) &&
+  MatchAudit match_audit{};
+  const bool ok = matcher_experiment_valid &&
+                  collect_evidence(runtime, 0, after) &&
                   after.features == before.features &&
                   after.pairs >= before.pairs && after.matches == after.pairs &&
                   after.verified == before.verified &&
                   after.rejected == before.rejected &&
-                  after.tracks == before.tracks;
+                  after.tracks == before.tracks &&
+                  audit_match_results(runtime, matcher_task_id, match_audit) &&
+                  match_audit.match_result_count == after.matches;
+  const char *matcher_mode_name = runtime.matcher_mode == MatcherMode::kAuto
+      ? "auto" : runtime.matcher_mode == MatcherMode::kCpu ? "cpu" : "vulkan";
+  const char *pipeline_name = runtime.matcher_pipeline == MatcherPipeline::kRolling
+      ? "rolling" : "synchronous";
   std::printf(
       "{\"record\":\"existing_pre_gv_summary\",\"ok\":%s,"
       "\"candidate_task_id\":%llu,\"candidate_action\":\"%s\","
@@ -1116,6 +2070,12 @@ bool run_existing_pre_gv(Runtime &runtime) {
       "\"match_results_before\":%zu,\"match_results_after\":%zu,"
       "\"gvrs_before\":%zu,\"gvrs_after\":%zu,"
       "\"tracks_before\":%zu,\"tracks_after\":%zu,"
+      "\"matcher_mode\":\"%s\",\"matcher_pipeline\":\"%s\","
+      "\"matcher_inflight_override\":%s,\"matcher_batch_override\":%s,"
+      "\"match_output_digest\":\"%s\",\"match_digest_format\":\"L3DMRD1\","
+      "\"match_asset_validation\":\"sha-size-header-and-entries\","
+      "\"match_asset_count\":%zu,\"duplicate_candidate_pair_mappings\":%zu,"
+      "\"candidate_mapping_contiguous\":%s,\"matcher_cursor_complete\":%s,"
       "\"prior_stages_replayed\":false,\"gv_enqueued\":false,"
       "\"track_builder_enqueued\":false,\"sparse_sfm_run\":false}\n",
       ok ? "true" : "false",
@@ -1126,7 +2086,17 @@ bool run_existing_pre_gv(Runtime &runtime) {
       matcher_recovery.resumed, before.features, after.features, before.pairs,
       after.pairs, before.matches, after.matches,
       before.verified + before.rejected, after.verified + after.rejected,
-      before.tracks, after.tracks);
+      before.tracks, after.tracks, matcher_mode_name, pipeline_name,
+      runtime.matcher_inflight_override == 0 ? "null" :
+          runtime.matcher_inflight_override == 1 ? "1" : "2",
+      runtime.matcher_batch_override == 0 ? "null" :
+          runtime.matcher_batch_override == 2 ? "2" :
+          runtime.matcher_batch_override == 4 ? "4" :
+          runtime.matcher_batch_override == 8 ? "8" : "12",
+      match_audit.digest_hex, match_audit.match_asset_count,
+      match_audit.duplicate_candidate_pair_mappings,
+      match_audit.candidate_mapping_contiguous ? "true" : "false",
+      match_audit.matcher_cursor_complete ? "true" : "false");
   stop_runtime(runtime);
   return ok;
 }
@@ -1208,9 +2178,74 @@ bool run_existing_geometry(Runtime &runtime) {
 }  // namespace
 
 int main(int argc, char **argv) {
+  /* The runner is a production-runtime consumer even though its evidence
+   * controls are benchmark-only. Establish Mesa's no-disk-worker policy before
+   * argument handling or any application pthread creation. */
+  const Lardon3DResourceDriverPolicyResult driver_policy =
+      lardon3d_resource_governor_internal_configure_driver_policy();
+  if (driver_policy == LARDON3D_RESOURCE_DRIVER_POLICY_FAILED ||
+      driver_policy == LARDON3D_RESOURCE_DRIVER_POLICY_REJECTED_UNSAFE) {
+    std::fprintf(stderr,
+                 "MESA_SHADER_CACHE_DISABLE must be true for safe CPU affinity\n");
+    return 2;
+  }
   Options options;
   if (!parse_options(argc, argv, options)) {
     usage(argv[0]);
+    return 2;
+  }
+  /* Reject this contradictory operational request before opening a project or
+   * allocating a durable Task ID. A Vulkan Matcher has an immutable GPU=1
+   * estimate, while GPU budget zero expressly removes GPU admission. */
+  if (options.matcher_mode == MatcherMode::kVulkan && options.has_gpu_budget &&
+      options.gpu_budget == 0) {
+    std::fprintf(stderr, "--matcher-mode vulkan requires --gpu-budget 1\n");
+    return 2;
+  }
+  if (options.has_matcher_inflight_override && options.has_gpu_budget &&
+      options.gpu_budget == 0) {
+    /* A forced A/B cohort has no CPU admission alternative. Reject the
+     * contradictory budget before project inspection so a typo cannot create
+     * a durable Task that merely waits or silently measures CPU. */
+    std::fprintf(stderr, "--matcher-inflight requires --gpu-budget 1\n");
+    return 2;
+  }
+  if (options.matcher_mode == MatcherMode::kCpu &&
+      options.matcher_pipeline == MatcherPipeline::kSynchronous) {
+    std::fprintf(stderr,
+                 "--matcher-pipeline synchronous requires auto or vulkan; "
+                 "CPU has no Vulkan fence baseline\n");
+    return 2;
+  }
+  if (options.has_matcher_inflight_override &&
+      options.matcher_mode != MatcherMode::kAuto) {
+    std::fprintf(stderr,
+                 "--matcher-inflight requires normal AUTO Matcher mode\n");
+    return 2;
+  }
+  if (options.has_matcher_batch_override &&
+      !options.has_matcher_inflight_override) {
+    std::fprintf(stderr,
+                 "--matcher-batch requires --matcher-inflight 1 or 2\n");
+    return 2;
+  }
+  if (options.has_matcher_batch_override &&
+      options.matcher_pipeline != MatcherPipeline::kRolling) {
+    std::fprintf(stderr, "--matcher-batch requires rolling pipeline\n");
+    return 2;
+  }
+  if (options.matcher_pipeline == MatcherPipeline::kSynchronous &&
+      options.matcher_inflight_override == 2) {
+    std::fprintf(stderr,
+                 "--matcher-pipeline synchronous supports inflight 1 only\n");
+    return 2;
+  }
+  /* These environment seams are compiled only into this runner's private
+   * Matcher Task object. Defaults actively clear inherited controls, while the
+   * scoped owner restores their exact prior values on every return path. */
+  ScopedMatcherBenchmarkEnvironment benchmark_environment;
+  if (!benchmark_environment.configure(options)) {
+    std::fprintf(stderr, "unable to configure benchmark Matcher controls\n");
     return 2;
   }
   Runtime runtime;
@@ -1221,6 +2256,14 @@ int main(int argc, char **argv) {
       return 2;
     }
     runtime.cpu_budget = options.cpu_budget;
+    runtime.gpu_budget = options.gpu_budget;
+    runtime.has_gpu_budget = options.has_gpu_budget;
+    runtime.matcher_mode = options.matcher_mode;
+    runtime.matcher_pipeline = options.matcher_pipeline;
+    runtime.matcher_inflight_override = options.matcher_inflight_override;
+    runtime.matcher_batch_override = options.matcher_batch_override;
+    runtime.matcher_needed = options.resume_pre_gv_existing;
+    runtime.stop_after_matcher = options.stop_after_matcher;
     if (options.resume_candidate_existing)
       return run_existing_candidate(runtime) ? 0 : 1;
     return (options.resume_pre_gv_existing ? run_existing_pre_gv(runtime)
@@ -1231,6 +2274,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   runtime.database_path = (options.project_dir / "project.lardon3d").string();
+  runtime.matcher_needed = true;
   Campaign campaign;
   if (!discover_campaign(options, campaign) || !start_runtime(runtime)) {
     std::fprintf(stderr, "campaign discovery or runtime setup failed\n");
@@ -1276,11 +2320,14 @@ int main(int argc, char **argv) {
   }
 
   uint64_t geometry_task_id = 0;
+  uint64_t matcher_task_id = 0;
   std::vector<uint64_t> verified_ids;
   Lardon3DGeometricVerifierParameters verifier = lardon3d_geometric_verifier_default_parameters();
   unsigned char verifier_fingerprint[32]{};
   lardon3d_geometric_verifier_fingerprint(&verifier, verifier_fingerprint);
-  if (ok) ok = downstream(runtime, features, orb, geometry_task_id, verified_ids);
+  if (ok)
+    ok = downstream(runtime, features, orb, geometry_task_id, matcher_task_id,
+                    verified_ids);
   if (ok && options.restart == RestartBoundary::kGeometry) {
     ok = restart_runtime(runtime, execution.execution_id, "geometry");
     if (ok) ok = collect_verified_ids(runtime, verifier_fingerprint, verified_ids);
@@ -1298,12 +2345,26 @@ int main(int argc, char **argv) {
     ok = start_runtime(runtime);
   }
   Evidence evidence{};
-  if (ok) ok = collect_evidence(runtime, execution.execution_id, evidence);
+  MatchAudit match_audit{};
+  if (ok)
+    ok = collect_evidence(runtime, execution.execution_id, evidence) &&
+         audit_match_results(runtime, matcher_task_id, match_audit) &&
+         match_audit.match_result_count == evidence.matches;
   if (ok) {
     std::printf("{\"record\":\"summary\",\"mode\":\"%s\","
                 "\"execution_id\":%llu,\"selected\":%zu,\"feature_sets\":%zu,"
                 "\"candidate_pairs\":%zu,\"matches\":%zu,\"verified\":%zu,"
                 "\"rejected\":%zu,\"tracks\":%zu,"
+                "\"matcher_mode\":\"auto\",\"matcher_pipeline\":\"rolling\","
+                "\"matcher_inflight_override\":null,"
+                "\"matcher_batch_override\":null,"
+                "\"match_output_digest\":\"%s\","
+                "\"match_digest_format\":\"L3DMRD1\","
+                "\"match_asset_validation\":\"sha-size-header-and-entries\","
+                "\"match_asset_count\":%zu,"
+                "\"duplicate_candidate_pair_mappings\":%zu,"
+                "\"candidate_mapping_contiguous\":%s,"
+                "\"matcher_cursor_complete\":%s,"
                 "\"orb_max_features_per_set\":8192,"
                 "\"visual_index_max_features_per_set\":1024,"
                 "\"visual_index_feature_set_limit\":4096,"
@@ -1311,7 +2372,11 @@ int main(int argc, char **argv) {
                 "\"calibration_attached\":false,\"sparse_sfm_run\":false}\n",
                 mode_name, static_cast<unsigned long long>(execution.execution_id),
                 evidence.selected, evidence.features, evidence.pairs, evidence.matches,
-                evidence.verified, evidence.rejected, evidence.tracks);
+                evidence.verified, evidence.rejected, evidence.tracks,
+                match_audit.digest_hex, match_audit.match_asset_count,
+                match_audit.duplicate_candidate_pair_mappings,
+                match_audit.candidate_mapping_contiguous ? "true" : "false",
+                match_audit.matcher_cursor_complete ? "true" : "false");
   }
   stop_runtime(runtime);
   return ok ? 0 : 1;

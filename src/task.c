@@ -6,6 +6,8 @@
 
 #include <lardon3d/task.h>
 
+#include "task_internal.h"
+
 struct Lardon3DTask {
     pthread_mutex_t mutex;
     pthread_cond_t condition;
@@ -26,6 +28,11 @@ struct Lardon3DTask {
     char task_kind[LARDON3D_TASK_KIND_CAPACITY];
     uint32_t task_kind_version;
     Lardon3DResourceEstimate estimate;
+    Lardon3DTaskCapabilityEnvelope capability_envelope;
+    Lardon3DResourceCapabilitySelection pending_selection;
+    Lardon3DResourceCapabilitySelection selected_capability;
+    Lardon3DResourceReservation *pending_reservation;
+    bool has_selected_capability;
     Lardon3DTaskExecutionContract contract;
     bool has_contract;
     bool pause_requested;
@@ -34,6 +41,18 @@ struct Lardon3DTask {
     Lardon3DResourceGovernor *governor;
     Lardon3DResourceReservation *current_reservation;
     unsigned int sequence_count;
+    /* Matcher candidate-pair publication is strictly ascending within one
+     * Task. This private, non-persisted watermark makes item telemetry
+     * idempotent in-process without turning it into checkpoint state. */
+    uint64_t fallback_item_high_water;
+    bool fallback_items_saturated;
+    uint64_t local_ineligible_fallback_items;
+    uint64_t backend_failure_fallback_items;
+    uint64_t backend_other_fallback_items;
+#ifdef LARDON3D_TASK_TESTING
+    bool test_force_sequence_association_mismatch;
+    unsigned int test_association_failure_releases;
+#endif
 };
 
 static bool
@@ -81,6 +100,29 @@ static void
 copy_text(char *destination, size_t capacity, const char *text)
 {
     (void)snprintf(destination, capacity, "%s", text ? text : "");
+}
+
+static bool
+kind_has_validated_cpu_range(const char *task_kind, uint32_t task_kind_version)
+{
+    if (!task_kind || task_kind_version != 1) {
+        return false;
+    }
+    return strcmp(task_kind, "features.extract") == 0
+        || strcmp(task_kind, "features.extract.sift") == 0
+        || strcmp(task_kind, "features.extract.rootsift") == 0
+        || strcmp(task_kind, "visual_index.update") == 0
+        || strcmp(task_kind, "candidate_pair.generate") == 0;
+}
+
+static bool
+kind_has_validated_batch_range(const char *task_kind, uint32_t version)
+{
+    /* Candidate generation already executes/publishes at every canonical
+     * 1..64 sequence size. This private bit changes operational pacing only;
+     * it does not add a scientific or durable identity dimension. */
+    return task_kind && version == 1
+        && strcmp(task_kind, "candidate_pair.generate") == 0;
 }
 
 static void
@@ -179,9 +221,354 @@ lardon3d_task_create_typed(
         task->task_kind_version = task_kind_version;
     }
     task->estimate = *estimate;
+    /* Every Task starts with one honest capability identical to its canonical
+     * durable estimate. It remains fixed unless kind/version proves a bounded
+     * operational range or installs alternatives before admission; the
+     * durable estimate is never mutated. */
+    task->capability_envelope = (Lardon3DTaskCapabilityEnvelope) {
+        .count = 1,
+        .capabilities = {{
+            .estimate = *estimate,
+            .backend = LARDON3D_RESOURCE_BACKEND_FIXED,
+            .inflight_limit = 1,
+            /* A durable estimate is a fixed operational envelope unless its
+             * registered kind has proved that its callback consumes a CPU
+             * range without changing scientific identity. This private bit
+             * is reconstructed from kind/version and is never persisted. */
+            .cpu_reducible = typed
+                && kind_has_validated_cpu_range(task_kind, task_kind_version),
+            .batch_adaptive = typed
+                && kind_has_validated_batch_range(task_kind, task_kind_version),
+        }},
+    };
     copy_text(task->message, sizeof(task->message), "En attente.");
     return task;
 }
+
+bool
+lardon3d_task_internal_set_capability_envelope(
+    Lardon3DTask *task,
+    const Lardon3DTaskCapabilityEnvelope *envelope
+)
+{
+    if (!task || !envelope || envelope->count == 0
+        || envelope->count > LARDON3D_RESOURCE_CAPABILITY_MAX) {
+        return false;
+    }
+    for (size_t index = 0; index < envelope->count; ++index) {
+        const Lardon3DResourceEstimate *estimate =
+            &envelope->capabilities[index].estimate;
+        const Lardon3DTaskCapability *capability =
+            &envelope->capabilities[index];
+        size_t minimum_inflight = capability->minimum_inflight_limit != 0
+            ? capability->minimum_inflight_limit : capability->inflight_limit;
+        if (estimate->minimum_batch_size == 0
+            || estimate->maximum_batch_size < estimate->minimum_batch_size
+            || estimate->desired_cpu_threads == 0
+            || capability->inflight_limit == 0
+            || minimum_inflight > capability->inflight_limit
+            || (capability->sustained_gpu_batch_feedback
+                && (!capability->batch_adaptive
+                    || capability->backend
+                        != LARDON3D_RESOURCE_BACKEND_ORB_VULKAN))
+            || (capability->inflight_adaptive
+                && (capability->minimum_inflight_limit == 0
+                    || capability->gpu_memory_bytes_per_inflight == 0))
+            || (capability->gpu_memory_bytes_per_inflight != 0
+                && capability->inflight_limit
+                    > UINT64_MAX / capability->gpu_memory_bytes_per_inflight)) {
+            return false;
+        }
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    bool accepted = !task->executing && task->state == TASK_PENDING
+        && !task->current_reservation && !task->pending_reservation;
+    if (accepted) {
+        /* Task owns this bounded copy for its lifetime. Hardware/backend
+         * availability remains Governor-owned and is checked at admission. */
+        task->capability_envelope = *envelope;
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return accepted;
+}
+
+bool
+lardon3d_task_internal_enable_known_capabilities(Lardon3DTask *task)
+{
+    if (!task) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    /* Recovery repeats the same private kind/version derivation used at fresh
+     * creation. Matcher and acquisition hooks may replace this one-capability
+     * default immediately afterward; the canonical durable estimate remains
+     * untouched in every case. */
+    if (task->capability_envelope.count == 1
+        && task->capability_envelope.capabilities[0].backend
+            == LARDON3D_RESOURCE_BACKEND_FIXED) {
+        task->capability_envelope.capabilities[0].cpu_reducible =
+            kind_has_validated_cpu_range(
+                task->task_kind, task->task_kind_version);
+        task->capability_envelope.capabilities[0].batch_adaptive =
+            kind_has_validated_batch_range(
+                task->task_kind, task->task_kind_version);
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return true;
+}
+
+bool
+lardon3d_task_internal_reserve_available(
+    Lardon3DTask *task,
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourceDecision *decision,
+    Lardon3DResourceReservation **reservation
+)
+{
+    if (!task || !governor || !decision || !reservation) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    Lardon3DTaskCapabilityEnvelope envelope = task->capability_envelope;
+    char task_kind[LARDON3D_TASK_KIND_CAPACITY];
+    copy_text(task_kind, sizeof(task_kind), task->task_kind[0]
+        ? task->task_kind : "task.untyped");
+    uint32_t task_kind_version = task->task_kind_version;
+    (void)pthread_mutex_unlock(&task->mutex);
+
+    Lardon3DResourceCapabilitySelection selection;
+    Lardon3DResourceReservation *created = NULL;
+    if (!lardon3d_resource_governor_internal_reserve_capability_available(
+            governor,
+            task_kind,
+            task_kind_version,
+            &envelope,
+            &selection,
+            &created
+        )) {
+        return false;
+    }
+    *decision = selection.decision;
+    *reservation = created;
+    if (created) {
+        (void)pthread_mutex_lock(&task->mutex);
+        if (task->pending_reservation) {
+            (void)pthread_mutex_unlock(&task->mutex);
+            (void)lardon3d_resource_governor_release(governor, created);
+            *reservation = NULL;
+            return false;
+        }
+        task->pending_selection = selection;
+        task->pending_reservation = created;
+        (void)pthread_mutex_unlock(&task->mutex);
+    }
+    return true;
+}
+
+bool
+lardon3d_task_internal_record_sequence_execution(
+    Lardon3DTask *task,
+    uint64_t wall_time_ns,
+    size_t items_completed,
+    Lardon3DResourceBackend actual_backend,
+    const char *backend_reason
+)
+{
+    return lardon3d_task_internal_record_sequence_execution_metrics(
+        task, wall_time_ns, items_completed, actual_backend, backend_reason,
+        NULL);
+}
+
+bool
+lardon3d_task_internal_record_sequence_execution_metrics(
+    Lardon3DTask *task,
+    uint64_t wall_time_ns,
+    size_t items_completed,
+    Lardon3DResourceBackend actual_backend,
+    const char *backend_reason,
+    const Lardon3DResourceExecutionMetrics *metrics
+)
+{
+    if (!task || wall_time_ns == 0 || !backend_reason) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    bool available = task->executing && task->governor
+        && task->has_selected_capability;
+    Lardon3DResourceGovernor *governor = task->governor;
+    Lardon3DResourceCapabilitySelection selection = task->selected_capability;
+    char task_kind[LARDON3D_TASK_KIND_CAPACITY];
+    copy_text(task_kind, sizeof(task_kind), task->task_kind[0]
+        ? task->task_kind : "task.untyped");
+    uint32_t task_kind_version = task->task_kind_version;
+    (void)pthread_mutex_unlock(&task->mutex);
+    return available
+        && lardon3d_resource_governor_internal_record_sequence_execution_metrics(
+        governor,
+        task_kind,
+        task_kind_version,
+        &selection,
+        wall_time_ns,
+        items_completed,
+        actual_backend,
+        backend_reason,
+        metrics
+    );
+}
+
+static void
+increment_task_fallback_counter(uint64_t *counter, bool *saturated)
+{
+    if (*counter == UINT64_MAX) {
+        *saturated = true;
+    } else {
+        ++*counter;
+    }
+}
+
+bool
+lardon3d_task_internal_record_fallback_item(
+    Lardon3DTask *task,
+    uint64_t candidate_pair_id,
+    Lardon3DResourceFallbackItemCause cause
+)
+{
+    if (!task || candidate_pair_id == 0
+        || cause < LARDON3D_RESOURCE_FALLBACK_ITEM_LOCAL_INELIGIBLE
+        || cause > LARDON3D_RESOURCE_FALLBACK_ITEM_OTHER) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    bool available = task->executing && task->governor
+        && task->has_selected_capability
+        && task->selected_capability.capability.backend
+            == LARDON3D_RESOURCE_BACKEND_ORB_VULKAN;
+    if (!available || candidate_pair_id <= task->fallback_item_high_water) {
+        bool duplicate = available
+            && candidate_pair_id <= task->fallback_item_high_water;
+        (void)pthread_mutex_unlock(&task->mutex);
+        return duplicate;
+    }
+    Lardon3DResourceGovernor *governor = task->governor;
+    Lardon3DResourceCapabilitySelection selection = task->selected_capability;
+    char task_kind[LARDON3D_TASK_KIND_CAPACITY];
+    copy_text(task_kind, sizeof(task_kind), task->task_kind[0]
+        ? task->task_kind : "task.untyped");
+    uint32_t task_kind_version = task->task_kind_version;
+    (void)pthread_mutex_unlock(&task->mutex);
+
+    if (!lardon3d_resource_governor_internal_record_fallback_items(
+            governor, task_kind, task_kind_version, &selection, cause, 1)) {
+        return false;
+    }
+
+    (void)pthread_mutex_lock(&task->mutex);
+    /* Queue owns the single callback, so no second recorder can pass the
+     * watermark concurrently. Retain the check to make the private operation
+     * idempotent even if a caller retries after a successful commit. */
+    if (candidate_pair_id > task->fallback_item_high_water) {
+        task->fallback_item_high_water = candidate_pair_id;
+        switch (cause) {
+        case LARDON3D_RESOURCE_FALLBACK_ITEM_LOCAL_INELIGIBLE:
+            increment_task_fallback_counter(
+                &task->local_ineligible_fallback_items,
+                &task->fallback_items_saturated);
+            break;
+        case LARDON3D_RESOURCE_FALLBACK_ITEM_BACKEND_FAILURE:
+            increment_task_fallback_counter(
+                &task->backend_failure_fallback_items,
+                &task->fallback_items_saturated);
+            break;
+        case LARDON3D_RESOURCE_FALLBACK_ITEM_OTHER:
+            increment_task_fallback_counter(
+                &task->backend_other_fallback_items,
+                &task->fallback_items_saturated);
+            break;
+        }
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return true;
+}
+
+bool
+lardon3d_task_internal_record_sequence(
+    Lardon3DTask *task,
+    uint64_t wall_time_ns,
+    size_t items_completed
+)
+{
+    if (!task) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    Lardon3DResourceBackend selected = task->has_selected_capability
+        ? task->selected_capability.capability.backend
+        : LARDON3D_RESOURCE_BACKEND_FIXED;
+    (void)pthread_mutex_unlock(&task->mutex);
+    return lardon3d_task_internal_record_sequence_execution(
+        task,
+        wall_time_ns,
+        items_completed,
+        selected,
+        "selected-backend-completed"
+    );
+}
+
+bool
+lardon3d_task_internal_execution_selection(
+    const Lardon3DTask *task,
+    Lardon3DResourceCapabilitySelection *selection
+)
+{
+    if (!task || !selection) return false;
+    Lardon3DTask *mutable_task = (Lardon3DTask *)task;
+    (void)pthread_mutex_lock(&mutable_task->mutex);
+    bool available = task->executing && task->has_selected_capability
+        && task->has_contract;
+    if (available) {
+        *selection = task->selected_capability;
+    }
+    (void)pthread_mutex_unlock(&mutable_task->mutex);
+    return available;
+}
+
+#ifdef LARDON3D_TASK_TESTING
+bool
+lardon3d_task_internal_test_force_sequence_association_mismatch(
+    Lardon3DTask *task
+)
+{
+    if (!task) return false;
+    (void)pthread_mutex_lock(&task->mutex);
+    bool accepted = task->executing && !is_terminal(task->state);
+    if (accepted) {
+        task->test_force_sequence_association_mismatch = true;
+        task->test_association_failure_releases = 0;
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return accepted;
+}
+
+bool
+lardon3d_task_internal_test_has_reservation_ownership(Lardon3DTask *task)
+{
+    if (!task) return false;
+    (void)pthread_mutex_lock(&task->mutex);
+    bool owned = task->current_reservation || task->pending_reservation;
+    (void)pthread_mutex_unlock(&task->mutex);
+    return owned;
+}
+
+unsigned int
+lardon3d_task_internal_test_association_failure_releases(Lardon3DTask *task)
+{
+    if (!task) return 0;
+    (void)pthread_mutex_lock(&task->mutex);
+    unsigned int count = task->test_association_failure_releases;
+    (void)pthread_mutex_unlock(&task->mutex);
+    return count;
+}
+#endif
 
 void
 lardon3d_task_destroy(Lardon3DTask *task)
@@ -232,13 +619,46 @@ lardon3d_task_start(
         return false;
     }
     (void)pthread_mutex_lock(&task->mutex);
-    if (task->executing || is_terminal(task->state)) {
+    if (task->executing || is_terminal(task->state)
+        || (task->pending_reservation
+            && task->pending_reservation != reservation)) {
         (void)pthread_mutex_unlock(&task->mutex);
         return false;
     }
     task->executing = true;
     task->governor = governor;
     task->current_reservation = (Lardon3DResourceReservation *)reservation;
+    if (task->pending_reservation == reservation) {
+        task->selected_capability = task->pending_selection;
+        task->has_selected_capability = true;
+        task->pending_reservation = NULL;
+    } else {
+        /* Direct public callers remain compatible. Their reservation is an
+         * immutable fixed selection for this sequence. They did not ask the
+         * private Governor capability chooser, so an adaptive envelope must
+         * use its durable/minimum inflight rather than advertise an
+         * unreserved operational maximum. Only Queue-owned admission may
+         * install a higher adaptive depth. */
+        const Lardon3DTaskCapability *direct_capability =
+            &task->capability_envelope.capabilities[0];
+        size_t direct_inflight = direct_capability->inflight_adaptive
+            ? direct_capability->minimum_inflight_limit
+            : direct_capability->inflight_limit;
+        task->selected_capability = (Lardon3DResourceCapabilitySelection) {
+            .capability = *direct_capability,
+            .reservation_estimate = direct_capability->estimate,
+            .decision = {
+                .kind = LARDON3D_RESOURCE_START,
+                .batch_size = information.batch_size,
+                .cpu_threads = information.cpu_threads,
+                .gpu_slots = information.gpu_slots,
+                .io_slots = information.io_slots,
+            },
+            .inflight_limit = direct_inflight,
+            .pressure = lardon3d_resource_governor_pressure(governor),
+        };
+        task->has_selected_capability = true;
+    }
     task->contract = (Lardon3DTaskExecutionContract) {
         .batch_size = information.batch_size,
         .memory_bytes = information.memory_bytes,
@@ -482,7 +902,6 @@ lardon3d_task_sequence_break(
     if (previous) {
         (void)lardon3d_resource_governor_release(governor, previous);
     }
-
     for (;;) {
         /* Vérifier pause et annulation avant chaque tentative d'admission. */
         (void)pthread_mutex_lock(&task->mutex);
@@ -508,9 +927,9 @@ lardon3d_task_sequence_break(
         uint64_t generation = lardon3d_resource_governor_generation(governor);
         Lardon3DResourceDecision decision;
         Lardon3DResourceReservation *next = NULL;
-        bool admitted = lardon3d_resource_governor_reserve_available(
+        bool admitted = lardon3d_task_internal_reserve_available(
+            task,
             governor,
-            &task->estimate,
             &decision,
             &next
         );
@@ -561,7 +980,44 @@ lardon3d_task_sequence_break(
                 return false;
             }
             (void)pthread_mutex_lock(&task->mutex);
+#ifdef LARDON3D_TASK_TESTING
+            if (task->test_force_sequence_association_mismatch) {
+                task->pending_reservation = NULL;
+                task->test_force_sequence_association_mismatch = false;
+            }
+#endif
             task->current_reservation = next;
+            if (task->pending_reservation != next) {
+                /* Association validation remains strict. Before releasing the
+                 * rejected reservation, remove every Task ownership marker so
+                 * task_start's common epilogue cannot release it a second time
+                 * or expose a capability without its reservation. */
+                task->current_reservation = NULL;
+                task->pending_reservation = NULL;
+                task->pending_selection = (Lardon3DResourceCapabilitySelection) {0};
+                task->selected_capability = (Lardon3DResourceCapabilitySelection) {0};
+                task->has_selected_capability = false;
+                task->contract = (Lardon3DTaskExecutionContract) {0};
+                task->has_contract = false;
+                finish_locked(
+                    task,
+                    TASK_FAILED,
+                    "Sélection de capacité incohérente."
+                );
+                (void)pthread_mutex_unlock(&task->mutex);
+                bool released = lardon3d_resource_governor_release(governor, next);
+#ifdef LARDON3D_TASK_TESTING
+                (void)pthread_mutex_lock(&task->mutex);
+                if (released) ++task->test_association_failure_releases;
+                (void)pthread_mutex_unlock(&task->mutex);
+#else
+                (void)released;
+#endif
+                return false;
+            }
+            task->selected_capability = task->pending_selection;
+            task->has_selected_capability = true;
+            task->pending_reservation = NULL;
             task->contract = (Lardon3DTaskExecutionContract) {
                 .batch_size = information.batch_size,
                 .memory_bytes = information.memory_bytes,

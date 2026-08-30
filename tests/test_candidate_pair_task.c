@@ -338,7 +338,10 @@ static bool run_test(void) {
               &state, visual_index_id, &qopts, &multi_sequence_task_id) &&
           wait_state(state.task_queue, multi_sequence_task_id, TASK_COMPLETED, &snap) &&
           snap.progress == 100 &&
-          lardon3d_candidate_pair_task_test_started_participants() >= 6 &&
+          /* A fresh kind history begins at CPU1. This small fixture proves
+           * every durable item executes; synthetic throughput is not allowed
+           * to assume that CPU2 was already demonstrated beneficial. */
+          lardon3d_candidate_pair_task_test_started_participants() >= 1 &&
           lardon3d_candidate_pair_task_test_computed_work_items() >= 6);
     Lardon3DProjectDbTask multi_sequence_task;
     CHECK(lardon3d_project_db_load_task(state.project_db, multi_sequence_task_id,

@@ -13,6 +13,9 @@
 #include <lardon3d/sift_task.h>
 #include <lardon3d/task_queue.h>
 
+#include "opencv_task_thread_control.h"
+#include "task_internal.h"
+
 typedef struct {
   char project_path[PATH_MAX];
   Lardon3DProjectDb *database;
@@ -92,8 +95,9 @@ static bool source_path(const SiftTaskContext *context, char path[PATH_MAX]) {
          memcmp(actual, asset.sha256, 32) == 0;
 }
 
-static bool run(Lardon3DTask *task, void *userdata) {
+static bool run_body(Lardon3DTask *task, void *userdata, size_t *durable_items) {
   SiftTaskContext *context = userdata;
+  *durable_items = 0;
   if (!lardon3d_task_checkpoint(task)) return false;
   Lardon3DProjectDbFeatureSet existing;
   Lardon3DProjectDbResult found = lardon3d_project_db_find_feature_set(
@@ -111,8 +115,8 @@ static bool run(Lardon3DTask *task, void *userdata) {
   }
   if (found != LARDON3D_PROJECT_DB_NOT_FOUND)
     return lardon3d_task_fail(task, "Recherche Feature Store SIFT impossible.");
-  struct timespec begin;
-  (void)clock_gettime(CLOCK_MONOTONIC, &begin);
+  struct timespec begin = {0};
+  bool timing_known = clock_gettime(CLOCK_MONOTONIC, &begin) == 0;
   char path[PATH_MAX];
   if (!source_path(context, path)) return lardon3d_task_fail(task, "Asset image corrompu.");
   Lardon3DSiftExtractorParameters parameters = extract_parameters(context);
@@ -147,11 +151,44 @@ static bool run(Lardon3DTask *task, void *userdata) {
       published != LARDON3D_FEATURE_STORE_ALREADY_PRESENT &&
       published != LARDON3D_FEATURE_STORE_PUBLISHED_NOT_DURABLE)
     return lardon3d_task_fail(task, "Publication SIFT impossible.");
-  struct timespec end;
-  (void)clock_gettime(CLOCK_MONOTONIC, &end);
-  (void)lardon3d_resource_governor_record_batch(
-      context->governor, LARDON3D_RESOURCE_TASK_CPU, 1, elapsed_ns(begin, end), 0);
+  *durable_items = published == LARDON3D_FEATURE_STORE_OK ? 1 : 0;
+  struct timespec end = {0};
+  timing_known = timing_known && clock_gettime(CLOCK_MONOTONIC, &end) == 0;
+  if (*durable_items > 0 && timing_known) {
+    (void)lardon3d_resource_governor_record_batch(
+        context->governor, LARDON3D_RESOURCE_TASK_CPU, *durable_items,
+        elapsed_ns(begin, end), 0);
+  }
   return lardon3d_task_set_progress(task, 100, "Feature Set SIFT publié.");
+}
+
+static bool run(Lardon3DTask *task, void *userdata) {
+  struct timespec begin = {0};
+  struct timespec end = {0};
+  bool timing_known = clock_gettime(CLOCK_MONOTONIC, &begin) == 0;
+  Lardon3DOpenCvTaskThreadControl threads;
+  if (!lardon3d_opencv_task_threads_begin(task, 12, &threads)) {
+    return lardon3d_task_fail(task, "Contrat CPU OpenCV SIFT invalide.");
+  }
+  /* SIFT/RootSIFT consume the immutable admitted 1..12 OpenCV count. Queue's
+   * single Task owner makes the process-wide set/restore deterministic and
+   * race-free without changing extractor identity or output semantics. */
+  size_t durable_items = 0;
+  bool result = run_body(task, userdata, &durable_items);
+  if (!lardon3d_opencv_task_threads_end(&threads)) {
+    (void)lardon3d_task_fail(task, "Restauration OpenCV SIFT impossible.");
+    return false;
+  }
+  timing_known = timing_known && clock_gettime(CLOCK_MONOTONIC, &end) == 0;
+  if (result && timing_known) {
+    /* SIFT and RootSIFT retain distinct histories. READY reuse, a durable
+     * ALREADY_PRESENT collision, and uncertain directory durability are
+     * successful no-work observations, so they cannot advance either kind's
+     * next-sequence CPU baseline or trial. */
+    (void)lardon3d_task_internal_record_sequence(
+        task, elapsed_ns(begin, end), durable_items);
+  }
+  return result;
 }
 
 static void finished(const Lardon3DTask *task, void *userdata) {
@@ -252,9 +289,8 @@ Lardon3DTask *lardon3d_project_create_sift_extract_task(
                                        .memory_bytes_per_item = 1024ULL * 1024 * 1024,
                                        .minimum_batch_size = 1,
                                        .maximum_batch_size = 1,
-                                       /* Keep the immutable estimate independent of Matcher's
-                                        * temporary process-wide single-thread setting. Governor
-                                        * reduction makes this ceiling equal the startup pool. */
+                                       /* Canonical durable maximum; the admitted OpenCV count may
+                                        * adapt within the validated 1..12 range. */
                                        .desired_cpu_threads = 12,
                                        .desired_io_slots = 1,
                                        .task_class = LARDON3D_RESOURCE_TASK_CPU};

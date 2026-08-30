@@ -602,6 +602,12 @@ Lardon3DFeatureStoreResult lardon3d_feature_store_publish_v2(
   }
   unlink(temporary);
   bool durable = sync_directory(prefix);
+#ifdef LARDON3D_FEATURE_STORE_TESTING
+  const char *fail_sync = getenv("LARDON3D_TEST_FEATURE_FAIL_DIRECTORY_SYNC");
+  if (fail_sync && strcmp(fail_sync, "1") == 0) {
+    durable = false;
+  }
+#endif
   return register_published_feature_set(
       state, image_id, producer_task_id, &image_asset, kind, version, fingerprint, descriptor_type,
       descriptor_dimension, features, file_hash, relative, file_size, durable, feature_set);

@@ -33,6 +33,18 @@ device, la file, le pipeline, le command buffer et trois buffers
 bornés. Un mutex impose un dispatch à la fois. Une famille compute sans graphics
 est préférée, avec fallback vers toute famille compute compatible.
 
+Le propriétaire du processus doit établir `MESA_SHADER_CACHE_DISABLE` à la
+valeur exacte `true` ou `1` avant de créer ses threads. Les exécutables
+Lardon3D normaux prennent le défaut sûr si la variable est absente et refusent
+une valeur explicite différente. Le backend public peut cependant être appelé
+par un autre consumer après son propre démarrage : sa frontière d'initialisation
+ne mute donc jamais l'environnement. Avant tout appel Vulkan/Mesa, elle refuse
+une valeur absente, fausse ou malformée, mémorise le backend comme indisponible
+et retourne `LARDON3D_ORB_VULKAN_UNAVAILABLE` sans sortie partielle. Les appels
+vides et la lecture metadata restent non initialisants. Les exécutables autonomes
+de benchmark/feasibility établissent le même défaut sûr comme première action de
+`main` ; cette politique reste opérationnelle, non persistée et non scientifique.
+
 Le sélecteur utilise le travail `feature_count_a × feature_count_b`. Sous le
 seuil mesuré de `768 × 768` comparaisons, OpenCV reste utilisé afin d'éviter le
 coût fixe du dispatch. Le seuil est une politique d'exécution et ne modifie ni
@@ -41,8 +53,15 @@ matche aucun grand couple ORB ne paie aucun cold start.
 
 ## Mémoire et pannes
 
-Les buffers maximaux contiennent 256 Kio pour A, 256 Kio pour B et 128 Kio pour
-8192 sorties top-2, soit 640 Kio de payload, hors petits objets du driver. Une
+Chaque slot contient 256 Kio pour A, 256 Kio pour B et 128 Kio pour 8192
+sorties top-2, soit 640 Kio. Le contexte fraîchement créé ne mappe aucun
+payload. L'initialisation depth 1, rolling AUTO normal et le wrapper public
+synchrone retiennent exactement un slot. Seul un contrat privé de
+sûreté/benchmark depth 2 mappe le second, soit 1,25 Mio pendant cette séquence.
+Device, pipeline,
+layouts et cache restent partagés, hors objets opaques du driver. Commandes,
+fences, descriptor sets et queries sont des métadonnées bornées à deux slots,
+mais ne rendent pas le second payload mappé tant qu'il n'est pas admis. Une
 mémoire host-visible, cohérente et cached est préférée sur UMA, car elle réduit
 nettement le coût CPU de copie/readback observé sur RADV. Le backend sait
 appliquer flush/invalidate lorsque le type retenu n'est pas cohérent.
@@ -52,12 +71,44 @@ utilise le CPU sans nouvelle tentative par paire. Une panne de soumission ou un
 device lost désactive Vulkan pour la session ; la paire courante est reprise sur
 CPU avant toute publication. Un Match Result n'est jamais créé depuis une
 sortie GPU partielle.
+La couche Matcher distingue cette faute backend d'une faute locale. Une lecture
+Feature/allocation échouée avant `begin` ne consomme aucun slot; une faute de
+filtrage/allocation/staging après un `finish` backend réussi a déjà consommé
+seulement son handle exact. Ces deux cas recalculent la paire complète sur CPU,
+comptent `other` après publication durable et conservent la disponibilité du
+backend ainsi que tout successeur soumis sain.
 
-Le job est synchrone au niveau du Matcher. Il soumet sur l'unique queue détenue
-par le contexte puis attend cette queue, sans `vkDeviceWaitIdle` sur le chemin
-normal. Le Resource Governor admet la tâche avant le callback ; en RED aucun
-nouveau batch ne démarre, tandis qu'une paire déjà soumise finit et se publie.
-Le worker unique et le mutex interdisent plusieurs dispatchs concurrents en v1.
+Le Resource Governor fige inflight 1 avant le callback AUTO normal. La couture
+benchmark/test peut forcer 1 ou 2. Au début de la séquence, sans requête pending,
+le backend alloue la capacité exacte avant le
+premier submit ; une croissance échouée conserve la capacité antérieure et
+provoque le fallback CPU complet. Le worker unique soumet jusqu'à cette
+profondeur sur l'unique queue, attend chaque fence exacte et publie le préfixe
+en ordre, sans `vkDeviceWaitIdle` sur le chemin normal. La fin de séquence,
+succès, annulation ou erreur nettoyée, libère le second payload avant la
+prochaine admission depth 1. En RED aucun nouveau batch ne démarre; la pression
+active ramène l'admission courante permise au depth minimum. Le wrapper public
+et le contrôle de benchmark synchrone forcent depth 1. Aucun helper hôte n'est
+créé.
+
+L'ABBA corpus forcé mesure 54,661652238 paires/s à depth 1 et 55,797311953 à
+depth 2, soit +2,077617 %, sous le deadband 5 %, avec digest identique, quatre fallbacks
+locaux et zéro panne/discard. Depth 2 est donc
+**REJECTED_WITH_MEASURED_REASON** pour AUTO normal; sa capacité maximale 2
+reste disponible uniquement pour les preuves privées reproductibles.
+Le S21 AUTO final exerce le backend normal sur 172 741 paires : 172 507
+soumissions et 172 507 complétions, zéro panne, zéro discard et aucun slot
+pending à la sortie. Les 234 items sous le seuil restent des fallbacks locaux
+CPU complets; ils ne sont jamais passés à `finish`. Le digest canonique final
+est `e5128a2e599ff593c4f79850e067254b1f249d19e8480a44973306b1af250f70`
+pour 172 741 mappings contigus et sans doublon. La réservation AUTO reste un
+slot de 655 360 octets UMA pendant tout ce run.
+
+Chaque requête privée porte le couple exact `slot+generation`. La génération
+ne boucle jamais : après l'usage de `UINT64_MAX`, ce slot est retiré avant toute
+nouvelle soumission et ne peut plus faire correspondre un handle ancien. Un
+second slot sain peut terminer sa requête indépendamment. `finish` et `discard`
+consomment uniquement le handle exact et ne mélangent jamais leurs sorties.
 
 ## Shader et déterminisme
 

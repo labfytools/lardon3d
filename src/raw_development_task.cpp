@@ -5,6 +5,8 @@ extern "C" {
 #include <lardon3d/task_queue.h>
 }
 
+#include "opencv_task_thread_guard.h"
+
 #include <cstdio>
 #include <new>
 
@@ -84,7 +86,13 @@ bool run_impl(Lardon3DTask *task, Context *context) {
 
 bool run(Lardon3DTask *task, void *value) noexcept {
   try {
-    return run_impl(task, static_cast<Context *>(value));
+    Lardon3DOpenCvTaskThreadGuard threads(task);
+    if (!threads.valid())
+      return lardon3d_task_fail(task, "Contrat CPU OpenCV RAW invalide.");
+    bool result = run_impl(task, static_cast<Context *>(value));
+    if (!threads.restore())
+      return lardon3d_task_fail(task, "Restauration OpenCV RAW impossible.");
+    return result;
   } catch (const std::bad_alloc &) {
     return lardon3d_task_fail(task, "Mémoire insuffisante pour le développement RAW.");
   } catch (...) {

@@ -56,11 +56,14 @@ validé. Après crash, la registry statique reconstruit le même `task_id`; l'im
 est recommencée, sans micro-checkpoint trompeur. Aucun Feature Set partiel ne
 devient READY. Le SHA-256 de l'Image Asset géré est vérifié avant décodage.
 
-L'estimation SIFT demande jusqu'à douze threads CPU ; le Governor réduit ce
-plafond à la limite interne OpenCV configurée au démarrage. Elle réserve aussi
+L'estimation SIFT demande jusqu'à douze threads CPU. Le réglage OpenCV du
+démarrage est une baseline/plafond sûre ; pour chaque séquence, l'unique
+callback Queue applique temporairement le compte immuable admis dans `1..12`,
+le vérifie puis restaure la baseline sur toute sortie. Une mutation process-wide
+concurrente par plusieurs workers n'est pas supportée. La tâche réserve aussi
 un slot IO, aucun GPU et environ 1,06 Gio structurels :
 image décodée, pyramides OpenCV, candidats et descriptors. Le pic de lot est
-zéro. Le Resource Governor admet donc le fan-out OpenCV complet ; la Queue
+zéro. Le Resource Governor admet donc le fan-out OpenCV exact ; la Queue
 conserve un seul callback actif et ne superpose pas un second pool SIFT.
 
 Le nombre de threads reste opérationnel et absent du fingerprint SIFT/RootSIFT.

@@ -6,6 +6,8 @@
 
 #include <lardon3d/task_queue.h>
 
+#include "task_internal.h"
+
 typedef struct TaskNode {
     Lardon3DTask *task;
     struct TaskNode *next_all;
@@ -26,6 +28,7 @@ struct Lardon3DTaskQueue {
     pthread_cond_t not_full;
     pthread_t worker;
     bool worker_started;
+    bool worker_ready;
     bool stopping;
     Lardon3DResourceGovernor *governor;
     uint64_t next_id;
@@ -94,16 +97,14 @@ select_admissible(
             node = next;
             continue;
         }
-        Lardon3DResourceEstimate estimate;
         Lardon3DResourceDecision decision;
         Lardon3DResourceReservation *candidate = NULL;
-        bool evaluated = lardon3d_task_resource_estimate(node->task, &estimate)
-            && lardon3d_resource_governor_reserve_available(
-                queue->governor,
-                &estimate,
-                &decision,
-                &candidate
-            );
+        bool evaluated = lardon3d_task_internal_reserve_available(
+            node->task,
+            queue->governor,
+            &decision,
+            &candidate
+        );
         if (!evaluated) {
             (void)lardon3d_task_reject(
                 node->task,
@@ -160,6 +161,15 @@ static void *
 queue_worker(void *context)
 {
     Lardon3DTaskQueue *queue = context;
+    /* Only this thread owns heavy Task callbacks. Applying the Governor mask
+     * here keeps the caller/main/TUI thread unconstrained; children created by
+     * OpenCV, Matcher, or the Vulkan driver inherit the bounded worker mask. */
+    (void)lardon3d_resource_governor_internal_apply_worker_affinity(
+        queue->governor);
+    (void)pthread_mutex_lock(&queue->mutex);
+    queue->worker_ready = true;
+    (void)pthread_cond_broadcast(&queue->not_empty);
+    (void)pthread_mutex_unlock(&queue->mutex);
     /* Single worker only; execution is serialized by design. Queue preserves
      * pending FIFO order with adaptive dispatch/backpressure; Governor decides
      * admission.
@@ -188,6 +198,12 @@ queue_worker(void *context)
         queue->active = selected;
         (void)pthread_mutex_unlock(&queue->mutex);
 
+        /* Policy may change between Tasks. Reapply and verify only on this
+         * worker; failure is recorded by the Governor and execution continues
+         * under the conservative compute-count admission without corrupting
+         * Queue ownership or durable scientific state. */
+        (void)lardon3d_resource_governor_internal_apply_worker_affinity(
+            queue->governor);
         if (!lardon3d_task_start(selected, queue->governor, reservation)) {
             (void)lardon3d_task_reject(
                 selected,
@@ -261,6 +277,11 @@ lardon3d_task_queue_create(Lardon3DResourceGovernor *governor, size_t capacity)
         return NULL;
     }
     queue->worker_started = true;
+    (void)pthread_mutex_lock(&queue->mutex);
+    while (!queue->worker_ready) {
+        (void)pthread_cond_wait(&queue->not_empty, &queue->mutex);
+    }
+    (void)pthread_mutex_unlock(&queue->mutex);
     return queue;
 }
 

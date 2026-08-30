@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -23,6 +27,10 @@
 #include <lardon3d/sift_task.h>
 #include <lardon3d/task_checkpoint.h>
 #include <lardon3d/task_queue.h>
+
+#include "../src/opencv_task_thread_control.h"
+#include "../src/resource_governor_internal.h"
+#include "../src/task_internal.h"
 
 #define CHECK(x)                                                                                   \
   do {                                                                                             \
@@ -95,6 +103,196 @@ static bool write_uniform_pgm(const char *path) {
   for (size_t y = 0; ok && y < 192; ++y) ok = fwrite(row, 1, sizeof(row), file) == sizeof(row);
   return fclose(file) == 0 && ok;
 }
+
+static bool wait_state(Lardon3DTaskQueue *q, uint64_t id,
+                       Lardon3DTaskState wanted,
+                       Lardon3DTaskSnapshot *out);
+
+static bool extracted_equal(const Lardon3DExtractedFeatures *left,
+                            const Lardon3DExtractedFeatures *right) {
+  if (!left || !right || left->image_width != right->image_width ||
+      left->image_height != right->image_height ||
+      left->feature_count != right->feature_count ||
+      left->descriptor_bytes != right->descriptor_bytes ||
+      memcmp(&left->quality, &right->quality, sizeof(left->quality)) != 0 ||
+      (left->descriptor_bytes > 0 &&
+       memcmp(left->descriptors, right->descriptors,
+              left->descriptor_bytes) != 0)) {
+    return false;
+  }
+  for (uint32_t index = 0; index < left->feature_count; ++index) {
+    const Lardon3DFeatureKeypoint *a = &left->keypoints[index];
+    const Lardon3DFeatureKeypoint *b = &right->keypoints[index];
+    if (memcmp(&a->x, &b->x, sizeof(a->x)) != 0 ||
+        memcmp(&a->y, &b->y, sizeof(a->y)) != 0 ||
+        memcmp(&a->size, &b->size, sizeof(a->size)) != 0 ||
+        memcmp(&a->angle_degrees, &b->angle_degrees,
+               sizeof(a->angle_degrees)) != 0 ||
+        memcmp(&a->response, &b->response, sizeof(a->response)) != 0 ||
+        a->octave != b->octave) {
+      return false;
+    }
+  }
+  return true;
+}
+
+typedef enum {
+  TEST_EXTRACT_ORB = 0,
+  TEST_EXTRACT_SIFT = 1,
+  TEST_EXTRACT_ROOTSIFT = 2,
+  TEST_EXTRACT_COUNT = 3,
+} TestExtractKind;
+
+typedef struct {
+  const char *path;
+  unsigned int expected_threads;
+  TestExtractKind kind;
+  Lardon3DExtractedFeatures output;
+} AdaptiveExtractWork;
+
+static bool adaptive_extract_callback(Lardon3DTask *task, void *userdata) {
+  AdaptiveExtractWork *work = userdata;
+  Lardon3DOpenCvTaskThreadControl control;
+  if (!lardon3d_opencv_task_threads_begin(task, 12, &control) ||
+      lardon3d_feature_opencv_thread_count() != work->expected_threads) {
+    return false;
+  }
+  Lardon3DFeatureExtractResult result;
+  if (work->kind == TEST_EXTRACT_ORB) {
+    const Lardon3DFeatureExtractorParameters parameters = {512, 4, 10};
+    result = lardon3d_feature_extract_orb(work->path, &parameters,
+                                         &work->output);
+  } else {
+    Lardon3DSiftExtractorParameters parameters =
+        lardon3d_sift_precision_classic_v1(
+            work->kind == TEST_EXTRACT_ROOTSIFT);
+    parameters.max_features = 512;
+    result = lardon3d_feature_extract_sift(work->path, &parameters,
+                                          &work->output);
+  }
+  bool restored = lardon3d_opencv_task_threads_end(&control);
+  return result == LARDON3D_FEATURE_EXTRACT_OK && restored &&
+         lardon3d_task_set_progress(task, 100, "Extraction adaptative testée.");
+}
+
+static bool run_adaptive_output_equivalence(const char *path) {
+  cpu_set_t allowed_mask;
+  CPU_ZERO(&allowed_mask);
+  if (sched_getaffinity(0, sizeof(allowed_mask), &allowed_mask) != 0) {
+    return true;
+  }
+  unsigned int allowed_ids[LARDON3D_RESOURCE_CPU_MAX];
+  size_t allowed_count = 0;
+  for (unsigned int cpu = 0; cpu < CPU_SETSIZE &&
+       cpu < LARDON3D_RESOURCE_CPU_MAX; ++cpu) {
+    if (CPU_ISSET((size_t)cpu, &allowed_mask)) {
+      allowed_ids[allowed_count++] = cpu;
+    }
+  }
+  if (allowed_count == 0) return true;
+  const unsigned int requested[] = {1, 2, 4, 8, 12};
+  Lardon3DExtractedFeatures baseline[TEST_EXTRACT_COUNT] = {0};
+  bool have_baseline[TEST_EXTRACT_COUNT] = {false};
+  unsigned int previous_threads = lardon3d_feature_opencv_thread_count();
+  bool ok = true;
+  for (size_t request_index = 0;
+       request_index < sizeof(requested) / sizeof(requested[0]) && ok;
+       ++request_index) {
+    unsigned int threads = requested[request_index];
+    if (threads > allowed_count) continue;
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = threads + 4,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = UINT64_C(16) * 1024 * 1024 * 1024,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .system_cpu_reserve = 4,
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 100.0,
+        .io_slot_capacity = 1,
+    };
+    Lardon3DResourceGovernor *governor =
+        lardon3d_resource_governor_create(&profile, &policy);
+    Lardon3DResourceCpuTopologyInput topology = {
+        .affinity_available = true,
+        .topology_available = false,
+        .allowed_cpu_count = threads,
+    };
+    for (unsigned int index = 0; index < threads; ++index) {
+      topology.allowed_cpu_ids[index] = allowed_ids[index];
+    }
+    Lardon3DTaskQueue *queue = NULL;
+    if (!governor ||
+        !lardon3d_resource_governor_internal_configure_cpu_topology(
+            governor, &topology) ||
+        !(queue = lardon3d_task_queue_create(governor, TEST_EXTRACT_COUNT))) {
+      lardon3d_task_queue_destroy(queue);
+      lardon3d_resource_governor_destroy(governor);
+      ok = false;
+      break;
+    }
+    AdaptiveExtractWork work[TEST_EXTRACT_COUNT] = {0};
+    uint64_t ids[TEST_EXTRACT_COUNT] = {0};
+    Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 12,
+        .task_class = LARDON3D_RESOURCE_TASK_CPU,
+    };
+    static const char *const task_kinds[TEST_EXTRACT_COUNT] = {
+        "features.extract",
+        "features.extract.sift",
+        "features.extract.rootsift",
+    };
+    for (size_t kind = 0; kind < TEST_EXTRACT_COUNT && ok; ++kind) {
+      work[kind] = (AdaptiveExtractWork) {
+          .path = path,
+          .expected_threads = threads,
+          .kind = (TestExtractKind)kind,
+      };
+      Lardon3DTask *task = lardon3d_task_create_typed(
+          "Extraction adaptative", &estimate, task_kinds[kind], 1,
+          adaptive_extract_callback, &work[kind], NULL);
+      Lardon3DTaskCapabilityEnvelope envelope = {
+          .count = 1,
+          .capabilities = {{
+              .estimate = estimate,
+              .backend = LARDON3D_RESOURCE_BACKEND_FIXED,
+              .inflight_limit = 1,
+          }},
+      };
+      envelope.capabilities[0].estimate.desired_cpu_threads = threads;
+      /* Scientific equality is tested at exact admitted counts independently
+       * of feedback timing; Governor progression/deadband has its own fully
+       * deterministic rate-injection regression. */
+      ok = task && lardon3d_task_internal_set_capability_envelope(
+          task, &envelope) && lardon3d_task_queue_add(queue, task, &ids[kind]);
+      if (!ok && task) lardon3d_task_destroy(task);
+    }
+    Lardon3DTaskSnapshot snapshot;
+    for (size_t kind = 0; kind < TEST_EXTRACT_COUNT && ok; ++kind) {
+      ok = wait_state(queue, ids[kind], TASK_COMPLETED, &snapshot);
+      if (!ok) break;
+      if (!have_baseline[kind]) {
+        baseline[kind] = work[kind].output;
+        work[kind].output = (Lardon3DExtractedFeatures) {0};
+        have_baseline[kind] = true;
+      } else {
+        ok = extracted_equal(&baseline[kind], &work[kind].output);
+      }
+    }
+    for (size_t kind = 0; kind < TEST_EXTRACT_COUNT; ++kind) {
+      lardon3d_extracted_features_destroy(&work[kind].output);
+    }
+    lardon3d_task_queue_destroy(queue);
+    lardon3d_resource_governor_destroy(governor);
+  }
+  for (size_t kind = 0; kind < TEST_EXTRACT_COUNT; ++kind) {
+    lardon3d_extracted_features_destroy(&baseline[kind]);
+  }
+  return lardon3d_feature_opencv_configure_threads(previous_threads) && ok;
+}
 static bool runtime(Lardon3DAppState *s) {
   s->hardware_profile = (Lardon3DHardwareProfile){.logical_cpu_count = 64,
                                                   .page_size_bytes = 4096,
@@ -110,7 +308,10 @@ static bool wait_state(Lardon3DTaskQueue *q, uint64_t id, Lardon3DTaskState want
                        Lardon3DTaskSnapshot *out) {
   struct timespec deadline;
   if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) return false;
-  deadline.tv_sec += 5;
+  /* The equality fixture deliberately executes ORB/SIFT/RootSIFT at five CPU
+   * contracts. Instrumented OpenCV is slower than the normal build; keep the
+   * wait bounded without mistaking sanitizer overhead for scientific drift. */
+  deadline.tv_sec += 30;
   for (;;) {
     if (lardon3d_task_queue_get(q, id, out) && out->state == wanted) {
       return true;
@@ -122,6 +323,16 @@ static bool wait_state(Lardon3DTaskQueue *q, uint64_t id, Lardon3DTaskState want
     }
     sched_yield();
   }
+}
+
+static bool last_sequence_is_no_work(Lardon3DAppState *state, const char *task_kind) {
+  Lardon3DResourceSequenceDiagnostic diagnostic;
+  return lardon3d_resource_governor_internal_last_diagnostic(
+             state->resource_governor, task_kind, 1, &diagnostic) &&
+         diagnostic.items_completed == 0 &&
+         diagnostic.durable_items_per_second_milli == 0 &&
+         diagnostic.cpu_threads == 1 &&
+         strcmp(diagnostic.reason, "throughput-no-work") == 0;
 }
 
 typedef struct {
@@ -146,9 +357,11 @@ static bool run_test(void) {
   CHECK(mkdtemp(root) && setenv("LARDON3D_PROJECTS_ROOT", root, 1) == 0);
   char source[PATH_MAX];
   CHECK(join_path(source, root, "source.pgm") && write_pgm(source));
+  CHECK(run_adaptive_output_equivalence(source));
   Lardon3DAppState state;
   lardon3d_app_state_init(&state);
   CHECK(runtime(&state) && lardon3d_project_create(&state, "Features"));
+  CHECK(lardon3d_feature_opencv_configure_threads(3));
   Lardon3DProjectDbScanSet scanset;
   CHECK(lardon3d_image_catalog_create_scanset(&state, "A", &scanset));
   Lardon3DProjectDbImage image;
@@ -164,6 +377,7 @@ static bool run_test(void) {
   CHECK(wait_state(state.task_queue, task_id, TASK_PAUSED, &snapshot));
   lardon3d_task_queue_destroy(state.task_queue);
   state.task_queue = NULL;
+  CHECK(lardon3d_feature_opencv_thread_count() == 3);
   lardon3d_project_close(&state);
   lardon3d_resource_governor_destroy(state.resource_governor);
   state.resource_governor = NULL;
@@ -171,10 +385,12 @@ static bool run_test(void) {
         unsetenv("LARDON3D_TEST_FEATURE_SKIP_FINISHED_CHECKPOINT") == 0);
   lardon3d_app_state_init(&state);
   CHECK(runtime(&state) && lardon3d_project_open(&state, "Features"));
+  CHECK(lardon3d_feature_opencv_configure_threads(3));
   Lardon3DProjectRecoverySummary summary;
   CHECK(lardon3d_project_last_recovery_summary(&state, &summary) && summary.resumed == 1);
   CHECK(wait_state(state.task_queue, task_id, TASK_COMPLETED, &snapshot) &&
         snapshot.progress == 100);
+  CHECK(lardon3d_feature_opencv_thread_count() == 3);
   unsigned char fp[32];
   lardon3d_feature_extractor_parameter_fingerprint(&parameters, fp);
   Lardon3DProjectDbFeatureSet set;
@@ -198,6 +414,60 @@ static bool run_test(void) {
         LARDON3D_FEATURE_STORE_OK);
   lardon3d_feature_reader_close(reader);
 
+  uint64_t duplicate_orb_task = 0;
+  CHECK(lardon3d_project_enqueue_feature_extract(
+            &state, image.image_id, &parameters, &duplicate_orb_task) &&
+        wait_state(state.task_queue, duplicate_orb_task, TASK_COMPLETED, &snapshot) &&
+        last_sequence_is_no_work(&state, LARDON3D_FEATURE_EXTRACT_TASK_KIND));
+
+  /* The asset and DB row are visible, but forced directory-sync uncertainty
+   * means this extraction is not durable throughput evidence. */
+  Lardon3DFeatureExtractorParameters nondurable_orb_parameters = {508, 4, 10};
+  uint64_t nondurable_orb_task = 0;
+  CHECK(setenv("LARDON3D_TEST_FEATURE_FAIL_DIRECTORY_SYNC", "1", 1) == 0 &&
+        lardon3d_project_enqueue_feature_extract(
+            &state, image.image_id, &nondurable_orb_parameters,
+            &nondurable_orb_task) &&
+        wait_state(state.task_queue, nondurable_orb_task, TASK_COMPLETED, &snapshot) &&
+        last_sequence_is_no_work(&state, LARDON3D_FEATURE_EXTRACT_TASK_KIND) &&
+        unsetenv("LARDON3D_TEST_FEATURE_FAIL_DIRECTORY_SYNC") == 0);
+  uint64_t post_no_work_orb_task = 0;
+  CHECK(lardon3d_project_enqueue_feature_extract(
+            &state, image.image_id, &parameters, &post_no_work_orb_task) &&
+        wait_state(state.task_queue, post_no_work_orb_task, TASK_COMPLETED,
+                   &snapshot) &&
+        last_sequence_is_no_work(&state, LARDON3D_FEATURE_EXTRACT_TASK_KIND));
+
+  /* Configuration failure is injected after OpenCV mutates its process-wide
+   * pool. Feature, SIFT, and RootSIFT must each restore the captured value. */
+  CHECK(lardon3d_feature_opencv_configure_threads(3));
+  CHECK(setenv("LARDON3D_TEST_OPENCV_CONFIGURE_FAILURE_THREADS", "1", 1) == 0);
+  Lardon3DFeatureExtractorParameters failed_orb_parameters = {509, 4, 10};
+  uint64_t failed_orb_task = 0;
+  CHECK(lardon3d_project_enqueue_feature_extract(
+            &state, image.image_id, &failed_orb_parameters, &failed_orb_task) &&
+        wait_state(state.task_queue, failed_orb_task, TASK_FAILED, &snapshot) &&
+        lardon3d_feature_opencv_thread_count() == 3);
+
+  Lardon3DSiftExtractorParameters failed_sift_parameters =
+      lardon3d_sift_precision_classic_v1(false);
+  failed_sift_parameters.max_features = 511;
+  uint64_t failed_sift_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(
+            &state, image.image_id, &failed_sift_parameters,
+            &failed_sift_task) &&
+        wait_state(state.task_queue, failed_sift_task, TASK_FAILED, &snapshot) &&
+        lardon3d_feature_opencv_thread_count() == 3);
+  failed_sift_parameters.rootsift = true;
+  failed_sift_parameters.max_features = 510;
+  uint64_t failed_rootsift_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(
+            &state, image.image_id, &failed_sift_parameters,
+            &failed_rootsift_task) &&
+        wait_state(state.task_queue, failed_rootsift_task, TASK_FAILED, &snapshot) &&
+        lardon3d_feature_opencv_thread_count() == 3 &&
+        unsetenv("LARDON3D_TEST_OPENCV_CONFIGURE_FAILURE_THREADS") == 0);
+
   Lardon3DSiftExtractorParameters sift_parameters = lardon3d_sift_precision_classic_v1(false);
   sift_parameters.max_features = 512;
   uint64_t sift_task_id = 0, concurrent_identical_sift_task = 0;
@@ -207,7 +477,8 @@ static bool run_test(void) {
                                               &concurrent_identical_sift_task));
   CHECK(sift_task_id != concurrent_identical_sift_task &&
         wait_state(state.task_queue, sift_task_id, TASK_COMPLETED, &snapshot) &&
-        wait_state(state.task_queue, concurrent_identical_sift_task, TASK_COMPLETED, &snapshot));
+        wait_state(state.task_queue, concurrent_identical_sift_task, TASK_COMPLETED, &snapshot) &&
+        last_sequence_is_no_work(&state, LARDON3D_SIFT_EXTRACT_TASK_KIND));
   unsigned char sift_fingerprint[32];
   lardon3d_sift_extractor_parameter_fingerprint(&sift_parameters, sift_fingerprint);
   unsigned char same_sift_fingerprint[32], changed_sift_fingerprint[32];
@@ -281,6 +552,31 @@ static bool run_test(void) {
                                              rootsift_fingerprint, &rootsift_set) ==
             LARDON3D_PROJECT_DB_OK &&
         rootsift_set.feature_set_id != sift_set.feature_set_id);
+  uint64_t duplicate_rootsift_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(
+            &state, image.image_id, &rootsift_parameters,
+            &duplicate_rootsift_task) &&
+        wait_state(state.task_queue, duplicate_rootsift_task, TASK_COMPLETED, &snapshot) &&
+        last_sequence_is_no_work(&state, LARDON3D_ROOTSIFT_EXTRACT_TASK_KIND));
+
+  Lardon3DSiftExtractorParameters nondurable_sift_parameters = sift_parameters;
+  nondurable_sift_parameters.max_features = 508;
+  uint64_t nondurable_sift_task = 0;
+  CHECK(setenv("LARDON3D_TEST_FEATURE_FAIL_DIRECTORY_SYNC", "1", 1) == 0 &&
+        lardon3d_project_enqueue_sift_extract(
+            &state, image.image_id, &nondurable_sift_parameters,
+            &nondurable_sift_task) &&
+        wait_state(state.task_queue, nondurable_sift_task, TASK_COMPLETED, &snapshot) &&
+        last_sequence_is_no_work(&state, LARDON3D_SIFT_EXTRACT_TASK_KIND));
+  nondurable_sift_parameters.rootsift = true;
+  nondurable_sift_parameters.max_features = 509;
+  uint64_t nondurable_rootsift_task = 0;
+  CHECK(lardon3d_project_enqueue_sift_extract(
+            &state, image.image_id, &nondurable_sift_parameters,
+            &nondurable_rootsift_task) &&
+        wait_state(state.task_queue, nondurable_rootsift_task, TASK_COMPLETED, &snapshot) &&
+        last_sequence_is_no_work(&state, LARDON3D_ROOTSIFT_EXTRACT_TASK_KIND) &&
+        unsetenv("LARDON3D_TEST_FEATURE_FAIL_DIRECTORY_SYNC") == 0);
   /* SIFT and RootSIFT CPU1 checkpoints are exact historical operational
    * signatures. Recovery uses CPU12 in memory without publishing an
    * estimate-only checkpoint; a neighboring CPU2 shape is corruption. */
@@ -507,6 +803,26 @@ static bool run_test(void) {
   lardon3d_feature_reader_close(reader);
 
   Lardon3DVisualIndexConfiguration index_configuration = {1, 256, 128};
+  Lardon3DVisualIndexConfiguration nondurable_index_configuration = {1, 255, 128};
+  uint64_t nondurable_visual_index_id = 0;
+  uint64_t nondurable_visual_task_id = 0;
+  CHECK(lardon3d_visual_index_create(
+            state.project_db, &set, &nondurable_index_configuration,
+            &nondurable_visual_index_id) == LARDON3D_VISUAL_INDEX_OK);
+  CHECK(setenv("LARDON3D_TEST_VISUAL_INDEX_FAIL_DIR_FSYNC", "1", 1) == 0 &&
+        setenv("LARDON3D_TEST_VISUAL_INDEX_PAUSE_AFTER_SEGMENT", "1", 1) == 0);
+  CHECK(lardon3d_project_enqueue_visual_index_update(
+      &state, nondurable_visual_index_id, &nondurable_visual_task_id));
+  CHECK(wait_state(state.task_queue, nondurable_visual_task_id, TASK_PAUSED,
+                   &snapshot));
+  CHECK(last_sequence_is_no_work(
+      &state, LARDON3D_VISUAL_INDEX_UPDATE_TASK_KIND));
+  CHECK(unsetenv("LARDON3D_TEST_VISUAL_INDEX_FAIL_DIR_FSYNC") == 0 &&
+        unsetenv("LARDON3D_TEST_VISUAL_INDEX_PAUSE_AFTER_SEGMENT") == 0 &&
+        lardon3d_task_queue_resume(
+            state.task_queue, nondurable_visual_task_id) &&
+        wait_state(state.task_queue, nondurable_visual_task_id, TASK_COMPLETED,
+                   &snapshot));
   uint64_t visual_index_id = 0;
   CHECK(lardon3d_visual_index_create(state.project_db, &set, &index_configuration,
                                      &visual_index_id) == LARDON3D_VISUAL_INDEX_OK);

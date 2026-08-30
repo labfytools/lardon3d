@@ -116,6 +116,88 @@ snapshot(void)
 }
 
 static bool
+run_legacy_estimate_validation_test(void)
+{
+    static const Lardon3DTaskKindDescriptor descriptors[] = {
+        {.kind = "candidate_pair.generate", .kind_version = 1,
+         .reconstruct = reconstruct},
+        {.kind = "features.extract.sift", .kind_version = 1,
+         .reconstruct = reconstruct},
+        {.kind = "features.extract.rootsift", .kind_version = 1,
+         .reconstruct = reconstruct},
+    };
+    Lardon3DTaskKindRegistry registry;
+    CHECK(lardon3d_task_kind_registry_init(&registry, descriptors, 3));
+    int destroyed = 0;
+    int finished = 0;
+    ReconstructContext context = {
+        .destroyed = &destroyed,
+        .finished = &finished,
+    };
+    const char *kinds[] = {
+        "candidate_pair.generate",
+        "features.extract.sift",
+        "features.extract.rootsift",
+    };
+    for (size_t index = 0; index < 3; ++index) {
+        Lardon3DTaskDurableSnapshot corrupt = snapshot();
+        corrupt.estimate = (Lardon3DResourceEstimate) {0};
+        Lardon3DTask *task = NULL;
+        /* An absent legacy form must never make the all-zero estimate look
+         * like an exact historical signature. Reconstruction owns and frees
+         * the binding userdata on this corruption rejection. */
+        CHECK(lardon3d_task_kind_registry_restore(
+            &registry, kinds[index], 1, &corrupt, &context, &task
+        ) == LARDON3D_TASK_KIND_RECONSTRUCTION_FAILED);
+        CHECK(!task && destroyed == (int)index + 1);
+    }
+
+    const Lardon3DResourceEstimate historical[] = {
+        {
+            .memory_fixed_bytes = 128 * 1024,
+            .memory_bytes_per_item = 64 * 1024,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 64,
+            .desired_cpu_threads = 1,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_CPU,
+        },
+        {
+            .memory_fixed_bytes = 64ULL * 1024 * 1024,
+            .memory_bytes_per_item = 1024ULL * 1024 * 1024,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 1,
+            .desired_cpu_threads = 1,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_CPU,
+        },
+        {
+            .memory_fixed_bytes = 64ULL * 1024 * 1024,
+            .memory_bytes_per_item = 1024ULL * 1024 * 1024,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 1,
+            .desired_cpu_threads = 1,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_CPU,
+        },
+    };
+    for (size_t index = 0; index < 3; ++index) {
+        Lardon3DTaskDurableSnapshot durable = snapshot();
+        durable.estimate = historical[index];
+        Lardon3DTask *task = NULL;
+        CHECK(lardon3d_task_kind_registry_restore(
+            &registry, kinds[index], 1, &durable, &context, &task
+        ) == LARDON3D_TASK_KIND_OK);
+        Lardon3DResourceEstimate effective;
+        CHECK(task && lardon3d_task_resource_estimate(task, &effective));
+        CHECK(effective.desired_cpu_threads == 12);
+        lardon3d_task_destroy(task);
+    }
+    CHECK(destroyed == 6);
+    return true;
+}
+
+static bool
 run_test(void)
 {
     static const Lardon3DTaskKindDescriptor descriptors[] = {
@@ -209,5 +291,6 @@ run_test(void)
 int
 main(void)
 {
-    return run_test() ? EXIT_SUCCESS : EXIT_FAILURE;
+    return (run_test() && run_legacy_estimate_validation_test())
+        ? EXIT_SUCCESS : EXIT_FAILURE;
 }

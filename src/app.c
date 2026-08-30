@@ -1,4 +1,5 @@
 #include <locale.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include <lardon3d/app.h>
@@ -12,9 +13,22 @@
 #include <lardon3d/task_queue.h>
 #include <lardon3d/tui.h>
 
+#include "resource_governor_internal.h"
+
 int
 lardon3d_app_run(void)
 {
+    /* CONTRACT: establish the process-wide driver policy before Queue, OpenCV,
+     * ncurses, or any other application pthread can exist. An explicit unsafe
+     * Mesa cache value is rejected instead of silently overwritten. */
+    Lardon3DResourceDriverPolicyResult driver_policy =
+        lardon3d_resource_governor_internal_configure_driver_policy();
+    if (driver_policy == LARDON3D_RESOURCE_DRIVER_POLICY_FAILED
+        || driver_policy == LARDON3D_RESOURCE_DRIVER_POLICY_REJECTED_UNSAFE) {
+        (void)fprintf(stderr,
+            "MESA_SHADER_CACHE_DISABLE must be true for safe CPU affinity\n");
+        return EXIT_FAILURE;
+    }
     Lardon3DAppState state;
     lardon3d_app_state_init(&state);
 
@@ -39,10 +53,11 @@ lardon3d_app_run(void)
     if (feature_threads > 12) {
         feature_threads = 12;
     }
-    /* OpenCV owns an internal process-wide pool. Configure it once, before
-     * Queue workers exist, to the empirically audited part of the host-reserved
-     * CPU budget. Feature Tasks request the same count from the Governor. This
-     * operational ceiling is not part of a fingerprint or FeatureSet identity. */
+    /* OpenCV owns one process-wide CPU setting. Startup establishes the safe
+     * audited baseline/ceiling before Queue exists; the sole Queue callback may
+     * temporarily apply its immutable admitted count and must restore this
+     * baseline on every path. Concurrent multi-worker mutation is unsupported.
+     * This operational count is never FeatureSet identity or fingerprint. */
     if (!lardon3d_feature_opencv_configure_threads(feature_threads)) {
         return EXIT_FAILURE;
     }

@@ -8,6 +8,7 @@
 #include <lardon3d/task.h>
 
 #include "resource_snapshot_test_utils.h"
+#include "../src/task_internal.h"
 
 #define CHECK(condition) \
     do { \
@@ -79,6 +80,49 @@ failure_callback(Lardon3DTask *task, void *userdata)
     return lardon3d_task_fail(task, "Erreur contrôlée.") && false;
 }
 
+typedef struct {
+    Lardon3DResourceGovernor *governor;
+    bool sequence_rejected;
+    bool active_reservation_released;
+} AssociationMismatchProbe;
+
+typedef struct {
+    size_t inflight_limit;
+    uint64_t gpu_memory_bytes;
+} DirectAdaptiveProbe;
+
+static bool
+direct_adaptive_callback(Lardon3DTask *task, void *userdata)
+{
+    DirectAdaptiveProbe *probe = userdata;
+    Lardon3DResourceCapabilitySelection selection;
+    Lardon3DTaskExecutionContract contract;
+    if (!probe
+        || !lardon3d_task_internal_execution_selection(task, &selection)
+        || !lardon3d_task_execution_contract(task, &contract)) {
+        return false;
+    }
+    probe->inflight_limit = selection.inflight_limit;
+    probe->gpu_memory_bytes = contract.gpu_memory_bytes;
+    return lardon3d_task_set_progress(task, 100, "Contrat direct observé.");
+}
+
+static bool
+association_mismatch_callback(Lardon3DTask *task, void *userdata)
+{
+    AssociationMismatchProbe *probe = userdata;
+    Lardon3DResourceReservation *reservation = NULL;
+    Lardon3DTaskExecutionContract contract;
+    if (!lardon3d_task_internal_test_force_sequence_association_mismatch(task)) {
+        return false;
+    }
+    probe->sequence_rejected = !lardon3d_task_sequence_break(
+        task, probe->governor, &reservation, &contract);
+    probe->active_reservation_released =
+        lardon3d_resource_governor_reservation_count(probe->governor) == 0;
+    return false;
+}
+
 static void *
 start_task(void *context)
 {
@@ -118,12 +162,15 @@ run_test(void)
         .logical_cpu_count = 4,
         .page_size_bytes = 4096,
         .memory_total_bytes = UINT64_MAX,
+        .gpu_available = true,
+        .gpu_uses_shared_memory = true,
         .cpu_architecture = "test",
     };
     Lardon3DResourcePolicy policy = {
         .maximum_cpu_load_ratio = 1.0,
         .maximum_io_pressure_avg10 = 100.0,
         .io_slot_capacity = 1,
+        .gpu_slot_capacity = 1,
     };
     Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(
         &profile,
@@ -238,6 +285,63 @@ run_test(void)
     CHECK(failed_probe.count == 1 && failed_probe.snapshot_succeeded
         && failed_probe.state == TASK_FAILED
         && failed_probe.reservation_released);
+    lardon3d_task_destroy(task);
+
+    AssociationMismatchProbe mismatch = {.governor = governor};
+    task = lardon3d_task_create(
+        "Association invalide", &estimate, association_mismatch_callback,
+        &mismatch);
+    CHECK(task);
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
+    CHECK(lardon3d_resource_governor_reserve(
+        governor, &resource_snapshot, &estimate, &decision, &reservation));
+    CHECK(lardon3d_task_start(task, governor, reservation));
+    CHECK(mismatch.sequence_rejected && mismatch.active_reservation_released);
+    CHECK(!lardon3d_task_internal_test_has_reservation_ownership(task));
+    CHECK(lardon3d_task_internal_test_association_failure_releases(task) == 1);
+    CHECK(lardon3d_resource_governor_reservation_count(governor) == 0);
+    CHECK(lardon3d_task_snapshot(task, &snapshot));
+    CHECK(snapshot.state == TASK_FAILED);
+    lardon3d_task_destroy(task);
+
+    /* A direct public reserve/start call has no private capability decision.
+     * It must therefore install the durable depth-one minimum, never the
+     * adaptive maximum that only Queue-owned admission may reserve. */
+    const Lardon3DResourceEstimate adaptive_estimate = {
+        .gpu_memory_fixed_bytes = 640 * 1024,
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+        .desired_gpu_slots = 1,
+        .task_class = LARDON3D_RESOURCE_TASK_MIXED,
+    };
+    Lardon3DTaskCapabilityEnvelope adaptive_envelope = {
+        .count = 1,
+        .capabilities = {{
+            .estimate = adaptive_estimate,
+            .backend = LARDON3D_RESOURCE_BACKEND_ORB_VULKAN,
+            .inflight_limit = 2,
+            .minimum_inflight_limit = 1,
+            .gpu_memory_bytes_per_inflight = 640 * 1024,
+            .inflight_adaptive = true,
+        }},
+    };
+    adaptive_envelope.capabilities[0].estimate.gpu_memory_fixed_bytes = 0;
+    DirectAdaptiveProbe direct_probe = {0};
+    task = lardon3d_task_create_typed(
+        "Contrat adaptatif direct", &adaptive_estimate,
+        "test.direct.adaptive", 1, direct_adaptive_callback, &direct_probe,
+        NULL);
+    CHECK(task
+        && lardon3d_task_internal_set_capability_envelope(
+            task, &adaptive_envelope));
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
+    CHECK(lardon3d_resource_governor_reserve(
+        governor, &resource_snapshot, &adaptive_estimate, &decision,
+        &reservation));
+    CHECK(reservation && lardon3d_task_start(task, governor, reservation));
+    CHECK(direct_probe.inflight_limit == 1
+        && direct_probe.gpu_memory_bytes == 640 * 1024);
     lardon3d_task_destroy(task);
 
     task = lardon3d_task_create(

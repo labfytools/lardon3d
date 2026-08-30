@@ -12,6 +12,7 @@
 #include <lardon3d/visual_index_task.h>
 
 #include "visual_index_internal.h"
+#include "task_internal.h"
 
 enum { VISUAL_INDEX_TASK_CPU_THREADS = 12 };
 
@@ -72,16 +73,16 @@ static bool run(Lardon3DTask *task, void *userdata) {
         contract.cpu_threads == 0 || contract.cpu_threads > VISUAL_INDEX_TASK_CPU_THREADS) {
       return lardon3d_task_fail(task, "Contrat Visual Index invalide.");
     }
-    struct timespec begin;
-    struct timespec end;
-    clock_gettime(CLOCK_MONOTONIC, &begin);
+    struct timespec begin = {0};
+    struct timespec end = {0};
+    bool timing_known = clock_gettime(CLOCK_MONOTONIC, &begin) == 0;
     uint64_t last = context->parameters.after_feature_set_id;
     size_t indexed = 0;
     Lardon3DVisualIndexResult result = lardon3d_visual_index_update_once_parallel(
         context->project_path, context->database, context->parameters.visual_index_id,
         lardon3d_task_id(task), context->parameters.after_feature_set_id, contract.batch_size,
         contract.cpu_threads, &last, &indexed);
-    clock_gettime(CLOCK_MONOTONIC, &end);
+    timing_known = timing_known && clock_gettime(CLOCK_MONOTONIC, &end) == 0;
     if (result == LARDON3D_VISUAL_INDEX_NO_CHANGE) {
       return lardon3d_task_set_progress(task, 100, "Visual Index à jour.");
     }
@@ -90,8 +91,21 @@ static bool run(Lardon3DTask *task, void *userdata) {
       return lardon3d_task_fail(task, "Mise à jour Visual Index impossible.");
     }
     context->parameters.after_feature_set_id = last;
-    lardon3d_resource_governor_record_batch(context->governor, LARDON3D_RESOURCE_TASK_CPU,
-                                            indexed, elapsed_ns(begin, end), 0);
+    size_t durable_indexed = result == LARDON3D_VISUAL_INDEX_OK ? indexed : 0;
+    uint64_t duration_ns = timing_known ? elapsed_ns(begin, end) : 0;
+    if (durable_indexed > 0 && duration_ns > 0) {
+      lardon3d_resource_governor_record_batch(
+          context->governor, LARDON3D_RESOURCE_TASK_CPU, durable_indexed,
+          duration_ns, 0);
+    }
+    /* Visual Index already consumes the immutable admitted CPU count. A
+     * segment whose directory publication is not durable remains visible for
+     * restart semantics but is zero operational work, so it cannot train the
+     * next sequence's 1/2/4/8/12 CPU trial. */
+    if (duration_ns > 0) {
+      (void)lardon3d_task_internal_record_sequence(
+          task, duration_ns, durable_indexed);
+    }
     if (!lardon3d_task_set_progress(task, 99, "Segment Visual Index publié.") ||
         lardon3d_project_checkpoint_visual_index_update_task(&state, task,
                                                              &context->parameters) !=

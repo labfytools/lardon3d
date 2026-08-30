@@ -20,13 +20,36 @@ extern "C" bool lardon3d_feature_opencv_configure_threads(unsigned int threads) 
   if (threads == 0 || threads > static_cast<unsigned int>(std::numeric_limits<int>::max())) {
     return false;
   }
-  cv::setNumThreads(static_cast<int>(threads));
-  return cv::getNumThreads() == static_cast<int>(threads);
+  try {
+    cv::setNumThreads(static_cast<int>(threads));
+#ifdef LARDON3D_FEATURE_TASK_TESTING
+    const char *forced = std::getenv(
+        "LARDON3D_TEST_OPENCV_CONFIGURE_FAILURE_THREADS");
+    if (forced) {
+      char *end = nullptr;
+      unsigned long parsed = std::strtoul(forced, &end, 10);
+      if (end && *end == '\0' && parsed == threads) {
+        /* Inject after mutation so Task cleanup must restore the captured
+         * process-wide value rather than treating failure as side-effect-free. */
+        return false;
+      }
+    }
+#endif
+    return cv::getNumThreads() == static_cast<int>(threads);
+  } catch (...) {
+    /* This process-wide operational control is a C ABI seam. OpenCV failures
+     * are reported to the Task owner and no C++ exception may escape. */
+    return false;
+  }
 }
 
 extern "C" unsigned int lardon3d_feature_opencv_thread_count(void) {
-  int threads = cv::getNumThreads();
-  return threads > 0 ? static_cast<unsigned int>(threads) : 1U;
+  try {
+    int threads = cv::getNumThreads();
+    return threads > 0 ? static_cast<unsigned int>(threads) : 1U;
+  } catch (...) {
+    return 1U;
+  }
 }
 
 extern "C" bool

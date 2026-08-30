@@ -26,22 +26,38 @@ read_text(const char *path, char *text, size_t capacity)
     if (!text || capacity < 2) {
         return false;
     }
-    int descriptor = open(path, O_RDONLY | O_CLOEXEC);
+    int descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (descriptor < 0) {
         return false;
     }
-    ssize_t count;
-    do {
-        count = read(descriptor, text, capacity - 1);
-    } while (count < 0 && errno == EINTR);
-    bool success = count >= 0 && close(descriptor) == 0;
+    size_t total = 0;
+    bool success = true;
+    while (total + 1 < capacity) {
+        ssize_t count = read(descriptor, text + total, capacity - total - 1);
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0) {
+            success = false;
+            break;
+        }
+        if (count == 0) break;
+        total += (size_t)count;
+    }
+    if (success && total + 1 == capacity) {
+        char extra;
+        ssize_t count;
+        do {
+            count = read(descriptor, &extra, 1);
+        } while (count < 0 && errno == EINTR);
+        success = count == 0;
+    }
+    if (close(descriptor) != 0) success = false;
     if (!success) {
         return false;
     }
-    text[(size_t)count] = '\0';
-    while (count > 0 && (text[(size_t)count - 1] == '\n'
-            || text[(size_t)count - 1] == '\r')) {
-        text[--count] = '\0';
+    text[total] = '\0';
+    while (total > 0 && (text[total - 1] == '\n'
+            || text[total - 1] == '\r')) {
+        text[--total] = '\0';
     }
     return true;
 }
@@ -49,23 +65,49 @@ read_text(const char *path, char *text, size_t capacity)
 static bool
 parse_uint64(const char *text, uint64_t *value)
 {
-    if (!text || !text[0] || !value || text[0] == '-') {
+    if (!text || !text[0] || !value) {
         return false;
     }
-    errno = 0;
-    char *end;
-    unsigned long long parsed = strtoull(text, &end, 0);
-    if (errno != 0 || end == text) {
-        return false;
+    const unsigned char *cursor = (const unsigned char *)text;
+    uint64_t parsed = 0;
+    size_t digits = 0;
+    while (*cursor >= '0' && *cursor <= '9') {
+        uint64_t digit = (uint64_t)(*cursor - '0');
+        if (parsed > (UINT64_MAX - digit) / 10U) return false;
+        parsed = parsed * 10U + digit;
+        ++cursor;
+        ++digits;
     }
-    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') {
-        ++end;
+    if (digits == 0) return false;
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\n'
+        || *cursor == '\r' || *cursor == '\f' || *cursor == '\v') {
+        ++cursor;
     }
-    if (*end) {
-        return false;
-    }
-    *value = (uint64_t)parsed;
+    if (*cursor) return false;
+    *value = parsed;
     return true;
+}
+
+static bool
+shared_memory_evidence(
+    const Lardon3DHardwareProfile *profile,
+    uint64_t vram_total,
+    bool gtt_known,
+    uint64_t gtt_total
+)
+{
+    if (profile->memory_total_bytes == 0) return false;
+    const uint64_t two_gibibytes = UINT64_C(2) * 1024 * 1024 * 1024;
+    bool conservatively_small = vram_total <= two_gibibytes
+        && vram_total <= profile->memory_total_bytes / 8;
+    bool system_scale_gtt = gtt_known
+        && gtt_total >= profile->memory_total_bytes / 4
+        && vram_total <= gtt_total / 2;
+    /* WHY: amdgpu exposes a small stolen/dedicated VRAM aperture even for an
+     * integrated GPU. Treating that positive number as separate free memory
+     * undercharges host RAM. A low-VRAM uncertain device may conservatively
+     * become UMA; the reverse error could violate the 3 GiB/2 GiB host floors. */
+    return conservatively_small || system_scale_gtt;
 }
 
 static const char *
@@ -92,9 +134,16 @@ lardon3d_hardware_profile_detect_gpu_at_root(
     if (!profile || !drm_root) {
         return;
     }
+    profile->gpu_available = false;
+    profile->gpu_drm_card_index = 0;
+    profile->gpu_memory_known = false;
+    profile->gpu_uses_shared_memory = false;
+    profile->gpu_memory_total_bytes = 0;
+    profile->gpu_name[0] = '\0';
     for (unsigned int index = 0; index < 64; ++index) {
         char vendor_path[PATH_MAX];
         char memory_path[PATH_MAX];
+        char gtt_path[PATH_MAX];
         int vendor_written = snprintf(
             vendor_path,
             sizeof(vendor_path),
@@ -109,9 +158,17 @@ lardon3d_hardware_profile_detect_gpu_at_root(
             drm_root,
             index
         );
+        int gtt_written = snprintf(
+            gtt_path,
+            sizeof(gtt_path),
+            "%s/card%u/device/mem_info_gtt_total",
+            drm_root,
+            index
+        );
         if (vendor_written < 0 || (size_t)vendor_written >= sizeof(vendor_path)
             || memory_written < 0
-            || (size_t)memory_written >= sizeof(memory_path)) {
+            || (size_t)memory_written >= sizeof(memory_path)
+            || gtt_written < 0 || (size_t)gtt_written >= sizeof(gtt_path)) {
             continue;
         }
         char vendor[32];
@@ -132,7 +189,16 @@ lardon3d_hardware_profile_detect_gpu_at_root(
             && parse_uint64(memory, &bytes) && bytes > 0) {
             profile->gpu_memory_known = true;
             profile->gpu_memory_total_bytes = bytes;
+            char gtt[64];
+            uint64_t gtt_bytes = 0;
+            bool gtt_known = read_text(gtt_path, gtt, sizeof(gtt))
+                && parse_uint64(gtt, &gtt_bytes) && gtt_bytes > 0;
+            profile->gpu_uses_shared_memory = shared_memory_evidence(
+                profile, bytes, gtt_known, gtt_bytes);
         } else {
+            /* Unknown payload capacity must never be treated as an independent
+             * VRAM budget. Governor can still use the GPU conservatively while
+             * charging every admitted byte to MemAvailable. */
             profile->gpu_uses_shared_memory = true;
         }
         return;
