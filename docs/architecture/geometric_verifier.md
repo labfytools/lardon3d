@@ -352,6 +352,60 @@ existante. Le build CPU-only couvre la suite normale (31/31). La suite normale n
 benchmark lourd ni stress. Le clean build Clang/Clang++ et la campagne normale finale passent
 32/32 avec ORB Vulkan matériel sur Radeon 780M RADV PHOENIX.
 
+## Real S21 GV v3
+
+`REAL_S21_GV_V3=PASS/FROZEN` au 31 août 2026. La preuve part d'une copie reflink entière du projet
+Matcher S21 gelé à 2 826 Feature Sets, 172 741 Candidate Pairs et 172 741 Match Results. Le SHA-256
+DB source vaut avant et après
+`9f5ee4877bca25db3d4929be06d8e6ff4fa1c29e11249e4125266a833f09f3e0` ; le projet source n'est
+jamais ouvert en écriture. La copie de travail reprend exclusivement à la frontière Match Result,
+par la Task, la Queue et le Resource Governor AUTO de production, puis s'arrête avant Track
+Builder. Avant GV, la Task Matcher 2831 est `COMPLETE`, progression 100,
+`sequence_count=21629`, curseur 172 741 ; son checkpoint SHA-256 vaut
+`636f4f4a20f27308d90142c495c9f6ffc04b4c0dfcca0fdc75cfeb5366ab50b1`. Le projet contient alors
+zéro GVR, Track Set, Track ou Sparse Reconstruction.
+
+La Task 2832 consomme le curseur complet de 172 741 Match Results. Parmi eux, 172 275 parents
+`MATCHED` applicables produisent exactement 172 275 identités v3 : 24 065
+`GEOMETRIC_VERIFIED` et 148 210 `GEOMETRIC_REJECTED`. Les 466 autres Match Results sont traversés
+sans GVR conformément au contrat. Le fingerprint est
+`6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c`. La Task termine
+`COMPLETE`, progression 100, `sequence_count=21592`, curseur 172 741 et zéro mapping dupliqué. Son
+checkpoint final SHA-256 vaut
+`3e6bed97cee9c96f229ef19a3c905d19d4693cdbf43b30319edcdeed6c4e378e`. Le wall propre à
+l'enqueue/attente GV vaut 3 221,757986763 s ; le wall du runner incluant l'audit intégral amont
+vaut 3 252,89 s.
+
+L'audit relit les 172 741 mappings Candidate/Match et les 172 275 Match Files : SHA, taille,
+header, entrées, ordre et curseur Matcher restent valides. Le digest `L3DMRD1` demeure
+`e5128a2e599ff593c4f79850e067254b1f249d19e8480a44973306b1af250f70`. Feature Sets, Candidate
+Pairs et Match Results gardent respectivement 2 826, 172 741 et 172 741 lignes ; aucune Task
+Feature, Candidate ou Matcher n'est rejouée. Track Set, Track, Track Builder Task, Sparse SfM Task
+et Sparse Reconstruction restent tous à zéro.
+
+Le Governor enregistre 21 593 admissions, exclusivement backend fixe, sans changement de contrat.
+Le dernier contrat est GREEN, CPU 1, GPU 0, I/O 1, batch 8, hôte 4 Mio et GPU 0. Les masques sont
+compute `0-5,8-13` et reserve `6,7,14,15`. Sur l'échantillonnage coalescé de 21 590 changements,
+le minimum `MemAvailable` vaut 8 907 714 560 octets, le RSS/HWM processus maximal 45 690 880
+octets, le PSI mémoire maximal 0,90 %, le PSI I/O maximal 50,17 % et les deltas swap-in/out sont
+0/0. Les réserves 3 Gio/2 Gio restent respectées ; aucune voie GPU GV n'est créée.
+
+La seconde reprise complète crée la Task 2833, traverse le même curseur et crée zéro GVR. Les
+172 275 lignes avant/après sont égales sur toutes leurs colonnes par `EXCEPT` dans les deux sens,
+avec zéro différence, les mêmes IDs 1..172275 et les mêmes comptes accepté/rejeté. Sur une copie
+reflink séparée, SIGKILL interrompt la Task 2834 après un préfixe checkpointé : l'état durable reste
+`RUNNING/PENDING`, puis la registry de production reprend cette même Task (`inspected=1`,
+`resumed=1`) jusqu'à `COMPLETE`, progression 100 et curseur 172 741. L'égalité complète des GVR
+avec le projet terminé reste zéro différence dans les deux sens ; aucun résultat n'est perdu ou
+dupliqué et aucun travail amont/aval n'est exécuté.
+
+Les builds normaux Vulkan et portable sans Vulkan passent. Les 14 tests focalisés GV, Task,
+checkpoint, Project DB/Project, registry, Queue et Governor passent dans chaque configuration ; le
+test runner ciblé passe aussi sous ASan/UBSan. `REAL_S21_GV_V3`, `RESTART_IDEMPOTENCE`,
+`DETERMINISM`, `GOVERNOR_ADMISSION` et `DOWNSTREAM_STOP` sont donc `PASS/FROZEN`. Ce gel porte sur
+la preuve réelle de la policy v3 déjà gelée ; il ne rouvre ni algorithme, seuil, RNG, fingerprint,
+Project DB v22, Matcher/Governor v2, Track Builder ou Sparse SfM.
+
 ## Out of scope
 
 Tracks, model competition, classification planaire ou faible parallaxe, Essential, calibration,

@@ -339,6 +339,16 @@ int main() {
   CHECK(std::string(std::getenv("MESA_SHADER_CACHE_DISABLE")) == "false");
   CHECK(setenv("MESA_SHADER_CACHE_DISABLE", "true", 1) == 0);
 
+  Runtime geometric_reset{};
+  geometric_reset.geometric_maximum_swap_pages_in_delta = 17;
+  geometric_reset.geometric_maximum_swap_pages_out_delta = 19;
+  geometric_reset.geometric_maximum_process_rss_bytes = 23;
+  begin_geometric_evidence(geometric_reset);
+  CHECK(geometric_reset.geometric_maximum_swap_pages_in_delta == 0 &&
+        geometric_reset.geometric_maximum_swap_pages_out_delta == 0 &&
+        geometric_reset.geometric_maximum_process_rss_bytes == 0);
+  geometric_reset.geometric_evidence_active = false;
+
   Options options;
   CHECK(parse_case({"runner", "--resume-pre-gv-existing", "--project-dir",
                     "/tmp/not-opened"}, options));
@@ -420,6 +430,24 @@ int main() {
   CHECK(!parse_case({"runner", "--resume-candidate-existing", "--project-dir",
                      "/tmp/not-opened", "--matcher-inflight", "1",
                      "--matcher-batch", "2"}, options));
+  options = {};
+  CHECK(parse_case({"runner", "--resume-geometry-existing", "--project-dir",
+                    "/tmp/not-opened", "--stop-after-gv"}, options));
+  CHECK(options.stop_after_gv && !options.stop_after_matcher);
+  options = {};
+  CHECK(!parse_case({"runner", "--resume-pre-gv-existing", "--project-dir",
+                     "/tmp/not-opened", "--stop-after-gv"}, options));
+  options = {};
+  CHECK(!parse_case({"runner", "--resume-candidate-existing", "--project-dir",
+                     "/tmp/not-opened", "--stop-after-gv"}, options));
+  options = {};
+  CHECK(!parse_case({"runner", "--mode", "s21", "--project-dir",
+                     "/tmp/not-opened", "--root", "/tmp",
+                     "--stop-after-gv"}, options));
+  options = {};
+  CHECK(!parse_case({"runner", "--resume-geometry-existing", "--project-dir",
+                     "/tmp/not-opened", "--stop-after-matcher",
+                     "--stop-after-gv"}, options));
   options = {};
   CHECK(!parse_case({"runner", "--resume-geometry-existing", "--project-dir",
                      "/tmp/not-opened", "--cpu-budget", "2"}, options));

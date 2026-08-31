@@ -417,6 +417,17 @@ termine batch 8/inflight 1/helpers 0 et ne compte aucune panne/discard/pending.
 Une admission YELLOW réduit batch 8 à 1, puis les séquences GREEN rétablissent
 1 → 2 → 4 → 8; le gate possède donc aussi une preuve réelle de recovery.
 
+La poursuite S21 ferme ensuite le point Geometric Verifier v3 sans rejouer le
+Matcher. La Task 2832 consomme les 172 741 Match Results et publie 172 275 GVR
+v3, dont 24 065 acceptés et 148 210 rejetés, avec zéro doublon et curseur
+complet. Le digest Matcher reste
+`e5128a2e599ff593c4f79850e067254b1f249d19e8480a44973306b1af250f70`.
+La seconde reprise crée zéro ligne ; une Task interrompue sur une copie dédiée
+reprend le même ID et converge vers les mêmes lignes exactes. Feature,
+Candidate et Matcher ne sont pas rejoués. Track Builder et Sparse SfM ne sont
+pas exécutés. `REAL_S21_GV_V3=PASS/FROZEN` ; la prochaine tranche S21 commence
+donc après GV, sans prétendre que Tracks est acquis.
+
 Les gates de fermeture sont acquis :
 
 ```text
@@ -445,6 +456,12 @@ DOC_CONSISTENCY=PASS
 MATCHER_GPU=EXISTING_BACKEND_VALIDATED_AND_PREFERRED
 COMPUTE_GOVERNOR_V2=PASS/FROZEN
 ORB_VULKAN_ASYNC_EXECUTION=PASS/FROZEN
+REAL_S21_GV_V3=PASS/FROZEN
+FEATURE_REPLAY=0
+CANDIDATE_REPLAY=0
+MATCHER_REPLAY=0
+TRACKS_EXECUTED=0
+SPARSE_SFM_EXECUTED=0
 ```
 
 L'expérience normale est donc : l'utilisateur lance une Task; l'unique
@@ -459,7 +476,8 @@ fondation scientifique pré-SfM courante
   (Candidate, Matcher, Visual Index, audit feature threading,
    correction progression/Resource Governor, audit GPU)
 → COMPUTE GOVERNOR v2 / ORB VULKAN ASYNC EXECUTION (PASS / FROZEN)
-→ poursuite pré-SfM réelle complète de S21
+→ REAL S21 GV v3 (PASS / FROZEN; arrêt avant Tracks)
+→ poursuite pré-SfM réelle de S21 à partir de Tracks
 → acquisition dédiée de calibration
 → Sparse SfM réel
 → Dense / MVS
@@ -776,7 +794,8 @@ CURRENT NEXT
   → INTERNAL PARALLELISM + COMPUTE RESOURCES v1
   → COMPUTE GOVERNOR v2 / ORB VULKAN ASYNC EXECUTION
     (PASS / FROZEN; AUTO GPU-first ORB et preuve S21 Matcher complète)
-  → poursuite pré-SfM réelle complète de S21
+  → REAL S21 GV v3 (PASS / FROZEN; Tracks/Sparse SfM non exécutés)
+  → poursuite pré-SfM réelle de S21 à partir de Tracks
   → acquisition physique dédiée de calibration
   → calibration connue validée → Sparse SfM réel multi-campagne
   → dense / MVS → publication

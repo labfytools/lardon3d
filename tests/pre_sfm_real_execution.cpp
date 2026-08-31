@@ -65,6 +65,7 @@ struct Options {
   unsigned int matcher_batch_override{};
   bool has_matcher_batch_override{};
   bool stop_after_matcher{};
+  bool stop_after_gv{};
   std::filesystem::path project_dir;
   std::vector<std::filesystem::path> roots;
   size_t limit{LARDON3D_VISUAL_INDEX_CANDIDATE_MAX};
@@ -89,12 +90,38 @@ struct Runtime {
   unsigned int matcher_batch_override{};
   bool matcher_needed{};
   bool stop_after_matcher{};
+  bool stop_after_gv{};
   bool matcher_evidence_active{};
   uint64_t matcher_diagnostic_serial{};
   uint64_t matcher_diagnostic_samples{};
   std::chrono::steady_clock::time_point matcher_wall_begin{};
   bool matcher_backend_before_known{};
   Lardon3DOrbVulkanTelemetry matcher_backend_before{};
+  /* Runner-owned fixed scalars retain extrema from coalesced Governor
+   * diagnostics. They never add per-sequence history, production state, or a
+   * scientific acceptance input; `diagnostic_samples` states the sampling
+   * limitation explicitly in the evidence record. */
+  bool geometric_evidence_active{};
+  uint64_t geometric_diagnostic_serial{};
+  uint64_t geometric_diagnostic_samples{};
+  std::chrono::steady_clock::time_point geometric_wall_begin{};
+  bool geometric_memory_available_known{};
+  uint64_t geometric_minimum_memory_available_bytes{};
+  bool geometric_memory_psi_some_known{};
+  uint32_t geometric_maximum_memory_psi_some_basis_points{};
+  bool geometric_memory_psi_full_known{};
+  uint32_t geometric_maximum_memory_psi_full_basis_points{};
+  bool geometric_io_psi_some_known{};
+  uint32_t geometric_maximum_io_psi_some_basis_points{};
+  bool geometric_io_psi_full_known{};
+  uint32_t geometric_maximum_io_psi_full_basis_points{};
+  bool geometric_swap_delta_known{};
+  uint64_t geometric_maximum_swap_pages_in_delta{};
+  uint64_t geometric_maximum_swap_pages_out_delta{};
+  bool geometric_process_rss_known{};
+  uint64_t geometric_maximum_process_rss_bytes{};
+  bool geometric_process_peak_rss_known{};
+  uint64_t geometric_maximum_process_peak_rss_bytes{};
 };
 
 struct Evidence {
@@ -122,7 +149,8 @@ void usage(const char *program) {
       "Usage: %s --mode a6000|s21 --project-dir ABSOLUTE_EMPTY_DIR "
       "--root ABSOLUTE_DIR [--root ABSOLUTE_DIR ...] [--limit 1..4096] "
       "[--restart-boundary representations|features|geometry]\n"
-      "       %s --resume-geometry-existing --project-dir ABSOLUTE_EXISTING_DIR\n"
+      "       %s --resume-geometry-existing --project-dir ABSOLUTE_EXISTING_DIR "
+      "[--stop-after-gv]\n"
       "       %s --resume-pre-gv-existing --project-dir "
       "ABSOLUTE_EXISTING_DIR [--cpu-budget 1..12] [--gpu-budget 0..1] "
       "[--matcher-mode auto|cpu|vulkan] "
@@ -254,6 +282,8 @@ bool parse_options(int argc, char **argv, Options &options) {
       options.has_matcher_batch_override = true;
     } else if (argument == "--stop-after-matcher") {
       options.stop_after_matcher = true;
+    } else if (argument == "--stop-after-gv") {
+      options.stop_after_gv = true;
     } else {
       return false;
     }
@@ -266,13 +296,13 @@ bool parse_options(int argc, char **argv, Options &options) {
         options.restart != RestartBoundary::kNone || resume_mode_count != 1)
       return false;
     if (options.resume_pre_gv_existing) {
-      return true;
+      return !options.stop_after_gv;
     }
     if (options.resume_candidate_existing)
       return !options.has_matcher_mode && !options.has_matcher_pipeline &&
              !options.has_matcher_inflight_override &&
              !options.has_matcher_batch_override &&
-             !options.stop_after_matcher;
+             !options.stop_after_matcher && !options.stop_after_gv;
     return options.cpu_budget == 0 && !options.has_gpu_budget &&
            !options.has_matcher_mode && !options.has_matcher_pipeline &&
            !options.has_matcher_inflight_override &&
@@ -283,7 +313,7 @@ bool parse_options(int argc, char **argv, Options &options) {
       options.has_matcher_mode || options.has_matcher_pipeline ||
       options.has_matcher_inflight_override ||
       options.has_matcher_batch_override ||
-      options.stop_after_matcher) return false;
+      options.stop_after_matcher || options.stop_after_gv) return false;
   return options.has_mode && !options.project_dir.empty() && !options.roots.empty() &&
          options.roots.size() <= LARDON3D_ACQUISITION_CAMPAIGN_MAX_ROOTS;
 }
@@ -1042,9 +1072,216 @@ bool end_matcher_evidence(Runtime &runtime) {
   return !experiment.applicable || experiment.valid;
 }
 
+void begin_geometric_evidence(Runtime &runtime) {
+  runtime.geometric_evidence_active = true;
+  runtime.geometric_diagnostic_serial = 0;
+  runtime.geometric_diagnostic_samples = 0;
+  runtime.geometric_wall_begin = std::chrono::steady_clock::now();
+  runtime.geometric_memory_available_known = false;
+  runtime.geometric_minimum_memory_available_bytes = 0;
+  runtime.geometric_memory_psi_some_known = false;
+  runtime.geometric_maximum_memory_psi_some_basis_points = 0;
+  runtime.geometric_memory_psi_full_known = false;
+  runtime.geometric_maximum_memory_psi_full_basis_points = 0;
+  runtime.geometric_io_psi_some_known = false;
+  runtime.geometric_maximum_io_psi_some_basis_points = 0;
+  runtime.geometric_io_psi_full_known = false;
+  runtime.geometric_maximum_io_psi_full_basis_points = 0;
+  runtime.geometric_swap_delta_known = false;
+  runtime.geometric_maximum_swap_pages_in_delta = 0;
+  runtime.geometric_maximum_swap_pages_out_delta = 0;
+  runtime.geometric_process_rss_known = false;
+  runtime.geometric_maximum_process_rss_bytes = 0;
+  runtime.geometric_process_peak_rss_known = false;
+  runtime.geometric_maximum_process_peak_rss_bytes = 0;
+}
+
+void sample_geometric_diagnostic(Runtime &runtime) {
+  if (!runtime.geometric_evidence_active || !runtime.state.resource_governor)
+    return;
+  Lardon3DResourceSequenceDiagnostic diagnostic{};
+  if (!lardon3d_resource_governor_internal_diagnostic_since(
+          runtime.state.resource_governor,
+          LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND,
+          LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND_VERSION,
+          runtime.geometric_diagnostic_serial, &diagnostic))
+    return;
+  runtime.geometric_diagnostic_serial = diagnostic.serial;
+  ++runtime.geometric_diagnostic_samples;
+  if (diagnostic.host.memory_available_known &&
+      (!runtime.geometric_memory_available_known ||
+       diagnostic.host.memory_available_bytes <
+           runtime.geometric_minimum_memory_available_bytes)) {
+    runtime.geometric_memory_available_known = true;
+    runtime.geometric_minimum_memory_available_bytes =
+        diagnostic.host.memory_available_bytes;
+  }
+#define RETAIN_GEOMETRIC_MAX(known_field, maximum_field, source_known, source) \
+  do {                                                                          \
+    if ((source_known) && (!(known_field) || (source) > (maximum_field))) {      \
+      (known_field) = true;                                                      \
+      (maximum_field) = (source);                                                \
+    }                                                                            \
+  } while (false)
+  RETAIN_GEOMETRIC_MAX(runtime.geometric_memory_psi_some_known,
+                       runtime.geometric_maximum_memory_psi_some_basis_points,
+                       diagnostic.host.memory_psi_some_known,
+                       diagnostic.host.memory_psi_some_basis_points);
+  RETAIN_GEOMETRIC_MAX(runtime.geometric_memory_psi_full_known,
+                       runtime.geometric_maximum_memory_psi_full_basis_points,
+                       diagnostic.host.memory_psi_full_known,
+                       diagnostic.host.memory_psi_full_basis_points);
+  RETAIN_GEOMETRIC_MAX(runtime.geometric_io_psi_some_known,
+                       runtime.geometric_maximum_io_psi_some_basis_points,
+                       diagnostic.host.io_psi_some_known,
+                       diagnostic.host.io_psi_some_basis_points);
+  RETAIN_GEOMETRIC_MAX(runtime.geometric_io_psi_full_known,
+                       runtime.geometric_maximum_io_psi_full_basis_points,
+                       diagnostic.host.io_psi_full_known,
+                       diagnostic.host.io_psi_full_basis_points);
+  if (diagnostic.host.swap_delta_known) {
+    runtime.geometric_swap_delta_known = true;
+    runtime.geometric_maximum_swap_pages_in_delta = std::max(
+        runtime.geometric_maximum_swap_pages_in_delta,
+        diagnostic.host.swap_pages_in_delta);
+    runtime.geometric_maximum_swap_pages_out_delta = std::max(
+        runtime.geometric_maximum_swap_pages_out_delta,
+        diagnostic.host.swap_pages_out_delta);
+  }
+  RETAIN_GEOMETRIC_MAX(runtime.geometric_process_rss_known,
+                       runtime.geometric_maximum_process_rss_bytes,
+                       diagnostic.host.process_rss_known,
+                       diagnostic.host.process_rss_bytes);
+  RETAIN_GEOMETRIC_MAX(runtime.geometric_process_peak_rss_known,
+                       runtime.geometric_maximum_process_peak_rss_bytes,
+                       diagnostic.host.process_peak_rss_known,
+                       diagnostic.host.process_peak_rss_bytes);
+#undef RETAIN_GEOMETRIC_MAX
+}
+
+bool end_geometric_evidence(Runtime &runtime) {
+  if (!runtime.geometric_evidence_active) return false;
+  sample_geometric_diagnostic(runtime);
+  const uint64_t wall_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - runtime.geometric_wall_begin)
+          .count());
+  Lardon3DResourceSequenceAggregate aggregate{};
+  const bool aggregate_known =
+      lardon3d_resource_governor_internal_sequence_aggregate(
+          runtime.state.resource_governor,
+          LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND,
+          LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND_VERSION, &aggregate);
+  Lardon3DResourceSequenceDiagnostic last{};
+  const bool last_known = lardon3d_resource_governor_internal_last_diagnostic(
+      runtime.state.resource_governor,
+      LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND,
+      LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND_VERSION, &last);
+  Lardon3DResourceCpuPolicyDiagnostic cpu_policy{};
+  const bool cpu_policy_known =
+      lardon3d_resource_governor_internal_cpu_policy(
+          runtime.state.resource_governor, &cpu_policy);
+  const bool contract_valid =
+      last_known && last.backend == LARDON3D_RESOURCE_BACKEND_FIXED &&
+      last.actual_backend == LARDON3D_RESOURCE_BACKEND_FIXED &&
+      !last.backend_fallback && last.cpu_threads == 1 &&
+      last.gpu_slots == 0 && last.io_slots == 1 &&
+      last.batch_size >= LARDON3D_GEOMETRIC_VERIFIER_TASK_MINIMUM_BATCH &&
+      last.batch_size <= LARDON3D_GEOMETRIC_VERIFIER_TASK_MAXIMUM_BATCH &&
+      last.memory_bytes == UINT64_C(4) * 1024 * 1024 &&
+      last.gpu_memory_bytes == 0;
+  const bool admission_valid =
+      aggregate_known && !aggregate.saturated &&
+      aggregate.admission_count > 0 &&
+      aggregate.selected_backend_admissions[
+          LARDON3D_RESOURCE_BACKEND_FIXED] == aggregate.admission_count &&
+      aggregate.selected_backend_admissions[LARDON3D_RESOURCE_BACKEND_CPU] == 0 &&
+      aggregate.selected_backend_admissions[
+          LARDON3D_RESOURCE_BACKEND_ORB_VULKAN] == 0 &&
+      contract_valid && cpu_policy_known && cpu_policy.affinity_active &&
+      cpu_policy.runtime_thread_policy_active;
+  std::printf(
+      "{\"record\":\"geometric_governor_evidence\","
+      "\"diagnostic_sampling\":\"latest-change-coalescing\","
+      "\"diagnostic_samples\":%llu,\"wall_ns\":%llu,"
+      "\"admissions\":%llu,\"governor_sequence_observations\":%llu,"
+      "\"selected_fixed_admissions\":%llu,\"selected_cpu_admissions\":%llu,"
+      "\"selected_vulkan_admissions\":%llu,\"contract_changes\":%llu,"
+      "\"min_mem_available_bytes\":",
+      static_cast<unsigned long long>(runtime.geometric_diagnostic_samples),
+      static_cast<unsigned long long>(wall_ns),
+      static_cast<unsigned long long>(aggregate.admission_count),
+      static_cast<unsigned long long>(aggregate.sequence_count),
+      static_cast<unsigned long long>(aggregate.selected_backend_admissions[
+          LARDON3D_RESOURCE_BACKEND_FIXED]),
+      static_cast<unsigned long long>(aggregate.selected_backend_admissions[
+          LARDON3D_RESOURCE_BACKEND_CPU]),
+      static_cast<unsigned long long>(aggregate.selected_backend_admissions[
+          LARDON3D_RESOURCE_BACKEND_ORB_VULKAN]),
+      static_cast<unsigned long long>(aggregate.contract_change_count));
+  print_known_u64(runtime.geometric_memory_available_known,
+                  runtime.geometric_minimum_memory_available_bytes);
+  std::fputs(",\"max_memory_psi_some_basis_points\":", stdout);
+  print_known_u32(runtime.geometric_memory_psi_some_known,
+                  runtime.geometric_maximum_memory_psi_some_basis_points);
+  std::fputs(",\"max_memory_psi_full_basis_points\":", stdout);
+  print_known_u32(runtime.geometric_memory_psi_full_known,
+                  runtime.geometric_maximum_memory_psi_full_basis_points);
+  std::fputs(",\"max_io_psi_some_basis_points\":", stdout);
+  print_known_u32(runtime.geometric_io_psi_some_known,
+                  runtime.geometric_maximum_io_psi_some_basis_points);
+  std::fputs(",\"max_io_psi_full_basis_points\":", stdout);
+  print_known_u32(runtime.geometric_io_psi_full_known,
+                  runtime.geometric_maximum_io_psi_full_basis_points);
+  std::fputs(",\"observed_max_swap_pages_in_delta\":", stdout);
+  print_known_u64(runtime.geometric_swap_delta_known,
+                  runtime.geometric_maximum_swap_pages_in_delta);
+  std::fputs(",\"observed_max_swap_pages_out_delta\":", stdout);
+  print_known_u64(runtime.geometric_swap_delta_known,
+                  runtime.geometric_maximum_swap_pages_out_delta);
+  std::fputs(",\"max_process_rss_bytes\":", stdout);
+  print_known_u64(runtime.geometric_process_rss_known,
+                  runtime.geometric_maximum_process_rss_bytes);
+  std::fputs(",\"max_process_peak_rss_bytes\":", stdout);
+  print_known_u64(runtime.geometric_process_peak_rss_known,
+                  runtime.geometric_maximum_process_peak_rss_bytes);
+  std::printf(
+      ",\"aggregate_saturated\":%s,\"affinity_known\":%s,"
+      "\"affinity_active\":%s,\"runtime_thread_policy_active\":%s,"
+      "\"compute_cpu_count\":%u,\"reserved_cpu_count\":%u,"
+      "\"compute_mask\":",
+      aggregate.saturated ? "true" : "false",
+      cpu_policy_known ? "true" : "false",
+      cpu_policy_known && cpu_policy.affinity_active ? "true" : "false",
+      cpu_policy_known && cpu_policy.runtime_thread_policy_active ? "true" : "false",
+      cpu_policy.compute_cpu_count, cpu_policy.reserved_cpu_count);
+  print_cpu_mask(cpu_policy.compute_mask);
+  std::fputs(",\"reserved_mask\":", stdout);
+  print_cpu_mask(cpu_policy.reserved_mask);
+  std::printf(",\"last_contract_known\":%s", last_known ? "true" : "false");
+  if (last_known) {
+    std::printf(
+        ",\"last_selected_backend\":\"%s\",\"last_actual_backend\":\"%s\","
+        "\"last_pressure\":\"%s\",\"last_cpu\":%u,\"last_gpu\":%u,"
+        "\"last_batch\":%zu,\"last_io\":%u,\"last_host_memory_bytes\":%llu,"
+        "\"last_gpu_memory_bytes\":%llu,\"last_reason\":",
+        backend_name(last.backend), backend_name(last.actual_backend),
+        pressure_name(last.pressure), last.cpu_threads, last.gpu_slots,
+        last.batch_size, last.io_slots,
+        static_cast<unsigned long long>(last.memory_bytes),
+        static_cast<unsigned long long>(last.gpu_memory_bytes));
+    print_json_string(last.reason);
+  }
+  std::printf(",\"governor_admission_pass\":%s}\n",
+              admission_valid ? "true" : "false");
+  runtime.geometric_evidence_active = false;
+  return admission_valid;
+}
+
 bool wait_completed(Runtime &runtime, uint64_t task_id, const char *phase) {
   for (;;) {
     emit_matcher_diagnostic_change(runtime);
+    sample_geometric_diagnostic(runtime);
     Lardon3DTaskSnapshot snapshot{};
     if (!lardon3d_task_queue_get(runtime.state.task_queue, task_id, &snapshot)) return false;
     if (snapshot.state == TASK_COMPLETED || snapshot.state == TASK_FAILED ||
@@ -1060,6 +1297,7 @@ bool wait_completed(Runtime &runtime, uint64_t task_id, const char *phase) {
           return false;
         }
         emit_matcher_diagnostic_change(runtime);
+        sample_geometric_diagnostic(runtime);
         return lardon3d_task_queue_remove(runtime.state.task_queue, task_id);
       }
     }
@@ -1790,6 +2028,75 @@ bool count_exact_gvrs(Runtime &runtime, const unsigned char fingerprint[32],
   return true;
 }
 
+bool match_result_frontier(Runtime &runtime, size_t &count,
+                           uint64_t &last_match_result_id) {
+  count = 0;
+  last_match_result_id = 0;
+  for (;;) {
+    Lardon3DProjectDbMatchResult page[64]{};
+    size_t page_count = 0;
+    if (lardon3d_project_db_list_match_results(
+            runtime.state.project_db, last_match_result_id, page, 64,
+            &page_count) != LARDON3D_PROJECT_DB_OK)
+      return false;
+    if (page_count > SIZE_MAX - count) return false;
+    count += page_count;
+    if (page_count != 0) {
+      const uint64_t next = page[page_count - 1].match_result_id;
+      if (next <= last_match_result_id) return false;
+      last_match_result_id = next;
+    }
+    if (page_count < 64) return true;
+  }
+}
+
+bool find_pending_geometry_task(Runtime &runtime, uint64_t &geometry_task_id) {
+  geometry_task_id = 0;
+  uint64_t cursor = 0;
+  for (;;) {
+    Lardon3DProjectRecoveryEntry entries[8]{};
+    size_t count = 0;
+    if (lardon3d_project_list_recoverable(
+            &runtime.state, lardon3d_task_kind_registry_production(), cursor,
+            entries, 8, &count) != LARDON3D_PROJECT_DB_OK)
+      return false;
+    for (size_t index = 0; index < count; ++index) {
+      const auto &entry = entries[index];
+      cursor = entry.task_id;
+      if ((entry.status != LARDON3D_PROJECT_RECOVERABLE &&
+           entry.status !=
+               LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE) ||
+          entry.snapshot.recovery_state != TASK_PENDING ||
+          std::strcmp(entry.task_kind,
+                      LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND) != 0 ||
+          geometry_task_id != 0) {
+        /* The production recovery API resumes every pending Task. This
+         * GV-only proof route must never replay an upstream or downstream kind
+         * merely because it shares the same project. */
+        std::fprintf(stderr,
+                     "GV-only recovery refuses unsafe pending task %llu of kind %s\n",
+                     static_cast<unsigned long long>(entry.task_id),
+                     entry.task_kind);
+        return false;
+      }
+      geometry_task_id = entry.task_id;
+    }
+    if (count < 8) return true;
+  }
+}
+
+bool recover_geometry_task(Runtime &runtime, uint64_t geometry_task_id,
+                           Lardon3DProjectRecoverySummary &recovery) {
+  recovery = {};
+  return lardon3d_project_resume_recoverable_tasks(
+             &runtime.state, lardon3d_task_kind_registry_production(),
+             &recovery) == LARDON3D_PROJECT_DB_OK &&
+         recovery.inspected == 1 && recovery.resumed == 1 &&
+         recovery.failed == 0 && !recovery.queue_full &&
+         wait_completed(runtime, geometry_task_id,
+                        "geometric_verifier.run recovered existing");
+}
+
 bool find_pending_pre_gv_task(Runtime &runtime, uint64_t &candidate_task_id,
                               uint64_t &matcher_task_id) {
   candidate_task_id = 0;
@@ -2107,8 +2414,16 @@ bool run_existing_geometry(Runtime &runtime) {
       lardon3d_geometric_verifier_default_parameters()};
   unsigned char fingerprint[32]{};
   lardon3d_geometric_verifier_fingerprint(&configuration.verifier, fingerprint);
+  Evidence before{};
   size_t exact_before = 0;
-  if (!count_exact_gvrs(runtime, fingerprint, exact_before)) {
+  size_t match_results_before = 0;
+  uint64_t match_frontier_before = 0;
+  uint64_t pending_geometry_task_id = 0;
+  if (!collect_evidence(runtime, 0, before) ||
+      !count_exact_gvrs(runtime, fingerprint, exact_before) ||
+      !match_result_frontier(runtime, match_results_before,
+                             match_frontier_before) ||
+      !find_pending_geometry_task(runtime, pending_geometry_task_id)) {
     stop_runtime(runtime);
     return false;
   }
@@ -2116,14 +2431,29 @@ bool run_existing_geometry(Runtime &runtime) {
   /* This route deliberately starts at the immutable Match Result boundary.
    * It enqueues no quality, campaign, representation, feature, index,
    * candidate, or Matcher work. Task/Queue/Governor retain their production
-   * ownership, and exact current identity reuse makes a full rerun convergent. */
-  uint64_t geometry_task_id = 0;
-  if (!lardon3d_project_enqueue_geometric_verifier_task(
-          &runtime.state, &configuration, &geometry_task_id) ||
-      !wait_completed(runtime, geometry_task_id,
-                      "geometric_verifier.run current existing")) {
+   * ownership, and exact current identity reuse makes a full rerun convergent.
+   * The stop flag is runner-only: it suppresses only the legacy Track Builder
+   * call after a completed/audited production GV Task. */
+  uint64_t geometry_task_id = pending_geometry_task_id;
+  Lardon3DProjectRecoverySummary recovery{};
+  const char *geometry_action = pending_geometry_task_id == 0
+                                    ? "enqueued"
+                                    : "recovered";
+  begin_geometric_evidence(runtime);
+  const bool task_completed = pending_geometry_task_id != 0
+      ? recover_geometry_task(runtime, geometry_task_id, recovery)
+      : lardon3d_project_enqueue_geometric_verifier_task(
+            &runtime.state, &configuration, &geometry_task_id) &&
+            wait_completed(runtime, geometry_task_id,
+                           "geometric_verifier.run current existing");
+  const bool governor_admission_ok = end_geometric_evidence(runtime);
+  if (!task_completed || !governor_admission_ok) {
     std::printf("{\"record\":\"existing_geometry_summary\",\"ok\":false,"
-                "\"stage\":\"geometric_verifier.run\",\"task_errors\":1}\n");
+                "\"stage\":\"geometric_verifier.run\",\"task_id\":%llu,"
+                "\"task_action\":\"%s\",\"governor_admission_pass\":%s,"
+                "\"task_errors\":1}\n",
+                static_cast<unsigned long long>(geometry_task_id),
+                geometry_action, governor_admission_ok ? "true" : "false");
     stop_runtime(runtime);
     return false;
   }
@@ -2133,44 +2463,130 @@ bool run_existing_geometry(Runtime &runtime) {
   size_t verified = 0;
   size_t rejected = 0;
   size_t exact_after = 0;
+  Evidence after{};
+  size_t match_results_after = 0;
+  uint64_t match_frontier_after = 0;
+  uint64_t matcher_task_id = 0;
+  MatchAudit match_audit{};
+  Lardon3DProjectDbTask durable_task{};
+  Lardon3DProjectDbGeometricVerifierTask durable_geometry{};
   if (!collect_verified_ids(runtime, fingerprint, verified_ids, &applicable, &verified,
                             &rejected) ||
-      !count_exact_gvrs(runtime, fingerprint, exact_after) || exact_after != applicable) {
+      !count_exact_gvrs(runtime, fingerprint, exact_after) ||
+      !collect_evidence(runtime, 0, after) ||
+      !match_result_frontier(runtime, match_results_after,
+                             match_frontier_after) ||
+      !audit_match_results(runtime, matcher_task_id, match_audit) ||
+      lardon3d_project_db_load_task(runtime.state.project_db, geometry_task_id,
+                                    &durable_task) != LARDON3D_PROJECT_DB_OK ||
+      lardon3d_project_db_load_geometric_verifier_task(
+          runtime.state.project_db, geometry_task_id,
+          &durable_geometry) != LARDON3D_PROJECT_DB_OK ||
+      exact_after != applicable || verified + rejected != applicable ||
+      match_results_before != before.matches ||
+      match_results_after != after.matches ||
+      match_audit.match_result_count != after.matches ||
+      before.features != after.features || before.pairs != after.pairs ||
+      before.matches != after.matches ||
+      match_frontier_before != match_frontier_after ||
+      durable_task.saved_state != TASK_COMPLETED ||
+      durable_task.recovery_state != TASK_COMPLETED ||
+      durable_task.progress != 100 ||
+      durable_geometry.after_match_result_id != match_frontier_after) {
     std::printf("{\"record\":\"existing_geometry_summary\",\"ok\":false,"
                 "\"stage\":\"current_evidence_audit\",\"task_errors\":1}\n");
     stop_runtime(runtime);
     return false;
   }
 
-  // Track Builder receives only exact current-policy VERIFIED IDs. Historical
-  // v1/v2 evidence is neither replayed nor mixed, and the exact scope identity
+  // Without the proof-only terminal seam, preserve the legacy route: Track
+  // Builder receives only exact current-policy VERIFIED IDs. Historical v1/v2
+  // evidence is neither replayed nor mixed, and the exact scope identity
   // reuses an existing Track Set instead of publishing duplicate lineage.
   uint64_t track_task_id = 0;
   Lardon3DProjectDbTrackSet track_set{};
-  if (!build_tracks(runtime, verified_ids, fingerprint, &track_task_id, &track_set)) {
+  if (!runtime.stop_after_gv &&
+      !build_tracks(runtime, verified_ids, fingerprint, &track_task_id,
+                    &track_set)) {
     std::printf("{\"record\":\"existing_geometry_summary\",\"ok\":false,"
                 "\"stage\":\"track_builder.run\",\"task_errors\":1}\n");
     stop_runtime(runtime);
     return false;
   }
+  if (!runtime.stop_after_gv) {
+    Evidence after_tracks{};
+    if (!collect_evidence(runtime, 0, after_tracks) ||
+        after_tracks.features != after.features ||
+        after_tracks.pairs != after.pairs ||
+        after_tracks.matches != after.matches ||
+        after_tracks.verified != after.verified ||
+        after_tracks.rejected != after.rejected) {
+      std::printf("{\"record\":\"existing_geometry_summary\",\"ok\":false,"
+                  "\"stage\":\"downstream_evidence_audit\","
+                  "\"task_errors\":1}\n");
+      stop_runtime(runtime);
+      return false;
+    }
+    after = after_tracks;
+  }
+  if (runtime.stop_after_gv && before.tracks != after.tracks) {
+    std::printf("{\"record\":\"existing_geometry_summary\",\"ok\":false,"
+                "\"stage\":\"downstream_stop_audit\",\"task_errors\":1}\n");
+    stop_runtime(runtime);
+    return false;
+  }
 
   const size_t created = exact_after >= exact_before ? exact_after - exact_before : 0;
+  char fingerprint_hex[65]{};
+  static constexpr char digits[] = "0123456789abcdef";
+  for (size_t index = 0; index < 32; ++index) {
+    fingerprint_hex[index * 2] = digits[fingerprint[index] >> 4U];
+    fingerprint_hex[index * 2 + 1] = digits[fingerprint[index] & 0x0fU];
+  }
   std::printf(
       "{\"record\":\"existing_geometry_summary\",\"ok\":true,"
-      "\"verifier_version\":%u,\"geometry_task_id\":%llu,"
+      "\"verifier_version\":%u,\"verifier_fingerprint\":\"%s\","
+      "\"geometry_task_id\":%llu,\"geometry_task_action\":\"%s\","
+      "\"geometry_recovery_inspected\":%zu,\"geometry_recovery_resumed\":%zu,"
+      "\"geometry_task_state\":\"COMPLETE\",\"geometry_task_progress\":%u,"
+      "\"geometry_task_sequence_count\":%u,"
+      "\"geometry_cursor_after_match_result_id\":%llu,"
+      "\"geometry_cursor_complete\":true,\"match_results_consumed\":%zu,"
       "\"track_task_id\":%llu,\"applicable_matched_parents\":%zu,"
       "\"verified\":%zu,\"rejected\":%zu,\"gvrs_before\":%zu,"
       "\"gvrs_created\":%zu,\"gvrs_after\":%zu,"
+      "\"duplicate_gvr_mappings\":0,\"gvr_mapping_order_canonical\":true,"
+      "\"feature_sets_before\":%zu,\"feature_sets_after\":%zu,"
+      "\"candidate_pairs_before\":%zu,\"candidate_pairs_after\":%zu,"
+      "\"match_results_before\":%zu,\"match_results_after\":%zu,"
+      "\"match_output_digest\":\"%s\",\"match_digest_format\":\"L3DMRD1\","
+      "\"match_asset_count\":%zu,\"duplicate_candidate_pair_mappings\":%zu,"
+      "\"matcher_task_id\":%llu,\"matcher_cursor_complete\":%s,"
       "\"track_set_id\":%llu,\"track_count\":%llu,"
       "\"track_set_reused\":%s,"
-      "\"task_errors\":0,\"upstream_replayed\":false,"
-      "\"mixed_verifier_lineage\":false,\"sparse_sfm_run\":false}\n",
-      LARDON3D_GEOMETRIC_VERIFIER_VERSION,
+      "\"tracks_before\":%zu,\"tracks_after\":%zu,"
+      "\"stop_after_gv\":%s,\"feature_replay\":0,\"candidate_replay\":0,"
+      "\"matcher_replay\":0,\"task_errors\":0,\"upstream_replayed\":false,"
+      "\"mixed_verifier_lineage\":false,\"track_builder_enqueued\":%s,"
+      "\"sparse_sfm_run\":false,\"governor_admission_pass\":true}\n",
+      LARDON3D_GEOMETRIC_VERIFIER_VERSION, fingerprint_hex,
       static_cast<unsigned long long>(geometry_task_id),
+      geometry_action, recovery.inspected, recovery.resumed,
+      durable_task.progress, durable_task.sequence_count,
+      static_cast<unsigned long long>(durable_geometry.after_match_result_id),
+      after.matches,
       static_cast<unsigned long long>(track_task_id), applicable, verified, rejected, exact_before,
-      created, exact_after, static_cast<unsigned long long>(track_set.track_set_id),
+      created, exact_after, before.features, after.features, before.pairs,
+      after.pairs, before.matches, after.matches, match_audit.digest_hex,
+      match_audit.match_asset_count,
+      match_audit.duplicate_candidate_pair_mappings,
+      static_cast<unsigned long long>(matcher_task_id),
+      match_audit.matcher_cursor_complete ? "true" : "false",
+      static_cast<unsigned long long>(track_set.track_set_id),
       static_cast<unsigned long long>(track_set.track_count),
-      track_task_id == 0 && track_set.track_set_id != 0 ? "true" : "false");
+      track_task_id == 0 && track_set.track_set_id != 0 ? "true" : "false",
+      before.tracks, after.tracks, runtime.stop_after_gv ? "true" : "false",
+      runtime.stop_after_gv ? "false" : "true");
   stop_runtime(runtime);
   return true;
 }
@@ -2264,6 +2680,7 @@ int main(int argc, char **argv) {
     runtime.matcher_batch_override = options.matcher_batch_override;
     runtime.matcher_needed = options.resume_pre_gv_existing;
     runtime.stop_after_matcher = options.stop_after_matcher;
+    runtime.stop_after_gv = options.stop_after_gv;
     if (options.resume_candidate_existing)
       return run_existing_candidate(runtime) ? 0 : 1;
     return (options.resume_pre_gv_existing ? run_existing_pre_gv(runtime)
