@@ -320,12 +320,16 @@ power of two at least `1.5 × N + 1`, and `F` the number of distinct Feature
 Sets resolved from the exact GVR scope, and `M_max` the largest parent Match
 Result `match_count` in that scope, it reserves:
 
-`4 MiB + 101 × N + 8 × E_raw + 16 × S + 640 × F + 12 × M_max` bytes.
+`4 MiB + 133 × N + 8 × E_raw + 16 × S + 640 × F + 12 × M_max` bytes.
 
-The `101 × N` term is documented code accounting: retained compact nodes (16),
+The `133 × N` term is documented code accounting: retained compact nodes (16),
 DSU/group/conflict scratch (17), flat canonical output (24), and worst-case
 simultaneous per-Track publication serialization (44): stored observation
-capacity (16), vector objects/capacity (up to 12), and publication rows (16).
+capacity (16), vector objects/capacity (up to 12), and publication rows (16),
+plus two 16-byte transient sorted publication-validation keys. Those keys prove
+global observation uniqueness and one-image-per-Track independently of the
+Builder before the atomic database transaction. They are released before
+`COMMIT` and are not persistent state.
 The other terms are actual reserved
 edge capacity, actual power-of-two identity slot capacity, and a conservative
 Feature Set projection/cache/hash allowance. The final term is the largest
@@ -340,7 +344,7 @@ coefficients and multiplier did not name live allocations. It is not the
 current estimator and must not be reinterpreted as such. At S21
 `E_raw = 6,628,174`, it produced `19,546,898,688` bytes (18.204 GiB), exceeding
 the `12,750,811,136`-byte host capacity after canonical reserve. The compact
-formula with `F=0, M_max=0` produces `1,932,981,756` bytes; real admission adds
+formula with `F=0, M_max=0` produces `2,357,184,892` bytes; real admission adds
 exactly `640 × F + 12 × M_max` and therefore remains derived from the exact scope rather than from
 an invented fixed 10.48 GiB target.
 
@@ -724,3 +728,39 @@ and 862 MiB, minimum observed MemAvailable was about 8 GiB, no swap delta was
 observed, and Governor admission passed. No scratch or scratch lease was used.
 No Feature, Candidate Pair, Matcher or GVR work was replayed or created, and
 Sparse SfM/Dense remained at zero.
+
+## Operational performance slice — PASS
+
+This post-freeze slice changes no Track science, identity, fingerprint,
+serialization, Task identity, recovery rule or publication boundary. Phase-A
+profiling on the exact S21 scope measured 6,628,174 raw inlier edges and found
+the graph work small: resolve/register 6.099 s, DSU/canonicalization 1.477 s,
+serialization preparation 0.056 s and final snapshot revalidation 1.618 s.
+The dominant cost was instead the pre-publication defensive validator, which
+prepared SQLite statements per observation and compared every pair of Tracks.
+At 912,447 Tracks, that latter all-pairs relation was accidentally
+superlinear.
+
+Publication validation now sorts bounded 16-byte observation and image keys,
+reuses one Feature Set lookup statement per distinct Feature Set, and rejects
+exactly the prior invalid inputs: invalid feature index, duplicate observation
+membership or repeated image in one Track. Its complexity is `O(V log V)` for
+`V` published observations, with an explicit additional 32-byte-per-node peak
+in the Governor model above. The atomic `BEGIN IMMEDIATE`/`COMMIT` publication
+and rollback behavior remain unchanged.
+
+On dedicated reflinks of the immutable S21 GV v3 source, fresh Task 2835
+published Track Set 1 in 21 s and the interrupted pending Task 2835 recovered
+to the same result in 24 s, versus the frozen 3,316 s baseline (approximately
+157.9× and 138.2× respectively). Both retained 912,447 Tracks, 2,495,768
+observations, min/max/mean length 2/42/2.7352470883240341, zero duplicate
+memberships and zero duplicate-image components. Their complete canonical row
+stream is identical to the frozen proof, so the persistent digest remains
+`c30eba192627bf73eaf21ff30d81038d8cc6bbf36a69226f88cdc8c37f7d74a1`.
+
+CPU parallelism was deliberately not added: the remaining Track Builder Task
+is only tens of seconds, while the profile gives no material CPU-bound graph
+phase whose parallelization would repay the added determinism, ownership and
+memory-risk surface. Production still uses its one admitted CPU worker; this
+is a measured operational decision, not an arbitrary CPU1 policy. No GPU,
+scratch lease, Sparse SfM or downstream work ran, and no swap was observed.

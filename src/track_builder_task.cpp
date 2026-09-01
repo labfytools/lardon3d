@@ -66,15 +66,16 @@ bool compact_memory_estimate(uint64_t raw_edges, uint64_t feature_sets,
   }
   uint64_t graph_and_peak_node_bytes = 0, edge_bytes = 0;
   uint64_t identity_bytes = 0, feature_bytes = 0, match_file_peak_bytes = 0;
-  /* WHY/ACCOUNTING: 101 B/node is the simultaneous retained node (16),
-   * DSU/group/conflict scratch (17), flat canonical output (24) and worst
+  /* WHY/ACCOUNTING: 133 B/node is the simultaneous retained node (16),
+   * DSU/group/conflict scratch (17), flat canonical output (24), worst
    * per-track publication serialization (44: stored observation capacity 16,
-   * per-track vector capacity/objects up to 12, and publish rows 16). Identity slots and raw indexed
-   * edges are charged by their actual reserved capacities. 640 B/Feature Set
+   * per-track vector capacity/objects up to 12, and publish rows 16), plus
+   * two 16-byte sorted transient publication-validation keys. Identity slots
+   * and raw indexed edges are charged by their actual reserved capacities. 640 B/Feature Set
    * bounds the metadata projection plus the adapter cache/hash allocation.
    * WHY/CONTRACT: resolve_gvr materializes exactly one Match File at a time;
    * charge its largest entry vector as a peak, not the sum across the scope. */
-  if (!checked_mul(nodes, 101U, &graph_and_peak_node_bytes) ||
+  if (!checked_mul(nodes, 133U, &graph_and_peak_node_bytes) ||
       !checked_mul(raw_edges, sizeof(lardon3d::track_builder_internal::Edge), &edge_bytes) ||
       !checked_mul(slots, sizeof(lardon3d::track_builder_internal::IdentitySlot),
                    &identity_bytes) ||

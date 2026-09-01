@@ -55,6 +55,16 @@ struct Output {
   std::vector<TrackRange> tracks;
 };
 
+/* WHY: large real scopes need diagnosis without changing their durable task or
+ * scientific result.  These counters describe only transient hash-table work;
+ * they are never serialized, fingerprinted, or consulted by the Builder. */
+struct Profile {
+  uint64_t identity_lookups = 0;
+  uint64_t identity_probes = 0;
+  uint64_t identity_max_probe = 0;
+  uint64_t identity_inserts = 0;
+};
+
 /* WHY: Project construction must have one owner for nodes, identity lookup and
  * indexed edges.  Transporting pointer edges through the public ABI recreated
  * the complete graph twice before DSU.  This private type is deliberately not
@@ -70,6 +80,7 @@ class CompactGraph {
   uint64_t node_image(uint32_t node_index) const;
   size_t node_count() const { return nodes_.size(); }
   uint64_t raw_edge_count() const { return raw_edge_count_; }
+  const Profile &profile() const { return profile_; }
 
  private:
   uint32_t resolve_node(uint32_t metadata_index, uint32_t feature_index);
@@ -81,6 +92,7 @@ class CompactGraph {
   std::vector<IdentitySlot> identity_;
   size_t identity_size_ = 0;
   uint64_t raw_edge_count_ = 0;
+  Profile profile_;
 };
 
 using Checkpoint = bool (*)(void *userdata);

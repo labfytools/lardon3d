@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <fcntl.h>
 #include <limits>
 #include <new>
@@ -24,6 +26,44 @@ extern "C" {
 
 namespace {
 namespace internal = lardon3d::track_builder_internal;
+
+bool profile_enabled() {
+  const char *value = std::getenv("LARDON3D_TRACK_BUILDER_PROFILE");
+  return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
+double elapsed_seconds(const std::chrono::steady_clock::time_point &start) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
+/* CONTRACT: profile output is opt-in diagnostic stderr only.  It carries no
+ * task identity or scientific state, so a restarted task remains exactly the
+ * same durable operation whether profiling is enabled or absent. */
+void report_profile(bool enabled, uint64_t gvr_count, uint64_t raw_edge_hint,
+                    const internal::CompactGraph &graph, double hint_seconds,
+                    double graph_seconds, double resolve_seconds, double core_seconds,
+                    double serialize_seconds, double revalidate_seconds) {
+  if (!enabled) return;
+  const internal::Profile &profile = graph.profile();
+  const uint64_t identity_operations = profile.identity_lookups + profile.identity_inserts;
+  const double mean_probe = identity_operations == 0
+                                ? 0.0
+                                : static_cast<double>(profile.identity_probes) /
+                                      static_cast<double>(identity_operations);
+  std::fprintf(stderr,
+               "track_builder_profile gvr=%llu raw_edge_hint=%llu nodes=%zu raw_edges=%llu "
+               "hint_s=%.3f graph_s=%.3f resolve_s=%.3f core_s=%.3f serialize_s=%.3f "
+               "revalidate_s=%.3f identity_lookups=%llu identity_inserts=%llu "
+               "identity_mean_probe=%.3f identity_max_probe=%llu\n",
+               static_cast<unsigned long long>(gvr_count),
+               static_cast<unsigned long long>(raw_edge_hint), graph.node_count(),
+               static_cast<unsigned long long>(graph.raw_edge_count()), hint_seconds,
+               graph_seconds, resolve_seconds, core_seconds, serialize_seconds,
+               revalidate_seconds,
+               static_cast<unsigned long long>(profile.identity_lookups),
+               static_cast<unsigned long long>(profile.identity_inserts), mean_probe,
+               static_cast<unsigned long long>(profile.identity_max_probe));
+}
 
 #ifdef LARDON3D_TRACK_BUILDER_PROJECT_TESTING
 extern "C" void lardon3d_track_builder_project_test_publication_capacities(
@@ -225,6 +265,7 @@ Lardon3DTrackBuilderProjectStatus internal::build_project(
       return LARDON3D_TRACK_BUILDER_PROJECT_INVALID_ARGUMENT;
   }
   try {
+    const bool profiling = profile_enabled();
     std::vector<uint64_t> owned_ids(request->gvr_ids,
                                     request->gvr_ids + request->gvr_count);
     Lardon3DTrackBuilderProjectRequest owned_request = *request;
@@ -259,6 +300,7 @@ Lardon3DTrackBuilderProjectStatus internal::build_project(
     }
     if (db != LARDON3D_PROJECT_DB_NOT_FOUND) return map_db(db);
 
+    const auto hint_start = std::chrono::steady_clock::now();
     uint64_t raw_edge_hint = 0;
     for (size_t i = 0; i < request->gvr_count; ++i) {
       Lardon3DProjectDbGeometricVerificationResult gvr{};
@@ -269,8 +311,12 @@ Lardon3DTrackBuilderProjectStatus internal::build_project(
         return LARDON3D_TRACK_BUILDER_PROJECT_OUT_OF_MEMORY;
       raw_edge_hint += gvr.inlier_count;
     }
+    const double hint_seconds = elapsed_seconds(hint_start);
+    const auto graph_start = std::chrono::steady_clock::now();
     internal::CompactGraph graph(raw_edge_hint);
+    const double graph_seconds = elapsed_seconds(graph_start);
     std::unordered_map<uint64_t, FeatureCacheEntry> cache;
+    const auto resolve_start = std::chrono::steady_clock::now();
     for (size_t i = 0; i < request->gvr_count; ++i) {
       auto status = resolve_gvr(*request, request->gvr_ids[i], cache, graph);
       if (status != LARDON3D_TRACK_BUILDER_PROJECT_OK) return status;
@@ -280,6 +326,8 @@ Lardon3DTrackBuilderProjectStatus internal::build_project(
       if (checkpoint && !checkpoint(checkpoint_userdata))
         return LARDON3D_TRACK_BUILDER_PROJECT_INTERRUPTED;
     }
+    const double resolve_seconds = elapsed_seconds(resolve_start);
+    const auto core_start = std::chrono::steady_clock::now();
     internal::Output core;
     auto core_status = graph.build(&core);
     if (core_status != LARDON3D_TRACK_BUILDER_OK) {
@@ -287,6 +335,7 @@ Lardon3DTrackBuilderProjectStatus internal::build_project(
                  ? LARDON3D_TRACK_BUILDER_PROJECT_OUT_OF_MEMORY
                  : LARDON3D_TRACK_BUILDER_PROJECT_CORE_ERROR;
     }
+    const double core_seconds = elapsed_seconds(core_start);
     /* GATE D CONTRACT: Gate B (DSU/canonicalization) is deliberately
      * non-preemptible, but a pause/cancel raised during it must be observed
      * before any publication preparation can become durable. */
@@ -296,6 +345,7 @@ Lardon3DTrackBuilderProjectStatus internal::build_project(
      * canonical compact membership to Track Model rows. position_in_track is
      * the already-canonical flat order; DB publication below remains the sole
      * atomic, owner-only persistence point. */
+    const auto serialize_start = std::chrono::steady_clock::now();
     std::vector<std::vector<Lardon3DProjectDbTrackObservation>> stored(core.tracks.size());
     std::vector<Lardon3DProjectDbTrack> publish(core.tracks.size());
     for (size_t i = 0; i < core.tracks.size(); ++i) {
@@ -308,6 +358,7 @@ Lardon3DTrackBuilderProjectStatus internal::build_project(
       }
       publish[i] = {0, 0, static_cast<uint32_t>(stored[i].size()), stored[i].data()};
     }
+    const double serialize_seconds = elapsed_seconds(serialize_start);
 #ifdef LARDON3D_TRACK_BUILDER_PROJECT_TESTING
     uint64_t stored_observation_capacity = 0;
     for (const auto &observations : stored)
@@ -321,12 +372,17 @@ Lardon3DTrackBuilderProjectStatus internal::build_project(
     lardon3d_track_builder_project_test_before_revalidation(
         request->database, request->gvr_ids, request->gvr_count);
 #endif
+    const auto revalidate_start = std::chrono::steady_clock::now();
     for (size_t i = 0; i < request->gvr_count; ++i) {
       db = validate_gvr_snapshot(*request, request->gvr_ids[i]);
       if (db != LARDON3D_PROJECT_DB_OK) {
         return map_db(db);
       }
     }
+    const double revalidate_seconds = elapsed_seconds(revalidate_start);
+    report_profile(profiling, request->gvr_count, raw_edge_hint, graph, hint_seconds,
+                   graph_seconds, resolve_seconds, core_seconds, serialize_seconds,
+                   revalidate_seconds);
     /* GATE D CONTRACT: this is the final interruptible boundary.  Refusal
      * guarantees zero publication; create_track_set below remains one
      * non-preemptible atomic publication. */

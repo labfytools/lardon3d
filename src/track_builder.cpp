@@ -106,9 +106,16 @@ uint32_t tb::CompactGraph::register_feature(const FeatureMetadata &m) {
 void tb::CompactGraph::insert_identity(const Node &node, uint32_t index) {
   const size_t mask = identity_.size() - 1U;
   size_t slot = static_cast<size_t>(hash_key(node.feature_set_id, node.feature_index)) & mask;
-  while (identity_[slot].node_plus_one) slot = (slot + 1U) & mask;
+  uint64_t probes = 1;
+  while (identity_[slot].node_plus_one) {
+    slot = (slot + 1U) & mask;
+    ++probes;
+  }
   identity_[slot] = {node.feature_set_id, node.feature_index, index + 1U};
   ++identity_size_;
+  ++profile_.identity_inserts;
+  profile_.identity_probes += probes;
+  profile_.identity_max_probe = std::max(profile_.identity_max_probe, probes);
 }
 
 uint32_t tb::CompactGraph::resolve_node(uint32_t metadata_index,
@@ -118,21 +125,29 @@ uint32_t tb::CompactGraph::resolve_node(uint32_t metadata_index,
   const uint64_t set = metadata_[metadata_index].feature_set_id;
   const size_t mask = identity_.size() - 1U;
   size_t slot = static_cast<size_t>(hash_key(set, feature_index)) & mask;
+  uint64_t probes = 1;
   while (identity_[slot].node_plus_one) {
     const IdentitySlot &found = identity_[slot];
     if (found.feature_set_id == set && found.feature_index == feature_index) {
       const uint32_t index = found.node_plus_one - 1U;
       if (nodes_[index].metadata_index != metadata_index)
         throw std::invalid_argument("contradictory observation");
+      ++profile_.identity_lookups;
+      profile_.identity_probes += probes;
+      profile_.identity_max_probe = std::max(profile_.identity_max_probe, probes);
       return index;
     }
     slot = (slot + 1U) & mask;
+    ++probes;
   }
   if (nodes_.size() == UINT32_MAX || identity_size_ == identity_.size())
     throw std::bad_alloc();
   nodes_.push_back({set, feature_index, metadata_index});
   const uint32_t index = static_cast<uint32_t>(nodes_.size() - 1U);
   insert_identity(nodes_.back(), index);
+  ++profile_.identity_lookups;
+  profile_.identity_probes += probes;
+  profile_.identity_max_probe = std::max(profile_.identity_max_probe, probes);
   return index;
 }
 

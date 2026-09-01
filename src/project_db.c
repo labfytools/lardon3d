@@ -8452,77 +8452,149 @@ Lardon3DProjectDbResult lardon3d_project_db_list_track_sets(
   return result;
 }
 
+typedef struct {
+  uint64_t feature_set_id;
+  uint32_t feature_index;
+  uint32_t track_index;
+} TrackObservationValidationKey;
+
+typedef struct {
+  uint64_t image_id;
+  uint32_t track_index;
+  uint32_t reserved;
+} TrackImageValidationKey;
+
+_Static_assert(sizeof(TrackObservationValidationKey) == 16,
+               "Track publication validation must retain a compact key");
+_Static_assert(sizeof(TrackImageValidationKey) == 16,
+               "Track publication validation must retain a compact image key");
+
+static int compare_track_observation_validation_key(const void *left, const void *right) {
+  const TrackObservationValidationKey *a = left;
+  const TrackObservationValidationKey *b = right;
+  if (a->feature_set_id != b->feature_set_id)
+    return a->feature_set_id < b->feature_set_id ? -1 : 1;
+  if (a->feature_index != b->feature_index)
+    return a->feature_index < b->feature_index ? -1 : 1;
+  return a->track_index == b->track_index ? 0 :
+         (a->track_index < b->track_index ? -1 : 1);
+}
+
+static int compare_track_image_validation_key(const void *left, const void *right) {
+  const TrackImageValidationKey *a = left;
+  const TrackImageValidationKey *b = right;
+  if (a->track_index != b->track_index)
+    return a->track_index < b->track_index ? -1 : 1;
+  return a->image_id == b->image_id ? 0 : (a->image_id < b->image_id ? -1 : 1);
+}
+
 static Lardon3DProjectDbResult validate_track_observations_locked(
     Lardon3DProjectDb *database, const Lardon3DProjectDbTrack *tracks, size_t track_count) {
+  size_t observation_count = 0;
+  if (track_count > UINT32_MAX)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   for (size_t track_index = 0; track_index < track_count; ++track_index) {
     const Lardon3DProjectDbTrack *track = &tracks[track_index];
-    if (!track->observations || track->observation_count < 2) {
+    if (!track->observations || track->observation_count < 2 ||
+        track->observation_count > SIZE_MAX - observation_count)
       return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
-    }
-    for (uint32_t observation_index = 0; observation_index < track->observation_count;
-         ++observation_index) {
-      const Lardon3DProjectDbTrackObservation *observation = &track->observations[observation_index];
-      if (observation->position_in_track != observation_index || observation->feature_set_id == 0) {
+    observation_count += track->observation_count;
+  }
+  /* CONTRACT: an empty Track Set is a valid complete result when every graph
+   * component conflicts; only non-empty publication needs membership checks. */
+  if (observation_count == 0)
+    return LARDON3D_PROJECT_DB_OK;
+  if (observation_count > SIZE_MAX / sizeof(TrackObservationValidationKey))
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+
+  /* WHY/CONTRACT: publication must independently reject duplicate memberships
+   * and repeated images, even though Track Builder normally supplies canonical
+   * output. Sorting compact transient keys is O(V log V), deterministic, and
+   * preserves the same rejection relation as the former all-pairs scan. The
+   * arrays are released before COMMIT and are never persistent state. */
+  TrackObservationValidationKey *observations =
+      malloc(observation_count * sizeof(*observations));
+  TrackImageValidationKey *images = malloc(observation_count * sizeof(*images));
+  if (!observations || !images) {
+    free(observations);
+    free(images);
+    return LARDON3D_PROJECT_DB_IO_ERROR;
+  }
+  size_t offset = 0;
+  for (size_t track_index = 0; track_index < track_count; ++track_index) {
+    const Lardon3DProjectDbTrack *track = &tracks[track_index];
+    for (uint32_t position = 0; position < track->observation_count; ++position) {
+      const Lardon3DProjectDbTrackObservation *observation = &track->observations[position];
+      if (observation->position_in_track != position || observation->feature_set_id == 0) {
+        free(observations);
+        free(images);
         return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
       }
-      sqlite3_stmt *statement = NULL;
-      Lardon3DProjectDbResult result = prepare(
-          database, "SELECT image_id,feature_count FROM feature_sets WHERE feature_set_id=?1",
-          &statement);
-      if (result != LARDON3D_PROJECT_DB_OK) {
-        return result;
-      }
-      (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)observation->feature_set_id);
-      int code = sqlite3_step(statement);
-      sqlite3_int64 image_id = code == SQLITE_ROW ? sqlite3_column_int64(statement, 0) : 0;
-      sqlite3_int64 feature_count = code == SQLITE_ROW ? sqlite3_column_int64(statement, 1) : 0;
-      (void)sqlite3_finalize(statement);
-      if (code != SQLITE_ROW) {
-        return code == SQLITE_DONE ? LARDON3D_PROJECT_DB_NOT_FOUND
+      observations[offset++] = (TrackObservationValidationKey) {
+          observation->feature_set_id, observation->feature_index, (uint32_t)track_index};
+    }
+  }
+  qsort(observations, observation_count, sizeof(*observations),
+        compare_track_observation_validation_key);
+  for (size_t index = 1; index < observation_count; ++index) {
+    if (observations[index - 1].feature_set_id == observations[index].feature_set_id &&
+        observations[index - 1].feature_index == observations[index].feature_index) {
+      free(observations);
+      free(images);
+      return LARDON3D_PROJECT_DB_CONSTRAINT;
+    }
+  }
+
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database, "SELECT image_id,feature_count FROM feature_sets WHERE feature_set_id=?1", &statement);
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    free(observations);
+    free(images);
+    return result;
+  }
+  for (size_t begin = 0; result == LARDON3D_PROJECT_DB_OK && begin < observation_count;) {
+    size_t end = begin + 1;
+    while (end < observation_count &&
+           observations[end].feature_set_id == observations[begin].feature_set_id)
+      ++end;
+    sqlite3_reset(statement);
+    sqlite3_clear_bindings(statement);
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)observations[begin].feature_set_id);
+    int code = sqlite3_step(statement);
+    sqlite3_int64 image_id = code == SQLITE_ROW ? sqlite3_column_int64(statement, 0) : 0;
+    sqlite3_int64 feature_count = code == SQLITE_ROW ? sqlite3_column_int64(statement, 1) : 0;
+    if (code != SQLITE_ROW) {
+      result = code == SQLITE_DONE ? LARDON3D_PROJECT_DB_NOT_FOUND
                                    : sqlite_result(database, code, "validate track feature set");
+    } else if (image_id <= 0 || feature_count < 0) {
+      result = LARDON3D_PROJECT_DB_CONSTRAINT;
+    } else {
+      for (size_t index = begin; index < end; ++index) {
+        if ((uint64_t)observations[index].feature_index >= (uint64_t)feature_count) {
+          result = LARDON3D_PROJECT_DB_CONSTRAINT;
+          break;
+        }
+        images[index] = (TrackImageValidationKey) {
+            (uint64_t)image_id, observations[index].track_index, 0};
       }
-      if (image_id <= 0 || feature_count < 0 || (uint64_t)observation->feature_index >=
-                              (uint64_t)feature_count) {
-        return LARDON3D_PROJECT_DB_CONSTRAINT;
-      }
-      for (uint32_t prior = 0; prior < observation_index; ++prior) {
-        const Lardon3DProjectDbTrackObservation *old = &track->observations[prior];
-        if (old->feature_set_id == observation->feature_set_id &&
-            old->feature_index == observation->feature_index) {
-          return LARDON3D_PROJECT_DB_CONSTRAINT;
-        }
-        sqlite3_stmt *image_statement = NULL;
-        result = prepare(database, "SELECT image_id FROM feature_sets WHERE feature_set_id=?1",
-                         &image_statement);
-        if (result != LARDON3D_PROJECT_DB_OK) {
-          return result;
-        }
-        (void)sqlite3_bind_int64(image_statement, 1, (sqlite3_int64)old->feature_set_id);
-        code = sqlite3_step(image_statement);
-        sqlite3_int64 old_image = code == SQLITE_ROW ? sqlite3_column_int64(image_statement, 0) : 0;
-        (void)sqlite3_finalize(image_statement);
-        if (code != SQLITE_ROW) {
-          return LARDON3D_PROJECT_DB_CORRUPT;
-        }
-        if (old_image == image_id) {
-          return LARDON3D_PROJECT_DB_CONSTRAINT;
-        }
+    }
+    begin = end;
+  }
+  (void)sqlite3_finalize(statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    qsort(images, observation_count, sizeof(*images), compare_track_image_validation_key);
+    for (size_t index = 1; index < observation_count; ++index) {
+      if (images[index - 1].track_index == images[index].track_index &&
+          images[index - 1].image_id == images[index].image_id) {
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+        break;
       }
     }
   }
-  for (size_t first = 0; first < track_count; ++first) {
-    for (size_t second = first + 1; second < track_count; ++second) {
-      for (uint32_t a = 0; a < tracks[first].observation_count; ++a) {
-        for (uint32_t b = 0; b < tracks[second].observation_count; ++b) {
-          if (tracks[first].observations[a].feature_set_id == tracks[second].observations[b].feature_set_id &&
-              tracks[first].observations[a].feature_index == tracks[second].observations[b].feature_index) {
-            return LARDON3D_PROJECT_DB_CONSTRAINT;
-          }
-        }
-      }
-    }
-  }
-  return LARDON3D_PROJECT_DB_OK;
+  free(observations);
+  free(images);
+  return result;
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_create_track_set(

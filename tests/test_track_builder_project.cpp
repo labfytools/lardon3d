@@ -742,7 +742,10 @@ void run_durable_task_case() {
   uint64_t task_id = 0;
   CHECK(lardon3d_project_enqueue_track_builder_task(&state, &configuration, &task_id));
   Lardon3DTaskSnapshot snapshot{};
-  for (size_t attempt = 0; attempt < 200; ++attempt) {
+  /* WHY: ASan/UBSan make the durable worker's SQLite startup materially slower
+   * on loaded hosts. This is an observation deadline only; it neither changes
+   * Task cancellation semantics nor permits a non-terminal publication. */
+  for (size_t attempt = 0; attempt < 500; ++attempt) {
     CHECK(lardon3d_task_queue_get(queue, task_id, &snapshot));
     if (snapshot.state == TASK_COMPLETED || snapshot.state == TASK_FAILED ||
         snapshot.state == TASK_CANCELLED)
@@ -836,7 +839,9 @@ void run_crash_recovery_case() {
   setenv("LARDON3D_TRACK_BUILDER_TEST_SKIP_FINISHED", "1", 1);
   CHECK(lardon3d_project_enqueue_track_builder_task(&state, &configuration, &task_id));
   Lardon3DTaskSnapshot snapshot{};
-  for (size_t attempt = 0; attempt < 200; ++attempt) {
+  /* Same bounded sanitizer/loaded-host observation allowance as the durable
+   * enqueue path above; recovery semantics remain asserted after completion. */
+  for (size_t attempt = 0; attempt < 500; ++attempt) {
     CHECK(lardon3d_task_queue_get(queue, task_id, &snapshot));
     if (snapshot.state == TASK_COMPLETED) break;
     usleep(10000);
@@ -1027,7 +1032,7 @@ void run_s21_admission_estimate_case() {
   constexpr uint64_t historical_envelope = 19546898688ULL;
   uint64_t compact = 0;
   CHECK(lardon3d_track_builder_task_memory_estimate(edges, 0, &compact));
-  CHECK(compact == 1932981756ULL && compact < capacity_after_canonical_reserve &&
+  CHECK(compact == 2357184892ULL && compact < capacity_after_canonical_reserve &&
         historical_envelope > capacity_after_canonical_reserve);
   CHECK(!lardon3d_track_builder_task_memory_estimate(
       static_cast<uint64_t>(UINT32_MAX) / 2U + 1U, 0, &compact));
@@ -1155,7 +1160,7 @@ void run_disjoint_publication_capacity_case() {
   while (slots < required_slots) slots *= 2U;
   const uint64_t legacy_undercharge = 4ULL * 1024ULL * 1024ULL +
       85ULL * g_publication_nodes + 8ULL * track_count + 16ULL * slots + 640ULL * 2U;
-  CHECK(estimate == legacy_undercharge + 16ULL * g_publication_nodes);
+  CHECK(estimate == legacy_undercharge + 48ULL * g_publication_nodes);
 
   Lardon3DHardwareProfile profile{};
   char error[128]{};
