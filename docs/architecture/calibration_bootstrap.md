@@ -145,4 +145,32 @@ advances the selected-execution cursor itself, and retains its published `image_
 generic Task progress can become durable. Its reservation owns one CPU thread, one I/O slot and a
 conservative 2 GiB working allowance for the bounded 40 MP decoder and publication buffers only for
 the callback lifetime; this operational admission bound is not a scientific Capture-count limit.
+
+## Calibration Tooling v1
+
+**PASS / FROZEN.** `calibration_tooling.h` is the bounded production bridge
+between a completed external `CALIBRATION_SCIENCE_V1` evidence bundle and this
+importer. It does not solve calibration, parse an unbounded user document, own
+an acquisition session, or add a persistent schema. The caller supplies a
+borrowed manifest bounded to 4,096 views and 4,096 selected image bindings,
+with hashes for the target, optical state and four required evidence artifacts.
+It declares and checks the frozen ChArUco family, `9 x 7` geometry,
+`DICT_5X5_100`, 30.000 mm squares, 21.000 mm markers, 270.000 x 210.000 mm
+active area and at least a 30.000 mm white border; the target hash binds the
+corresponding immutable physical-evidence record.
+Each view records an accepted/rejected decision and rejected views retain a
+nonzero rejection reason; accepted statistics alone are evaluated. Each entry
+carries the same optical-state manifest hash and remains in the exact selected
+item order required by the importer (it is not reordered by image id).
+The validator applies every hard Science v1 acceptance rule before allocating
+or calling Project DB. The producer writes the exact existing `L3DCALB1` v1
+little-endian record into caller-owned storage (at most 600,000 bytes), hashes
+it deterministically, and invokes only
+`lardon3d_calibration_bootstrap_import(...)`.
+
+Invalid evidence therefore creates no calibration row and never reaches
+`READY`. A valid exact retry reuses the frozen importer’s immutable
+calibrations, scope and selected-execution attachment. Tooling stops at
+`READY`; it never creates a Sparse SfM Task, and it cannot retro-calibrate the
+historical S21 campaign.
 A higher-level selected-execution coordinator remains separate scope.

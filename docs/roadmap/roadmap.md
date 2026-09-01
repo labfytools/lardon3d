@@ -147,6 +147,12 @@ provenance requis pour les **futures** campagnes connues-calibrées. Il ne
 réhabilite aucune campagne historique : S21 Engine Bay reste définitivement
 non rétro-calibrable. Voir [Calibration Science v1](../architecture/calibration_science_v1.md).
 
+`CALIBRATION_TOOLING_V1=PASS/FROZEN` ajoute le pont opérationnel borné entre
+un bundle d'évidence Science v1 déjà acquis et l'importeur immuable `L3DCALB1`
+v1. Il valide les HARD REJECTS, produit l'artefact déterministe et s'arrête à
+la transition `CALIBRATION → READY`; il ne résout aucune calibration, ne lance
+pas Sparse SfM et ne rétro-calibre pas S21.
+
 ## PHOTO QUALITY TRIAGE / ACQUISITION SELECTION — PASS / FROZEN
 
 L'étape qualité canonique implémentée se place après la découverte bornée, les

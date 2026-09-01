@@ -11,6 +11,8 @@ project(
     ],
 )
 
+cc = meson.get_compiler('c')
+
 add_project_arguments(
     '-D_POSIX_C_SOURCE=200809L',
     '-Wpedantic',
@@ -177,6 +179,7 @@ lardon3d_app = executable(
         'src/project_db.c', 'src/project_db_sparse_sfm.c',
         'src/optical_profiles.c',
         'src/calibration_bootstrap.c',
+        'src/calibration_tooling.c',
         'src/sparse_sfm_geometry.cpp',
         'src/sparse_sfm_incremental.cpp',
         'src/sparse_sfm_bundle_adjustment.cpp',
@@ -876,6 +879,21 @@ calibration_bootstrap_test = executable(
 )
 
 test('calibration-bootstrap', calibration_bootstrap_test, timeout: 30)
+
+calibration_tooling_test = executable(
+    'test-calibration-tooling',
+    sources: [
+        'tests/test_calibration_tooling.c',
+        'src/calibration_tooling.c', 'src/calibration_bootstrap.c',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, cc.find_library('m')],
+)
+
+test('calibration-tooling', calibration_tooling_test, timeout: 30)
 
 optical_profiles_test = executable(
     'test-optical-profiles',
