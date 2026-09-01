@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include <dirent.h>
 #include <fcntl.h>
 #include <openssl/evp.h>
 #include <sqlite3.h>
@@ -23,6 +24,14 @@ extern "C" {
 #include <lardon3d/track_builder_project.h>
 }
 
+namespace lardon3d::track_builder_internal {
+using Checkpoint = bool (*)(void *userdata);
+Lardon3DTrackBuilderProjectStatus build_project(
+    const Lardon3DTrackBuilderProjectRequest *request,
+    Lardon3DTrackBuilderProjectResult *result, Checkpoint checkpoint,
+    void *checkpoint_userdata);
+}
+
 namespace {
 constexpr Lardon3DGeometricVerifierKind kVerifier = LARDON3D_GEOMETRIC_VERIFIER_FUNDAMENTAL;
 constexpr uint32_t kVersion = 1;
@@ -34,6 +43,8 @@ std::string g_insert_db;
 uint64_t g_insert_match_id = 0;
 bool g_insert_during_build = false;
 bool g_publication_race = false;
+uint64_t g_publication_nodes = 0;
+uint64_t g_publication_capacity_bytes = 0;
 
 void check(bool value, const char *expression, int line) {
   if (!value) {
@@ -654,16 +665,25 @@ void run_resource_case(size_t gvr_count = 13) {
   auto started = std::chrono::steady_clock::now();
   report_rss("before-build");
   uint64_t expected_raw = static_cast<uint64_t>(gvr_count) * 8192ULL;
-  CHECK(lardon3d_track_builder_build_project(&request, &result) ==
-        LARDON3D_TRACK_BUILDER_PROJECT_OK && result.raw_inlier_edge_count == expected_raw &&
+  const auto build_status = lardon3d_track_builder_build_project(&request, &result);
+  if (build_status != LARDON3D_TRACK_BUILDER_PROJECT_OK ||
+      result.raw_inlier_edge_count != expected_raw ||
+      result.core_observation_count != 16384 || result.track_count != 8192)
+    std::fprintf(stderr, "resource build status=%d raw=%llu nodes=%llu tracks=%llu\n",
+                 static_cast<int>(build_status),
+                 static_cast<unsigned long long>(result.raw_inlier_edge_count),
+                 static_cast<unsigned long long>(result.core_observation_count),
+                 static_cast<unsigned long long>(result.track_count));
+  CHECK(build_status == LARDON3D_TRACK_BUILDER_PROJECT_OK &&
+        result.raw_inlier_edge_count == expected_raw &&
         result.core_observation_count == 16384 && result.track_count == 8192);
   report_rss("after-build");
   auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started);
   struct rusage usage{};
   CHECK(getrusage(RUSAGE_SELF, &usage) == 0);
-  uint64_t predicted = 4ULL * 1024ULL * 1024ULL +
-                       result.raw_inlier_edge_count * (48ULL + 2ULL * 160ULL);
-  predicted *= result.raw_inlier_edge_count > 400000ULL ? 8ULL : 2ULL;
+  uint64_t predicted = 0;
+  CHECK(lardon3d_track_builder_task_memory_estimate(
+      result.raw_inlier_edge_count, 2, &predicted));
   std::printf("RESOURCE GVR=%zu RAW=%llu INLIERS=%llu FEATURES=3 OBS=%llu TRACKS=%llu "
               "PREDICTED_RESERVATION=%llu\n",
               ids.size(), static_cast<unsigned long long>(result.raw_inlier_edge_count),
@@ -961,6 +981,251 @@ void run_pause_cancel_case() {
   std::puts("PAUSE/CANCEL: PASS");
 }
 
+struct LateRefusal {
+  size_t calls = 0;
+  size_t refuse_at = 0;
+};
+
+bool refuse_checkpoint(void *userdata) {
+  auto *state = static_cast<LateRefusal *>(userdata);
+  ++state->calls;
+  return state->calls != state->refuse_at;
+}
+
+void run_late_refusal_boundaries_case() {
+  Fixture fixture;
+  const uint64_t gvr = fixture.add_gvr(0, 1, {{0, 0, 0.1F}}, {0x01});
+  const uint64_t ids[] = {gvr};
+  const auto request = fixture.request(ids, 1);
+
+  for (size_t refusal : {2U, 3U}) {
+    LateRefusal checkpoint{0, refusal};
+    Lardon3DTrackBuilderProjectResult interrupted{};
+    CHECK(lardon3d::track_builder_internal::build_project(
+              &request, &interrupted, refuse_checkpoint, &checkpoint) ==
+              LARDON3D_TRACK_BUILDER_PROJECT_INTERRUPTED &&
+          checkpoint.calls == refusal && track_set_count(fixture.db_path) == 0 &&
+          table_count(fixture.db_path, "tracks") == 0 &&
+          table_count(fixture.db_path, "track_observations") == 0);
+  }
+
+  Lardon3DTrackBuilderProjectResult completed{};
+  CHECK(lardon3d_track_builder_build_project(&request, &completed) ==
+            LARDON3D_TRACK_BUILDER_PROJECT_OK &&
+        !completed.reused && completed.track_count == 1 &&
+        track_set_count(fixture.db_path) == 1 &&
+        table_count(fixture.db_path, "tracks") == 1 &&
+        table_count(fixture.db_path, "track_observations") == 2);
+  assert_two_observation_track(fixture.db, completed.track_set_id,
+                               fixture.feature[0], fixture.feature[1]);
+  std::puts("LATE REFUSAL: PASS (post-DSU and pre-publication remain zero, retry exact)");
+}
+
+void run_s21_admission_estimate_case() {
+  constexpr uint64_t edges = 6628174ULL;
+  constexpr uint64_t capacity_after_canonical_reserve = 12750811136ULL;
+  constexpr uint64_t historical_envelope = 19546898688ULL;
+  uint64_t compact = 0;
+  CHECK(lardon3d_track_builder_task_memory_estimate(edges, 0, &compact));
+  CHECK(compact == 1932981756ULL && compact < capacity_after_canonical_reserve &&
+        historical_envelope > capacity_after_canonical_reserve);
+  CHECK(!lardon3d_track_builder_task_memory_estimate(
+      static_cast<uint64_t>(UINT32_MAX) / 2U + 1U, 0, &compact));
+  CHECK(!lardon3d_track_builder_task_memory_estimate(edges, UINT64_MAX, &compact));
+  uint64_t with_match_peak = 0;
+  CHECK(lardon3d_track_builder_task_memory_estimate_with_match_peak(
+      edges, 0, LARDON3D_MATCH_FILE_MAX_MATCHES, &with_match_peak));
+  CHECK(with_match_peak == compact +
+        LARDON3D_MATCH_FILE_MAX_MATCHES * sizeof(Lardon3DMatchFileEntry));
+  CHECK(!lardon3d_track_builder_task_memory_estimate_with_match_peak(
+      0, 0, UINT64_MAX, &with_match_peak));
+  uint64_t adversarial_compact = 0, adversarial_peak = 0;
+  CHECK(lardon3d_track_builder_task_memory_estimate(1, 2, &adversarial_compact));
+  CHECK(lardon3d_track_builder_task_memory_estimate_with_match_peak(
+      1, 2, LARDON3D_MATCH_FILE_MAX_MATCHES, &adversarial_peak));
+  CHECK(adversarial_peak == adversarial_compact +
+        LARDON3D_MATCH_FILE_MAX_MATCHES * sizeof(Lardon3DMatchFileEntry));
+  Lardon3DHardwareProfile profile{};
+  char error[128]{};
+  CHECK(lardon3d_hardware_profile_detect(&profile, error, sizeof(error)));
+  profile.memory_total_bytes = capacity_after_canonical_reserve;
+  Lardon3DResourcePolicy policy{};
+  CHECK(lardon3d_resource_policy_default(&profile, &policy));
+  policy.system_memory_reserve_bytes = 0;
+  policy.emergency_memory_floor_bytes = 0;
+  Lardon3DResourceGovernor *governor =
+      lardon3d_resource_governor_create(&profile, &policy);
+  CHECK(governor != nullptr);
+  Lardon3DResourceSnapshot snapshot{};
+  CHECK(clock_gettime(CLOCK_MONOTONIC, &snapshot.captured_at) == 0);
+  snapshot.memory_available_bytes = capacity_after_canonical_reserve;
+  snapshot.memory_free_bytes = capacity_after_canonical_reserve;
+  Lardon3DResourceEstimate estimate = {
+      compact, 0, 0, 0, 1, 1, 1, 0, 1, LARDON3D_RESOURCE_TASK_CPU};
+  Lardon3DResourceDecision decision{};
+  Lardon3DResourceReservation *reservation = nullptr;
+  CHECK(lardon3d_resource_governor_reserve(
+            governor, &snapshot, &estimate, &decision, &reservation) &&
+        decision.kind == LARDON3D_RESOURCE_START && reservation != nullptr &&
+        lardon3d_resource_governor_release(governor, reservation));
+  lardon3d_resource_governor_destroy(governor);
+
+  /* WHY/CONTRACT: matches can greatly exceed inliers. At the exact boundary
+   * the legacy E/F subtotal would start, while truthful peak accounting must
+   * make the sole Governor refuse admission. */
+  profile.memory_total_bytes = adversarial_peak - 1U;
+  CHECK(lardon3d_resource_policy_default(&profile, &policy));
+  policy.system_memory_reserve_bytes = 0;
+  policy.emergency_memory_floor_bytes = 0;
+  governor = lardon3d_resource_governor_create(&profile, &policy);
+  CHECK(governor != nullptr);
+  snapshot.memory_available_bytes = adversarial_peak - 1U;
+  snapshot.memory_free_bytes = adversarial_peak - 1U;
+  estimate.memory_fixed_bytes = adversarial_peak;
+  reservation = nullptr;
+  CHECK(lardon3d_resource_governor_reserve(
+            governor, &snapshot, &estimate, &decision, &reservation) &&
+        decision.kind != LARDON3D_RESOURCE_START && reservation == nullptr);
+  lardon3d_resource_governor_destroy(governor);
+  std::puts("S21 ADMISSION: PASS (truthful checked envelope fits canonical reserve)");
+}
+
+void run_adversarial_match_peak_task_case() {
+  Fixture fixture(LARDON3D_MATCH_FILE_MAX_MATCHES);
+  std::vector<Lardon3DMatchFileEntry> entries(LARDON3D_MATCH_FILE_MAX_MATCHES);
+  for (uint32_t i = 0; i < LARDON3D_MATCH_FILE_MAX_MATCHES; ++i)
+    entries[i] = {i, i, 0.1F};
+  std::vector<unsigned char> mask(LARDON3D_MATCH_FILE_MAX_MATCHES / 8U, 0);
+  mask[0] = 0x01;
+  const uint64_t gvr = fixture.add_gvr(0, 1, entries, mask);
+  const uint64_t ids[] = {gvr};
+  Lardon3DHardwareProfile profile{};
+  char error[128]{};
+  CHECK(lardon3d_hardware_profile_detect(&profile, error, sizeof(error)));
+  Lardon3DResourcePolicy policy{};
+  CHECK(lardon3d_resource_policy_default(&profile, &policy));
+  Lardon3DResourceGovernor *governor =
+      lardon3d_resource_governor_create(&profile, &policy);
+  CHECK(governor != nullptr);
+  Lardon3DAppState state{};
+  lardon3d_app_state_init(&state);
+  state.project_loaded = true;
+  state.project_db = fixture.db;
+  state.resource_governor = governor;
+  std::snprintf(state.project_path, sizeof(state.project_path), "%s",
+                fixture.directory.c_str());
+  Lardon3DTrackBuilderTaskConfiguration configuration = {
+      state.project_path, fixture.db, kVerifier, kVersion, g_verifier, ids, 1};
+  uint64_t task_id = 0;
+  Lardon3DTask *task = lardon3d_project_create_track_builder_task(
+      &state, &configuration, &task_id);
+  uint64_t expected = 0;
+  Lardon3DResourceEstimate estimate{};
+  CHECK(task != nullptr && task_id != 0 &&
+        lardon3d_track_builder_task_memory_estimate_with_match_peak(
+            1, 2, LARDON3D_MATCH_FILE_MAX_MATCHES, &expected) &&
+        lardon3d_task_resource_estimate(task, &estimate) &&
+        estimate.memory_fixed_bytes == expected);
+  lardon3d_task_destroy(task);
+  lardon3d_resource_governor_destroy(governor);
+  std::puts("MATCH PEAK TASK: PASS (8192 matches, 1 inlier, exact creation estimate)");
+}
+
+void run_disjoint_publication_capacity_case() {
+  constexpr uint32_t track_count = 256;
+  Fixture fixture(track_count);
+  std::vector<Lardon3DMatchFileEntry> entries(track_count);
+  for (uint32_t i = 0; i < track_count; ++i) entries[i] = {i, i, 0.1F};
+  std::vector<unsigned char> mask(track_count / 8U, 0xffU);
+  const uint64_t gvr = fixture.add_gvr(0, 1, entries, mask);
+  const uint64_t ids[] = {gvr};
+  auto request = fixture.request(ids, 1);
+  g_publication_nodes = 0;
+  g_publication_capacity_bytes = 0;
+  Lardon3DTrackBuilderProjectResult result{};
+  CHECK(lardon3d_track_builder_build_project(&request, &result) ==
+            LARDON3D_TRACK_BUILDER_PROJECT_OK &&
+        result.track_count == track_count && result.core_observation_count == 2U * track_count);
+  CHECK(g_publication_nodes == 2U * track_count &&
+        g_publication_capacity_bytes == 44U * g_publication_nodes);
+  uint64_t estimate = 0;
+  CHECK(lardon3d_track_builder_task_memory_estimate(track_count, 2, &estimate));
+  uint64_t required_slots = g_publication_nodes + g_publication_nodes / 2U + 1U;
+  uint64_t slots = 8;
+  while (slots < required_slots) slots *= 2U;
+  const uint64_t legacy_undercharge = 4ULL * 1024ULL * 1024ULL +
+      85ULL * g_publication_nodes + 8ULL * track_count + 16ULL * slots + 640ULL * 2U;
+  CHECK(estimate == legacy_undercharge + 16ULL * g_publication_nodes);
+
+  Lardon3DHardwareProfile profile{};
+  char error[128]{};
+  CHECK(lardon3d_hardware_profile_detect(&profile, error, sizeof(error)));
+  profile.memory_total_bytes = estimate - 1U;
+  Lardon3DResourcePolicy policy{};
+  CHECK(lardon3d_resource_policy_default(&profile, &policy));
+  policy.system_memory_reserve_bytes = 0;
+  policy.emergency_memory_floor_bytes = 0;
+  Lardon3DResourceGovernor *governor = lardon3d_resource_governor_create(&profile, &policy);
+  CHECK(governor != nullptr);
+  Lardon3DResourceSnapshot snapshot{};
+  CHECK(clock_gettime(CLOCK_MONOTONIC, &snapshot.captured_at) == 0);
+  snapshot.memory_available_bytes = estimate - 1U;
+  snapshot.memory_free_bytes = estimate - 1U;
+  Lardon3DResourceEstimate resource = {
+      estimate, 0, 0, 0, 1, 1, 1, 0, 1, LARDON3D_RESOURCE_TASK_CPU};
+  Lardon3DResourceDecision decision{};
+  Lardon3DResourceReservation *reservation = nullptr;
+  CHECK(lardon3d_resource_governor_reserve(
+            governor, &snapshot, &resource, &decision, &reservation) &&
+        decision.kind != LARDON3D_RESOURCE_START && reservation == nullptr);
+  lardon3d_resource_governor_destroy(governor);
+  std::puts("PUBLICATION CAPACITY: PASS (256 disjoint tracks, truthful 44 B/node peak)");
+}
+
+bool checkpoints_directory_empty(const Fixture &fixture) {
+  DIR *directory = opendir((fixture.directory + "/.lardon3d/checkpoints").c_str());
+  CHECK(directory != nullptr);
+  bool empty = true;
+  while (dirent *entry = readdir(directory))
+    if (std::strcmp(entry->d_name, ".") != 0 && std::strcmp(entry->d_name, "..") != 0)
+      empty = false;
+  CHECK(closedir(directory) == 0);
+  return empty;
+}
+
+void run_creation_ownership_failures_case() {
+  for (const char *fault : {"LARDON3D_TRACK_BUILDER_TEST_FAIL_SCOPE_DIR_FSYNC",
+                            "LARDON3D_TRACK_BUILDER_TEST_FAIL_INITIAL_PERSIST"}) {
+    Fixture fixture;
+    const uint64_t gvr = fixture.add_gvr(0, 1, {{0, 0, 0.1F}}, {0x01});
+    const uint64_t ids[] = {gvr};
+    Lardon3DHardwareProfile profile{};
+    char error[128]{};
+    CHECK(lardon3d_hardware_profile_detect(&profile, error, sizeof(error)));
+    Lardon3DResourcePolicy policy{};
+    CHECK(lardon3d_resource_policy_default(&profile, &policy));
+    Lardon3DResourceGovernor *governor =
+        lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(governor != nullptr);
+    Lardon3DAppState state{};
+    lardon3d_app_state_init(&state);
+    state.project_loaded = true;
+    state.project_db = fixture.db;
+    state.resource_governor = governor;
+    std::snprintf(state.project_path, sizeof(state.project_path), "%s", fixture.directory.c_str());
+    Lardon3DTrackBuilderTaskConfiguration configuration = {
+        state.project_path, fixture.db, kVerifier, kVersion, g_verifier, ids, 1};
+    uint64_t task_id = 99;
+    CHECK(setenv(fault, "1", 1) == 0);
+    CHECK(lardon3d_project_create_track_builder_task(&state, &configuration, &task_id) == nullptr);
+    CHECK(unsetenv(fault) == 0 && task_id == 0 && checkpoints_directory_empty(fixture) &&
+          table_count(fixture.db_path, "tasks") == 0 &&
+          table_count(fixture.db_path, "track_builder_tasks") == 0);
+    lardon3d_resource_governor_destroy(governor);
+  }
+  std::puts("CREATION OWNERSHIP: PASS (post-rename and post-checkpoint rollback clean)");
+}
+
 } // namespace
 
 #ifdef LARDON3D_TRACK_BUILDER_PROJECT_TESTING
@@ -1008,6 +1273,12 @@ extern "C" void lardon3d_track_builder_project_test_before_publication(
   CHECK(lardon3d_track_builder_build_project(request, &result) ==
         LARDON3D_TRACK_BUILDER_PROJECT_OK && !result.reused);
 }
+
+extern "C" void lardon3d_track_builder_project_test_publication_capacities(
+    uint64_t node_count, uint64_t serialization_capacity_bytes) {
+  g_publication_nodes = node_count;
+  g_publication_capacity_bytes = serialization_capacity_bytes;
+}
 #endif
 
 int main() {
@@ -1036,9 +1307,14 @@ int main() {
   run_scope_snapshot_case();
   run_partial_input_failure();
   run_resource_case();
+  run_s21_admission_estimate_case();
+  run_adversarial_match_peak_task_case();
+  run_disjoint_publication_capacity_case();
+  run_creation_ownership_failures_case();
   run_durable_task_case();
   run_late_identity_race_case();
   run_pause_cancel_case();
+  run_late_refusal_boundaries_case();
   run_crash_recovery_case();
   std::puts("C01-C27 integration harness: PASS (C26 N/A; C27 Gate D closed)");
   return 0;

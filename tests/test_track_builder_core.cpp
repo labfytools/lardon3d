@@ -179,6 +179,16 @@ void test_corruption_and_immutability() {
          LARDON3D_TRACK_BUILDER_INVALID_ARGUMENT);
 }
 
+void test_isolated_divergent_metadata_regression() {
+  const Observation o1 = observation(1, 0, 10, 1);
+  const Observation o2 = observation(1, 1, 10, 2);
+  const Observation o3 = observation(2, 0, 11, 1);
+  /* Public ABI contract: metadata is tied to an observation identity and is
+   * checked per connected component.  Divergent metadata on isolated O2 must
+   * not poison the valid O1--O3 component. */
+  expect({o1, o2, o3}, {edge(o1, o3)}, {{{1, 0}, {2, 0}}});
+}
+
 void test_additional_adversarial() {
   const Observation a = observation(1, 0, 10);
   const Observation b = observation(2, 0, 11);
@@ -290,6 +300,7 @@ int main() {
   test_fingerprint();
   test_adversarial();
   test_corruption_and_immutability();
+  test_isolated_divergent_metadata_regression();
   test_additional_adversarial();
   test_exhaustive();
   test_large_and_repeatable();

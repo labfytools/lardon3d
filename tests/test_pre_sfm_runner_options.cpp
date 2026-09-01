@@ -349,6 +349,22 @@ int main() {
         geometric_reset.geometric_maximum_process_rss_bytes == 0);
   geometric_reset.geometric_evidence_active = false;
 
+  Lardon3DProjectRecoveryEntry recovery_entry{};
+  recovery_entry.status = LARDON3D_PROJECT_RECOVERABLE;
+  recovery_entry.snapshot.recovery_state = TASK_PENDING;
+  std::snprintf(recovery_entry.task_kind, sizeof(recovery_entry.task_kind),
+                "%s", LARDON3D_TRACK_BUILDER_TASK_KIND);
+  recovery_entry.task_kind_version = LARDON3D_TRACK_BUILDER_TASK_KIND_VERSION;
+  GeometryRecoveryKind recovery_kind{};
+  CHECK(geometry_recovery_kind(recovery_entry, recovery_kind));
+  CHECK(recovery_kind == GeometryRecoveryKind::kTrackBuilder);
+  ++recovery_entry.task_kind_version;
+  CHECK(!geometry_recovery_kind(recovery_entry, recovery_kind));
+  std::snprintf(recovery_entry.task_kind, sizeof(recovery_entry.task_kind),
+                "unknown.task");
+  recovery_entry.task_kind_version = 1;
+  CHECK(!geometry_recovery_kind(recovery_entry, recovery_kind));
+
   Options options;
   CHECK(parse_case({"runner", "--resume-pre-gv-existing", "--project-dir",
                     "/tmp/not-opened"}, options));

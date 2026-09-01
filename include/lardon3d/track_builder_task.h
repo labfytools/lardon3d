@@ -44,6 +44,18 @@ bool lardon3d_track_builder_task_reconstruct(
     const Lardon3DTaskDurableSnapshot *snapshot, void *context,
     Lardon3DTaskKindBinding *binding);
 
+/* Checked operational envelope for the compact RAM-only implementation.
+ * This is admission accounting, not Builder identity or scientific policy. */
+bool lardon3d_track_builder_task_memory_estimate(
+    uint64_t raw_edge_count, uint64_t feature_set_count,
+    uint64_t *memory_bytes);
+
+/* Additive operational estimator used when the exact scope scan has resolved
+ * the largest parent Match Result. The legacy E/F estimator remains ABI-stable. */
+bool lardon3d_track_builder_task_memory_estimate_with_match_peak(
+    uint64_t raw_edge_count, uint64_t feature_set_count,
+    uint64_t max_match_count, uint64_t *memory_bytes);
+
 #ifdef __cplusplus
 }
 #endif

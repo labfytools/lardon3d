@@ -2053,8 +2053,31 @@ bool match_result_frontier(Runtime &runtime, size_t &count,
   }
 }
 
-bool find_pending_geometry_task(Runtime &runtime, uint64_t &geometry_task_id) {
+enum class GeometryRecoveryKind { kNone, kGeometry, kTrackBuilder };
+
+bool geometry_recovery_kind(const Lardon3DProjectRecoveryEntry &entry,
+                            GeometryRecoveryKind &kind) {
+  kind = GeometryRecoveryKind::kNone;
+  if ((entry.status != LARDON3D_PROJECT_RECOVERABLE &&
+       entry.status != LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE) ||
+      entry.snapshot.recovery_state != TASK_PENDING)
+    return false;
+  if (std::strcmp(entry.task_kind, LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND) == 0) {
+    kind = GeometryRecoveryKind::kGeometry;
+    return true;
+  }
+  if (std::strcmp(entry.task_kind, LARDON3D_TRACK_BUILDER_TASK_KIND) == 0 &&
+      entry.task_kind_version == LARDON3D_TRACK_BUILDER_TASK_KIND_VERSION) {
+    kind = GeometryRecoveryKind::kTrackBuilder;
+    return true;
+  }
+  return false;
+}
+
+bool find_pending_geometry_task(Runtime &runtime, uint64_t &geometry_task_id,
+                                uint64_t &track_task_id) {
   geometry_task_id = 0;
+  track_task_id = 0;
   uint64_t cursor = 0;
   for (;;) {
     Lardon3DProjectRecoveryEntry entries[8]{};
@@ -2066,23 +2089,22 @@ bool find_pending_geometry_task(Runtime &runtime, uint64_t &geometry_task_id) {
     for (size_t index = 0; index < count; ++index) {
       const auto &entry = entries[index];
       cursor = entry.task_id;
-      if ((entry.status != LARDON3D_PROJECT_RECOVERABLE &&
-           entry.status !=
-               LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE) ||
-          entry.snapshot.recovery_state != TASK_PENDING ||
-          std::strcmp(entry.task_kind,
-                      LARDON3D_GEOMETRIC_VERIFIER_TASK_KIND) != 0 ||
-          geometry_task_id != 0) {
+      GeometryRecoveryKind kind{};
+      if (!geometry_recovery_kind(entry, kind) || geometry_task_id != 0 ||
+          track_task_id != 0) {
         /* The production recovery API resumes every pending Task. This
          * GV-only proof route must never replay an upstream or downstream kind
          * merely because it shares the same project. */
         std::fprintf(stderr,
-                     "GV-only recovery refuses unsafe pending task %llu of kind %s\n",
+                     "geometry recovery refuses unsafe pending task %llu of kind %s v%u\n",
                      static_cast<unsigned long long>(entry.task_id),
-                     entry.task_kind);
+                     entry.task_kind, entry.task_kind_version);
         return false;
       }
-      geometry_task_id = entry.task_id;
+      if (kind == GeometryRecoveryKind::kGeometry)
+        geometry_task_id = entry.task_id;
+      else
+        track_task_id = entry.task_id;
     }
     if (count < 8) return true;
   }
@@ -2098,6 +2120,18 @@ bool recover_geometry_task(Runtime &runtime, uint64_t geometry_task_id,
          recovery.failed == 0 && !recovery.queue_full &&
          wait_completed(runtime, geometry_task_id,
                         "geometric_verifier.run recovered existing");
+}
+
+bool recover_track_builder_task(Runtime &runtime, uint64_t track_task_id,
+                                Lardon3DProjectRecoverySummary &recovery) {
+  recovery = {};
+  return lardon3d_project_resume_recoverable_tasks(
+             &runtime.state, lardon3d_task_kind_registry_production(),
+             &recovery) == LARDON3D_PROJECT_DB_OK &&
+         recovery.inspected == 1 && recovery.resumed == 1 &&
+         recovery.failed == 0 && !recovery.queue_full &&
+         wait_completed(runtime, track_task_id,
+                        "track_builder.run recovered existing");
 }
 
 bool find_pending_pre_gv_task(Runtime &runtime, uint64_t &candidate_task_id,
@@ -2422,11 +2456,13 @@ bool run_existing_geometry(Runtime &runtime) {
   size_t match_results_before = 0;
   uint64_t match_frontier_before = 0;
   uint64_t pending_geometry_task_id = 0;
+  uint64_t pending_track_task_id = 0;
   if (!collect_evidence(runtime, 0, before) ||
       !count_exact_gvrs(runtime, fingerprint, exact_before) ||
       !match_result_frontier(runtime, match_results_before,
                              match_frontier_before) ||
-      !find_pending_geometry_task(runtime, pending_geometry_task_id)) {
+      !find_pending_geometry_task(runtime, pending_geometry_task_id,
+                                  pending_track_task_id)) {
     stop_runtime(runtime);
     return false;
   }
@@ -2439,17 +2475,23 @@ bool run_existing_geometry(Runtime &runtime) {
    * call after a completed/audited production GV Task. */
   uint64_t geometry_task_id = pending_geometry_task_id;
   Lardon3DProjectRecoverySummary recovery{};
-  const char *geometry_action = pending_geometry_task_id == 0
+  const char *geometry_action = pending_track_task_id != 0
+                                    ? "reused-completed"
+                                : pending_geometry_task_id == 0
                                     ? "enqueued"
                                     : "recovered";
-  begin_geometric_evidence(runtime);
-  const bool task_completed = pending_geometry_task_id != 0
-      ? recover_geometry_task(runtime, geometry_task_id, recovery)
-      : lardon3d_project_enqueue_geometric_verifier_task(
-            &runtime.state, &configuration, &geometry_task_id) &&
-            wait_completed(runtime, geometry_task_id,
-                           "geometric_verifier.run current existing");
-  const bool governor_admission_ok = end_geometric_evidence(runtime);
+  bool task_completed = true;
+  bool governor_admission_ok = true;
+  if (pending_track_task_id == 0) {
+    begin_geometric_evidence(runtime);
+    task_completed = pending_geometry_task_id != 0
+        ? recover_geometry_task(runtime, geometry_task_id, recovery)
+        : lardon3d_project_enqueue_geometric_verifier_task(
+              &runtime.state, &configuration, &geometry_task_id) &&
+              wait_completed(runtime, geometry_task_id,
+                             "geometric_verifier.run current existing");
+    governor_admission_ok = end_geometric_evidence(runtime);
+  }
   if (!task_completed || !governor_admission_ok) {
     std::printf("{\"record\":\"existing_geometry_summary\",\"ok\":false,"
                 "\"stage\":\"geometric_verifier.run\",\"task_id\":%llu,"
@@ -2480,11 +2522,13 @@ bool run_existing_geometry(Runtime &runtime) {
       !match_result_frontier(runtime, match_results_after,
                              match_frontier_after) ||
       !audit_match_results(runtime, matcher_task_id, match_audit) ||
-      lardon3d_project_db_load_task(runtime.state.project_db, geometry_task_id,
-                                    &durable_task) != LARDON3D_PROJECT_DB_OK ||
-      lardon3d_project_db_load_geometric_verifier_task(
-          runtime.state.project_db, geometry_task_id,
-          &durable_geometry) != LARDON3D_PROJECT_DB_OK ||
+      (pending_track_task_id == 0 &&
+       lardon3d_project_db_load_task(runtime.state.project_db, geometry_task_id,
+                                     &durable_task) != LARDON3D_PROJECT_DB_OK) ||
+      (pending_track_task_id == 0 &&
+       lardon3d_project_db_load_geometric_verifier_task(
+           runtime.state.project_db, geometry_task_id,
+           &durable_geometry) != LARDON3D_PROJECT_DB_OK) ||
       exact_after != applicable || verified + rejected != applicable ||
       match_results_before != before.matches ||
       match_results_after != after.matches ||
@@ -2492,10 +2536,11 @@ bool run_existing_geometry(Runtime &runtime) {
       before.features != after.features || before.pairs != after.pairs ||
       before.matches != after.matches ||
       match_frontier_before != match_frontier_after ||
-      durable_task.saved_state != TASK_COMPLETED ||
-      durable_task.recovery_state != TASK_COMPLETED ||
-      durable_task.progress != 100 ||
-      durable_geometry.after_match_result_id != match_frontier_after) {
+      (pending_track_task_id == 0 &&
+       (durable_task.saved_state != TASK_COMPLETED ||
+        durable_task.recovery_state != TASK_COMPLETED ||
+        durable_task.progress != 100 ||
+        durable_geometry.after_match_result_id != match_frontier_after))) {
     std::printf("{\"record\":\"existing_geometry_summary\",\"ok\":false,"
                 "\"stage\":\"current_evidence_audit\",\"task_errors\":1}\n");
     stop_runtime(runtime);
@@ -2508,6 +2553,15 @@ bool run_existing_geometry(Runtime &runtime) {
   // reuses an existing Track Set instead of publishing duplicate lineage.
   uint64_t track_task_id = 0;
   Lardon3DProjectDbTrackSet track_set{};
+  Lardon3DProjectRecoverySummary track_recovery{};
+  if (!runtime.stop_after_gv && pending_track_task_id != 0 &&
+      !recover_track_builder_task(runtime, pending_track_task_id,
+                                  track_recovery)) {
+    std::printf("{\"record\":\"existing_geometry_summary\",\"ok\":false,"
+                "\"stage\":\"track_builder.run recovered\",\"task_errors\":1}\n");
+    stop_runtime(runtime);
+    return false;
+  }
   if (!runtime.stop_after_gv &&
       !build_tracks(runtime, verified_ids, fingerprint, &track_task_id,
                     &track_set)) {
@@ -2516,6 +2570,7 @@ bool run_existing_geometry(Runtime &runtime) {
     stop_runtime(runtime);
     return false;
   }
+  if (pending_track_task_id != 0) track_task_id = pending_track_task_id;
   if (!runtime.stop_after_gv) {
     Evidence after_tracks{};
     if (!collect_evidence(runtime, 0, after_tracks) ||

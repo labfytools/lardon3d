@@ -63,6 +63,15 @@ probes across 19 modified/new public headers, ABI and production-seam checks,
 retained-manifest verification and diff validation, with zero blocking findings.
 Do not reopen this boundary or infer a new scientific policy from the freeze.
 
+The canonical review checkpoint is tag `global-maintenance-2026-09-01` at
+commit `b84f860d868c66d9ee84b85ceb1bc6480b95aca5`; its detailed evidence is
+[`docs/architecture/global_maintenance_audit.md`](docs/architecture/global_maintenance_audit.md).
+Future reviews are delta-based from this checkpoint: begin with
+`git diff global-maintenance-2026-09-01...HEAD` and examine changed files,
+their directly affected contracts, tests, documentation, and crossed dependency
+boundaries. Unchanged PASS/FROZEN systems inherit this evidence and are reopened
+only by concrete evidence; do not repeat a global A-to-Z audit.
+
 When a ticket declares `NO_NEW_SUBSYSTEM`, do not introduce an unrelated:
 
 - Task Runtime;

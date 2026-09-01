@@ -504,6 +504,16 @@ ressources, la persistance et l'observation TUI. Son état et ses preuves
 consolidées sont consignés dans le
 [registre canonique de maintenance](../architecture/global_maintenance_audit.md).
 
+Le checkpoint canonique de revue est le tag
+`global-maintenance-2026-09-01`, au commit
+`b84f860d868c66d9ee84b85ceb1bc6480b95aca5`. Les revues futures sont
+strictement delta-based depuis ce point : `git diff
+global-maintenance-2026-09-01...HEAD`, puis examen des fichiers modifiés, des
+contrats, tests et documents directement affectés, et des frontières de
+dépendances traversées. Les systèmes PASS/FROZEN inchangés héritent de la preuve
+du [registre de maintenance](../architecture/global_maintenance_audit.md) et ne
+sont rouverts que sur preuve concrète ; ne pas répéter un audit global A-à-Z.
+
 Les résultats déjà réglés sont :
 
 - Project DB v23 ajoute neuf relations optiques sans backfill ni inférence ;
@@ -542,6 +552,41 @@ bloquant après avoir indépendamment rejoué le build portable, la suite 64/64,
 production, le SHA du manifest GV retenu et le diff-check. La gate de
 maintenance est donc fermée ; la poursuite réelle depuis Tracks devient la
 prochaine tranche séparée, sans avoir été exécutée par cette synchronisation.
+
+## REAL S21 TRACKS — PASS / FROZEN
+
+`REAL_S21_TRACKS=PASS/FROZEN`. La preuve part du projet GV v3 immuable
+`/home/fy59/Documents/Lardon/.real-pre-sfm-2026-08-31/s21-gv-v3`, dont le
+SHA-256 de Project DB est, avant et après les exécutions,
+`56aa5ec37624b322e9f77a90b138cc7390ef817a9cec3bef7e4c87609fd2eeed`.
+Les reflinks de preuve conservent exactement 2 826 Feature Sets, 172 741
+Candidate Pairs/Match Results, 172 275 parents GVR (24 065
+`GEOMETRIC_VERIFIED`, 148 210 `GEOMETRIC_REJECTED`). Aucun Feature, Candidate
+Pair, Matcher ou GVR n'a été rejoué ni créé ; le source reste intègre. Sparse
+SfM et Dense restent à zéro.
+
+Le rejet initial de la Task `track_builder.run` 2835 à 0 % est conservé comme
+constat historique : son enveloppe alors utilisée valait 19 546 898 688 octets
+(18,204 Gio), au-delà des 12 750 811 136 octets (11,875 Gio) admis après
+réserve. Ce n'est pas le modèle opérationnel validé. Le modèle compact actuel,
+qui réserve les capacités vivantes du scope et le pic du Match File parent,
+est admis par le Governor ; aucun scratch ni lease scratch n'a été utilisé.
+
+La Task fraîche primaire 2837 termine `COMPLETE` à 100 % et publie le seul
+Track Set 1 : 912 447 Tracks, 2 495 768 observations, longueurs min/max/moyenne
+2/42/2,7352470883240341, zéro doublon et zéro Track à images conflictuelles.
+Son digest canonique persistant est
+`c30eba192627bf73eaf21ff30d81038d8cc6bbf36a69226f88cdc8c37f7d74a1`.
+La reprise exacte suivante réutilise Track Set 1 (`task_track_id=0`) sans
+modifier ces Tracks. Le run complet propre de la Task 2837 dure 3 316 s
+(1788262322 → 1788265638).
+
+La preuve de récupération est distincte : la Task 2835 est créée pendante sur
+un reflink, interrompue par `SIGTERM` sans publication, puis reprise par le
+runner corrigé. Elle termine `COMPLETE` à 100 % et retrouve le même Track Set
+1, les mêmes comptes et le même digest ; le scénario interrompu avait publié
+zéro Track Set. Cette preuve valide la reprise opérationnelle sans rouvrir le
+contrat scientifique Tracks gelé.
 
 ## NEAR TERM
 

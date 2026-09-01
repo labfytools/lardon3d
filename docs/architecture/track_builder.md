@@ -295,14 +295,56 @@ a complete Track Set with the exact non-empty scope.
 
 ## Resource model
 
-**DECISION:** use a full sparse in-memory graph with deterministic edge sort,
-not a dense matrix, SQLite temporary graph or external merge in v1. This is
-the minimum complexity credible for the 16 GiB target and permits exhaustive
-canonical finalization. Input Match Files are read one at a time; they are
-never all resident.
+The scientific choice remains **FROZEN**: a full sparse graph and deterministic
+edge sort, never a dense matrix. The operational representation was reopened
+after the S21 admission failure without changing observation identity, edges,
+DSU components, conflict rejection, canonicalization, fingerprint or version.
+Input Match Files are still read one at a time and are never all resident.
 
-Approximate implementation-neutral accounting, including allocator/alignment
-headroom:
+The Project path now constructs one private compact graph directly. It owns a
+Feature Set metadata projection, 16-byte nodes, 8-byte indexed raw edges and
+one 16-byte-slot open-addressed identity index. The public C core remains an
+adapter; Project no longer creates a `deque<Observation>`, pointer-edge vector,
+second observation/map/edge transport and then another public-core table. DSU
+uses a 32-bit parent array and byte ranks. Component grouping and accepted
+Track ranges are flat arrays, not `vector<vector<...>>` ownership forests.
+
+The RAM-only path is valid and is the current production path. No external
+merge or scratch lease is used, no temporary graph state is authoritative or
+stored in the DB, and no user flag selects a representation. Consequently no
+new Governor/SSD wrapper is justified by this change.
+
+The Task admission estimator is checked integer arithmetic over retained
+capacities. For `N = 2 × E_raw` (the safe endpoint upper bound), `S` the next
+power of two at least `1.5 × N + 1`, and `F` the number of distinct Feature
+Sets resolved from the exact GVR scope, and `M_max` the largest parent Match
+Result `match_count` in that scope, it reserves:
+
+`4 MiB + 101 × N + 8 × E_raw + 16 × S + 640 × F + 12 × M_max` bytes.
+
+The `101 × N` term is documented code accounting: retained compact nodes (16),
+DSU/group/conflict scratch (17), flat canonical output (24), and worst-case
+simultaneous per-Track publication serialization (44): stored observation
+capacity (16), vector objects/capacity (up to 12), and publication rows (16).
+The other terms are actual reserved
+edge capacity, actual power-of-two identity slot capacity, and a conservative
+Feature Set projection/cache/hash allowance. The final term is the largest
+live `Lardon3DMatchFileEntry` vector: Match Files are resolved sequentially,
+so this is a peak rather than a sum, and `match_count` is intentionally not
+approximated by the potentially much smaller `inlier_count`. Overflow or more than
+`UINT32_MAX` possible nodes fails closed before Task creation.
+
+The former Task formula
+`(4 MiB + E×48 + 2E×160) × (2 or 8)` was a historical envelope whose
+coefficients and multiplier did not name live allocations. It is not the
+current estimator and must not be reinterpreted as such. At S21
+`E_raw = 6,628,174`, it produced `19,546,898,688` bytes (18.204 GiB), exceeding
+the `12,750,811,136`-byte host capacity after canonical reserve. The compact
+formula with `F=0, M_max=0` produces `1,932,981,756` bytes; real admission adds
+exactly `640 × F + 12 × M_max` and therefore remains derived from the exact scope rather than from
+an invented fixed 10.48 GiB target.
+
+Historical implementation-neutral guidance, retained only for comparison:
 
 - observation key: 16–24 bytes;
 - unique edge: 16–32 bytes for two compact node references and sort metadata;
@@ -379,6 +421,13 @@ A durable `track_builder.run` v1 treats one complete Track Set as its scientific
 unit. It replays the explicit scope after recovery and pauses/cancels only at
 safe boundaries; publication occurs only after complete canonical output and
 final scope validation. A cancelled or failed run publishes no incomplete set.
+
+The Task supplies an internal checkpoint callback to the Project adapter after
+each complete GVR has been read and incorporated. It never preempts Match File
+reading, DSU/canonicalization, final revalidation or atomic publication. A
+pause/cancel therefore discards only reconstructible, non-authoritative RAM;
+restart replays the same explicit durable scope and exact-identity lookup
+reuses a publication that committed before a crash.
 
 ## Resource Governor integration (Gate D)
 
@@ -511,14 +560,17 @@ internal SHA-256 helper. Its fingerprint vector remains
 
 The historical isolated Gate B 1M benchmark's `973752 KiB` is a process
 high-water RSS measurement; it is not the Gate C/D project integration
-measurement. The
+measurement and predates the compact Project ownership change. The
 synthetic caller retains 136,000,136 bytes of observations and 16,000,000
 bytes of pointer edges while the core retains its 136,000,136-byte canonical
 metadata table, 16,000,000-byte normalized edges, DSU/component temporaries
 and compact output. Compact edges contain node indices only; they do not copy
 136-byte metadata at either endpoint. The remaining high-water gap is
 primarily allocator retention plus hash-table buckets/nodes and vector
-capacity. No core duplication bug was found or changed in the closure audit.
+capacity. Those figures characterize the historical public-adapter benchmark,
+not the current direct Project path; the operational reopening removed the
+identified Project-to-core duplicate transport while preserving that public
+adapter for ABI compatibility.
 
 The targeted corpus explicitly covers reversed endpoints, 100 identical
 edges, contradictory metadata, fingerprint/dimension/version conflicts,
@@ -542,7 +594,8 @@ Only Feature Set metadata is loaded—descriptor payloads are never read. A
 small per-build Feature Set cache is permitted, while Match File buffers are
 released immediately after edge extraction.
 
-The complete resolved graph is passed unchanged to the Gate B core. Before the
+The complete resolved evidence is inserted directly into the shared private
+compact core representation. Before the
 frozen `lardon3d_project_db_create_track_set()` publication transaction, the
 same explicit GVR IDs, status, selector, parent chain and scope count/hash are
 revalidated. Any missing, rejected, mismatched or corrupt selected input aborts
@@ -653,3 +706,21 @@ persistent shell that launched direct runs; it was not Track Builder memory.
 A normal 250k hardware run completed in 0.368 seconds with 33,228 KiB peak RSS,
 MemAvailable loss of 14,108 KiB, no swap delta and zero PSI averages. Gate D
 is **PASS**; Gate E final validation and freeze are complete.
+
+The final real S21 proof validates the compact operational path on the immutable
+GV v3 source (Project DB SHA-256 unchanged before and after:
+`56aa5ec37624b322e9f77a90b138cc7390ef817a9cec3bef7e4c87609fd2eeed`). The
+fresh primary task 2837 completed at 100% and published Track Set 1 with
+912,447 Tracks and 2,495,768 observations (length min/max/mean
+2/42/2.7352470883240341), zero duplicates, zero conflicting-image Tracks and
+the persisted canonical digest
+`c30eba192627bf73eaf21ff30d81038d8cc6bbf36a69226f88cdc8c37f7d74a1`. Its
+wall time was 3,316 seconds (1788262322 to 1788265638). Exact resume reused
+that Track Set unchanged. In a separate reflink, pending Task 2835 was
+terminated with `SIGTERM` before publication (zero published Track Sets) and
+then completed at 100% through the corrected runner, producing the identical
+Track Set/counts/digest. RSS samples remained stable at approximately 845 MiB
+and 862 MiB, minimum observed MemAvailable was about 8 GiB, no swap delta was
+observed, and Governor admission passed. No scratch or scratch lease was used.
+No Feature, Candidate Pair, Matcher or GVR work was replayed or created, and
+Sparse SfM/Dense remained at zero.
