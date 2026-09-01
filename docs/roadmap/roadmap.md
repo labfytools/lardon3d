@@ -153,6 +153,12 @@ v1. Il valide les HARD REJECTS, produit l'artefact déterministe et s'arrête à
 la transition `CALIBRATION → READY`; il ne résout aucune calibration, ne lance
 pas Sparse SfM et ne rétro-calibre pas S21.
 
+`CALIBRATION_SOLVER_PREFLIGHT_V1=PASS` retient un exécutable externe épinglé
+sur OpenCV 5.0.x, dont le seul rôle futur est de produire le bundle d'évidence
+consommé par Calibration Tooling. Il ne devient pas une dépendance runtime et
+ne lance aucun stage de reconstruction. Voir [Calibration Solver Preflight
+v1](../architecture/calibration_solver_preflight_v1.md).
+
 ## PHOTO QUALITY TRIAGE / ACQUISITION SELECTION — PASS / FROZEN
 
 L'étape qualité canonique implémentée se place après la découverte bornée, les
