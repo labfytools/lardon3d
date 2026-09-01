@@ -141,6 +141,12 @@ calibration connue a passé. Une acquisition physique dédiée de calibration es
 une étape future, décrite dans [Calibration Bootstrap v1](../architecture/calibration_bootstrap.md),
 et non une fonctionnalité déjà réalisée.
 
+`CALIBRATION_SCIENCE_V1=PASS/FROZEN` fixe désormais le protocole physique,
+les seuils, le regroupement optique, la preuve de coordonnées et le bundle de
+provenance requis pour les **futures** campagnes connues-calibrées. Il ne
+réhabilite aucune campagne historique : S21 Engine Bay reste définitivement
+non rétro-calibrable. Voir [Calibration Science v1](../architecture/calibration_science_v1.md).
+
 ## PHOTO QUALITY TRIAGE / ACQUISITION SELECTION — PASS / FROZEN
 
 L'étape qualité canonique implémentée se place après la découverte bornée, les
