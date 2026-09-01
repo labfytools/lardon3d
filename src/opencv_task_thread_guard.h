@@ -42,9 +42,12 @@ class Lardon3DOpenCvTaskThreadGuard {
       return false;
     try {
       cv::setNumThreads(previous_ > 0 ? previous_ : 1);
-      restored_ = true;
       restore_succeeded_ =
           cv::getNumThreads() == (previous_ > 0 ? previous_ : 1);
+      /* Keep ownership live after a verification failure. The explicit Task
+       * cleanup reports the failure, while the noexcept destructor gets one
+       * final bounded restoration attempt during stack unwinding. */
+      restored_ = restore_succeeded_;
       return restore_succeeded_;
     } catch (...) {
       /* C callback boundary: restoration failure cannot escape as C++. */

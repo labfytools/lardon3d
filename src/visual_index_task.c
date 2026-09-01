@@ -11,10 +11,8 @@
 #include <lardon3d/visual_index.h>
 #include <lardon3d/visual_index_task.h>
 
-#include "visual_index_internal.h"
 #include "task_internal.h"
-
-enum { VISUAL_INDEX_TASK_CPU_THREADS = 12 };
+#include "visual_index_internal.h"
 
 typedef struct {
   char project_path[PATH_MAX];
@@ -70,7 +68,8 @@ static bool run(Lardon3DTask *task, void *userdata) {
     Lardon3DTaskExecutionContract contract;
     if (!lardon3d_task_execution_contract(task, &contract) || contract.batch_size == 0 ||
         contract.batch_size > LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX ||
-        contract.cpu_threads == 0 || contract.cpu_threads > VISUAL_INDEX_TASK_CPU_THREADS) {
+        contract.cpu_threads == 0 ||
+        contract.cpu_threads > LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX) {
       return lardon3d_task_fail(task, "Contrat Visual Index invalide.");
     }
     struct timespec begin = {0};
@@ -98,10 +97,11 @@ static bool run(Lardon3DTask *task, void *userdata) {
           context->governor, LARDON3D_RESOURCE_TASK_CPU, durable_indexed,
           duration_ns, 0);
     }
-    /* Visual Index already consumes the immutable admitted CPU count. A
-     * segment whose directory publication is not durable remains visible for
-     * restart semantics but is zero operational work, so it cannot train the
-     * next sequence's 1/2/4/8/12 CPU trial. */
+    /* ALGORITHMIC: one participant owns one disjoint Feature Set slice, so the
+     * immutable admitted CPU count cannot exceed the 16-member segment bound.
+     * A segment whose directory publication is not durable remains visible for
+     * restart semantics but is zero operational work and cannot train the next
+     * sequence's portable CPU trial. */
     if (duration_ns > 0) {
       (void)lardon3d_task_internal_record_sequence(
           task, duration_ns, durable_indexed);
@@ -206,10 +206,16 @@ Lardon3DTask *lardon3d_project_create_visual_index_update_task(
     return NULL;
   }
   Lardon3DResourceEstimate estimate = {.memory_fixed_bytes = 8ULL * 1024 * 1024,
+                                       /* RESOURCE: includes each bounded 512 KiB reader stack and
+                                        * its per-Feature-Set staging/reader state. */
                                        .memory_bytes_per_item = 2ULL * 1024 * 1024,
                                        .minimum_batch_size = 1,
-                                       .maximum_batch_size = 16,
-                                       .desired_cpu_threads = VISUAL_INDEX_TASK_CPU_THREADS,
+                                       .maximum_batch_size =
+                                           LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX,
+                                       /* ALGORITHMIC: no segment contains more
+                                        * independent work than this bound. */
+                                       .desired_cpu_threads =
+                                           LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX,
                                        .desired_io_slots = 1,
                                        .task_class = LARDON3D_RESOURCE_TASK_CPU};
   Lardon3DTask *task = lardon3d_task_create_typed(

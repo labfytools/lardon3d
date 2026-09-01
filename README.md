@@ -1,6 +1,7 @@
 # Lardon3D
 
-Moteur de reconstruction géométrique persistante et incrémentale, piloté par une TUI ncursesw.
+Moteur de photogrammétrie générique, persistant, incrémental et sensible aux
+ressources, piloté par une TUI ncursesw.
 
 ## Vision
 
@@ -35,9 +36,10 @@ persistante, enrichissable et versionnable.
 - **Task** : moteur de tâches avec pause/reprise, annulation et séquences
 - **Task Checkpoint v1** : snapshot durable, protocole `.chk.next` → SQLite →
   `.chk` sous verrou par tâche, et reprise sûre
-- **Project Database v22** : fondations v20/v21 préservées, avec snapshot
-  d'exécution sélectionnée, publication bornée des représentations, attache de
-  scope de calibration et tâche durable mince `raw.develop` — PASS / FROZEN
+- **Project Database v23** : overlay optique additif au-dessus de la fondation
+  v22 PASS / FROZEN ; profils de boîtier et d'objectif, configurations
+  body+lens+focale, affectations campagne/Capture et calibrations exactement
+  compatibles, sans inférence ni backfill — IMPLEMENTED / VALIDATED / REVIEWED
 - **[Photo Quality Triage](docs/architecture/photo_quality_triage.md)** : métriques JPEG
 - **[Calibration Bootstrap v1](docs/architecture/calibration_bootstrap.md)** :
   import borné d'une calibration optimisée et traçable avant le Sparse SfM à
@@ -73,8 +75,20 @@ persistante, enrichissable et versionnable.
 - **Hardware Profile** : détection des capacités matérielles
 - **Resource Snapshot** : capture instantanée des ressources
 - **Resource Governor** : arbitrage centralisé des budgets et réservations
+- **TUI observatoire / centre de contrôle** : modèle de vue pur et borné,
+  observation coalescée, progression durable/ETA honnête, écrans Tasks,
+  Resources, Optique et SSD, avec ncurses exclusivement sur le thread principal
+  — CURRENT / VALIDATED OPERATIONAL
+- **Contrôleur SSD externe optionnel** : frontière physique UDisks2/GDBus,
+  identité Drive+labels+UUIDs, drain sûr et capacités de contrôle exactes ; son
+  état physique est enregistré auprès du Governor, seul orchestrateur des
+  leases scratch de production — CURRENT / VALIDATED OPERATIONAL
 
 ### Intégration réelle validée
+
+Sony A6000 et Samsung S21 FE sont des preuves de validation de la chaîne
+générique. Ils ne définissent ni l'identité produit, ni un profil caméra
+hardcodé, ni une limite de CPU ou de dataset.
 
 - **Intégration multi-campagne A6000 + S21 FE Engine Bay** : PASS — les plans
   réels A6000 (953 paires confirmées `CALLER_EXPLICIT`) et Samsung SM-G990B
@@ -89,8 +103,8 @@ persistante, enrichissable et versionnable.
 
 ### Plus tard / différé
 
-- publication durable dense/mesh et scratch SSD externe optionnel gouverné ;
-- workflow TUI de confirmation/progression ;
+- publication durable dense/mesh et consommation Task explicite du scratch
+  SSD optionnel ;
 - vidéo/keyframes et **Capture Guidance / Live Coverage** : analyse et viewer de
   couverture, suggestions de prises de vue puis assistance live, après
   reconstruction mature ;
@@ -102,11 +116,11 @@ persistante, enrichissable et versionnable.
 ```text
 TUI / Projet
     ↓
-Scheduler
+Task Queue bornée (un worker, ordre/backpressure)
     ↓
-Resource Governor
+Resource Governor (admission et réservation)
     ↓
-Workers
+Task callback admis (parallélisme interne borné si prouvé)
     ↓
 Résultats atomiques / persistants
     ↓
@@ -116,11 +130,36 @@ Viewer (consommation passive de snapshots)
 ### Invariants fondamentaux
 
 - Aucun callback de tâche sans réservation active validée
-- Le scheduler ne décide jamais des ressources
+- La Queue/runtime ne décide jamais des ressources
 - Le Resource Governor est l'unique propriétaire des budgets
 - ncurses appartient exclusivement au thread principal
 - Les estimations de ressources sont immuables
 - Les buffers et files sont strictement bornés
+
+### TUI opérationnelle
+
+La TUI sépare le modèle de vue pur du rendu ncurses. Son observateur copie au
+plus 129 entrées Queue (64 pending, une active, 64 historiques) et coalesce les
+captures hôte autour d'une seconde ; aucun scan DB ou `/proc` volumineux n'a
+lieu par frame. La progression scientifique exacte provient seulement des
+compteurs durables typés. Le taux EWMA et l'ETA restent « calcul » jusqu'à deux
+intervalles positifs, excluent le préfixe repris et deviennent explicitement
+indéterminés, stalled ou throttled lorsque l'évidence l'exige.
+
+Les tailles supportées sont 100×30 et plus en vue complète, 72×20 en compacte
+de référence, et jusqu'au minimum 60×15 ; en dessous, seul « Terminal trop
+petit » est affiché. Les couleurs ont toujours un équivalent textuel/bold/dim.
+`F1` à `F7` ouvrent aide, projets, import, viewer futur, tâches, ressources et
+optique. Le segment littéral `F10 SSD` reste visible à 60 colonnes et déclenche
+uniquement l'action autorisée par le contrôleur. Pendant une saisie, seules
+Enter, Échap et F10 sont actives ; pendant un import, seules `X` et F10 le sont,
+et quitter/retour accueil sont explicitement désactivés.
+
+Ouvrir, fermer ou changer de projet détruit et joint d'abord l'unique Queue,
+callbacks terminaux inclus, puis ferme Project DB et recrée une Queue vide. Le
+workflow optique utilise les alias metadata exacts, accepte normalement les
+objectifs manuels sans EXIF, crée des profils/configurations immuables et exige
+une affectation/sélection de calibration explicite et exactement compatible.
 
 ## Pipeline cible
 
@@ -150,7 +189,7 @@ Acquisitions
 - [Resource Governor](docs/architecture/resource_governor.md)
 - [Parallélisme interne borné](docs/architecture/internal_parallelism.md)
 - [Pipeline sensible aux ressources](docs/architecture/resource_aware_pipeline.md)
-- [Intégration Scheduler ↔ Governor](docs/architecture/scheduler_resource_integration.md)
+- [Intégration Queue/runtime ↔ Governor](docs/architecture/scheduler_resource_integration.md)
 - [Pipeline de reconstruction](docs/architecture/reconstruction_pipeline.md)
 - [Persistance](docs/architecture/persistence.md)
 - [Base de données projet](docs/architecture/project_database.md)
@@ -167,7 +206,8 @@ Acquisitions
 - [Backend Vulkan ORB](docs/architecture/vulkan_matcher.md)
 - [Viewer](docs/architecture/viewer.md)
 - [Resource Boundary — No New Resource Subsystem](docs/architecture/resource_boundary.md)
-- [Revue des fondations](docs/architecture/foundation_review.md)
+- [Audit global de maintenance — état consolidé](docs/architecture/global_maintenance_audit.md)
+- [Revue historique des fondations](docs/architecture/foundation_review.md)
 
 ### Concepts
 - [Scan Sets](docs/concepts/scan_sets.md)
@@ -223,17 +263,32 @@ les paramètres dans `L3DMDID2` v2 (220 octets). Chaque appel utilise un espace 
 travail privé neuf sous le staging appelant, sans réemploi d'une scène,
 profondeur, cache ou sortie antérieure. Le DAG, le viewer et les autres étapes
 denses restent des tickets séparés planifiés.
-Project DB v22, `raw.develop` et Calibration Bootstrap v1 sont **PASS /
-FROZEN** : la suite normale 53/53, les contrôles syntaxiques C17, `git diff
---check`, la validation ciblée ASan/UBSan et l'audit final ont passé. La suite
-ASan/UBSan complète demeure qualifiée par le comportement LSan du pilote tiers
-RADV ; elle n'est pas présentée comme un PASS complet du dépôt. Les campagnes
+La fondation Project DB v22, `raw.develop` et Calibration Bootstrap v1 reste
+**PASS / FROZEN**. La tête courante v23 ajoute seulement le contexte optique
+générique : neuf tables, migration transactionnelle sans backfill, objectifs
+manuels sans EXIF, configurations multiples par campagne et sélection de
+calibration exactement compatible. Les migrations de copies réelles S21/A6000
+ont conservé leurs lignes scientifiques et laissé l'overlay vide. Les campagnes
 réelles S21 et A6000 Engine Bay sont
 `CALIBRATION_UNAVAILABLE` par non-identifiabilité scientifique des données de
 calibration connues ; le Sparse SfM réel reste
 `BLOCKED_BY_KNOWN_CALIBRATION_DATA`, sans pseudo-calibration ni import inféré.
-Le Resource Governor ne constitue pas un Resource System générique : voir la décision
-d’architecture.
+Le Resource Governor ne constitue pas un Resource System générique : il reste
+l'unique propriétaire des budgets et le seul orchestrateur des leases scratch
+de production. Le contrôleur SSD UDisks2 est une frontière physique séparée,
+jamais un second scheduler ou Governor. Les quatorze Task kinds actuels ne
+consomment encore aucun scratch : l'espace disponible est une capacité
+observable, pas un usage fabriqué, et scratch/swap ne deviennent jamais de la
+RAM. La TUI/F10 et cette intégration sont validées opérationnellement. L'audit
+global est désormais `GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN` : après les builds
+Clang frais portable/Vulkan, les suites normales 64/64 et 65/65, les sanitizers
+applicables, TSan et les contrôles ABI, l'unique revue finale indépendante
+GPT-5.6 SOL/ULTRA a conclu PASS sans finding bloquant. Elle a indépendamment
+rejoué le build portable, la suite 64/64, une matrice focalisée 15/15 et les
+76/76 probes strictes C17/C++17 couvrant 19 headers publics modifiés/nouveaux,
+ainsi que l'ABI, les négatifs de seams production, le SHA du manifest GV et le
+diff-check. Ce gel clôt la gate de maintenance ; il n'exécute pas à lui seul la
+tranche scientifique suivante.
 
 ## Licence
 

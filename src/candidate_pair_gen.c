@@ -8,7 +8,7 @@
 #include <lardon3d/project_db.h>
 #include <lardon3d/visual_index.h>
 
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 
 #include "candidate_pair_gen_internal.h"
 
@@ -192,17 +192,36 @@ void lardon3d_candidate_pair_generation_fingerprint(
     uint64_t visual_index_id, uint64_t source_feature_set_id,
     const Lardon3DVisualIndexQueryOptions *query_options,
     unsigned char fingerprint[32]) {
-  SHA256_CTX sha;
-  SHA256_Init(&sha);
-  SHA256_Update(&sha, &visual_index_id, sizeof(visual_index_id));
-  SHA256_Update(&sha, &source_feature_set_id, sizeof(source_feature_set_id));
-  if (query_options) {
-    SHA256_Update(&sha, &query_options->top_k, sizeof(query_options->top_k));
-    SHA256_Update(&sha, &query_options->minimum_evidence_count,
-                  sizeof(query_options->minimum_evidence_count));
-    SHA256_Update(&sha, &query_options->scanset_filter, sizeof(query_options->scanset_filter));
-    bool exclude = query_options->exclude_same_asset;
-    SHA256_Update(&sha, &exclude, sizeof(exclude));
+  if (!fingerprint) return;
+  /* FROZEN SCIENTIFIC CONTRACT: v1 hashes the same 29 bytes historically
+   * produced on validated little-endian hosts, but spells out widths and byte
+   * order so a new architecture cannot silently change Candidate identity.
+   * The optional-query form remains the historical 16-byte ID prefix. */
+  unsigned char canonical[29];
+  for (unsigned int index = 0; index < 8; ++index) {
+    canonical[index] = (unsigned char)(visual_index_id >> (8U * index));
+    canonical[8 + index] =
+        (unsigned char)(source_feature_set_id >> (8U * index));
   }
-  SHA256_Final(fingerprint, &sha);
+  size_t size = 16;
+  if (query_options) {
+    const uint32_t values[] = {
+        query_options->top_k,
+        query_options->minimum_evidence_count,
+        (uint32_t)query_options->scanset_filter,
+    };
+    for (size_t value = 0; value < 3; ++value) {
+      for (unsigned int index = 0; index < 4; ++index) {
+        canonical[16 + value * 4 + index] =
+            (unsigned char)(values[value] >> (8U * index));
+      }
+    }
+    canonical[28] = query_options->exclude_same_asset ? 1U : 0U;
+    size = sizeof(canonical);
+  }
+  unsigned int digest_size = 0;
+  if (EVP_Digest(canonical, size, fingerprint, &digest_size, EVP_sha256(), NULL) != 1 ||
+      digest_size != 32) {
+    memset(fingerprint, 0, 32);
+  }
 }

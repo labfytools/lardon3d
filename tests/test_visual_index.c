@@ -577,7 +577,9 @@ static bool run_test(void) {
   size_t parallel_membership_count = 0;
   Lardon3DVisualIndexCandidate parallel_candidates[4];
   size_t parallel_candidate_count = 0;
-  CHECK(lardon3d_visual_index_update_once_parallel(root, database, index_id, 0, 0, 16, 4,
+  /* cpu_threads=16 exercises the intrinsic segment/participant ceiling; only
+   * the five selected members do useful work, and canonical bytes stay exact. */
+  CHECK(lardon3d_visual_index_update_once_parallel(root, database, index_id, 0, 0, 16, 16,
                                                    &parallel_last, &parallel_indexed) ==
             LARDON3D_VISUAL_INDEX_OK &&
         parallel_indexed == indexed && parallel_last == last &&

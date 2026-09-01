@@ -223,16 +223,18 @@ lardon3d_resource_snapshot_capture_gpu_at_root(
     }
 }
 
-bool
-lardon3d_resource_snapshot_capture(
+static bool
+capture_resource_snapshot(
     const Lardon3DHardwareProfile *profile,
     Lardon3DResourceSnapshot *snapshot,
+    uint64_t *swap_total_bytes,
     char *error_message,
     size_t error_message_size
 )
 {
     set_error(error_message, error_message_size, "");
-    if (!profile || !snapshot || profile->logical_cpu_count == 0
+    if (!profile || !snapshot || !swap_total_bytes
+        || profile->logical_cpu_count == 0
         || profile->memory_total_bytes == 0) {
         set_error(error_message, error_message_size, "Profil matériel invalide.");
         return false;
@@ -246,6 +248,7 @@ lardon3d_resource_snapshot_capture(
             &snapshot->memory_available_bytes
         )
         || !meminfo_bytes(buffer, "MemFree", &snapshot->memory_free_bytes)
+        || !meminfo_bytes(buffer, "SwapTotal", swap_total_bytes)
         || !meminfo_bytes(buffer, "SwapFree", &snapshot->swap_available_bytes)
         || !capture_load(snapshot)
         || clock_gettime(CLOCK_MONOTONIC, &snapshot->captured_at) != 0) {
@@ -268,5 +271,46 @@ lardon3d_resource_snapshot_capture(
         snapshot,
         "/sys/class/drm"
     );
+    return true;
+}
+
+bool
+lardon3d_resource_snapshot_capture(
+    const Lardon3DHardwareProfile *profile,
+    Lardon3DResourceSnapshot *snapshot,
+    char *error_message,
+    size_t error_message_size
+)
+{
+    uint64_t ignored_swap_total = 0;
+    /* CONTRACT: this historical entry point writes exactly the frozen
+     * ResourceSnapshot size; extended telemetry must use observation_capture.
+     */
+    return capture_resource_snapshot(profile, snapshot, &ignored_swap_total,
+        error_message, error_message_size);
+}
+
+bool
+lardon3d_resource_observation_capture(
+    const Lardon3DHardwareProfile *profile,
+    Lardon3DResourceObservation *observation,
+    char *error_message,
+    size_t error_message_size
+)
+{
+    if (observation) {
+        *observation = (Lardon3DResourceObservation) {0};
+    }
+    if (!observation) {
+        set_error(error_message, error_message_size,
+            "Instantané système invalide.");
+        return false;
+    }
+    if (!capture_resource_snapshot(profile, &observation->snapshot,
+            &observation->swap_total_bytes, error_message,
+            error_message_size)) {
+        return false;
+    }
+    observation->swap_total_known = true;
     return true;
 }

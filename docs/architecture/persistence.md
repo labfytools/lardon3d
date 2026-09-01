@@ -2,7 +2,10 @@
 
 ## Vision
 
-Lardon3D doit stocker les métadonnées de reconstruction dans une base de données persistante légère, probablement SQLite, tandis que les données numériques massives restent dans des fichiers/binaires adaptés.
+Lardon3D stocke les métadonnées de reconstruction dans Project DB SQLite,
+tandis que les données numériques massives restent dans des fichiers/binaires
+adaptés. Le schéma courant est v23 ; les sections v7 ci-dessous documentent la
+fondation historique sans prétendre être la tête de migration.
 
 ## Principes fondamentaux
 
@@ -37,6 +40,10 @@ Les éléments suivants sont des concepts de domaine, PAS des tables SQL imposé
 - track
 - observation
 - camera
+- camera_body_profile
+- lens_profile
+- optical_configuration
+- optical_calibration_profile
 - pose
 - point3d
 - reconstruction_layer
@@ -108,7 +115,7 @@ par le `time_t` local avant conversion. Le format reste donc lisible entre
 plateformes uniquement pour les valeurs communes à leurs domaines `size_t` et
 `time_t`.
 
-## Project Database v7
+## Project Database v7 — fondation historique
 
 SQLite contient l'état logique interrogable et les références aux fichiers ;
 les checkpoints et artefacts volumineux restent externes. L'enregistrement du
@@ -200,8 +207,9 @@ Les records sont parcourus par task ID croissant. Un checkpoint
 conserve cet avertissement jusqu'au prochain checkpoint durable. Une tâche
 terminale n'appartient pas à la requête de reprise.
 
-**NOT_YET_WIRED** — autosave complet, réconciliation des fichiers orphelins et
-retry piloté par l'utilisateur pour les sources indisponibles.
+**NOT_YET_WIRED** — réconciliation des fichiers orphelins et retry piloté par
+l'utilisateur pour les sources indisponibles. Les checkpoints existants sont
+kind-owned aux frontières métier ; aucun timer générique ne peut les remplacer.
 
 **NOT_YET_WIRED** — migration de la vue TUI en mémoire vers la pagination
 SQLite, scrub des assets et réconciliation globale des orphelins.
@@ -212,4 +220,25 @@ transactionnellement à ses métadonnées SQLite après publication.
 **IMPLEMENTED** — Visual Index externe segmenté, memberships transactionnels
 et tâche `visual_index.update` récupérable.
 
-**PLANNED** — migrations v7+ et reprise avec dépendances.
+**IMPLEMENTED** — migrations additives et séquentielles jusqu'à Project DB
+v23. Les versions v16 à v22 restent l'histoire scientifique et de persistance
+gelée ; v23 ajoute uniquement l'overlay optique générique.
+
+Les neuf relations v23 séparent profils de boîtier et alias, profils d'objectif
+et alias, configurations optiques, affectations de configuration aux groupes
+de campagne et aux Captures, profils de calibration et sélection explicite par
+Capture. Une configuration référence exactement un boîtier et un objectif ; un
+objectif manuel sans EXIF est normal. La compatibilité d'une
+calibration est exacte sur la configuration optique et ses dimensions/champs
+scientifiques. Aucun profil S21, A6000 ou Meike n'est inséré ou déduit par la
+migration : les tables nouvelles restent vides tant qu'un caller ne fournit
+pas explicitement les données.
+
+La migration v22→v23 est une transaction additive. Elle ne réinterprète ni les
+Captures, ni les Images, ni les résultats scientifiques historiques. Une copie
+S21 et une copie A6000 ont atteint v23 avec intégrité et clés étrangères
+valides, comptes scientifiques inchangés et tables optiques vides. Les détails
+normatifs sont dans [Project Database](project_database.md).
+
+**NOT_YET_WIRED** — reprise ordonnée par dépendances/DAG et réconciliation
+globale des artefacts orphelins.

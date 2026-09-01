@@ -15,13 +15,11 @@ Task
     ↓
 Estimate
     ↓
-Governor
+Task Queue
     ↓
-Reservation
+Resource Governor / Reservation
     ↓
-Scheduler
-    ↓
-Worker
+callback worker admis
     ↓
 Résultat atomique
     ↓
@@ -44,8 +42,9 @@ des fichiers admissibles et maintenance d'un manifeste cohérent.
 **Statut :** IMPLEMENTED
 
 ### Import Task
-Premier type métier persistant. Il s'exécute par lots bornés dans le scheduler
-générique, cible explicitement un ScanSet et peut être reconstruit puis repris.
+Premier type métier persistant. Il s'exécute par lots bornés dans le runtime et
+la Queue génériques, cible explicitement un ScanSet et peut être reconstruit
+puis repris.
 
 **Statut :** IMPLEMENTED
 
@@ -56,11 +55,39 @@ mémoire depuis `manifest.tsv` reste une façade legacy pour la TUI.
 
 **Statut :** IMPLEMENTED
 
+### Profils optiques et calibrations
+
+Project DB v23 ajoute un overlay générique distinct pour profils de boîtiers,
+objectifs électroniques ou manuels, configurations optiques, affectations aux
+campagnes/Captures et calibrations explicitement compatibles. La migration
+n'infère ni ne backfill aucune donnée S21/A6000 ; ces appareils restent des
+preuves de validation, pas des identités produit.
+
+**Statut :** IMPLEMENTED — OVERLAY ADDITIF v23
+
 ### Image View
 Vues triées et filtrées du catalogue pour la TUI. Ne modifie pas le
 catalogue, le manifeste ou les images.
 
 **Statut :** IMPLEMENTED
+
+### TUI observatoire / centre de contrôle
+
+Le thread principal possède ncurses, l'entrée et le rendu. Un modèle pur reçoit
+des copies bornées de l'unique Queue et du Governor, coalescées autour d'une
+seconde, et présente progression durable, ETA honnête, pipeline, ressources,
+profils optiques et SSD. Les dimensions validées sont full ≥100×30, compact de
+référence 72×20, minimum 60×15, puis le fallback `Terminal trop petit`. Les
+couleurs s'accompagnent toujours de libellés textuels et `F10 SSD` reste visible
+au minimum supporté.
+
+Ouvrir, fermer ou changer de projet détruit/joint l'unique Queue avant de
+fermer Project DB, puis recrée une Queue vide et rebranche l'observation. Les
+ABI historiques Task/Resource/AppState/layout restent inchangées ; les vues
+riches utilisent des structures et fonctions additives décrites dans
+[Runtime](runtime.md).
+
+**Statut :** CURRENT / VALIDATED OPERATIONAL
 
 ### Feature Store
 Extraction ORB réelle par tâche persistante, Feature Sets logiques et assets
@@ -104,10 +131,22 @@ adaptatifs, réservations opaques et historique borné de métriques.
 
 **Statut :** IMPLEMENTED
 
+### Contrôleur SSD externe optionnel
+
+Frontière physique UDisks2 pour la paire de labels `LARDON_SWAP` et
+`LARDON_SCRATCH`, avec identité Drive+UUID stable, état borné, leases scratch
+et drain sûr. Il ne formate, ne répare ni ne force jamais l'hôte et ne remplace
+pas le Resource Governor. La TUI exécute ses actions dans un seul thread
+joinable et le Governor enregistre l'état physique puis orchestre seul les
+leases scratch de production. Les quatorze Task kinds courants n'en consomment
+aucun ; capacité visible ne signifie donc pas usage.
+
+**Statut :** CURRENT / VALIDATED OPERATIONAL
+
 ### Candidate Pair
 Sous-système de génération et persistance de paires d'images candidates pour
-le matching géométrique. Répond uniquement à « quelles paires valent la
-peine d'être试探ées ? » sans validation géométrique.
+le matching géométrique. Répond uniquement à « quelles paires valent la peine
+d'être explorées ? » sans validation géométrique.
 
 **Statut :** IMPLEMENTED
 
@@ -165,7 +204,7 @@ frontière de séquence connue.
 ## Invariants fondamentaux
 
 - Aucun callback de tâche n'est lancé sans réservation active validée.
-- Le scheduler ne décide jamais des ressources.
+- La Queue ne décide jamais des ressources.
 - Le Resource Governor est l'unique propriétaire des budgets.
 - Les réservations sont libérées exactement une fois.
 - ncurses appartient exclusivement au thread principal.
@@ -174,7 +213,7 @@ frontière de séquence connue.
 
 ## Limites actuelles
 
-- File à worker unique avec FIFO strict.
+- File à worker unique avec FIFO stable et bypass des seuls `WAIT` ressources.
 - Absence de DAG de dépendances.
 - Absence de priorités.
 - Absence de pools de workers multiples (CPU/GPU/IO).

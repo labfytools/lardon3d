@@ -56,9 +56,10 @@ validé. Après crash, la registry statique reconstruit le même `task_id`; l'im
 est recommencée, sans micro-checkpoint trompeur. Aucun Feature Set partiel ne
 devient READY. Le SHA-256 de l'Image Asset géré est vérifié avant décodage.
 
-L'estimation SIFT demande jusqu'à douze threads CPU. Le réglage OpenCV du
-démarrage est une baseline/plafond sûre ; pour chaque séquence, l'unique
-callback Queue applique temporairement le compte immuable admis dans `1..12`,
+L'estimation SIFT publie la capacité sûre de l'API OpenCV, `INT_MAX`; le
+Governor la borne toujours au compute-pool réel. Le réglage OpenCV du démarrage
+est une baseline sûre ; pour chaque séquence, l'unique callback Queue applique
+temporairement le compte immuable admis dans `1..compute-pool`,
 le vérifie puis restaure la baseline sur toute sortie. Une mutation process-wide
 concurrente par plusieurs workers n'est pas supportée. La tâche réserve aussi
 un slot IO, aucun GPU et environ 1,06 Gio structurels :
@@ -67,8 +68,8 @@ zéro. Le Resource Governor admet donc le fan-out OpenCV exact ; la Queue
 conserve un seul callback actif et ne superpose pas un second pool SIFT.
 
 Le nombre de threads reste opérationnel et absent du fingerprint SIFT/RootSIFT.
-La reprise accepte la forme CPU12 courante et normalise uniquement l'ancienne
-forme CPU1 complète et exacte dans la copie privée restaurée. Elle ne publie
+La reprise accepte les formes historiques CPU12 et CPU1 complètes et exactes,
+et les normalise vers la demande portable dans la copie privée restaurée. Elle ne publie
 aucun checkpoint d'estimation seule ; une forme voisine est rejetée.
 L'audit contrôlé OpenCV 5.0.0 à 1, 2, 4, 8 et 12 threads compare exactement le
 count, l'ordre et les valeurs binary32 des champs keypoint persistés, les
@@ -88,8 +89,8 @@ après `imread`.
 La build OpenCV/TBB système n'est pas instrumentée par TSan et rapporte ses
 propres accès de teardown TLS/`cv::Mat`. Les tests TSan suppriment uniquement
 les frames des objets partagés `libopencv_core.so` et
-`libopencv_features.so`; les frames Lardon3D et toutes les autres bibliothèques
-restent contrôlées.
+`libopencv_features.so`, ainsi que le runtime externe `libtbb.so`; les frames
+Lardon3D et toutes les autres bibliothèques restent contrôlées.
 
 ## Consolidation intra-image
 
@@ -153,6 +154,9 @@ maximum 8192, les totaux sont 15,52 GB (14,45 Gio) de descriptors et 16,25 GB
 images ne sont jamais chargées ensemble.
 
 Le Visual Index v1 reste exclusivement ORB-LSH. Candidate Pair Generator,
-matching production, vérification géométrique, tracks et SfM sont **PLANNED**.
+Matcher ORB/SIFT/RootSIFT, Geometric Verifier v3, Track Model/Builder et Sparse
+SfM Gates C–G sont désormais **IMPLEMENTED / PASS-FROZEN à leurs frontières
+respectives**. Le pipeline dense complet, mesh, texturing et viewer restent
+futurs ; MVS-M1 ne fournit que sa frontière externe bornée FROZEN.
 ALIKED est **PLANNED / BLOCKED ON MODEL PROVENANCE + VALIDATED ONNX EXPORT** :
 aucun code ALIKED, ONNX ou Python production n'appartient à v1A.

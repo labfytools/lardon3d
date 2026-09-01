@@ -8,7 +8,8 @@
 
 Ce document décrit le contrat validé pour `features.extract`,
 `features.extract.sift`, `visual_index.update`, `candidate_pair.generate` et
-`matcher.run`. Le gel v1 porte sur le parallélisme interne borné, les
+`matcher.run`, ainsi que la maintenance outer-parallel du
+`geometric_verifier.run`. Le gel v1 porte sur le parallélisme interne borné, les
 réservations Governor et les sorties canoniques. Il ne préjuge pas du choix
 opérationnel CPU/Vulkan ajouté par la tranche v2.
 
@@ -17,14 +18,18 @@ opérationnel CPU/Vulkan ajouté par la tranche v2.
 La Task Queue conserve un seul callback actif. Une Task peut exploiter à
 l'intérieur de ce callback les `cpu_threads` effectivement admis par le
 Resource Governor. Ce parallélisme interne ne crée ni pool global, ni deuxième
-scheduler, ni file de travail persistante. Le Governor dérive désormais un
-masque privé depuis l'affinité permise et la topologie package/core Linux. Il
-réserve des coeurs physiques complets, frères SMT inclus, en ordre décroissant
-package/core. Sur l'hôte unrestricted validé, cela donne `0-5,8-13` pour le
-calcul lourd et `6,7,14,15` pour le desktop, l'audio et l'interaction. Un masque
-caller déjà borné à la capacité de calcul est repris sans seconde réserve ; si
-topologie ou affinité manque, seul le budget portable est conservé et aucun ID
-n'est inventé.
+scheduler, ni file de travail persistante. Le Governor dérive un masque privé
+depuis l'affinité permise et la topologie package/core Linux. La cible par
+défaut réserve quatre CPU logiques lorsque praticable et conserve au moins un
+CPU de calcul sur les petits hôtes. Avec une topologie fiable, un sous-ensemble
+déterministe de coeurs physiques complets, frères SMT inclus, satisfait cette
+cible avec le dépassement minimal. Les CPU exclus par une affinité externe
+comptent déjà dans la réserve. Si topologie ou affinité manque, seul le budget
+de compte portable est conservé et aucun masque/ID n'est inventé.
+
+Sur l'hôte unrestricted 16-CPU validé, cette politique donne `0-5,8-13` pour le
+calcul lourd et `6,7,14,15` pour le desktop, l'audio et l'interaction. Ces IDs
+restent une preuve de cet hôte et ne bornent aucune autre machine.
 
 L'unique worker Queue applique et vérifie son propre masque (`pid=0`) avant les
 callbacks ; le creator/main/TUI reste inchangé et les enfants créés depuis le
@@ -47,7 +52,8 @@ sortie partielle. `backend_info` et les requêtes vides restent non initialisant
 Cette défense couvre les consumers publics ou de feasibility qui ne traversent
 pas la Queue ; seuls leurs `main` autonomes peuvent prendre le défaut sûr avant
 tout pthread.
-Le compute-pool borne `cpu_threads` à l'admission. Un échec d'application est
+Le compute-pool borne `cpu_threads` à l'admission ; il n'existe aucun plafond
+global 12. Un échec d'application est
 diagnostiqué sans altérer Task, Queue, durabilité ou science. Cette couture v2
 est **PASS / FROZEN**, sans persistance ni ABI publique. Elle complète le gel
 v1 sans le redéfinir.
@@ -157,9 +163,10 @@ CPU/Vulkan, le fallback CPU complet et les diagnostics bornés sont
 ## Extraction OpenCV
 
 Le processus conserve une limite OpenCV globale. Sous l'unique callback Queue,
-RAW et Photo Quality appliquent/restaurent CPU1. ORB, SIFT et RootSIFT
-Extraction appliquent/restaurent exactement le `cpu_threads` immutable admis
-dans `1..min(12, compute_pool)`. Matcher applique OpenCV1 à l'intérieur de sa
+RAW, Photo Quality et la campagne appliquent/restaurent leur CPU admis (CPU1
+dans les estimations courantes). ORB, SIFT et RootSIFT Extraction déclarent le
+maximum `int` positif accepté par OpenCV, puis appliquent/restaurent exactement
+le `cpu_threads` immutable borné au compute-pool. Matcher applique OpenCV1 à l'intérieur de sa
 propre fenêtre et utilise les participants Task admis autour de cette
 primitive. La réservation vit pendant l'exécution bornée et aucun second pool
 runtime n'est créé.
@@ -167,12 +174,14 @@ runtime n'est créé.
 Le nombre admis est une politique de ressources, pas une identité scientifique.
 Les tests OpenCV 5.0.0 à 1/2/4/8/12 threads obtiennent les mêmes keypoints,
 descripteurs et métriques ORB, SIFT et RootSIFT. Aucun fingerprint, format ou
-schéma n'est modifié. Les utilisateurs imbriqués d'OpenCV ne peuvent pas faire
+schéma n'est modifié ; 12 est une preuve de l'hôte courant, pas un maximum
+portable. Les utilisateurs imbriqués d'OpenCV ne peuvent pas faire
 varier cette configuration process-wide pendant une extraction. Le callback
 assure donc qu'une admission CPU est réellement consommée, sans confondre cette
 dimension avec le lot admis.
 
-Le Governor slow-start les dimensions CPU validées selon `1/2/4/8/12`. Chaque
+Le Governor slow-start les dimensions CPU réductibles par doubles depuis 1,
+puis le maximum exact de la capacité, toujours borné au compute-pool. Chaque
 palier utilise deux observations et exige au moins 5 % de débit durable en plus.
 Un seul essai CPU ou lot est actif à la fois ; après plafonnement ou refus CPU,
 un kind dont le lot est adaptable peut seulement alors explorer le lot. Les
@@ -183,8 +192,8 @@ essai. Visual Index suit la même règle par
 segment, tandis que Candidate et Matcher observent chaque séquence. Les formes
 fixes restent fixes mais conservent un diagnostic d'admission Governor-owned.
 
-Pour Candidate Generation, l'estimation demande jusqu'à douze threads CPU et
-un slot I/O. Le callback de Queue compte comme un de ces threads ; il crée donc
+Pour Candidate Generation, l'estimation demande jusqu'à soixante-quatre threads
+CPU et un slot I/O. Le callback de Queue compte comme un de ces threads ; il crée donc
 au plus `cpu_threads - 1` threads enfants. Tous les enfants sont joints avant
 la fin de la séquence, la libération de réservation ou
 `lardon3d_task_sequence_break()`.
@@ -192,7 +201,7 @@ la fin de la séquence, la libération de réservation ou
 ## Calcul et publication Visual Index
 
 Une séquence sélectionne le même préfixe durable d'au plus seize Feature Sets
-qu'en mode sériel. Jusqu'à douze participants effectivement admis lisent les
+qu'en mode sériel. Jusqu'à seize participants effectivement admis lisent les
 Feature Files immuables ; chaque reader, son descripteur de fichier et sa
 tranche de 256 descripteurs appartiennent à un seul participant. Aucun enfant
 n'utilise le handle Project DB partagé.
@@ -259,17 +268,22 @@ réelle soutenue doit attendre un état hôte qui admet répétitivement
 
 Les sources sont les memberships durables du Visual Index, pagés en ordre
 croissant de `feature_set_id`. Les IDs peuvent être clairsemés. Une fenêtre
-contient au plus `2 * cpu_threads` sources et jamais plus de 24. Chaque résultat
+contient au plus `2 * cpu_threads` sources et jamais plus de 64 ni du lot admis.
+Chaque résultat
 conserve au plus le top-K existant de 256 propositions ; l'estimation de Task
-reste conservatrice à 256 Kio fixes et 64 Kio par item admis.
+reste conservatrice à 256 Kio fixes et 8 Mio par item admis. Ce coût couvre la
+pile enfant bornée de 4 Mio, le reader/Visual Index et le handle SQLite privé de
+chaque participant.
 
 Chaque participant possède son propre handle `project.db` pour les lectures et
 le ferme avant de terminer. Le calcul parallèle charge le Feature Set source,
 exécute exactement la requête Visual Index existante et forme les paires
 canoniques en mémoire. Il ne publie rien.
 
-La reprise normalise uniquement l'estimation Candidate v1 sérielle historique
-de forme exacte vers la demande courante de douze participants. Cette
+La reprise normalise uniquement les estimations Candidate historiques
+complètes reconnues — CPU1/128 Kio fixes et CPU12/256 Kio fixes, toutes deux à
+64 Kio par item — vers la demande courante CPU64/256 Kio fixes/8 Mio par item.
+Cette
 estimation effective reste privée et n'est pas checkpointée avant admission ; le Governor peut
 toujours la réduire à son budget disponible. Le Task ID, le curseur typé, le
 lot 1–64 et les paramètres scientifiques restent inchangés. Les autres kinds
@@ -283,6 +297,39 @@ emploie le comportement existant `find_candidate_pair` puis
 fingerprints et identités scientifiques ne changent pas. Le nombre de threads
 ne peut donc modifier ni les identités persistées, ni leur ordre de publication,
 ni leur cardinalité.
+
+## Préparation et publication Geometric Verifier
+
+La policy scientifique GV v3, les paramètres, le fingerprint, la seed, le
+masque, la matrice et `cv::UsacParams::isParallel=false` restent FROZEN. Le
+parallélisme courant est externe à l'estimator : une séquence sélectionne un
+préfixe d'au plus seize Match Results indépendants et jusqu'à huit participants
+utiles les préparent en parallèle. La fenêtre/participant a été validée sûre
+jusqu'à seize, mais la demande production s'arrête à huit selon la preuve de
+débit durable ci-dessous.
+
+Chaque préparation possède ses handles de fichiers Match/Feature et son objet
+opaque borné ; le handle Project DB partagé reste sérialisé par son mutex
+interne. Les enfants ne publient jamais. Après toutes les jointures, le callback
+Queue propriétaire publie seul dans l'ordre des parents, avance uniquement le
+préfixe contigu et checkpoint avant toute libération de réservation à
+`sequence_break`. Un échec de création partielle stoppe les nouvelles prises de
+travail, joint tous les enfants créés et détruit exactement une fois chaque
+préparation déjà produite.
+
+La preuve représentative réelle porte sur 4 113 parents, dont 4 102
+applicables : 578 vérifiés et 3 524 rejetés. Les IDs canoniques, toutes les
+colonnes GVR et le digest scientifique
+`9401ef6168804b6f1d51f4cdf64cd6b33cbebd2934e5294c8feacc87f9c8ce86`
+sont identiques à CPU1/2/4/8/12. Les débits complets, incluant préparation,
+publication ordonnée, curseur et checkpoint, valent respectivement
+60,7514/83,9556/104,7545/116,6329/119,7606 parents/s. CPU12 n'ajoute que
+2,68 % sur CPU8, sous le deadband Governor de 5 % : CPU utile maximal 8,
+fenêtre CPU sûre 16 et batch maximal 16.
+
+La preuve S21 complète historique (172 741 parents traversés, 172 275
+applicables, 24 065 vérifiés et 148 210 rejetés) reste valide avec son chemin
+CPU1/batch8 original. Elle n'est pas présentée comme un rerun du nouveau chemin.
 
 ## Échec, reprise et progression
 

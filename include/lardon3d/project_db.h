@@ -11,7 +11,10 @@
 #include <lardon3d/sparse_sfm_incremental.h>
 
 enum {
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 22,
+  /* v23 is an additive optical-context layer. Historical v22 rows and sparse
+   * calibration identities remain untouched; migration never guesses profiles
+   * or assignments for existing Captures. */
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 23,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -104,6 +107,8 @@ typedef struct {
 typedef struct {
   uint64_t task_id;
   uint64_t scanset_id;
+  /* Zero-based next-work position in 0..group_count. Its numeric value is the
+   * number of one-based campaign groups whose Capture mapping is durable. */
   uint32_t next_group_id;
   uint32_t group_count;
   const unsigned char *request;
@@ -691,24 +696,57 @@ Lardon3DProjectDbResult lardon3d_project_db_list_candidate_pairs(
 Lardon3DProjectDbResult
 lardon3d_project_db_load_image_import(Lardon3DProjectDb *database, uint64_t task_id,
                                       Lardon3DProjectDbImageImport *parameters);
+/* Atomically record generic Task/checkpoint state and one immutable typed
+ * campaign request for an existing ScanSet. All pointers are required except
+ * checkpoint; request bytes are borrowed only for the call. task_kind/version
+ * must exactly identify acquisition_campaign.run/v1. Exact replay is
+ * idempotent, while a changed request or generic kind conflicts. The cursor is
+ * the zero-based next-work position and never a Capture or scientific image
+ * identity. */
 Lardon3DProjectDbResult lardon3d_project_db_record_acquisition_campaign_task(
     Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
     const char *task_kind, uint32_t task_kind_version,
     const Lardon3DProjectDbCheckpoint *checkpoint,
     const Lardon3DProjectDbAcquisitionCampaignTask *parameters, int64_t updated_at);
+/* Load and validate the typed campaign row and its exact generic kind/version.
+ * With request==NULL and request_capacity==0, this is a size probe: metadata
+ * and request_size are returned while parameters->request remains NULL.
+ * Otherwise request is required caller-owned storage borrowed into parameters
+ * on success. Insufficient capacity returns CONSTRAINT without truncation;
+ * malformed SQLite types, signs, bounds, cursor relation, dispatch identity, or
+ * a retained mapping set other than the exact one-based prefix 1..next_group_id
+ * return CORRUPT. Every retained Capture must still exist in this campaign's
+ * ScanSet; validation is bounded by the frozen 4096-group maximum. */
 Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_task(
     Lardon3DProjectDb *database, uint64_t task_id, unsigned char *request,
     size_t request_capacity, Lardon3DProjectDbAcquisitionCampaignTask *parameters);
+/* Retain the explicit one-based group_id -> capture_id mapping and advance the
+ * zero-based next-work position atomically. next_group_id must equal group_id;
+ * exact retry is idempotent, conflicting identity/order is rejected. Before
+ * mutation, the generic kind/version, SQLite storage classes and complete
+ * retained prefix are validated signed-wide; malformed durable state returns
+ * CORRUPT, while a valid caller conflict returns CONSTRAINT. The Capture must
+ * already exist in the campaign ScanSet. In v23, any explicit group optical
+ * assignment is copied to Capture provenance in this same transaction before
+ * cursor publication; an unassigned group remains honestly unresolved. Generic
+ * Task progress may advance only after this call succeeds. */
 Lardon3DProjectDbResult lardon3d_project_db_retain_acquisition_campaign_capture(
     Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
     uint64_t capture_id, uint32_t next_group_id);
+/* Load one explicit retained mapping into caller-owned output. task_id and
+ * group_id must be positive; persisted SQLite types, bounds, Capture identity,
+ * plan range, zero-based cursor, exact durable prefix, Capture ScanSet, and
+ * generic campaign kind/version are validated before narrowing. A mapping ahead
+ * of the cursor or across ScanSets is CORRUPT and never yields a resume ID. No
+ * identity is inferred from request bytes or metadata. */
 Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_capture(
     Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
     Lardon3DProjectDbAcquisitionCampaignCapture *capture);
 /* Atomically record generic Task state and the immutable typed request for an
  * existing ScanSet. All pointers are required except checkpoint; request bytes
- * are borrowed only for the call. The request identifies campaign groups
- * operationally and never creates or infers Capture/Asset/image identities. */
+ * are borrowed only for the call. task_kind/version must exactly identify
+ * photo_quality.triage/v1. The request identifies campaign groups operationally
+ * and never creates or infers Capture/Asset/image identities. */
 Lardon3DProjectDbResult lardon3d_project_db_record_photo_quality_task(
     Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
     const char *task_kind, uint32_t task_kind_version,
@@ -716,7 +754,10 @@ Lardon3DProjectDbResult lardon3d_project_db_record_photo_quality_task(
     const Lardon3DProjectDbPhotoQualityTask *parameters, int64_t updated_at);
 /* On success, parameters receives validated one-based cursor/count fields and
  * borrows caller-owned request storage containing the immutable request bytes.
- * Insufficient capacity is reported as corrupt durable state, never truncated. */
+ * The generic kind/version and existing ScanSet identity must match exactly.
+ * For otherwise valid arguments, any non-OK result zeroes parameters and leaves
+ * request storage untouched. A present typed row with a missing parent is
+ * CORRUPT, not NOT_FOUND; insufficient capacity is also CORRUPT, never truncated. */
 Lardon3DProjectDbResult lardon3d_project_db_load_photo_quality_task(
     Lardon3DProjectDb *database, uint64_t task_id, unsigned char *request,
     size_t request_capacity, Lardon3DProjectDbPhotoQualityTask *parameters);
@@ -784,6 +825,9 @@ Lardon3DProjectDbResult lardon3d_project_db_create_selected_execution(
 Lardon3DProjectDbResult lardon3d_project_db_load_selected_execution(
     Lardon3DProjectDb *database, uint64_t execution_id,
     Lardon3DProjectDbSelectedExecution *execution);
+/* Load one immutable bridge item into caller-owned output. Required and
+ * nullable identifiers must use SQLite INTEGER/NULL storage exactly; numeric
+ * TEXT/REAL values are corruption even if SQLite could coerce them. */
 Lardon3DProjectDbResult lardon3d_project_db_load_selected_execution_item(
     Lardon3DProjectDb *database, uint64_t execution_id, uint32_t item_index,
     Lardon3DProjectDbSelectedExecutionItem *item);

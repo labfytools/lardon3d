@@ -219,6 +219,177 @@ decide_repeatedly(void *argument)
 }
 
 static bool
+run_portable_default_policy_test(void)
+{
+    static const struct {
+        unsigned int logical;
+        unsigned int reserved;
+        unsigned int compute;
+    } cases[] = {
+        {1, 0, 1},
+        {2, 1, 1},
+        {3, 2, 1},
+        {4, 3, 1},
+        {8, 4, 4},
+        {16, 4, 12},
+        {32, 4, 28},
+    };
+    for (size_t index = 0; index < sizeof(cases) / sizeof(cases[0]);
+         ++index) {
+        Lardon3DHardwareProfile profile = {
+            .logical_cpu_count = cases[index].logical,
+            .page_size_bytes = 4096,
+            .memory_total_bytes = GIBIBYTES(16),
+            .cpu_architecture = "synthetic",
+        };
+        Lardon3DResourcePolicy policy;
+        CHECK(lardon3d_resource_policy_default(&profile, &policy)
+            && policy.system_cpu_reserve == cases[index].reserved);
+        Lardon3DResourceGovernor *governor =
+            lardon3d_resource_governor_create(&profile, &policy);
+        Lardon3DResourcePolicy observed_policy = {0};
+        CHECK(governor
+            && lardon3d_resource_governor_get_policy(
+                governor, &observed_policy)
+            && observed_policy.system_cpu_reserve
+                == policy.system_cpu_reserve
+            && observed_policy.system_memory_reserve_bytes
+                == policy.system_memory_reserve_bytes
+            && observed_policy.emergency_memory_floor_bytes
+                == policy.emergency_memory_floor_bytes);
+        Lardon3DResourceCpuTopologyInput unavailable = {0};
+        Lardon3DResourceCpuPolicyDiagnostic diagnostic;
+        /* Force the deterministic count-only seam so this matrix never
+         * inherits the machine running the test suite. */
+        CHECK(governor
+            && lardon3d_resource_governor_internal_configure_cpu_topology(
+                governor, &unavailable)
+            && lardon3d_resource_governor_internal_cpu_policy(
+                governor, &diagnostic)
+            && !diagnostic.affinity_configured
+            && diagnostic.compute_cpu_count == cases[index].compute
+            && diagnostic.reserved_cpu_count == cases[index].reserved);
+        lardon3d_resource_governor_destroy(governor);
+    }
+    return true;
+}
+
+static bool
+run_default_memory_band_test(void)
+{
+    Lardon3DHardwareProfile profile = {
+        .logical_cpu_count = 8,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = GIBIBYTES(16),
+        .cpu_architecture = "synthetic",
+    };
+    Lardon3DResourcePolicy policy;
+    CHECK(lardon3d_resource_policy_default(&profile, &policy)
+        && policy.system_memory_reserve_bytes == GIBIBYTES(3)
+        && policy.emergency_memory_floor_bytes == GIBIBYTES(3));
+    policy.maximum_cpu_load_ratio = 1.0;
+    Lardon3DResourceGovernor *governor =
+        lardon3d_resource_governor_create(&profile, &policy);
+    Lardon3DResourceCpuTopologyInput count_only = {0};
+    CHECK(governor
+        && lardon3d_resource_governor_internal_configure_cpu_topology(
+            governor, &count_only)
+        && use_fixed_test_clock(governor));
+    Lardon3DResourceEstimate estimate = {
+        .memory_fixed_bytes = GIBIBYTES(1),
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+        .task_class = LARDON3D_RESOURCE_TASK_CPU,
+    };
+    Lardon3DResourceSnapshot snapshot = {
+        .memory_available_bytes = GIBIBYTES(4) + MEBIBYTES(512),
+    };
+    Lardon3DResourceDecision decision;
+    Lardon3DResourceReservation *reservation = NULL;
+    /* This 1 GiB admission proves capacity subtracts 3 GiB, not the 4 GiB
+     * caution threshold: 4.5 - 3 fits, while 4.5 - 4 would not. */
+    CHECK(lardon3d_resource_governor_reserve(governor, &snapshot, &estimate,
+            &decision, &reservation)
+        && reservation && decision.kind == LARDON3D_RESOURCE_START
+        && lardon3d_resource_governor_pressure(governor)
+            == LARDON3D_RESOURCE_PRESSURE_GREEN
+        && lardon3d_resource_governor_release(governor, reservation));
+
+    estimate.memory_fixed_bytes = 0;
+    estimate.memory_bytes_per_item = MEBIBYTES(256);
+    estimate.maximum_batch_size = 4;
+    snapshot.memory_available_bytes = GIBIBYTES(3) + MEBIBYTES(512);
+    for (unsigned int observation = 0; observation < 2; ++observation) {
+        reservation = NULL;
+        CHECK(lardon3d_resource_governor_reserve(governor, &snapshot,
+                &estimate, &decision, &reservation)
+            && reservation && decision.kind == LARDON3D_RESOURCE_START
+            && decision.batch_size == 1
+            && lardon3d_resource_governor_pressure(governor)
+                == LARDON3D_RESOURCE_PRESSURE_YELLOW
+            && lardon3d_resource_governor_release(governor, reservation));
+    }
+    /* A stable default caution band remains YELLOW, while the 3 GiB admission
+     * floor independently rejects work that would consume the host reserve. */
+    estimate.memory_fixed_bytes = MEBIBYTES(600);
+    estimate.memory_bytes_per_item = 0;
+    estimate.maximum_batch_size = 1;
+    reservation = NULL;
+    CHECK(lardon3d_resource_governor_reserve(governor, &snapshot, &estimate,
+            &decision, &reservation)
+        && !reservation && decision.kind == LARDON3D_RESOURCE_WAIT
+        && lardon3d_resource_governor_pressure(governor)
+            == LARDON3D_RESOURCE_PRESSURE_YELLOW);
+
+    estimate.memory_fixed_bytes = MEBIBYTES(256);
+    snapshot.memory_available_bytes = GIBIBYTES(5);
+    for (unsigned int observation = 0; observation < 3; ++observation) {
+        reservation = NULL;
+        CHECK(lardon3d_resource_governor_reserve(governor, &snapshot,
+                &estimate, &decision, &reservation)
+            && reservation
+            && lardon3d_resource_governor_release(governor, reservation));
+    }
+    CHECK(lardon3d_resource_governor_pressure(governor)
+        == LARDON3D_RESOURCE_PRESSURE_GREEN);
+    snapshot.memory_available_bytes = GIBIBYTES(3);
+    reservation = NULL;
+    CHECK(lardon3d_resource_governor_reserve(governor, &snapshot, &estimate,
+            &decision, &reservation)
+        && !reservation && decision.kind == LARDON3D_RESOURCE_WAIT
+        && lardon3d_resource_governor_pressure(governor)
+            == LARDON3D_RESOURCE_PRESSURE_RED);
+    lardon3d_resource_governor_destroy(governor);
+
+    profile.memory_total_bytes = GIBIBYTES(2);
+    CHECK(lardon3d_resource_policy_default(&profile, &policy)
+        && policy.system_memory_reserve_bytes == MEBIBYTES(512)
+        && policy.emergency_memory_floor_bytes == MEBIBYTES(512));
+    policy.maximum_cpu_load_ratio = 1.0;
+    governor = lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(governor && use_fixed_test_clock(governor));
+    estimate.memory_fixed_bytes = MEBIBYTES(64);
+    snapshot.memory_available_bytes = MEBIBYTES(600);
+    reservation = NULL;
+    CHECK(lardon3d_resource_governor_reserve(governor, &snapshot, &estimate,
+            &decision, &reservation)
+        && reservation
+        && lardon3d_resource_governor_pressure(governor)
+            == LARDON3D_RESOURCE_PRESSURE_YELLOW
+        && lardon3d_resource_governor_release(governor, reservation));
+    snapshot.memory_available_bytes = MEBIBYTES(512);
+    reservation = NULL;
+    CHECK(lardon3d_resource_governor_reserve(governor, &snapshot, &estimate,
+            &decision, &reservation)
+        && !reservation && decision.kind == LARDON3D_RESOURCE_WAIT
+        && lardon3d_resource_governor_pressure(governor)
+            == LARDON3D_RESOURCE_PRESSURE_RED);
+    lardon3d_resource_governor_destroy(governor);
+    return true;
+}
+
+static bool
 run_test(void)
 {
     Lardon3DHardwareProfile profile = {
@@ -229,8 +400,8 @@ run_test(void)
     };
     Lardon3DResourcePolicy policy;
     CHECK(lardon3d_resource_policy_default(&profile, &policy));
-    CHECK(policy.system_memory_reserve_bytes == GIBIBYTES(4));
-    CHECK(policy.emergency_memory_floor_bytes == GIBIBYTES(2));
+    CHECK(policy.system_memory_reserve_bytes == GIBIBYTES(3));
+    CHECK(policy.emergency_memory_floor_bytes == GIBIBYTES(3));
     CHECK(policy.system_cpu_reserve == 4);
     CHECK(policy.maximum_cpu_pressure_avg10 == 20.0);
     CHECK(policy.maximum_memory_pressure_avg10 == 1.0);
@@ -1257,11 +1428,70 @@ run_cpu_topology_policy_test(void)
         CHECK(diagnostic.compute_mask[word] == 0
             && diagnostic.reserved_mask[word] == 0);
     }
+
+    /* Two CPUs excluded by an external mask already satisfy half of the host
+     * reserve. Without topology, only the remaining two are removed by count;
+     * no unverifiable sibling mask is fabricated. */
+    topology = (Lardon3DResourceCpuTopologyInput) {
+        .affinity_available = true,
+        .topology_available = false,
+        .allowed_cpu_count = 14,
+    };
+    for (unsigned int cpu = 0; cpu < 14; ++cpu) {
+        topology.allowed_cpu_ids[cpu] = cpu;
+    }
+    CHECK(lardon3d_resource_governor_internal_configure_cpu_topology(
+            governor, &topology)
+        && lardon3d_resource_governor_internal_cpu_policy(
+            governor, &diagnostic));
+    CHECK(!diagnostic.affinity_configured
+        && diagnostic.externally_constrained
+        && diagnostic.compute_cpu_count == 12
+        && diagnostic.reserved_cpu_count == 2
+        && strcmp(diagnostic.reason,
+            "fallback-portable-topology-unavailable") == 0);
+    lardon3d_resource_governor_destroy(governor);
+
+    /* Asymmetric complete-core groups of 3,3,2 cannot meet logical reserve 4
+     * exactly. The minimum safe whole-core total is 5, not the greedy 6; the
+     * highest physical identities win the deterministic equal-size tie. */
+    profile.logical_cpu_count = 8;
+    governor = lardon3d_resource_governor_create(&profile, &policy);
+    CHECK(governor && use_fixed_test_clock(governor));
+    topology = (Lardon3DResourceCpuTopologyInput) {
+        .affinity_available = true,
+        .topology_available = true,
+        .allowed_cpu_count = 8,
+        .topology_entry_count = 8,
+    };
+    const unsigned int asymmetric_core[] = {0, 0, 0, 1, 1, 1, 2, 2};
+    for (unsigned int cpu = 0; cpu < 8; ++cpu) {
+        topology.allowed_cpu_ids[cpu] = cpu;
+        topology.topology_entries[cpu] =
+            (Lardon3DResourceCpuTopologyEntry) {
+                .cpu_id = cpu,
+                .package_id = 0,
+                .core_id = asymmetric_core[cpu],
+            };
+    }
+    CHECK(lardon3d_resource_governor_internal_configure_cpu_topology(
+            governor, &topology)
+        && lardon3d_resource_governor_internal_cpu_policy(
+            governor, &diagnostic)
+        && diagnostic.affinity_configured
+        && diagnostic.compute_cpu_count == 3
+        && diagnostic.reserved_cpu_count == 5);
+    for (unsigned int cpu = 0; cpu < 8; ++cpu) {
+        bool reserved = cpu >= 3;
+        CHECK(cpu_mask_has(diagnostic.reserved_mask, cpu) == reserved
+            && cpu_mask_has(diagnostic.compute_mask, cpu) == !reserved);
+    }
     lardon3d_resource_governor_destroy(governor);
 
     /* Read-only current-host assertion: when the caller really sees the
      * unrestricted 0..15 topology, the production discovery must reproduce
      * the validated compute/reserved masks. Other hosts skip this exact IDs. */
+    profile.logical_cpu_count = 16;
     CHECK(lardon3d_resource_policy_default(&profile, &policy));
     governor = lardon3d_resource_governor_create(&profile, &policy);
     CHECK(governor && lardon3d_resource_governor_internal_cpu_policy(
@@ -1712,7 +1942,7 @@ run_capability_governor_test(void)
         governor, &snapshot, "matcher.run", 1, &envelope, &selection,
         &reservation));
     CHECK(!reservation && selection.pressure ==
-        LARDON3D_RESOURCE_PRESSURE_YELLOW);
+        LARDON3D_RESOURCE_PRESSURE_RED);
     snapshot.memory_available_bytes = GIBIBYTES(2);
     CHECK(lardon3d_resource_governor_internal_reserve_capability(
         governor, &snapshot, "matcher.run", 1, &envelope, &selection,
@@ -2472,7 +2702,7 @@ static bool
 run_cpu_feedback_progression_test(void)
 {
     Lardon3DHardwareProfile profile = {
-        .logical_cpu_count = 16,
+        .logical_cpu_count = 32,
         .page_size_bytes = 4096,
         .memory_total_bytes = GIBIBYTES(16),
         .cpu_architecture = "test",
@@ -2482,7 +2712,11 @@ run_cpu_feedback_progression_test(void)
     policy.maximum_cpu_load_ratio = 1.0;
     Lardon3DResourceGovernor *governor =
         lardon3d_resource_governor_create(&profile, &policy);
-    CHECK(governor && use_fixed_test_clock(governor));
+    Lardon3DResourceCpuTopologyInput count_only = {0};
+    CHECK(governor
+        && lardon3d_resource_governor_internal_configure_cpu_topology(
+            governor, &count_only)
+        && use_fixed_test_clock(governor));
     Lardon3DTaskCapabilityEnvelope envelope = {
         .count = 1,
         .capabilities = {{
@@ -2490,7 +2724,7 @@ run_cpu_feedback_progression_test(void)
                 .memory_bytes_per_item = MEBIBYTES(1),
                 .minimum_batch_size = 1,
                 .maximum_batch_size = 4,
-                .desired_cpu_threads = 12,
+                .desired_cpu_threads = 28,
                 .task_class = LARDON3D_RESOURCE_TASK_CPU,
             },
             .backend = LARDON3D_RESOURCE_BACKEND_CPU,
@@ -2505,7 +2739,7 @@ run_cpu_feedback_progression_test(void)
     };
     Lardon3DResourceCapabilitySelection selection;
     Lardon3DResourceReservation *reservation = NULL;
-    const unsigned int expected_cpu[] = {1, 2, 4, 8, 12};
+    const unsigned int expected_cpu[] = {1, 2, 4, 8, 16, 28};
     for (size_t step = 0;
          step < sizeof(expected_cpu) / sizeof(expected_cpu[0]); ++step) {
         for (unsigned int observation = 0; observation < 2; ++observation) {
@@ -2526,7 +2760,7 @@ run_cpu_feedback_progression_test(void)
     CHECK(lardon3d_resource_governor_internal_reserve_capability(
         governor, &snapshot, "test.cpu.ramp", 1, &envelope, &selection,
         &reservation));
-    CHECK(reservation && selection.decision.cpu_threads == 12
+    CHECK(reservation && selection.decision.cpu_threads == 28
         && selection.decision.batch_size == 2
         && strcmp(selection.reason, "throughput-trial") == 0);
     CHECK(lardon3d_resource_governor_release(governor, reservation));
@@ -2534,10 +2768,10 @@ run_cpu_feedback_progression_test(void)
     CHECK(lardon3d_resource_governor_internal_last_diagnostic(
         governor, "test.cpu.ramp", 1, &ramp_diagnostic)
         && ramp_diagnostic.previous_wall_time_ns == 1000000000ULL
-        && ramp_diagnostic.items_completed == 12
-        && ramp_diagnostic.durable_items_per_second_milli == 12000);
+        && ramp_diagnostic.items_completed == 28
+        && ramp_diagnostic.durable_items_per_second_milli == 28000);
 
-    /* The first active swap-I/O delta is detected after the CPU12/batch2
+    /* The first active swap-I/O delta is detected after the maximum-CPU/batch2
      * operational trial was copied. This same admission must replace both
      * dimensions with CPU1/batch1 before it creates the reservation. */
     snapshot.swap_pages_out = 1;
@@ -2565,7 +2799,7 @@ run_cpu_feedback_progression_test(void)
         && strcmp(ramp_diagnostic.reason, "pressure-decrease") == 0
         && lardon3d_resource_governor_release(governor, reservation));
 
-    /* Recovery cannot reuse the old CPU12 baseline. Three healthy admissions
+    /* Recovery cannot reuse the old maximum-CPU baseline. Three healthy admissions
      * clear YELLOW, then two fresh CPU1 samples reopen only a CPU2 trial. */
     for (unsigned int observation = 0; observation < 3; ++observation) {
         reservation = NULL;
@@ -2674,7 +2908,10 @@ run_cpu_feedback_progression_test(void)
     profile.logical_cpu_count = 12;
     policy.system_cpu_reserve = 4;
     governor = lardon3d_resource_governor_create(&profile, &policy);
-    CHECK(governor && use_fixed_test_clock(governor));
+    CHECK(governor
+        && lardon3d_resource_governor_internal_configure_cpu_topology(
+            governor, &count_only)
+        && use_fixed_test_clock(governor));
     envelope.capabilities[0].estimate.maximum_batch_size = 1;
     envelope.capabilities[0].batch_adaptive = false;
     const unsigned int capped_cpu[] = {1, 2, 4, 8};
@@ -2707,6 +2944,8 @@ int
 main(void)
 {
     return (run_driver_runtime_policy_test()
+            && run_portable_default_policy_test()
+            && run_default_memory_band_test()
             && run_test() && run_generation_test() && run_adaptive_batch_test()
             && run_gate_g_boundary_test() && run_topology_value_reader_test()
             && run_gpu_busy_identity_reader_test()

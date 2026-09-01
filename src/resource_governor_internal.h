@@ -235,6 +235,11 @@ typedef struct {
     bool runtime_thread_policy_active;
     bool mesa_shader_cache_disabled;
     bool externally_constrained;
+    /* Counts describe the effective pool after an external allowed mask and
+     * the requested host reserve are combined. With complete topology, masks
+     * contain whole (package_id, core_id) groups and reserved_cpu_count may
+     * minimally exceed the logical request; count-only fallbacks leave masks
+     * empty rather than fabricating CPU identities. */
     unsigned int compute_cpu_count;
     unsigned int reserved_cpu_count;
     uint64_t allowed_mask[LARDON3D_RESOURCE_CPU_MASK_WORDS];
@@ -356,6 +361,36 @@ bool lardon3d_resource_governor_internal_capability_hardware_safe(
     const Lardon3DTaskCapability *capability
 );
 
+/* Private half of the public scratch wrappers. Begin freezes one bounded
+ * Governor operation, then releases the Governor mutex before the caller
+ * enters the SSD controller. Finish reconciles the controller snapshot and
+ * exact caller-owned lease address. SSD code never calls these functions, so
+ * there is no reverse lock edge. */
+bool lardon3d_resource_governor_internal_begin_scratch_operation(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller,
+    Lardon3DSsdScratchLease *lease,
+    bool acquire
+);
+bool lardon3d_resource_governor_internal_finish_scratch_operation(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller,
+    Lardon3DSsdScratchLease *lease,
+    bool acquire,
+    bool physical_success,
+    const Lardon3DResourceExternalStorage *storage
+);
+
+#ifdef LARDON3D_RESOURCE_EXTERNAL_STORAGE_TESTING
+/* Test definition is called with the Governor mutex held immediately before a
+ * public external-storage update is applied. It may block on test-owned
+ * synchronization only and must never call back into the Governor. */
+void lardon3d_resource_governor_external_update_engaged_for_test(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller
+);
+#endif
+
 /* Governor owns the bounded topology snapshot and compute mask. Queue calls
  * apply only from its sole heavy-compute worker; callers/main threads must not
  * be constrained. Failure is observable and leaves Task scientific state
@@ -423,6 +458,17 @@ void lardon3d_resource_governor_internal_force_capture_failure(
     Lardon3DResourceGovernor *governor,
     bool force_failure
 );
+
+#if defined(LARDON3D_RESOURCE_GOVERNOR_CAPTURE_TESTING)
+/* Test-only admission-capture seam. The Governor copies `snapshot`; NULL
+ * clears the override. Each use receives a fresh monotonic timestamp, while
+ * every other field remains exactly caller-controlled. This declaration and
+ * its implementation are absent from production preprocessing and symbols. */
+bool lardon3d_resource_governor_internal_set_capture_snapshot(
+    Lardon3DResourceGovernor *governor,
+    const Lardon3DResourceSnapshot *snapshot
+);
+#endif
 
 #ifdef __cplusplus
 }

@@ -13,11 +13,12 @@ desktop. Les signaux d'admission combinent `MemAvailable`, charge CPU, PSI CPU,
 PSI mémoire, PSI I/O et deltas `pswpin`/`pswpout`. Un seuil dépassé empêche une
 nouvelle admission ; il ne rompt pas une réservation saine déjà active.
 
-Le Governor maintient trois zones. GREEN emploie le lot adapté normal. La soft
-floor RAM, un PSI au seuil ou un premier intervalle avec swap actif produit
-YELLOW et interdit toute croissance. Deux observations de pression
-consécutives, ou `MemAvailable` sous la hard floor, produisent RED et suspendent
-toute admission. Le premier snapshot swap établit seulement la baseline.
+Le Governor maintient trois zones. GREEN emploie le lot adapté normal. La zone
+de prudence RAM entre 3 et 4 Gio, un PSI au seuil ou un premier intervalle avec
+swap actif produit YELLOW et interdit toute croissance. Deux observations de
+pression consécutives, ou `MemAvailable` sous la réserve dure de 3 Gio,
+produisent RED et suspendent toute admission. Le premier snapshot swap établit
+seulement la baseline.
 
 La récupération possède deux phases distinctes : trois observations saines
 font `RED → YELLOW`, puis trois nouvelles observations saines font
@@ -43,8 +44,11 @@ observe maintenant le RSS/HWM courant dans un buffer borné, uniquement comme
 diagnostic du processus : il ne le confond ni avec la réservation Task ni avec
 un coût attribuable. Le modèle cible un hôte Linux natif non contraint ; cgroups,
 limites systemd/RLIMIT, multi-GPU, historique/monitoring RSS long terme,
-redimensionnement d'admission depuis le RSS, scratch et stockage externe restent
-différés.
+redimensionnement d'admission depuis le RSS et consommation Task du scratch
+restent différés. Le contrôleur SSD optionnel gère le cycle de vie physique ;
+son état est enregistré auprès du Governor, qui est l'unique orchestrateur des
+leases scratch de production. Aucun des quatorze kinds actuels ne les consomme,
+et ni le registre, ni les leases, ni le swap ne créent un budget RAM.
 
 ## Feature Extraction
 
@@ -53,9 +57,10 @@ publication Feature Store, métadonnées DB, checkpoint terminal et libération 
 buffer. Le batch vaut donc une image et la granularité de reprise est une image.
 Le worker unique et la file bornée fournissent la backpressure actuelle.
 
-Le démarrage configure une baseline et un plafond OpenCV sûrs avant la création
-de Queue. L'unique callback lourd applique ensuite temporairement le compte CPU
-immuable admis pour sa séquence, dans `1..12`, et restaure la baseline sur toute
+Le démarrage configure une baseline OpenCV issue du compute-pool réellement
+disponible avant la création de Queue. L'unique callback lourd applique ensuite
+temporairement le compte CPU immuable admis pour sa séquence, dans
+`1..compute-pool`, et restaure la baseline sur toute
 sortie, y compris après une mutation suivie d'un échec de vérification. La tâche
 réserve donc le nombre réellement appliqué au lieu d'annoncer artificiellement
 un thread pendant qu'une primitive interne en utilise davantage. Une mutation
@@ -83,11 +88,15 @@ recalcule pas les descripteurs.
 ## Geometric Verification
 
 Project DB v12 stocke un résultat borné à 1024 octets de masque et neuf
-binary64. `geometric_verifier.run` v1 traite un Match Result atomique, publie
-par une transaction courte puis checkpoint son curseur par lots 1/2/4/8 avant
+binary64. `geometric_verifier.run` v1 traite chaque Match Result comme unité
+scientifique atomique, publie par une transaction courte puis checkpoint son
+curseur par lots 1..16 avant
 `task_sequence_break()`. Sa ligne durable appartient à Project DB v13. Le job
-réserve un CPU logique et 4 Mio, sans slot GPU. Admission, pression, lots et
-slow-start restent exclusivement décidés par Runtime et Governor.
+peut employer jusqu'à huit participants utiles et seize participants sûrs, par
+lots au plus seize, avec 8 Mio par parent et sans slot GPU. Le propriétaire
+publie le préfixe canonique dans l'ordre. Admission, pression, lots et
+slow-start restent exclusivement décidés par Runtime et Governor ; l'USAC
+scientifique interne conserve `isParallel=false`.
 
 ## GPU et files
 
@@ -110,12 +119,13 @@ reste inchangée.
 
 ## Profil interactif 8845HS mesuré
 
-- budget CPU Lardon3D : 12 threads logiques, 4 réservés au desktop ;
-- réserve `MemAvailable` : un quart de la RAM, environ 3,8 Gio ;
-- hard floor `MemAvailable` : un huitième, environ 1,9 Gio ;
+- budget CPU Lardon3D observé : 12 threads logiques, 4 réservés au desktop ;
+- réserve dure `MemAvailable` : 3 Gio ;
+- zone de prudence `MemAvailable` : de 3 à 4 Gio ;
 - Feature workers : 1 ; batch : 1 image ;
 - Matcher workers : 1 ; lots adaptatifs 1, 2, 4 ou 8 Candidate Pairs ;
-- Geometric Verifier workers : 1 ; lots adaptatifs 1, 2, 4 ou 8 Match Results ;
+- Geometric Verifier : un callback propriétaire, jusqu'à 8 participants utiles,
+  lots adaptatifs jusqu'à 16 Match Results ;
 - profondeur de la Task Queue : 64 tâches légères, un seul callback actif ;
 - PSI CPU avg10 : nouvelle admission suspendue à 20 % ;
 - PSI mémoire avg10 : nouvelle admission suspendue à 1 % ;
@@ -134,10 +144,13 @@ une distribution de latence estimator-only.
 
 ## Limites
 
-Le profil maximal explicite et les pools multi-workers restent hors périmètre.
+Les pools multi-workers restent hors périmètre. La capacité CPU portable est
+désormais bornée par le compute-pool de l'hôte et la limite intrinsèque du kind,
+jamais par un plafond global 12.
 SIFT/RootSIFT et Feature Extraction Vulkan restent hors de ce contrat.
 Swap, zram et disque externe ne sont jamais ajoutés au budget RAM. Aucun chemin
-scratch/spill ni aucune action modifiant l'hôte n'appartient à Gate G core.
+scratch/spill Task n'appartient à Gate G core. La commande SSD optionnelle est
+une intégration opérationnelle additive, pas une admission scientifique.
 
 La validation B3 du modèle Sparse SfM v16 a utilisé des processus frais, un
 fixture synthétique de 100 000 landmarks et 500 000 observations, cinq passes

@@ -24,6 +24,7 @@ enum {
   SEGMENT_POSTING_MAX = LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX * 1024 *
                         LARDON3D_VISUAL_INDEX_TABLE_COUNT,
   FEATURE_SET_POSTING_MAX = 1024 * LARDON3D_VISUAL_INDEX_TABLE_COUNT,
+  VISUAL_INDEX_CHILD_STACK_BYTES = 512 * 1024,
 };
 
 typedef struct {
@@ -249,6 +250,17 @@ static Lardon3DVisualIndexResult build_postings(
   PostingBuildJob jobs[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX];
   pthread_t children[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX - 1];
   bool created[LARDON3D_VISUAL_INDEX_SEGMENT_FEATURE_SET_MAX - 1] = {false};
+  pthread_attr_t attributes;
+  if (pthread_attr_init(&attributes) != 0) {
+    return LARDON3D_VISUAL_INDEX_IO_ERROR;
+  }
+  /* RESOURCE: each child only reads one immutable Feature File slice. Bound
+   * its stack explicitly so the Task's existing 2 MiB per-member reservation
+   * accounts for the complete 16-participant segment on every host. */
+  if (pthread_attr_setstacksize(&attributes, VISUAL_INDEX_CHILD_STACK_BYTES) != 0) {
+    (void)pthread_attr_destroy(&attributes);
+    return LARDON3D_VISUAL_INDEX_IO_ERROR;
+  }
   for (size_t participant = 0; participant < participants; ++participant) {
     jobs[participant] = (PostingBuildJob){.project_path = project_path,
                                           .sets = sets,
@@ -262,9 +274,10 @@ static Lardon3DVisualIndexResult build_postings(
   }
   for (size_t participant = 1; participant < participants; ++participant) {
     created[participant - 1] =
-        pthread_create(&children[participant - 1], NULL, build_posting_slices,
+        pthread_create(&children[participant - 1], &attributes, build_posting_slices,
                        &jobs[participant]) == 0;
   }
+  bool attributes_released = pthread_attr_destroy(&attributes) == 0;
   (void)build_posting_slices(&jobs[0]);
   bool joined = true;
   for (size_t participant = 1; participant < participants; ++participant) {
@@ -272,7 +285,7 @@ static Lardon3DVisualIndexResult build_postings(
       joined = false;
     }
   }
-  if (!joined) {
+  if (!joined || !attributes_released) {
     return LARDON3D_VISUAL_INDEX_IO_ERROR;
   }
   /* A failed pthread_create does not change results: the owner computes only

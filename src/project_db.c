@@ -11,6 +11,9 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include <lardon3d/acquisition_campaign_task.h>
+#include <lardon3d/optical_profiles.h>
+#include <lardon3d/photo_quality_task.h>
 #include <lardon3d/project_db.h>
 #include <lardon3d/raw_development_task.h>
 #include "project_db_internal.h"
@@ -708,6 +711,146 @@ static const char schema_selected_execution_v22[] =
     "capture_source_assets(capture_id,asset_id),"
     "FOREIGN KEY(capture_id,image_id) REFERENCES capture_images(capture_id,image_id));";
 
+/* PERSISTENCE CONTRACT v23: optical IDs are positive signed SQLite INTEGERs;
+   text must fit the matching 128/256-byte public capacities (loaders enforce
+   byte length because SQLite length() counts characters); focal identity is
+   INTEGER micrometres with zero meaning absent; enum values are the fixed codes
+   declared by optical_profiles.h. The migration is additive and creates no
+   rows, so v22 Capture and sparse-calibration identity is never reinterpreted
+   from names, paths, EXIF, hashes, or dimensions. */
+static const char schema_optical_profiles_v23[] =
+    "CREATE TABLE camera_body_profiles("
+    "camera_body_profile_id INTEGER PRIMARY KEY AUTOINCREMENT "
+    "CHECK(camera_body_profile_id>0),"
+    "manufacturer TEXT NOT NULL CHECK(typeof(manufacturer)='text' AND "
+    "length(manufacturer)>0 AND length(manufacturer)<128),"
+    "model TEXT NOT NULL CHECK(typeof(model)='text' AND length(model)>0 AND "
+    "length(model)<128),"
+    "name TEXT NOT NULL CHECK(typeof(name)='text' AND length(name)>0 AND "
+    "length(name)<128),UNIQUE(manufacturer,model,name));"
+    "CREATE TABLE camera_body_aliases("
+    "alias_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(alias_id>0),"
+    "camera_body_profile_id INTEGER NOT NULL REFERENCES camera_body_profiles("
+    "camera_body_profile_id) ON DELETE CASCADE,"
+    "metadata_make TEXT NOT NULL COLLATE BINARY CHECK(typeof(metadata_make)='text' "
+    "AND length(metadata_make)>0 AND length(metadata_make)<128),"
+    "metadata_model TEXT NOT NULL COLLATE BINARY CHECK(typeof(metadata_model)='text' "
+    "AND length(metadata_model)>0 AND length(metadata_model)<128),"
+    "UNIQUE(metadata_make,metadata_model));"
+    "CREATE INDEX camera_body_aliases_profile_idx ON "
+    "camera_body_aliases(camera_body_profile_id,alias_id);"
+    "CREATE TABLE lens_profiles("
+    "lens_profile_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(lens_profile_id>0),"
+    "manufacturer TEXT NOT NULL CHECK(typeof(manufacturer)='text' AND "
+    "length(manufacturer)<128),"
+    "model TEXT NOT NULL CHECK(typeof(model)='text' AND length(model)<128),"
+    "name TEXT NOT NULL CHECK(typeof(name)='text' AND length(name)>0 AND "
+    "length(name)<128),"
+    "interface_kind INTEGER NOT NULL CHECK(typeof(interface_kind)='integer' AND "
+    "interface_kind BETWEEN 1 AND 3),"
+    "focal_range_kind INTEGER NOT NULL CHECK(typeof(focal_range_kind)='integer' AND "
+    "focal_range_kind BETWEEN 1 AND 3),"
+    "minimum_focal_um INTEGER NOT NULL CHECK(typeof(minimum_focal_um)='integer' AND "
+    "minimum_focal_um>=0 AND minimum_focal_um<=4294967295),"
+    "maximum_focal_um INTEGER NOT NULL CHECK(typeof(maximum_focal_um)='integer' AND "
+    "maximum_focal_um>=0 AND maximum_focal_um<=4294967295),"
+    "CHECK((focal_range_kind=1 AND minimum_focal_um=0 AND maximum_focal_um=0) OR "
+    "(focal_range_kind=2 AND minimum_focal_um>0 AND "
+    "minimum_focal_um=maximum_focal_um) OR "
+    "(focal_range_kind=3 AND minimum_focal_um>0 AND "
+    "minimum_focal_um<maximum_focal_um)),UNIQUE(manufacturer,model,name));"
+    "CREATE TABLE lens_profile_aliases("
+    "alias_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(alias_id>0),"
+    "lens_profile_id INTEGER NOT NULL REFERENCES lens_profiles(lens_profile_id) "
+    "ON DELETE CASCADE,"
+    "metadata_make TEXT NOT NULL COLLATE BINARY CHECK(typeof(metadata_make)='text' "
+    "AND length(metadata_make)<128),"
+    "metadata_model TEXT NOT NULL COLLATE BINARY CHECK(typeof(metadata_model)='text' "
+    "AND length(metadata_model)>0 AND length(metadata_model)<128),"
+    "UNIQUE(metadata_make,metadata_model));"
+    "CREATE INDEX lens_profile_aliases_profile_idx ON "
+    "lens_profile_aliases(lens_profile_id,alias_id);"
+    "CREATE TABLE optical_configurations("
+    "optical_configuration_id INTEGER PRIMARY KEY AUTOINCREMENT "
+    "CHECK(optical_configuration_id>0),"
+    "camera_body_profile_id INTEGER NOT NULL REFERENCES camera_body_profiles("
+    "camera_body_profile_id),"
+    "lens_profile_id INTEGER NOT NULL REFERENCES lens_profiles(lens_profile_id),"
+    /* Zero means that the optional exact focal context is absent. Positive
+       values are deterministic integer micrometres, never locale/REAL data. */
+    "focal_length_um INTEGER NOT NULL CHECK(typeof(focal_length_um)='integer' AND "
+    "focal_length_um>=0 AND focal_length_um<=4294967295),"
+    "UNIQUE(camera_body_profile_id,lens_profile_id,focal_length_um));"
+    "CREATE INDEX optical_configurations_body_idx ON "
+    "optical_configurations(camera_body_profile_id,optical_configuration_id);"
+    "CREATE INDEX optical_configurations_lens_idx ON "
+    "optical_configurations(lens_profile_id,optical_configuration_id);";
+
+static const char schema_optical_assignments_v23[] =
+    "CREATE TABLE acquisition_campaign_group_optics("
+    "task_id INTEGER NOT NULL REFERENCES acquisition_campaign_tasks(task_id) "
+    "ON DELETE CASCADE,"
+    "group_id INTEGER NOT NULL CHECK(typeof(group_id)='integer' AND group_id>0 "
+    "AND group_id<=4096),"
+    "optical_configuration_id INTEGER NOT NULL REFERENCES optical_configurations("
+    "optical_configuration_id),PRIMARY KEY(task_id,group_id),"
+    "UNIQUE(task_id,group_id,optical_configuration_id));"
+    /* These composite keys let SQLite enforce that campaign provenance on a
+       Capture assignment names the exact durable group mapping/configuration. */
+    "CREATE UNIQUE INDEX acquisition_campaign_capture_identity_v23 ON "
+    "acquisition_campaign_captures(task_id,group_id,capture_id);"
+    "CREATE TABLE capture_optical_configurations("
+    "capture_id INTEGER PRIMARY KEY REFERENCES captures(capture_id) ON DELETE CASCADE,"
+    "optical_configuration_id INTEGER NOT NULL REFERENCES optical_configurations("
+    "optical_configuration_id),"
+    "assignment_provenance INTEGER NOT NULL CHECK(typeof(assignment_provenance)="
+    "'integer' AND assignment_provenance IN(1,2)),"
+    "campaign_task_id INTEGER,campaign_group_id INTEGER,"
+    "CHECK((assignment_provenance=1 AND typeof(campaign_task_id)='integer' AND "
+    "campaign_task_id>0 AND typeof(campaign_group_id)='integer' AND "
+    "campaign_group_id>0 AND campaign_group_id<=4096) OR "
+    "(assignment_provenance=2 AND campaign_task_id IS NULL AND "
+    "campaign_group_id IS NULL)),"
+    "UNIQUE(capture_id,optical_configuration_id),"
+    "FOREIGN KEY(campaign_task_id,campaign_group_id,optical_configuration_id) "
+    "REFERENCES acquisition_campaign_group_optics(task_id,group_id,"
+    "optical_configuration_id),"
+    "FOREIGN KEY(campaign_task_id,campaign_group_id,capture_id) REFERENCES "
+    "acquisition_campaign_captures(task_id,group_id,capture_id));"
+    "CREATE INDEX capture_optical_configurations_config_idx ON "
+    "capture_optical_configurations(optical_configuration_id,capture_id);";
+
+static const char schema_optical_calibrations_v23[] =
+    "CREATE TABLE optical_calibration_profiles("
+    "calibration_profile_id INTEGER PRIMARY KEY AUTOINCREMENT "
+    "CHECK(calibration_profile_id>0),"
+    "optical_configuration_id INTEGER NOT NULL REFERENCES optical_configurations("
+    "optical_configuration_id),"
+    "sparse_calibration_id INTEGER NOT NULL REFERENCES sparse_calibrations("
+    "calibration_id),"
+    "name TEXT NOT NULL CHECK(typeof(name)='text' AND length(name)>0 AND "
+    "length(name)<128),"
+    "profile_version INTEGER NOT NULL CHECK(typeof(profile_version)='integer' AND "
+    "profile_version>0 AND profile_version<=4294967295),"
+    "provenance TEXT NOT NULL CHECK(typeof(provenance)='text' AND "
+    "length(provenance)>0 AND length(provenance)<256),"
+    "applicability INTEGER NOT NULL CHECK(typeof(applicability)='integer' AND "
+    "applicability=1),"
+    "created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>=0),"
+    "UNIQUE(optical_configuration_id,name,profile_version),"
+    "UNIQUE(calibration_profile_id,optical_configuration_id));"
+    "CREATE INDEX optical_calibration_profiles_config_idx ON "
+    "optical_calibration_profiles(optical_configuration_id,calibration_profile_id);"
+    "CREATE INDEX optical_calibration_profiles_sparse_idx ON "
+    "optical_calibration_profiles(sparse_calibration_id,calibration_profile_id);"
+    "CREATE TABLE capture_calibration_selections("
+    "capture_id INTEGER PRIMARY KEY,calibration_profile_id INTEGER NOT NULL,"
+    "optical_configuration_id INTEGER NOT NULL,"
+    "FOREIGN KEY(capture_id,optical_configuration_id) REFERENCES "
+    "capture_optical_configurations(capture_id,optical_configuration_id),"
+    "FOREIGN KEY(calibration_profile_id,optical_configuration_id) REFERENCES "
+    "optical_calibration_profiles(calibration_profile_id,optical_configuration_id));";
+
 static void copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text) {
   if (destination) {
     (void)snprintf(destination, LARDON3D_PROJECT_DB_ERROR_CAPACITY, "%s", text ? text : "");
@@ -800,7 +943,7 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
       from_version != 8 && from_version != 9 && from_version != 10 && from_version != 11 &&
       from_version != 12 && from_version != 13 && from_version != 14 &&
       from_version != 15 && from_version != 16 && from_version != 17 && from_version != 18 &&
-      from_version != 19 && from_version != 20 && from_version != 21) {
+      from_version != 19 && from_version != 20 && from_version != 21 && from_version != 22) {
     return LARDON3D_PROJECT_DB_CORRUPT;
   }
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
@@ -1238,6 +1381,39 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
                        "finish schema v22 migration");
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version < 23) {
+    /* CONTRACT: v22 projects enter v23 with no optical rows. Historical names,
+       paths, metadata and sparse calibration dimensions are not identity and
+       therefore cannot be used for a migration backfill. */
+    result = execute(database, schema_optical_profiles_v23,
+                     "migrate optical profiles v22 to v23");
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database, schema_optical_assignments_v23,
+                       "migrate optical assignments v22 to v23");
+    }
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database, schema_optical_calibrations_v23,
+                       "migrate optical calibrations v22 to v23");
+    }
+#ifdef LARDON3D_PROJECT_DB_TESTING
+    if (result == LARDON3D_PROJECT_DB_OK &&
+        getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V23")) {
+      result = execute(database, "INSERT INTO missing_v23_test_table VALUES(1)",
+                       "forced migration v23 failure");
+    }
+#endif
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database,
+                       "UPDATE metadata SET value=23 WHERE key='schema_version' AND value=22",
+                       "finish schema v23 migration");
+      /* The schema marker is the durable publication point. A successful SQL
+         statement that matched no canonical v22 row must roll the whole
+         additive migration back rather than leave unversioned v23 objects. */
+      if (result == LARDON3D_PROJECT_DB_OK &&
+          sqlite3_changes(database->connection) != 1)
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit migration");
   }
@@ -1381,12 +1557,21 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
                                "photo_quality_triage_tasks",
                                "photo_quality_triage_results",
                                "selected_executions",
-                               "selected_execution_items"};
+                               "selected_execution_items",
+                               "camera_body_profiles",
+                               "camera_body_aliases",
+                               "lens_profiles",
+                               "lens_profile_aliases",
+                               "optical_configurations",
+                               "acquisition_campaign_group_optics",
+                               "capture_optical_configurations",
+                               "optical_calibration_profiles",
+                               "capture_calibration_selections"};
     for (size_t index = 0; index < sizeof(required) / sizeof(required[0]) &&
                            result == LARDON3D_PROJECT_DB_OK;
          ++index) {
       if (!table_exists(database->connection, required[index])) {
-        copy_error(database->error, "Schéma v1 incomplet.");
+        copy_error(database->error, "Schéma Project DB courant incomplet.");
         result = LARDON3D_PROJECT_DB_CORRUPT;
       }
     }
@@ -1496,6 +1681,18 @@ static bool copy_column(sqlite3_stmt *statement, int column, char *destination, 
   memcpy(destination, text, (size_t)bytes);
   destination[bytes] = '\0';
   return true;
+}
+
+static bool column_text_equals(sqlite3_stmt *statement, int column,
+                               const char *expected) {
+  if (!statement || !expected ||
+      sqlite3_column_type(statement, column) != SQLITE_TEXT)
+    return false;
+  const unsigned char *text = sqlite3_column_text(statement, column);
+  int bytes = sqlite3_column_bytes(statement, column);
+  size_t expected_bytes = strlen(expected);
+  return text && bytes >= 0 && (size_t)bytes == expected_bytes &&
+         memcmp(text, expected, expected_bytes) == 0;
 }
 
 Lardon3DProjectDbResult lardon3d_project_db_set_project(Lardon3DProjectDb *database,
@@ -1696,17 +1893,26 @@ record_task_internal(Lardon3DProjectDb *database, const Lardon3DTaskDurableSnaps
         !valid_task_id(sparse_sfm->track_set_id) ||
         !valid_task_id(sparse_sfm->calibration_scope_id) || sparse_sfm->sfm_kind != 1 ||
         sparse_sfm->sfm_version != 1 || !valid_sparse_sfm_parameters(&sparse_sfm->parameters))) ||
-      (campaign && (!valid_task_id(campaign->task_id) || campaign->task_id != snapshot->id ||
-                    !valid_task_id(campaign->scanset_id) || campaign->group_count == 0 ||
-                    campaign->group_count > 4096 ||
-                    campaign->next_group_id > campaign->group_count || !campaign->request ||
-                    campaign->request_size == 0 || campaign->request_size > INT_MAX)) ||
+      (campaign &&
+       (!task_kind ||
+        strcmp(task_kind, LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND) != 0 ||
+        task_kind_version != LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND_VERSION ||
+        !valid_task_id(campaign->task_id) || campaign->task_id != snapshot->id ||
+        !valid_task_id(campaign->scanset_id) || campaign->group_count == 0 ||
+        campaign->group_count > 4096 ||
+        campaign->next_group_id > campaign->group_count || !campaign->request ||
+        campaign->request_size == 0 ||
+        campaign->request_size >
+            LARDON3D_ACQUISITION_CAMPAIGN_TASK_REQUEST_MAX_BYTES)) ||
       (photo_quality &&
-       (!valid_task_id(photo_quality->task_id) || photo_quality->task_id != snapshot->id ||
+       (!task_kind || strcmp(task_kind, LARDON3D_PHOTO_QUALITY_TASK_KIND) != 0 ||
+        task_kind_version != LARDON3D_PHOTO_QUALITY_TASK_KIND_VERSION ||
+        !valid_task_id(photo_quality->task_id) || photo_quality->task_id != snapshot->id ||
         !valid_task_id(photo_quality->scanset_id) || photo_quality->group_count == 0 ||
         photo_quality->group_count > 4096 || photo_quality->next_group_id == 0 ||
         photo_quality->next_group_id > photo_quality->group_count + 1u || !photo_quality->request ||
-        photo_quality->request_size == 0 || photo_quality->request_size > INT_MAX)) ||
+        photo_quality->request_size == 0 ||
+        photo_quality->request_size > LARDON3D_PHOTO_QUALITY_TASK_REQUEST_MAX_BYTES)) ||
       (raw_development &&
        (!valid_task_id(raw_development->task_id) ||
         raw_development->task_id != snapshot->id ||
@@ -2465,7 +2671,9 @@ Lardon3DProjectDbResult lardon3d_project_db_record_acquisition_campaign_task(
   if (!database || !snapshot || !parameters || parameters->task_id != snapshot->id ||
       !valid_task_id(parameters->scanset_id) || parameters->group_count == 0 ||
       parameters->group_count > 4096 || parameters->next_group_id > parameters->group_count ||
-      !parameters->request || parameters->request_size == 0 || parameters->request_size > INT_MAX) {
+      !parameters->request || parameters->request_size == 0 ||
+      parameters->request_size >
+          LARDON3D_ACQUISITION_CAMPAIGN_TASK_REQUEST_MAX_BYTES) {
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   }
   /* The generic Task/checkpoint and typed request persist atomically: recovery
@@ -2475,34 +2683,121 @@ Lardon3DProjectDbResult lardon3d_project_db_record_acquisition_campaign_task(
                               NULL, updated_at);
 }
 
+static Lardon3DProjectDbResult validate_acquisition_campaign_prefix_locked(
+    Lardon3DProjectDb *database, uint64_t task_id, sqlite3_int64 scanset_id,
+    sqlite3_int64 next_group_id, sqlite3_int64 group_count) {
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT COUNT(*),"
+      "COUNT(CASE WHEN typeof(m.task_id)!='integer' OR "
+      "typeof(m.group_id)!='integer' OR m.group_id<1 OR m.group_id>?2 OR "
+      "m.group_id>?3 OR typeof(m.capture_id)!='integer' OR m.capture_id<=0 OR "
+      "c.capture_id IS NULL OR typeof(c.scanset_id)!='integer' OR "
+      "c.scanset_id<=0 OR c.scanset_id!=?4 THEN 1 END),"
+      "MIN(m.group_id),MAX(m.group_id) "
+      "FROM acquisition_campaign_captures m LEFT JOIN captures c "
+      "ON c.capture_id=m.capture_id WHERE m.task_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    (void)sqlite3_bind_int64(statement, 2, next_group_id);
+    (void)sqlite3_bind_int64(statement, 3, group_count);
+    (void)sqlite3_bind_int64(statement, 4, scanset_id);
+    int code = sqlite3_step(statement);
+    if (code != SQLITE_ROW) {
+      result = sqlite_result(database, code, "validate campaign prefix");
+    } else {
+      int count_type = sqlite3_column_type(statement, 0);
+      int invalid_type = sqlite3_column_type(statement, 1);
+      int minimum_type = sqlite3_column_type(statement, 2);
+      int maximum_type = sqlite3_column_type(statement, 3);
+      sqlite3_int64 count = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 invalid = sqlite3_column_int64(statement, 1);
+      sqlite3_int64 minimum = sqlite3_column_int64(statement, 2);
+      sqlite3_int64 maximum = sqlite3_column_int64(statement, 3);
+      /* CONTRACT: the cursor is exactly the number of durable mappings. With
+       * the v20 primary key, count/min/max plus strict INTEGER storage proves
+       * the complete one-based prefix 1..next and excludes every ahead row.
+       * Capture joins additionally preserve the campaign ScanSet boundary. */
+      bool empty = next_group_id == 0 && count == 0 &&
+                   minimum_type == SQLITE_NULL && maximum_type == SQLITE_NULL;
+      bool complete = next_group_id > 0 && count == next_group_id &&
+                      minimum_type == SQLITE_INTEGER &&
+                      maximum_type == SQLITE_INTEGER && minimum == 1 &&
+                      maximum == next_group_id;
+      if (count_type != SQLITE_INTEGER || invalid_type != SQLITE_INTEGER ||
+          count < 0 || count > 4096 || invalid != 0 || (!empty && !complete)) {
+        copy_error(database->error,
+                   "Préfixe durable de campagne incohérent.");
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+    }
+  }
+  (void)sqlite3_finalize(statement);
+  return result;
+}
+
 Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_task(
     Lardon3DProjectDb *database, uint64_t task_id, unsigned char *request,
     size_t request_capacity, Lardon3DProjectDbAcquisitionCampaignTask *parameters) {
-  if (!database || !valid_task_id(task_id) || !request || request_capacity == 0 || !parameters)
+  bool size_probe = !request && request_capacity == 0;
+  if (!database || !valid_task_id(task_id) || !parameters ||
+      (!size_probe && (!request || request_capacity == 0)))
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   memset(parameters, 0, sizeof(*parameters));
   (void)pthread_mutex_lock(&database->mutex);
   sqlite3_stmt *statement = NULL;
   Lardon3DProjectDbResult result = prepare(database,
-      "SELECT scanset_id,next_group_id,group_count,request FROM acquisition_campaign_tasks "
-      "WHERE task_id=?1", &statement);
+      "SELECT c.scanset_id,c.next_group_id,c.group_count,c.request,t.task_kind,"
+      "t.task_kind_version,s.scanset_id FROM acquisition_campaign_tasks c "
+      "LEFT JOIN tasks t ON t.task_id=c.task_id LEFT JOIN scansets s "
+      "ON s.scanset_id=c.scanset_id WHERE c.task_id=?1", &statement);
   if (result == LARDON3D_PROJECT_DB_OK) {
-  sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
     int code = sqlite3_step(statement);
     if (code == SQLITE_DONE) result = LARDON3D_PROJECT_DB_NOT_FOUND;
     else if (code != SQLITE_ROW) result = sqlite_result(database, code, "load campaign task");
     else {
+      sqlite3_int64 scanset = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 next = sqlite3_column_int64(statement, 1);
+      sqlite3_int64 count = sqlite3_column_int64(statement, 2);
       int bytes = sqlite3_column_bytes(statement, 3);
       const void *blob = sqlite3_column_blob(statement, 3);
-      if (bytes <= 0 || (size_t)bytes > request_capacity || !blob) {
+      sqlite3_int64 kind_version = sqlite3_column_int64(statement, 5);
+      sqlite3_int64 joined_scanset = sqlite3_column_int64(statement, 6);
+      bool valid_types = sqlite3_column_type(statement, 0) == SQLITE_INTEGER &&
+                         sqlite3_column_type(statement, 1) == SQLITE_INTEGER &&
+                         sqlite3_column_type(statement, 2) == SQLITE_INTEGER &&
+                         sqlite3_column_type(statement, 3) == SQLITE_BLOB &&
+                         sqlite3_column_type(statement, 5) == SQLITE_INTEGER &&
+                         sqlite3_column_type(statement, 6) == SQLITE_INTEGER;
+      /* SQLite integers are signed and dynamically typed. Validate the
+       * zero-based next-work cursor and generic/typed dispatch identity before
+       * narrowing; request bytes remain immutable durable business input. */
+      if (!valid_types || scanset <= 0 || joined_scanset != scanset || next < 0 ||
+          count < 1 || count > 4096 ||
+          next > count || bytes <= 0 ||
+          (size_t)bytes > LARDON3D_ACQUISITION_CAMPAIGN_TASK_REQUEST_MAX_BYTES ||
+          !blob ||
+          !column_text_equals(statement, 4,
+                              LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND) ||
+          kind_version != LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND_VERSION) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else if ((result = validate_acquisition_campaign_prefix_locked(
+                      database, task_id, scanset, next, count)) !=
+                 LARDON3D_PROJECT_DB_OK) {
+        /* The helper supplies CORRUPT and a durable-prefix diagnostic. */
+      } else if (!size_probe && (size_t)bytes > request_capacity) {
         result = LARDON3D_PROJECT_DB_CONSTRAINT;
       } else {
         parameters->task_id = task_id;
-        parameters->scanset_id = (uint64_t)sqlite3_column_int64(statement, 0);
-        parameters->next_group_id = (uint32_t)sqlite3_column_int64(statement, 1);
-        parameters->group_count = (uint32_t)sqlite3_column_int64(statement, 2);
-        memcpy(request, blob, (size_t)bytes);
-        parameters->request = request;
+        parameters->scanset_id = (uint64_t)scanset;
+        parameters->next_group_id = (uint32_t)next;
+        parameters->group_count = (uint32_t)count;
+        if (!size_probe)
+          memcpy(request, blob, (size_t)bytes);
+        parameters->request = size_probe ? NULL : request;
         parameters->request_size = (size_t)bytes;
       }
     }
@@ -2512,29 +2807,374 @@ Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_task(
   return result;
 }
 
+static bool project_db_optical_text_column(sqlite3_stmt *statement, int column,
+                                           size_t capacity,
+                                           bool allow_empty) {
+  if (sqlite3_column_type(statement, column) != SQLITE_TEXT)
+    return false;
+  int bytes = sqlite3_column_bytes(statement, column);
+  const unsigned char *text = sqlite3_column_text(statement, column);
+  return bytes >= 0 && (size_t)bytes < capacity && text &&
+         (allow_empty || bytes > 0) && !memchr(text, '\0', (size_t)bytes);
+}
+
+static Lardon3DProjectDbResult validate_retained_optical_configuration_locked(
+    Lardon3DProjectDb *database, sqlite3_int64 configuration_id) {
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT o.optical_configuration_id,o.camera_body_profile_id,"
+      "o.lens_profile_id,o.focal_length_um,b.camera_body_profile_id,"
+      "b.manufacturer,b.model,b.name,l.lens_profile_id,l.manufacturer,l.model,"
+      "l.name,l.interface_kind,l.focal_range_kind,l.minimum_focal_um,"
+      "l.maximum_focal_um FROM optical_configurations o LEFT JOIN "
+      "camera_body_profiles b ON b.camera_body_profile_id="
+      "o.camera_body_profile_id LEFT JOIN lens_profiles l ON "
+      "l.lens_profile_id=o.lens_profile_id WHERE "
+      "o.optical_configuration_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, configuration_id);
+    int code = sqlite3_step(statement);
+    if (code != SQLITE_ROW) {
+      result = code == SQLITE_DONE
+                   ? LARDON3D_PROJECT_DB_CORRUPT
+                   : sqlite_result(database, code,
+                                   "validate retained optical configuration");
+    } else {
+      sqlite3_int64 stored_configuration = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 body_id = sqlite3_column_int64(statement, 1);
+      sqlite3_int64 lens_id = sqlite3_column_int64(statement, 2);
+      sqlite3_int64 focal_um = sqlite3_column_int64(statement, 3);
+      sqlite3_int64 joined_body_id = sqlite3_column_int64(statement, 4);
+      sqlite3_int64 joined_lens_id = sqlite3_column_int64(statement, 8);
+      sqlite3_int64 interface_kind = sqlite3_column_int64(statement, 12);
+      sqlite3_int64 range_kind = sqlite3_column_int64(statement, 13);
+      sqlite3_int64 minimum_focal_um = sqlite3_column_int64(statement, 14);
+      sqlite3_int64 maximum_focal_um = sqlite3_column_int64(statement, 15);
+      bool integer_types = true;
+      const int integer_columns[] = {0, 1, 2, 3, 4, 8, 12, 13, 14, 15};
+      for (size_t index = 0;
+           index < sizeof(integer_columns) / sizeof(integer_columns[0]);
+           ++index) {
+        if (sqlite3_column_type(statement, integer_columns[index]) !=
+            SQLITE_INTEGER)
+          integer_types = false;
+      }
+      bool range_valid =
+          (range_kind == LARDON3D_OPTICAL_FOCAL_RANGE_UNKNOWN &&
+           minimum_focal_um == 0 && maximum_focal_um == 0) ||
+          (range_kind == LARDON3D_OPTICAL_FOCAL_RANGE_PRIME &&
+           minimum_focal_um > 0 && minimum_focal_um == maximum_focal_um) ||
+          (range_kind == LARDON3D_OPTICAL_FOCAL_RANGE_ZOOM &&
+           minimum_focal_um > 0 && minimum_focal_um < maximum_focal_um);
+      bool focal_valid =
+          focal_um == 0 ||
+          range_kind == LARDON3D_OPTICAL_FOCAL_RANGE_UNKNOWN ||
+          (range_kind == LARDON3D_OPTICAL_FOCAL_RANGE_PRIME &&
+           focal_um == minimum_focal_um) ||
+          (range_kind == LARDON3D_OPTICAL_FOCAL_RANGE_ZOOM &&
+           focal_um >= minimum_focal_um && focal_um <= maximum_focal_um);
+      /* INVARIANT: zero is the only absent focal encoding. A retained mapping
+         may publish a configuration only after the complete typed body/lens
+         graph and the focal-vs-lens relation have been proven valid. */
+      if (!integer_types || stored_configuration <= 0 ||
+          stored_configuration != configuration_id || body_id <= 0 ||
+          lens_id <= 0 || joined_body_id != body_id ||
+          joined_lens_id != lens_id || focal_um < 0 || focal_um > UINT32_MAX ||
+          !project_db_optical_text_column(
+              statement, 5, LARDON3D_OPTICAL_TEXT_CAPACITY, false) ||
+          !project_db_optical_text_column(
+              statement, 6, LARDON3D_OPTICAL_TEXT_CAPACITY, false) ||
+          !project_db_optical_text_column(
+              statement, 7, LARDON3D_OPTICAL_TEXT_CAPACITY, false) ||
+          !project_db_optical_text_column(
+              statement, 9, LARDON3D_OPTICAL_TEXT_CAPACITY, true) ||
+          !project_db_optical_text_column(
+              statement, 10, LARDON3D_OPTICAL_TEXT_CAPACITY, true) ||
+          !project_db_optical_text_column(
+              statement, 11, LARDON3D_OPTICAL_TEXT_CAPACITY, false) ||
+          interface_kind < LARDON3D_OPTICAL_LENS_MANUAL ||
+          interface_kind > LARDON3D_OPTICAL_LENS_INTEGRATED ||
+          minimum_focal_um < 0 || minimum_focal_um > UINT32_MAX ||
+          maximum_focal_um < 0 || maximum_focal_um > UINT32_MAX ||
+          !range_valid || !focal_valid ||
+          sqlite3_step(statement) != SQLITE_DONE) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+    }
+  }
+  (void)sqlite3_finalize(statement);
+  return result;
+}
+
+static Lardon3DProjectDbResult retain_campaign_optics_locked(
+    Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
+    uint64_t capture_id, bool new_mapping) {
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT g.optical_configuration_id,o.optical_configuration_id "
+      "FROM acquisition_campaign_tasks c LEFT JOIN "
+      "acquisition_campaign_group_optics g ON g.task_id=c.task_id AND "
+      "g.group_id=?2 LEFT JOIN optical_configurations o ON "
+      "o.optical_configuration_id=g.optical_configuration_id WHERE c.task_id=?1",
+      &statement);
+  bool group_assigned = false;
+  sqlite3_int64 configuration_id = 0;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
+    (void)sqlite3_bind_int64(statement, 2, (sqlite3_int64)group_id);
+    int code = sqlite3_step(statement);
+    if (code != SQLITE_ROW) {
+      result = code == SQLITE_DONE
+                   ? LARDON3D_PROJECT_DB_CORRUPT
+                   : sqlite_result(database, code, "load campaign group optics");
+    } else {
+      int assignment_type = sqlite3_column_type(statement, 0);
+      int configuration_type = sqlite3_column_type(statement, 1);
+      configuration_id = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 joined_configuration_id = sqlite3_column_int64(statement, 1);
+      bool absent = assignment_type == SQLITE_NULL &&
+                    configuration_type == SQLITE_NULL;
+      group_assigned = !absent;
+      if (!absent &&
+          (assignment_type != SQLITE_INTEGER ||
+           configuration_type != SQLITE_INTEGER || configuration_id <= 0 ||
+           joined_configuration_id != configuration_id)) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+      if (result == LARDON3D_PROJECT_DB_OK &&
+          sqlite3_step(statement) != SQLITE_DONE) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+    }
+  }
+  (void)sqlite3_finalize(statement);
+  statement = NULL;
+  if (result == LARDON3D_PROJECT_DB_OK && group_assigned)
+    result = validate_retained_optical_configuration_locked(database,
+                                                            configuration_id);
+  if (result != LARDON3D_PROJECT_DB_OK || !group_assigned)
+    return result;
+
+  result = prepare(
+      database,
+      "SELECT a.capture_id,a.optical_configuration_id,a.assignment_provenance,"
+      "a.campaign_task_id,a.campaign_group_id,o.optical_configuration_id,"
+      "g.task_id,g.group_id,g.optical_configuration_id,m.task_id,m.group_id,"
+      "m.capture_id,c.task_id,c.next_group_id,c.group_count,c.scanset_id,"
+      "c.request,t.task_id,t.task_kind,t.task_kind_version,p.capture_id,"
+      "p.scanset_id,s.scanset_id,ps.scanset_id FROM "
+      "capture_optical_configurations a LEFT JOIN optical_configurations o ON "
+      "o.optical_configuration_id=a.optical_configuration_id LEFT JOIN "
+      "acquisition_campaign_group_optics g ON g.task_id=a.campaign_task_id AND "
+      "g.group_id=a.campaign_group_id LEFT JOIN acquisition_campaign_captures m "
+      "ON m.task_id=a.campaign_task_id AND m.group_id=a.campaign_group_id LEFT "
+      "JOIN acquisition_campaign_tasks c ON c.task_id=a.campaign_task_id LEFT "
+      "JOIN tasks t ON t.task_id=a.campaign_task_id LEFT JOIN captures p ON "
+      "p.capture_id=a.capture_id LEFT JOIN scansets s ON s.scanset_id="
+      "c.scanset_id LEFT JOIN scansets ps ON ps.scanset_id=p.scanset_id WHERE "
+      "a.capture_id=?1",
+      &statement);
+  bool assignment_absent = false;
+  sqlite3_int64 retained_configuration = 0;
+  sqlite3_int64 provenance = 0;
+  sqlite3_int64 campaign_task = 0;
+  sqlite3_int64 campaign_group = 0;
+  sqlite3_int64 campaign_cursor = 0;
+  sqlite3_int64 campaign_group_count = 0;
+  sqlite3_int64 campaign_scanset = 0;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE) {
+      assignment_absent = true;
+    } else if (code != SQLITE_ROW) {
+      result = sqlite_result(database, code, "load retained Capture optics");
+    } else {
+      sqlite3_int64 stored_capture = sqlite3_column_int64(statement, 0);
+      retained_configuration = sqlite3_column_int64(statement, 1);
+      provenance = sqlite3_column_int64(statement, 2);
+      campaign_task = sqlite3_column_int64(statement, 3);
+      campaign_group = sqlite3_column_int64(statement, 4);
+      sqlite3_int64 joined_configuration = sqlite3_column_int64(statement, 5);
+      sqlite3_int64 joined_capture = sqlite3_column_int64(statement, 20);
+      sqlite3_int64 capture_scanset = sqlite3_column_int64(statement, 21);
+      sqlite3_int64 joined_capture_scanset = sqlite3_column_int64(statement, 23);
+      bool base_valid =
+          sqlite3_column_type(statement, 0) == SQLITE_INTEGER &&
+          stored_capture == (sqlite3_int64)capture_id && stored_capture > 0 &&
+          sqlite3_column_type(statement, 1) == SQLITE_INTEGER &&
+          retained_configuration > 0 &&
+          sqlite3_column_type(statement, 2) == SQLITE_INTEGER &&
+          (provenance == LARDON3D_OPTICAL_ASSIGNMENT_CAMPAIGN ||
+           provenance == LARDON3D_OPTICAL_ASSIGNMENT_CALLER_EXPLICIT) &&
+          sqlite3_column_type(statement, 5) == SQLITE_INTEGER &&
+          joined_configuration == retained_configuration &&
+          sqlite3_column_type(statement, 20) == SQLITE_INTEGER &&
+          joined_capture == stored_capture &&
+          sqlite3_column_type(statement, 21) == SQLITE_INTEGER &&
+          capture_scanset > 0 &&
+          sqlite3_column_type(statement, 23) == SQLITE_INTEGER &&
+          joined_capture_scanset == capture_scanset;
+      if (!base_valid) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else if (provenance == LARDON3D_OPTICAL_ASSIGNMENT_CALLER_EXPLICIT) {
+        if (sqlite3_column_type(statement, 3) != SQLITE_NULL ||
+            sqlite3_column_type(statement, 4) != SQLITE_NULL)
+          result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else {
+        campaign_cursor = sqlite3_column_int64(statement, 13);
+        campaign_group_count = sqlite3_column_int64(statement, 14);
+        campaign_scanset = sqlite3_column_int64(statement, 15);
+        int request_bytes = sqlite3_column_bytes(statement, 16);
+        bool campaign_valid =
+            sqlite3_column_type(statement, 3) == SQLITE_INTEGER &&
+            campaign_task > 0 &&
+            sqlite3_column_type(statement, 4) == SQLITE_INTEGER &&
+            campaign_group > 0 && campaign_group <= 4096 &&
+            sqlite3_column_type(statement, 6) == SQLITE_INTEGER &&
+            sqlite3_column_int64(statement, 6) == campaign_task &&
+            sqlite3_column_type(statement, 7) == SQLITE_INTEGER &&
+            sqlite3_column_int64(statement, 7) == campaign_group &&
+            sqlite3_column_type(statement, 8) == SQLITE_INTEGER &&
+            sqlite3_column_int64(statement, 8) == retained_configuration &&
+            sqlite3_column_type(statement, 9) == SQLITE_INTEGER &&
+            sqlite3_column_int64(statement, 9) == campaign_task &&
+            sqlite3_column_type(statement, 10) == SQLITE_INTEGER &&
+            sqlite3_column_int64(statement, 10) == campaign_group &&
+            sqlite3_column_type(statement, 11) == SQLITE_INTEGER &&
+            sqlite3_column_int64(statement, 11) == stored_capture &&
+            sqlite3_column_type(statement, 12) == SQLITE_INTEGER &&
+            sqlite3_column_int64(statement, 12) == campaign_task &&
+            sqlite3_column_type(statement, 13) == SQLITE_INTEGER &&
+            campaign_cursor >= 0 &&
+            sqlite3_column_type(statement, 14) == SQLITE_INTEGER &&
+            campaign_group_count >= 1 && campaign_group_count <= 4096 &&
+            campaign_cursor <= campaign_group_count &&
+            campaign_group <= campaign_cursor &&
+            campaign_group <= campaign_group_count &&
+            sqlite3_column_type(statement, 15) == SQLITE_INTEGER &&
+            campaign_scanset > 0 && campaign_scanset == capture_scanset &&
+            sqlite3_column_type(statement, 16) == SQLITE_BLOB &&
+            request_bytes > 0 &&
+            (size_t)request_bytes <=
+                LARDON3D_ACQUISITION_CAMPAIGN_TASK_REQUEST_MAX_BYTES &&
+            sqlite3_column_blob(statement, 16) != NULL &&
+            sqlite3_column_type(statement, 17) == SQLITE_INTEGER &&
+            sqlite3_column_int64(statement, 17) == campaign_task &&
+            column_text_equals(statement, 18,
+                               LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND) &&
+            sqlite3_column_type(statement, 19) == SQLITE_INTEGER &&
+            sqlite3_column_int64(statement, 19) ==
+                LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND_VERSION &&
+            sqlite3_column_type(statement, 22) == SQLITE_INTEGER &&
+            sqlite3_column_int64(statement, 22) == campaign_scanset;
+        if (!campaign_valid)
+          result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+      if (result == LARDON3D_PROJECT_DB_OK &&
+          sqlite3_step(statement) != SQLITE_DONE)
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+    }
+  }
+  (void)sqlite3_finalize(statement);
+  statement = NULL;
+
+  if (result == LARDON3D_PROJECT_DB_OK && !assignment_absent)
+    result = validate_retained_optical_configuration_locked(
+        database, retained_configuration);
+  if (result == LARDON3D_PROJECT_DB_OK && !assignment_absent &&
+      provenance == LARDON3D_OPTICAL_ASSIGNMENT_CAMPAIGN) {
+    result = validate_acquisition_campaign_prefix_locked(
+        database, (uint64_t)campaign_task, campaign_scanset, campaign_cursor,
+        campaign_group_count);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK && !assignment_absent) {
+    bool exact = retained_configuration == configuration_id &&
+                 provenance == LARDON3D_OPTICAL_ASSIGNMENT_CAMPAIGN &&
+                 campaign_task == (sqlite3_int64)task_id &&
+                 campaign_group == (sqlite3_int64)group_id;
+    /* A valid non-exact binding is a caller conflict only for a new mapping.
+       On retry, the already-durable mapping requires its exact campaign
+       binding. An exact binding observed before a new mapping is necessarily
+       an ahead/orphan relation and was rejected above by group<=cursor. */
+    if (!exact)
+      result = new_mapping ? LARDON3D_PROJECT_DB_CONSTRAINT
+                           : LARDON3D_PROJECT_DB_CORRUPT;
+  }
+
+  if (result == LARDON3D_PROJECT_DB_OK && assignment_absent && !new_mapping) {
+    /* A committed mapping/cursor with an assigned group must already have the
+       campaign-derived Capture binding; repairing it here would conceal
+       durable corruption and weaken the crash-ordering contract. */
+    result = LARDON3D_PROJECT_DB_CORRUPT;
+  }
+  if (result == LARDON3D_PROJECT_DB_OK && assignment_absent) {
+    result = prepare(
+        database,
+        "INSERT INTO capture_optical_configurations("
+        "capture_id,optical_configuration_id,assignment_provenance,"
+        "campaign_task_id,campaign_group_id) VALUES(?1,?2,1,?3,?4)",
+        &statement);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK && assignment_absent) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+    (void)sqlite3_bind_int64(statement, 2, configuration_id);
+    (void)sqlite3_bind_int64(statement, 3, (sqlite3_int64)task_id);
+    (void)sqlite3_bind_int64(statement, 4, (sqlite3_int64)group_id);
+    result = step_done(database, statement, "retain campaign Capture optics");
+    statement = NULL;
+    if (result == LARDON3D_PROJECT_DB_OK &&
+        sqlite3_changes(database->connection) != 1)
+      result = LARDON3D_PROJECT_DB_CONSTRAINT;
+  }
+  (void)sqlite3_finalize(statement);
+#ifdef LARDON3D_PROJECT_DB_TESTING
+  if (result == LARDON3D_PROJECT_DB_OK && assignment_absent &&
+      getenv("LARDON3D_TEST_PROJECT_DB_FAIL_CAMPAIGN_OPTICS_COPY")) {
+    result = execute(database, "INSERT INTO missing_campaign_optics_table VALUES(1)",
+                     "forced campaign optics retention failure");
+  }
+#endif
+  return result;
+}
+
 Lardon3DProjectDbResult lardon3d_project_db_retain_acquisition_campaign_capture(
     Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
     uint64_t capture_id, uint32_t next_group_id) {
-  /* S3-E already returned capture_id.  This transaction retains the group
-     mapping and advances the one-based cursor together; generic progress and
-     checkpoint advance afterwards.  An interruption after S3-E returns and
-     before this retention transaction cannot safely be repaired by guessing
-     identity from paths, hashes, metadata, or image IDs. */
+  /* S3-E already returned capture_id. This transaction retains one-based
+     group N and advances the zero-based next-work position from N-1 to N;
+     generic progress and checkpoint advance afterwards. An interruption after
+     S3-E returns and before this transaction cannot safely be repaired by
+     guessing identity from paths, hashes, metadata, or image IDs. */
   if (!database || !valid_task_id(task_id) || !valid_task_id(capture_id) ||
-      group_id == 0 || next_group_id != group_id) return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+      group_id == 0 || group_id > 4096 || next_group_id != group_id)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   (void)pthread_mutex_lock(&database->mutex);
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin capture retention");
   sqlite3_stmt *statement = NULL;
-  uint32_t cursor = 0;
-  uint32_t group_count = 0;
-  uint64_t retained_capture_id = 0;
+  sqlite3_int64 cursor = 0;
+  sqlite3_int64 group_count = 0;
+  sqlite3_int64 scanset_id = 0;
+  sqlite3_int64 retained_capture_id = 0;
+  bool mapping_present = false;
+  bool insert_mapping = false;
+  bool advance_cursor = false;
+  bool requested_capture_missing = false;
+  bool requested_capture_corrupt = false;
+  sqlite3_int64 requested_scanset_id = 0;
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = prepare(database,
-        "SELECT t.next_group_id,t.group_count,COALESCE(m.capture_id,0),"
-        "EXISTS(SELECT 1 FROM captures c WHERE c.capture_id=?3 AND "
-        "c.scanset_id=t.scanset_id) FROM acquisition_campaign_tasks t LEFT JOIN "
-        "acquisition_campaign_captures m ON m.task_id=t.task_id AND m.group_id=?2 "
-        "WHERE t.task_id=?1", &statement);
+        "SELECT c.next_group_id,c.group_count,m.group_id,m.capture_id,"
+        "c.scanset_id,t.task_kind,t.task_kind_version,p.capture_id,p.scanset_id,"
+        "s.scanset_id,c.request "
+        "FROM acquisition_campaign_tasks c LEFT JOIN tasks t ON t.task_id=c.task_id "
+        "LEFT JOIN acquisition_campaign_captures m ON m.task_id=c.task_id "
+        "AND m.group_id=?2 LEFT JOIN captures p ON p.capture_id=?3 "
+        "LEFT JOIN scansets s ON s.scanset_id=c.scanset_id "
+        "WHERE c.task_id=?1", &statement);
   }
   if (result == LARDON3D_PROJECT_DB_OK) {
     sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
@@ -2544,31 +3184,108 @@ Lardon3DProjectDbResult lardon3d_project_db_retain_acquisition_campaign_capture(
     if (code == SQLITE_DONE) result = LARDON3D_PROJECT_DB_NOT_FOUND;
     else if (code != SQLITE_ROW) result = sqlite_result(database, code, "validate capture retention");
     else {
-      cursor = (uint32_t)sqlite3_column_int64(statement, 0);
-      group_count = (uint32_t)sqlite3_column_int64(statement, 1);
-      retained_capture_id = (uint64_t)sqlite3_column_int64(statement, 2);
-      bool matching_scanset = sqlite3_column_int(statement, 3) == 1;
-      bool new_mapping = cursor + 1u == group_id && retained_capture_id == 0;
-      bool exact_retry = cursor == next_group_id && retained_capture_id == capture_id;
-      if (group_id > group_count || !matching_scanset || (!new_mapping && !exact_retry))
-        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+      int mapping_group_type = sqlite3_column_type(statement, 2);
+      int mapping_capture_type = sqlite3_column_type(statement, 3);
+      int requested_capture_type = sqlite3_column_type(statement, 7);
+      int requested_scanset_type = sqlite3_column_type(statement, 8);
+      cursor = sqlite3_column_int64(statement, 0);
+      group_count = sqlite3_column_int64(statement, 1);
+      sqlite3_int64 retained_group_id = sqlite3_column_int64(statement, 2);
+      retained_capture_id = sqlite3_column_int64(statement, 3);
+      scanset_id = sqlite3_column_int64(statement, 4);
+      sqlite3_int64 kind_version = sqlite3_column_int64(statement, 6);
+      sqlite3_int64 requested_capture_id = sqlite3_column_int64(statement, 7);
+      requested_scanset_id = sqlite3_column_int64(statement, 8);
+      sqlite3_int64 joined_scanset_id = sqlite3_column_int64(statement, 9);
+      int request_bytes = sqlite3_column_bytes(statement, 10);
+      bool mapping_absent = mapping_group_type == SQLITE_NULL &&
+                            mapping_capture_type == SQLITE_NULL;
+      mapping_present = mapping_group_type != SQLITE_NULL ||
+                        mapping_capture_type != SQLITE_NULL;
+      /* No persisted value is narrowed before storage class, sign, range and
+       * generic dispatch identity are established. COALESCE is deliberately
+       * avoided so an absent mapping cannot erase malformed durable storage. */
+      if (sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 1) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 4) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 6) != SQLITE_INTEGER || cursor < 0 ||
+          group_count < 1 || group_count > 4096 || cursor > group_count ||
+          scanset_id <= 0 || sqlite3_column_type(statement, 9) != SQLITE_INTEGER ||
+          joined_scanset_id != scanset_id ||
+          sqlite3_column_type(statement, 10) != SQLITE_BLOB ||
+          request_bytes <= 0 ||
+          (size_t)request_bytes >
+              LARDON3D_ACQUISITION_CAMPAIGN_TASK_REQUEST_MAX_BYTES ||
+          sqlite3_column_blob(statement, 10) == NULL ||
+          !column_text_equals(statement, 5,
+                              LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND) ||
+          kind_version != LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND_VERSION ||
+          (!mapping_absent &&
+           (mapping_group_type != SQLITE_INTEGER ||
+            mapping_capture_type != SQLITE_INTEGER || retained_group_id <= 0 ||
+            retained_group_id != (sqlite3_int64)group_id ||
+            retained_capture_id <= 0))) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else {
+        requested_capture_missing = requested_capture_type == SQLITE_NULL &&
+                                    requested_scanset_type == SQLITE_NULL;
+        requested_capture_corrupt =
+            !requested_capture_missing &&
+            (requested_capture_type != SQLITE_INTEGER ||
+             requested_scanset_type != SQLITE_INTEGER ||
+             requested_capture_id <= 0 || requested_scanset_id <= 0 ||
+             requested_capture_id != (sqlite3_int64)capture_id);
+      }
     }
   }
   sqlite3_finalize(statement);
   statement = NULL;
-  if (result == LARDON3D_PROJECT_DB_OK && retained_capture_id == 0)
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = validate_acquisition_campaign_prefix_locked(
+        database, task_id, scanset_id, cursor, group_count);
+  if (result == LARDON3D_PROJECT_DB_OK && requested_capture_missing)
+    result = LARDON3D_PROJECT_DB_CONSTRAINT;
+  if (result == LARDON3D_PROJECT_DB_OK && requested_capture_corrupt)
+    result = LARDON3D_PROJECT_DB_CORRUPT;
+  if (result == LARDON3D_PROJECT_DB_OK &&
+      (requested_scanset_id != scanset_id ||
+       (sqlite3_int64)group_id > group_count))
+    result = LARDON3D_PROJECT_DB_CONSTRAINT;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    bool new_mapping = cursor + 1 == (sqlite3_int64)group_id && !mapping_present;
+    bool exact_retry = cursor == (sqlite3_int64)next_group_id &&
+                       mapping_present &&
+                       retained_capture_id == (sqlite3_int64)capture_id;
+    if (!new_mapping && !exact_retry) {
+      result = LARDON3D_PROJECT_DB_CONSTRAINT;
+    } else {
+      insert_mapping = new_mapping;
+      advance_cursor = new_mapping;
+    }
+  }
+  if (result == LARDON3D_PROJECT_DB_OK && insert_mapping)
     result = prepare(database,
         "INSERT INTO acquisition_campaign_captures(task_id,group_id,capture_id) VALUES(?1,?2,?3)",
         &statement);
-  if (result == LARDON3D_PROJECT_DB_OK && retained_capture_id == 0) {
+  if (result == LARDON3D_PROJECT_DB_OK && insert_mapping) {
     sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
     sqlite3_bind_int64(statement, 2, group_id);
     sqlite3_bind_int64(statement, 3, (sqlite3_int64)capture_id);
     result = step_done(database, statement, "retain campaign capture");
+    statement = NULL;
     if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1)
       result = LARDON3D_PROJECT_DB_CONSTRAINT;
   }
-  if (result == LARDON3D_PROJECT_DB_OK && cursor + 1u == group_id) {
+  (void)sqlite3_finalize(statement);
+  statement = NULL;
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    /* INVARIANT: an explicit group configuration becomes Capture provenance
+       in the same transaction after mapping insertion and before cursor
+       publication. An unassigned group deliberately produces no row. */
+    result = retain_campaign_optics_locked(database, task_id, group_id,
+                                           capture_id, insert_mapping);
+  }
+  if (result == LARDON3D_PROJECT_DB_OK && advance_cursor) {
     result = prepare(database,
         "UPDATE acquisition_campaign_tasks SET next_group_id=?2 WHERE task_id=?1 AND "
         "next_group_id=?3 AND group_count>=?2", &statement);
@@ -2577,10 +3294,12 @@ Lardon3DProjectDbResult lardon3d_project_db_retain_acquisition_campaign_capture(
       sqlite3_bind_int64(statement, 2, next_group_id);
       sqlite3_bind_int64(statement, 3, (sqlite3_int64)group_id - 1);
       result = step_done(database, statement, "advance campaign cursor");
+      statement = NULL;
       if (result == LARDON3D_PROJECT_DB_OK && sqlite3_changes(database->connection) != 1)
         result = LARDON3D_PROJECT_DB_CONSTRAINT;
     }
   }
+  (void)sqlite3_finalize(statement);
   if (result == LARDON3D_PROJECT_DB_OK)
     result = execute(database, "COMMIT", "commit capture retention");
   if (result != LARDON3D_PROJECT_DB_OK)
@@ -2592,14 +3311,20 @@ Lardon3DProjectDbResult lardon3d_project_db_retain_acquisition_campaign_capture(
 Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_capture(
     Lardon3DProjectDb *database, uint64_t task_id, uint32_t group_id,
     Lardon3DProjectDbAcquisitionCampaignCapture *capture) {
-  if (!database || !valid_task_id(task_id) || !capture)
+  if (!database || !valid_task_id(task_id) || group_id == 0 || group_id > 4096 ||
+      !capture)
     return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
   memset(capture, 0, sizeof(*capture));
   (void)pthread_mutex_lock(&database->mutex);
   sqlite3_stmt *statement = NULL;
   Lardon3DProjectDbResult result = prepare(database,
-      "SELECT capture_id FROM acquisition_campaign_captures WHERE task_id=?1 AND group_id=?2",
-      &statement);
+      "SELECT m.group_id,m.capture_id,c.group_count,c.next_group_id,c.scanset_id,"
+      "t.task_kind,t.task_kind_version,p.capture_id,p.scanset_id,s.scanset_id "
+      "FROM acquisition_campaign_tasks c LEFT JOIN acquisition_campaign_captures m "
+      "ON m.task_id=c.task_id AND m.group_id=?2 LEFT JOIN tasks t ON t.task_id=c.task_id "
+      "LEFT JOIN captures p ON p.capture_id=m.capture_id "
+      "LEFT JOIN scansets s ON s.scanset_id=c.scanset_id "
+      "WHERE c.task_id=?1", &statement);
   if (result == LARDON3D_PROJECT_DB_OK) {
     sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
     sqlite3_bind_int64(statement, 2, group_id);
@@ -2607,8 +3332,54 @@ Lardon3DProjectDbResult lardon3d_project_db_load_acquisition_campaign_capture(
     if (code == SQLITE_DONE) result = LARDON3D_PROJECT_DB_NOT_FOUND;
     else if (code != SQLITE_ROW) result = sqlite_result(database, code, "load retained capture");
     else {
-      capture->group_id = group_id;
-      capture->capture_id = (uint64_t)sqlite3_column_int64(statement, 0);
+      int mapping_group_type = sqlite3_column_type(statement, 0);
+      int mapping_capture_type = sqlite3_column_type(statement, 1);
+      sqlite3_int64 persisted_group = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 capture_id = sqlite3_column_int64(statement, 1);
+      sqlite3_int64 group_count = sqlite3_column_int64(statement, 2);
+      sqlite3_int64 next_group_id = sqlite3_column_int64(statement, 3);
+      sqlite3_int64 scanset_id = sqlite3_column_int64(statement, 4);
+      sqlite3_int64 kind_version = sqlite3_column_int64(statement, 6);
+      sqlite3_int64 joined_capture_id = sqlite3_column_int64(statement, 7);
+      sqlite3_int64 capture_scanset_id = sqlite3_column_int64(statement, 8);
+      sqlite3_int64 joined_scanset_id = sqlite3_column_int64(statement, 9);
+      bool mapping_absent = mapping_group_type == SQLITE_NULL &&
+                            mapping_capture_type == SQLITE_NULL;
+      if ((!mapping_absent &&
+           (mapping_group_type != SQLITE_INTEGER ||
+            mapping_capture_type != SQLITE_INTEGER)) ||
+          sqlite3_column_type(statement, 2) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 3) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 4) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 6) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 9) != SQLITE_INTEGER ||
+          (!mapping_absent &&
+           (sqlite3_column_type(statement, 7) != SQLITE_INTEGER ||
+            sqlite3_column_type(statement, 8) != SQLITE_INTEGER)) ||
+          group_count < 1 || group_count > 4096 || persisted_group > group_count ||
+          next_group_id < 0 || next_group_id > group_count ||
+          scanset_id <= 0 || joined_scanset_id != scanset_id ||
+          (!mapping_absent &&
+           (persisted_group <= 0 || persisted_group != group_id ||
+            persisted_group > next_group_id || capture_id <= 0 ||
+            joined_capture_id != capture_id || capture_scanset_id <= 0 ||
+            capture_scanset_id != scanset_id)) ||
+          !column_text_equals(statement, 5,
+                              LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND) ||
+          kind_version != LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND_VERSION) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else if ((result = validate_acquisition_campaign_prefix_locked(
+                      database, task_id, scanset_id, next_group_id,
+                      group_count)) != LARDON3D_PROJECT_DB_OK) {
+        /* Never expose resume_capture_id from an incoherent durable prefix. */
+      } else if ((sqlite3_int64)group_id > group_count) {
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+      } else if (mapping_absent) {
+        result = LARDON3D_PROJECT_DB_NOT_FOUND;
+      } else {
+        capture->group_id = (uint32_t)persisted_group;
+        capture->capture_id = (uint64_t)capture_id;
+      }
     }
   }
   sqlite3_finalize(statement);
@@ -2640,8 +3411,10 @@ Lardon3DProjectDbResult lardon3d_project_db_load_photo_quality_task(
   sqlite3_stmt *statement = NULL;
   Lardon3DProjectDbResult result = prepare(
       database,
-      "SELECT scanset_id,next_group_id,group_count,request FROM photo_quality_triage_tasks "
-      "WHERE task_id=?1",
+      "SELECT q.scanset_id,q.next_group_id,q.group_count,q.request,t.task_kind,"
+      "t.task_kind_version,s.scanset_id FROM photo_quality_triage_tasks q "
+      "LEFT JOIN tasks t ON t.task_id=q.task_id LEFT JOIN scansets s "
+      "ON s.scanset_id=q.scanset_id WHERE q.task_id=?1",
       &statement);
   if (result == LARDON3D_PROJECT_DB_OK) {
     sqlite3_bind_int64(statement, 1, (sqlite3_int64)task_id);
@@ -2655,15 +3428,24 @@ Lardon3DProjectDbResult lardon3d_project_db_load_photo_quality_task(
       sqlite3_int64 scanset = sqlite3_column_int64(statement, 0);
       sqlite3_int64 next = sqlite3_column_int64(statement, 1);
       sqlite3_int64 count = sqlite3_column_int64(statement, 2);
+      sqlite3_int64 kind_version = sqlite3_column_int64(statement, 5);
+      sqlite3_int64 joined_scanset = sqlite3_column_int64(statement, 6);
       int bytes = sqlite3_column_bytes(statement, 3);
       const void *blob = sqlite3_column_blob(statement, 3);
       /* SQLite exposes signed 64-bit storage. Validate identity, operational
          bounds, and the one-based cursor relation before narrowing to the C API.
-         N+1 is the only completed cursor; zero and values beyond N+1 are corrupt. */
-      if (!integer_columns || sqlite3_column_type(statement, 3) != SQLITE_BLOB || scanset <= 0 ||
-          next < 1 || count < 1 || count > 4096 ||
+         LEFT JOIN preserves a present typed row so missing generic Task/ScanSet
+         parents are corruption rather than being misreported as NOT_FOUND. N+1
+         is the only completed cursor; zero and values beyond N+1 are corrupt. */
+      if (!integer_columns || sqlite3_column_type(statement, 3) != SQLITE_BLOB ||
+          sqlite3_column_type(statement, 5) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 6) != SQLITE_INTEGER || scanset <= 0 ||
+          joined_scanset != scanset || next < 1 || count < 1 || count > 4096 ||
           next > count + 1 || bytes <= 0 ||
-          (size_t)bytes > request_capacity || !blob) {
+          (size_t)bytes > LARDON3D_PHOTO_QUALITY_TASK_REQUEST_MAX_BYTES ||
+          (size_t)bytes > request_capacity || !blob ||
+          !column_text_equals(statement, 4, LARDON3D_PHOTO_QUALITY_TASK_KIND) ||
+          kind_version != LARDON3D_PHOTO_QUALITY_TASK_KIND_VERSION) {
         result = LARDON3D_PROJECT_DB_CORRUPT;
       } else {
         memcpy(request, blob, (size_t)bytes);
@@ -3009,7 +3791,10 @@ static bool read_selected_execution_row(sqlite3_stmt *statement,
   sqlite3_int64 id = sqlite3_column_int64(statement, 0);
   sqlite3_int64 quality = sqlite3_column_int64(statement, 1);
   sqlite3_int64 campaign = sqlite3_column_int64(statement, 2);
-  bool has_scope = sqlite3_column_type(statement, 3) != SQLITE_NULL;
+  int scope_type = sqlite3_column_type(statement, 3);
+  bool has_scope = scope_type != SQLITE_NULL;
+  if (has_scope && scope_type != SQLITE_INTEGER)
+    return false;
   sqlite3_int64 scope = has_scope ? sqlite3_column_int64(statement, 3) : 0;
   sqlite3_int64 stage = sqlite3_column_int64(statement, 4);
   sqlite3_int64 next = sqlite3_column_int64(statement, 5);
@@ -3092,8 +3877,10 @@ Lardon3DProjectDbResult lardon3d_project_db_load_selected_execution_item(
     if (code == SQLITE_DONE) result = LARDON3D_PROJECT_DB_NOT_FOUND;
     else if (code != SQLITE_ROW) result = sqlite_result(database, code, "load selected item");
     else {
-      bool has_source_asset = sqlite3_column_type(statement, 5) != SQLITE_NULL;
-      bool has_image = sqlite3_column_type(statement, 6) != SQLITE_NULL;
+      int source_asset_type = sqlite3_column_type(statement, 5);
+      int image_type = sqlite3_column_type(statement, 6);
+      bool has_source_asset = source_asset_type != SQLITE_NULL;
+      bool has_image = image_type != SQLITE_NULL;
       sqlite3_int64 index = sqlite3_column_int64(statement, 0);
       sqlite3_int64 quality = sqlite3_column_int64(statement, 1);
       sqlite3_int64 campaign = sqlite3_column_int64(statement, 2);
@@ -3107,6 +3894,8 @@ Lardon3DProjectDbResult lardon3d_project_db_load_selected_execution_item(
           sqlite3_column_type(statement, 2) != SQLITE_INTEGER ||
           sqlite3_column_type(statement, 3) != SQLITE_INTEGER ||
           sqlite3_column_type(statement, 4) != SQLITE_INTEGER ||
+          (has_source_asset && source_asset_type != SQLITE_INTEGER) ||
+          (has_image && image_type != SQLITE_INTEGER) ||
           sqlite3_column_type(statement, 7) != SQLITE_INTEGER || index < 0 || index >= count ||
           count <= 0 || count > 4096 || quality <= 0 || quality > 4096 || campaign <= 0 ||
           campaign > 4096 || capture <= 0 ||

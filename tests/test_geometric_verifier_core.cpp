@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cerrno>
 #include <climits>
 #include <cmath>
@@ -10,6 +11,7 @@
 #include <sqlite3.h>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -19,6 +21,8 @@ extern "C" {
 #include <lardon3d/geometric_verifier.h>
 #include <lardon3d/match_file.h>
 }
+
+#include "../src/geometric_verifier_internal.h"
 
 static int failures;
 
@@ -283,6 +287,97 @@ static std::string mask_bits(uint32_t count, uint32_t inliers,
     position = (position + stride) % count;
   }
   return bits;
+}
+
+static bool same_scientific_result(
+    const Lardon3DProjectDbGeometricVerificationResult &left,
+    const Lardon3DProjectDbGeometricVerificationResult &right) {
+  return left.match_result_id == right.match_result_id &&
+         left.verifier_kind == right.verifier_kind &&
+         left.verifier_version == right.verifier_version &&
+         std::memcmp(left.parameter_fingerprint, right.parameter_fingerprint,
+                     sizeof(left.parameter_fingerprint)) == 0 &&
+         left.status == right.status &&
+         left.inlier_count == right.inlier_count &&
+         left.inlier_mask_size == right.inlier_mask_size &&
+         std::memcmp(left.inlier_mask, right.inlier_mask,
+                     left.inlier_mask_size) == 0 &&
+         left.has_model == right.has_model &&
+         (!left.has_model ||
+          std::memcmp(left.model, right.model, sizeof(left.model)) == 0);
+}
+
+static void test_parallel_prepare_and_owner_order(Fixture *fixture) {
+  constexpr size_t parent_count = 16;
+  std::vector<uint64_t> parent_ids(parent_count);
+  for (size_t index = 0; index < parent_count; ++index)
+    CHECK(create_parent(fixture, 32, &parent_ids[index]));
+  const Lardon3DGeometricVerifierParameters parameters =
+      lardon3d_geometric_verifier_default_parameters();
+  std::vector<Lardon3DProjectDbGeometricVerificationResult> baseline;
+  for (size_t width : {1U, 2U, 4U, 8U, 12U, 16U}) {
+    char sql[256];
+    int length = std::snprintf(
+        sql, sizeof(sql),
+        "DELETE FROM geometric_verification_results WHERE match_result_id "
+        "BETWEEN %llu AND %llu",
+        static_cast<unsigned long long>(parent_ids.front()),
+        static_cast<unsigned long long>(parent_ids.back()));
+    CHECK(length > 0 && length < static_cast<int>(sizeof(sql)) &&
+          execute_sql(fixture->database_path, sql));
+    std::vector<Lardon3DGeometricVerifierPrepared *> prepared(parent_count,
+                                                               nullptr);
+    std::vector<Lardon3DProjectDbGeometricVerificationResult> results(
+        parent_count);
+    std::vector<Lardon3DGeometricVerifierResult> statuses(
+        parent_count, LARDON3D_GEOMETRIC_VERIFIER_INVALID_ARGUMENT);
+    std::vector<unsigned char> reused(parent_count, 0);
+    std::atomic<size_t> next{0};
+    lardon3d_geometric_verifier_test_reset_estimator_calls();
+    auto worker = [&]() {
+      for (;;) {
+        size_t index = next.fetch_add(1, std::memory_order_relaxed);
+        if (index >= parent_count)
+          return;
+        bool was_reused = false;
+        statuses[index] =
+            lardon3d_geometric_verifier_internal_prepare_version(
+                fixture->root, fixture->state.project_db, parent_ids[index],
+                &parameters, LARDON3D_GEOMETRIC_VERIFIER_VERSION_V3,
+                &prepared[index], &results[index], &was_reused);
+        reused[index] = was_reused ? 1U : 0U;
+      }
+    };
+    std::vector<std::thread> children;
+    for (size_t index = 1; index < width; ++index)
+      children.emplace_back(worker);
+    worker();
+    for (std::thread &child : children)
+      child.join();
+    CHECK(lardon3d_geometric_verifier_test_estimator_calls() == parent_count);
+    uint64_t previous_result_id = 0;
+    for (size_t index = 0; index < parent_count; ++index) {
+      CHECK(statuses[index] == LARDON3D_GEOMETRIC_VERIFIER_OK &&
+            prepared[index] && reused[index] == 0);
+      bool was_reused = false;
+      statuses[index] =
+          lardon3d_geometric_verifier_internal_publish_prepared(
+              fixture->state.project_db, prepared[index], &results[index],
+              &was_reused);
+      lardon3d_geometric_verifier_internal_prepared_destroy(prepared[index]);
+      prepared[index] = nullptr;
+      CHECK(statuses[index] == LARDON3D_GEOMETRIC_VERIFIER_OK && !was_reused &&
+            results[index].geometric_verification_result_id >
+                previous_result_id);
+      previous_result_id = results[index].geometric_verification_result_id;
+    }
+    if (baseline.empty()) {
+      baseline = results;
+    } else {
+      for (size_t index = 0; index < parent_count; ++index)
+        CHECK(same_scientific_result(baseline[index], results[index]));
+    }
+  }
 }
 
 static void test_parameters_and_fingerprint() {
@@ -982,6 +1077,7 @@ int main() {
     test_failures(&fixture);
     test_parent_and_asset_failures(&fixture);
     test_real_estimator_and_reopen(&fixture);
+    test_parallel_prepare_and_owner_order(&fixture);
     test_feature_failures(&fixture);
   }
   fixture_destroy(&fixture);

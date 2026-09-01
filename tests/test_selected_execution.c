@@ -48,6 +48,16 @@ static bool seed_v21(const char *path) {
       "2,randomblob(32));"
       "INSERT INTO sparse_calibration_scopes VALUES(1,randomblob(32),1);"
       "INSERT INTO sparse_calibration_scope_images VALUES(1,1,1);"
+      /* This fixture is a true v21 database; future additive objects must not
+         remain merely because it was generated from a temporary current DB. */
+      "DROP TABLE capture_calibration_selections;"
+      "DROP TABLE optical_calibration_profiles;"
+      "DROP TABLE capture_optical_configurations;"
+      "DROP INDEX acquisition_campaign_capture_identity_v23;"
+      "DROP TABLE acquisition_campaign_group_optics;"
+      "DROP TABLE optical_configurations;"
+      "DROP TABLE lens_profile_aliases;DROP TABLE lens_profiles;"
+      "DROP TABLE camera_body_aliases;DROP TABLE camera_body_profiles;"
       "DROP TABLE selected_execution_items;DROP TABLE selected_executions;"
       "UPDATE metadata SET value=21 WHERE key='schema_version';");
 }
@@ -79,7 +89,8 @@ static bool run(void) {
   if (migration_result != LARDON3D_PROJECT_DB_OK)
     fprintf(stderr, "retry migration result=%d error=%s\n", (int)migration_result, error);
   CHECK(migration_result == LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 22);
+  CHECK(lardon3d_project_db_schema_version(database) ==
+        LARDON3D_PROJECT_DB_SCHEMA_VERSION);
   Lardon3DProjectDbSelectedExecutionItem item = {
       .item_index = 0,
       .quality_group_id = 1,
@@ -152,6 +163,35 @@ static bool run(void) {
         LARDON3D_PROJECT_DB_CORRUPT);
   lardon3d_project_db_close(database);
   CHECK(sql(path, "UPDATE selected_execution_items SET representation_source=2 "
+                  "WHERE execution_id=1;"));
+
+  /* Numeric prefixes in TEXT demonstrate why positive-value checks alone are
+     insufficient: sqlite3_column_int64() would coerce these to valid IDs. */
+  CHECK(sql(path, "UPDATE selected_executions SET calibration_scope_id='1x' "
+                  "WHERE execution_id=1;"));
+  CHECK(lardon3d_project_db_open(path, &database, error) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_load_selected_execution(database, execution_id, &execution) ==
+        LARDON3D_PROJECT_DB_CORRUPT);
+  lardon3d_project_db_close(database);
+  CHECK(sql(path, "UPDATE selected_executions SET calibration_scope_id=1 "
+                  "WHERE execution_id=1;"));
+
+  CHECK(sql(path, "UPDATE selected_execution_items SET source_asset_id='2x' "
+                  "WHERE execution_id=1;"));
+  CHECK(lardon3d_project_db_open(path, &database, error) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_load_selected_execution_item(database, execution_id, 0, &loaded) ==
+        LARDON3D_PROJECT_DB_CORRUPT);
+  lardon3d_project_db_close(database);
+  CHECK(sql(path, "UPDATE selected_execution_items SET source_asset_id=2 "
+                  "WHERE execution_id=1;"));
+
+  CHECK(sql(path, "UPDATE selected_execution_items SET image_id='1x' "
+                  "WHERE execution_id=1;"));
+  CHECK(lardon3d_project_db_open(path, &database, error) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_load_selected_execution_item(database, execution_id, 0, &loaded) ==
+        LARDON3D_PROJECT_DB_CORRUPT);
+  lardon3d_project_db_close(database);
+  CHECK(sql(path, "UPDATE selected_execution_items SET image_id=1 "
                   "WHERE execution_id=1;"));
 
   CHECK(sqlite3_open(path, &raw) == SQLITE_OK);

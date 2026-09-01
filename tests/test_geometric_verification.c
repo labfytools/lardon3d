@@ -172,6 +172,16 @@ static bool create_v11_database(const char *path) {
   lardon3d_project_db_close(database);
   return execute_sql(path,
                      "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+                     "DROP TABLE IF EXISTS capture_calibration_selections;"
+                     "DROP TABLE IF EXISTS optical_calibration_profiles;"
+                     "DROP TABLE IF EXISTS capture_optical_configurations;"
+                     "DROP INDEX IF EXISTS acquisition_campaign_capture_identity_v23;"
+                     "DROP TABLE IF EXISTS acquisition_campaign_group_optics;"
+                     "DROP TABLE IF EXISTS optical_configurations;"
+                     "DROP TABLE IF EXISTS lens_profile_aliases;"
+                     "DROP TABLE IF EXISTS lens_profiles;"
+                     "DROP TABLE IF EXISTS camera_body_aliases;"
+                     "DROP TABLE IF EXISTS camera_body_profiles;"
                      "DROP TABLE IF EXISTS asset_derivations;"
                      "DROP TABLE IF EXISTS capture_selections;"
                      "DROP TABLE IF EXISTS capture_assets;"

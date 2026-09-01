@@ -14,6 +14,9 @@ struct Lardon3DTask {
     uint64_t id;
     char name[LARDON3D_TASK_NAME_CAPACITY];
     unsigned int progress;
+    bool durable_progress_known;
+    uint64_t durable_completed;
+    uint64_t durable_total;
     Lardon3DTaskState state;
     char message[LARDON3D_TASK_MESSAGE_CAPACITY];
     struct timespec started_at;
@@ -112,15 +115,17 @@ kind_has_validated_cpu_range(const char *task_kind, uint32_t task_kind_version)
         || strcmp(task_kind, "features.extract.sift") == 0
         || strcmp(task_kind, "features.extract.rootsift") == 0
         || strcmp(task_kind, "visual_index.update") == 0
-        || strcmp(task_kind, "candidate_pair.generate") == 0;
+        || strcmp(task_kind, "candidate_pair.generate") == 0
+        || strcmp(task_kind, "geometric_verifier.run") == 0;
 }
 
 static bool
 kind_has_validated_batch_range(const char *task_kind, uint32_t version)
 {
-    /* Candidate generation already executes/publishes at every canonical
-     * 1..64 sequence size. This private bit changes operational pacing only;
-     * it does not add a scientific or durable identity dimension. */
+    /* Candidate generation explicitly co-adapts its sequence window. GV keeps
+     * its 16-item preparation window while trialling CPU, because CPU2 with a
+     * one-item batch cannot exercise a second participant; Gate G may still
+     * reduce that bounded window for capacity or pressure. */
     return task_kind && version == 1
         && strcmp(task_kind, "candidate_pair.generate") == 0;
 }
@@ -1107,6 +1112,62 @@ lardon3d_task_set_progress(
     bool accepted = !is_terminal(task->state);
     if (accepted) {
         task->progress = progress;
+        task->durable_progress_known = false;
+        task->durable_completed = 0;
+        task->durable_total = 0;
+        if (message) {
+            copy_text(task->message, sizeof(task->message), message);
+        }
+    }
+    (void)pthread_mutex_unlock(&task->mutex);
+    return accepted;
+}
+
+static unsigned int
+durable_percentage(uint64_t completed, uint64_t total)
+{
+    if (completed >= total) {
+        return 100;
+    }
+    /* Compare against ceil(percent * total / 100). Splitting total first
+     * avoids overflowing uint64_t even at the public input maximum. */
+    uint64_t quotient = total / 100U;
+    uint64_t remainder = total % 100U;
+    for (unsigned int percent = 99; percent > 0; --percent) {
+        uint64_t threshold = quotient * percent;
+        uint64_t residual_product = remainder * percent;
+        threshold += residual_product / 100U;
+        if (residual_product % 100U != 0) {
+            ++threshold;
+        }
+        if (completed >= threshold) {
+            return percent;
+        }
+    }
+    return 0;
+}
+
+bool
+lardon3d_task_set_durable_progress(
+    Lardon3DTask *task,
+    uint64_t completed,
+    uint64_t total,
+    const char *message
+)
+{
+    if (!task || total == 0 || completed > total) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&task->mutex);
+    /* Only a typed Task owner can name a durable business prefix. Generic
+     * Task completion never fills the remaining count: doing so would invent
+     * a commit outside the typed transaction that owns this observation. */
+    bool accepted = !is_terminal(task->state) && task->task_kind[0] != '\0';
+    if (accepted) {
+        task->progress = durable_percentage(completed, total);
+        task->durable_progress_known = true;
+        task->durable_completed = completed;
+        task->durable_total = total;
         if (message) {
             copy_text(task->message, sizeof(task->message), message);
         }
@@ -1155,6 +1216,48 @@ lardon3d_task_snapshot(
     };
     copy_text(snapshot->name, sizeof(snapshot->name), task->name);
     copy_text(snapshot->message, sizeof(snapshot->message), task->message);
+    (void)pthread_mutex_unlock(&mutable_task->mutex);
+    return true;
+}
+
+bool
+lardon3d_task_observation(
+    const Lardon3DTask *task,
+    Lardon3DTaskObservation *observation
+)
+{
+    if (observation) {
+        *observation = (Lardon3DTaskObservation) {0};
+    }
+    if (!task || !observation) {
+        return false;
+    }
+    Lardon3DTask *mutable_task = (Lardon3DTask *)task;
+    (void)pthread_mutex_lock(&mutable_task->mutex);
+    *observation = (Lardon3DTaskObservation) {
+        .id = task->id,
+        .progress = task->progress,
+        .state = task->state,
+        .started_at = task->started_at,
+        .finished_at = task->finished_at,
+        .has_task_kind = task->task_kind[0] != '\0',
+        .task_kind_version = task->task_kind_version,
+        .durable_progress_known = task->durable_progress_known,
+        .durable_completed = task->durable_progress_known
+            ? task->durable_completed : 0,
+        .durable_total = task->durable_progress_known
+            ? task->durable_total : 0,
+        .sequence_count = task->sequence_count,
+        .has_execution_contract = task->has_contract,
+        .execution_contract = task->has_contract
+            ? task->contract
+            : (Lardon3DTaskExecutionContract) {0},
+    };
+    copy_text(observation->name, sizeof(observation->name), task->name);
+    copy_text(observation->task_kind, sizeof(observation->task_kind),
+        task->task_kind);
+    copy_text(observation->message, sizeof(observation->message),
+        task->message);
     (void)pthread_mutex_unlock(&mutable_task->mutex);
     return true;
 }

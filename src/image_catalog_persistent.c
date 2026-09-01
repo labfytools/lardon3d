@@ -12,6 +12,8 @@
 
 #include <lardon3d/image_catalog.h>
 
+#include "image_catalog_persistent_internal.h"
+
 enum { COPY_BUFFER_SIZE = 64 * 1024 };
 
 typedef enum {
@@ -230,16 +232,21 @@ lardon3d_image_catalog_publish_asset_file(Lardon3DAppState *state,
     return LARDON3D_IMAGE_CATALOG_ASSET_PUBLISHED;
 }
 
+#if defined(LARDON3D_IMAGE_CATALOG_PERSISTENT_TESTING)
 Lardon3DImageCatalogAssetPublishResult
 lardon3d_image_catalog_test_copy_hash(int input, int output)
 {
     unsigned char hash[LARDON3D_PROJECT_DB_SHA256_SIZE];
     uint64_t size = 0;
     CopyResult result = hash_stream(input, output, hash, &size);
-    return result == COPY_OK ? LARDON3D_IMAGE_CATALOG_ASSET_PUBLISHED
-        : result == COPY_DESTINATION_ERROR ? LARDON3D_IMAGE_CATALOG_ASSET_PUBLICATION_ERROR
-                                           : LARDON3D_IMAGE_CATALOG_ASSET_SOURCE_ERROR;
+    if (result == COPY_OK) {
+        return LARDON3D_IMAGE_CATALOG_ASSET_PUBLISHED;
+    }
+    return result == COPY_DESTINATION_ERROR
+        ? LARDON3D_IMAGE_CATALOG_ASSET_PUBLICATION_ERROR
+        : LARDON3D_IMAGE_CATALOG_ASSET_SOURCE_ERROR;
 }
+#endif
 
 bool
 lardon3d_image_catalog_create_scanset(Lardon3DAppState *state,

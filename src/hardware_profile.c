@@ -106,7 +106,8 @@ shared_memory_evidence(
     /* WHY: amdgpu exposes a small stolen/dedicated VRAM aperture even for an
      * integrated GPU. Treating that positive number as separate free memory
      * undercharges host RAM. A low-VRAM uncertain device may conservatively
-     * become UMA; the reverse error could violate the 3 GiB/2 GiB host floors. */
+     * become UMA; the reverse error could violate the 3 GiB hard reserve and
+     * the 3--4 GiB host-caution zone. */
     return conservatively_small || system_scale_gtt;
 }
 

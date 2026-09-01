@@ -8,18 +8,29 @@
 
 #include <lardon3d/hardware_profile.h>
 #include <lardon3d/resource_snapshot.h>
+#include <lardon3d/ssd_controller.h>
 
 enum {
     LARDON3D_RESOURCE_REASON_CAPACITY = 256,
+    LARDON3D_RESOURCE_EXTERNAL_IDENTITY_CAPACITY = 256,
 };
 
 typedef struct Lardon3DResourceGovernor Lardon3DResourceGovernor;
 typedef struct Lardon3DResourceReservation Lardon3DResourceReservation;
 
 typedef struct {
+    /* Host RAM below this MemAvailable floor is never assigned to new work.
+     * The default keeps approximately 3 GiB on capable hosts; smaller hosts
+     * use a deterministic fractional reserve. This is an operational desktop
+     * safety budget, never a scientific dataset-size limit. */
     uint64_t system_memory_reserve_bytes;
+    /* Custom policies may set a lower emergency threshold for immediate RED
+     * pressure. The default equals the normal reserve; its separate 4 GiB
+     * caution band is private Governor policy and does not reduce capacity. */
     uint64_t emergency_memory_floor_bytes;
     uint64_t gpu_memory_reserve_bytes;
+    /* Requested host reserve in logical CPUs. Complete topology may reserve a
+     * minimally larger whole-core group, while at least one compute CPU remains. */
     unsigned int system_cpu_reserve;
     double maximum_cpu_load_ratio;
     double maximum_cpu_pressure_avg10;
@@ -120,6 +131,40 @@ typedef struct {
     size_t active_reservations;
 } Lardon3DResourceAvailability;
 
+/* External storage is physical operational capacity, never Task/scientific
+ * identity and never an extension of host RAM. `generation` is the monotonic
+ * source/controller generation; the Governor has a separate aggregate change
+ * generation. Unknown byte metrics have their *_known flag clear and value
+ * zero. Strings are always NUL-terminated bounded copies; AVAILABLE, IN_USE,
+ * DRAINING and SAFE require a nonempty exact stable identity. Controller
+ * generation UINT64_MAX is legal saturation, not an invalid sentinel. */
+typedef enum {
+    LARDON3D_RESOURCE_EXTERNAL_STORAGE_ABSENT = 0,
+    LARDON3D_RESOURCE_EXTERNAL_STORAGE_DETECTED,
+    LARDON3D_RESOURCE_EXTERNAL_STORAGE_AVAILABLE,
+    LARDON3D_RESOURCE_EXTERNAL_STORAGE_IN_USE,
+    LARDON3D_RESOURCE_EXTERNAL_STORAGE_DRAINING,
+    LARDON3D_RESOURCE_EXTERNAL_STORAGE_SAFE,
+    LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR,
+} Lardon3DResourceExternalStorageStatus;
+
+typedef struct {
+    uint64_t generation;
+    Lardon3DResourceExternalStorageStatus status;
+    bool new_scratch_allocations_allowed;
+    bool scratch_total_known;
+    bool scratch_free_known;
+    uint64_t scratch_total_bytes;
+    uint64_t scratch_free_bytes;
+    bool swap_total_known;
+    bool swap_used_known;
+    uint64_t swap_total_bytes;
+    uint64_t swap_used_bytes;
+    size_t active_scratch_leases;
+    char stable_identity[LARDON3D_RESOURCE_EXTERNAL_IDENTITY_CAPACITY];
+    char reason[LARDON3D_RESOURCE_REASON_CAPACITY];
+} Lardon3DResourceExternalStorage;
+
 bool lardon3d_resource_policy_default(
     const Lardon3DHardwareProfile *profile,
     Lardon3DResourcePolicy *policy
@@ -128,12 +173,22 @@ Lardon3DResourceGovernor *lardon3d_resource_governor_create(
     const Lardon3DHardwareProfile *profile,
     const Lardon3DResourcePolicy *policy
 );
+/* No call may race with destruction. A registered external controller must be
+ * unregistered and every Governor scratch lease released first; the bound TUI
+ * adapter performs this ordering during normal application shutdown. */
 void lardon3d_resource_governor_destroy(
     Lardon3DResourceGovernor *governor
 );
 bool lardon3d_resource_governor_set_policy(
     Lardon3DResourceGovernor *governor,
     const Lardon3DResourcePolicy *policy
+);
+/* Copies the currently active operational policy under the Governor mutex.
+ * The caller owns the output. Observation cannot mutate admission, reserve
+ * resources, or turn swap/scratch into RAM capacity. */
+bool lardon3d_resource_governor_get_policy(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourcePolicy *policy
 );
 bool lardon3d_resource_governor_decide(
     Lardon3DResourceGovernor *governor,
@@ -184,6 +239,77 @@ bool lardon3d_resource_governor_availability(
     Lardon3DResourceGovernor *governor,
     const Lardon3DResourceSnapshot *snapshot,
     Lardon3DResourceAvailability *availability
+);
+
+/* Validates and converts one controller-owned bounded snapshot into the
+ * Governor's physical-storage vocabulary. `storage` is initialized to zero on
+ * every failure. Pairing, allocation or control authority requires current
+ * detection of both partitions, exact Drive/UUID identity and positive known
+ * partition extents. Contradictory ABSENT facts are rejected; a disconnected
+ * sticky hazard remains representable only as non-authoritative ERROR. Missing
+ * optional telemetry remains unknown. This pure conversion performs no
+ * controller call and acquires no lock. */
+bool lardon3d_resource_external_storage_from_ssd_snapshot(
+    const Lardon3DSsdSnapshot *snapshot,
+    Lardon3DResourceExternalStorage *storage
+);
+
+/* Registers one exact borrowed controller object and copies its initial state
+ * under the Governor mutex. The controller must outlive the registration.
+ * Registration is exclusive and fails if a controller is already registered;
+ * update exact-retries are idempotent. A valid newer source generation may
+ * change state, while stale or materially different equal-generation public
+ * data cannot restore availability. A conservative ERROR may replace
+ * same/older evidence to fail closed. The exact serialized scratch wrapper may
+ * reconcile its own completion at a saturated UINT64_MAX watermark; this
+ * exception is private provenance and is unavailable to update(). Material
+ * changes wake Governor generation waiters; source-generation-only refreshes
+ * do not.
+ * Unregister is rejected during a wrapper operation or while the last exact
+ * snapshot reports any active lease. Outputs from get are caller-owned and
+ * zeroed on failure/unregistered state. */
+bool lardon3d_resource_governor_register_external_storage(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller,
+    const Lardon3DResourceExternalStorage *storage
+);
+bool lardon3d_resource_governor_update_external_storage(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller,
+    const Lardon3DResourceExternalStorage *storage
+);
+bool lardon3d_resource_governor_unregister_external_storage(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller
+);
+bool lardon3d_resource_governor_get_external_storage(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourceExternalStorage *storage
+);
+
+/* Production scratch ownership crosses the physical-controller boundary only
+ * through these wrappers. A lease object remains caller-owned, exclusive, and
+ * unmoved exactly as required by the low-level controller. Acquire requires
+ * the exact registered controller and current allocation authority; draining,
+ * ERROR, absent, stale, or unregistered state fails closed. Release remains
+ * available for an exact wrapper-acquired lease during drain/ERROR. The
+ * Governor never holds its mutex while entering the controller, and the
+ * controller never calls back into the Governor. Registration/controller/
+ * Governor must outlive every successful lease; unregister is rejected while
+ * one remains. */
+bool lardon3d_resource_governor_acquire_scratch(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller,
+    Lardon3DSsdScratchLease *lease
+);
+bool lardon3d_resource_governor_release_scratch(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller,
+    Lardon3DSsdScratchLease *lease
+);
+
+const char *lardon3d_resource_external_storage_status_name(
+    Lardon3DResourceExternalStorageStatus status
 );
 uint64_t lardon3d_resource_governor_generation(
     Lardon3DResourceGovernor *governor

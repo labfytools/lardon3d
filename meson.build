@@ -24,6 +24,7 @@ ncursesw = dependency('ncursesw', required: true)
 threads = dependency('threads')
 sqlite3 = dependency('sqlite3', required: true)
 openssl = dependency('openssl', required: true)
+gio = dependency('gio-2.0', required: true, include_type: 'system')
 ceres = dependency(
     'Ceres',
     method: 'cmake',
@@ -145,6 +146,11 @@ lardon3d_app = executable(
         'src/app_state.c',
         'src/tui.c',
         'src/layout.c',
+        'src/tui_model.c',
+        'src/runtime_observer.c',
+        'src/runtime_session.c',
+        'src/tui_ssd_async.c',
+        'src/tui_optics.c',
         'src/import.c',
         'src/import_task.c',
         'src/image_catalog.c',
@@ -159,7 +165,6 @@ lardon3d_app = executable(
         'src/photo_quality_task.cpp',
         'src/feature_extractor_opencv.cpp',
         'src/feature_store.c',
-        'src/feature_extractor_opencv.cpp',
         'src/feature_task.c', 'src/sift_task.c', 'src/precision_features.c',
         'src/visual_index.c',
         'src/visual_index_task.c',
@@ -170,6 +175,7 @@ lardon3d_app = executable(
         'src/image_view.c',
         'src/project.c',
         'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/optical_profiles.c',
         'src/calibration_bootstrap.c',
         'src/sparse_sfm_geometry.cpp',
         'src/sparse_sfm_incremental.cpp',
@@ -187,8 +193,10 @@ lardon3d_app = executable(
         'src/task_kinds.c',
         'src/task_queue.c',
         'src/resource_governor.c',
+        'src/resource_governor_external_storage.c',
         'src/resource_snapshot.c',
         'src/hardware_profile.c',
+        'src/ssd_controller.c',
         'src/match_file.c',
         'src/matcher.cpp',
         'src/geometric_verifier.cpp',
@@ -210,6 +218,7 @@ lardon3d_app = executable(
         threads,
         sqlite3,
         openssl,
+        gio,
         libraw,
         libexif,
         libpng,
@@ -317,7 +326,10 @@ persistent_image_catalog_test = executable(
         'src/resource_governor.c',
         'src/resource_snapshot.c',
     ],
-    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    c_args: [
+        '-DLARDON3D_PROJECT_DB_TESTING',
+        '-DLARDON3D_IMAGE_CATALOG_PERSISTENT_TESTING',
+    ],
     include_directories: include_directories('include'),
     dependencies: [threads, sqlite3, openssl],
 )
@@ -731,6 +743,7 @@ feature_task_test = executable(
         '-DLARDON3D_FEATURE_STORE_TESTING',
         '-DLARDON3D_VISUAL_INDEX_TASK_TESTING',
         '-DLARDON3D_VISUAL_INDEX_TESTING',
+        '-DLARDON3D_RESOURCE_GOVERNOR_CAPTURE_TESTING',
     ],
     cpp_args: ['-DLARDON3D_FEATURE_TASK_TESTING'],
     include_directories: include_directories('include'),
@@ -864,6 +877,21 @@ calibration_bootstrap_test = executable(
 
 test('calibration-bootstrap', calibration_bootstrap_test, timeout: 30)
 
+optical_profiles_test = executable(
+    'test-optical-profiles',
+    sources: [
+        'tests/test_optical_profiles.c',
+        'src/optical_profiles.c',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl],
+)
+
+test('optical-profiles', optical_profiles_test, timeout: 30)
+
 sparse_sfm_model_test = executable(
     'test-sparse-sfm-model',
     sources: [
@@ -975,6 +1003,7 @@ project_test = executable(
         'tests/test_project.c',
         'src/app_state.c',
         'src/project.c',
+        'src/runtime_session.c',
         'src/project_db.c', 'src/project_db_sparse_sfm.c',
         'src/task.c',
         'src/task_checkpoint.c',
@@ -1045,6 +1074,7 @@ task_queue_test = executable(
         'src/resource_governor.c',
         'src/resource_snapshot.c',
     ],
+    c_args: ['-DLARDON3D_TASK_QUEUE_TESTING'],
     include_directories: include_directories('include'),
     dependencies: [threads],
 )
@@ -1061,6 +1091,112 @@ hardware_profile_test = executable(
 )
 
 test('hardware-profile', hardware_profile_test, timeout: 30)
+
+ssd_controller_test = executable(
+    'test-ssd-controller',
+    sources: ['tests/test_ssd_controller.c', 'src/ssd_controller.c'],
+    c_args: ['-DLARDON3D_SSD_CONTROLLER_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, gio],
+)
+
+test('ssd-controller', ssd_controller_test, timeout: 30)
+
+resource_external_storage_test = executable(
+    'test-resource-external-storage',
+    sources: [
+        'tests/test_resource_external_storage.c',
+        'src/resource_governor.c',
+        'src/resource_governor_external_storage.c',
+        'src/resource_snapshot.c',
+        'src/ssd_controller.c',
+        'src/task.c',
+        'src/task_queue.c',
+        'src/tui_ssd_async.c',
+    ],
+    c_args: [
+        '-DLARDON3D_SSD_CONTROLLER_TESTING',
+        '-DLARDON3D_RESOURCE_EXTERNAL_STORAGE_TESTING',
+        '-DLARDON3D_TASK_QUEUE_TESTING',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, gio],
+)
+
+test('resource-external-storage', resource_external_storage_test, timeout: 30)
+
+tui_model_test = executable(
+    'test-tui-model',
+    sources: ['tests/test_tui_model.c', 'src/tui_model.c'],
+    include_directories: include_directories('include'),
+)
+
+test('tui-model', tui_model_test, timeout: 30)
+
+tui_layout_test = executable(
+    'test-tui-layout',
+    sources: [
+        'tests/test_tui_layout.c',
+        'src/layout.c',
+        'src/tui_model.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [ncursesw],
+)
+
+test('tui-layout', tui_layout_test, timeout: 30)
+
+public_runtime_abi_test = executable(
+    'test-public-runtime-abi',
+    sources: ['tests/test_public_runtime_abi.c'],
+    include_directories: include_directories('include'),
+)
+
+test('public-runtime-abi', public_runtime_abi_test, timeout: 30)
+
+runtime_observer_test = executable(
+    'test-runtime-observer',
+    sources: [
+        'tests/test_runtime_observer.c',
+        'src/runtime_observer.c',
+        'src/tui_model.c',
+    ],
+    include_directories: include_directories('include'),
+)
+
+test('runtime-observer', runtime_observer_test, timeout: 30)
+
+tui_ssd_async_test = executable(
+    'test-tui-ssd-async',
+    sources: [
+        'tests/test_tui_ssd_async.c',
+        'src/tui_ssd_async.c',
+        'src/ssd_controller.c',
+        'src/resource_governor.c',
+        'src/resource_governor_external_storage.c',
+        'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, gio],
+)
+
+test('tui-ssd-async', tui_ssd_async_test, timeout: 30)
+
+tui_optics_test = executable(
+    'test-tui-optics',
+    sources: [
+        'tests/test_tui_optics.c',
+        'src/tui_optics.c',
+        'src/tui_model.c',
+        'src/optical_profiles.c',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl],
+)
+
+test('tui-optics', tui_optics_test, timeout: 30)
 
 resource_snapshot_test = executable(
     'test-resource-snapshot',

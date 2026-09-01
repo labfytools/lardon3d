@@ -141,9 +141,12 @@ sortie, soit 8,125 Mio de payload lazy en plus des 640 Kio ORB.
 
 Sur 24 160 requêtes SIFT et 24 161 requêtes RootSIFT contrôlées, y compris
 des descriptors produits par OpenCV SIFT et les frontières `nextafter` autour
-de Lowe 0,7, aucune divergence Lowe n'a été observée. Ce résultat de corpus
-n'est pas une garantie universelle. FP32 ne reproduit pas les distances bit à
-bit et un corpus d'égalités adversariales démontre
+de Lowe 0,7, aucune divergence Lowe n'a été observée. La comparaison exacte
+compte néanmoins une divergence d'index top-2 et 20 251 distances aux bits
+différents pour SIFT, puis une divergence d'index et 20 824 distances aux bits
+différents pour RootSIFT. Ce résultat de corpus au niveau de la décision Lowe
+n'est donc ni une identité bit à bit ni une garantie universelle. FP32 ne
+reproduit pas les distances bit à bit et un corpus d'égalités adversariales démontre
 une divergence d'indices reproductible : OpenCV choisit `(0, 1)` et FP32
 Vulkan `(7, 14)`. FP64 choisit `(0, 128)` et ne restaure donc pas le contrat
 OpenCV. Le recalcul CPU des distances des deux candidats ne peut corriger une

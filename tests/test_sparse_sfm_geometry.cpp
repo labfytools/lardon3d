@@ -53,6 +53,150 @@ static double translation_direction_error(
   return std::acos(std::clamp(dot, -1.0, 1.0));
 }
 
+static bool relative_result_equal(
+    const Lardon3DSparseGeometryRelativePoseResult &left,
+    const Lardon3DSparseGeometryRelativePoseResult &right) {
+  return std::memcmp(left.pose_ba.rotation_cw, right.pose_ba.rotation_cw,
+                     sizeof(left.pose_ba.rotation_cw)) == 0 &&
+         std::memcmp(left.pose_ba.translation_cw, right.pose_ba.translation_cw,
+                     sizeof(left.pose_ba.translation_cw)) == 0 &&
+         left.inlier_count == right.inlier_count &&
+         left.inlier_ratio == right.inlier_ratio &&
+         left.median_parallax_rad == right.median_parallax_rad &&
+         left.inlier_mask == right.inlier_mask &&
+         left.inlier_mask_capacity == right.inlier_mask_capacity;
+}
+
+static bool pnp_result_equal(const Lardon3DSparseGeometryPnPResult &left,
+                             const Lardon3DSparseGeometryPnPResult &right) {
+  return std::memcmp(left.pose_cw.rotation_cw, right.pose_cw.rotation_cw,
+                     sizeof(left.pose_cw.rotation_cw)) == 0 &&
+         std::memcmp(left.pose_cw.translation_cw, right.pose_cw.translation_cw,
+                     sizeof(left.pose_cw.translation_cw)) == 0 &&
+         left.inlier_count == right.inlier_count &&
+         left.inlier_ratio == right.inlier_ratio &&
+         left.inlier_mask == right.inlier_mask &&
+         left.inlier_mask_capacity == right.inlier_mask_capacity;
+}
+
+static int signed_parameter_boundary_test() {
+  const Lardon3DSparseGeometryCalibration calibration =
+      {1280, 960, 800, 800, 640, 480, 0, 0, 0, 0};
+  constexpr size_t count = 8;
+  Lardon3DSparseGeometryPoint2 relative_a[count];
+  Lardon3DSparseGeometryPoint2 relative_b[count];
+  Lardon3DSparseGeometryPoint3 pnp_points[count];
+  Lardon3DSparseGeometryPoint2 pnp_pixels[count];
+  for (size_t index = 0; index < count; ++index) {
+    relative_a[index] = {500.0 + static_cast<double>(index), 480.0};
+    relative_b[index] = {510.0 + static_cast<double>(index), 480.0};
+    pnp_points[index] = {static_cast<double>(index), 0.0, 4.0};
+    pnp_pixels[index] = {500.0 + static_cast<double>(index), 480.0};
+  }
+
+  auto relative_rejects_without_mutation =
+      [&](uint32_t max_iterations, uint32_t minimum_inliers) {
+        uint8_t mask[count];
+        std::fill(mask, mask + count, UINT8_C(0xa5));
+        uint8_t mask_before[count];
+        std::memcpy(mask_before, mask, sizeof(mask));
+        Lardon3DSparseGeometryRelativePoseResult result = {};
+        for (size_t index = 0; index < 9; ++index)
+          result.pose_ba.rotation_cw[index] = 10.0 + static_cast<double>(index);
+        for (size_t index = 0; index < 3; ++index)
+          result.pose_ba.translation_cw[index] =
+              20.0 + static_cast<double>(index);
+        result.inlier_count = 71;
+        result.inlier_ratio = 0.375;
+        result.median_parallax_rad = 0.125;
+        result.inlier_mask = mask;
+        result.inlier_mask_capacity = count;
+        const Lardon3DSparseGeometryRelativePoseResult before = result;
+        Lardon3DSparseGeometryRelativePoseParameters parameters =
+            {1.0, 0.999, max_iterations, minimum_inliers, 0.5, 1e-4, 0.5, 7};
+
+        const Lardon3DSparseGeometryResult status =
+            lardon3d_sparse_geometry_relative_pose(
+                &calibration, &calibration, relative_a, relative_b, count,
+                &parameters, &result);
+        return status == LARDON3D_SPARSE_GEOMETRY_INVALID_ARGUMENT &&
+               relative_result_equal(result, before) &&
+               std::memcmp(mask, mask_before, sizeof(mask)) == 0;
+      };
+
+  auto pnp_rejects_without_mutation =
+      [&](uint32_t max_iterations, uint32_t minimum_inliers) {
+        uint8_t mask[count];
+        std::fill(mask, mask + count, UINT8_C(0x5a));
+        uint8_t mask_before[count];
+        std::memcpy(mask_before, mask, sizeof(mask));
+        Lardon3DSparseGeometryPnPResult result = {};
+        for (size_t index = 0; index < 9; ++index)
+          result.pose_cw.rotation_cw[index] = 30.0 + static_cast<double>(index);
+        for (size_t index = 0; index < 3; ++index)
+          result.pose_cw.translation_cw[index] =
+              40.0 + static_cast<double>(index);
+        result.inlier_count = 83;
+        result.inlier_ratio = 0.625;
+        result.inlier_mask = mask;
+        result.inlier_mask_capacity = count;
+        const Lardon3DSparseGeometryPnPResult before = result;
+        Lardon3DSparseGeometryPnPParameters parameters =
+            {1.0, 0.999, max_iterations, minimum_inliers, 0.5, 9};
+
+        const Lardon3DSparseGeometryResult status = lardon3d_sparse_geometry_pnp(
+            &calibration, pnp_points, pnp_pixels, count, &parameters, &result);
+        return status == LARDON3D_SPARSE_GEOMETRY_INVALID_ARGUMENT &&
+               pnp_result_equal(result, before) &&
+               std::memcmp(mask, mask_before, sizeof(mask)) == 0;
+      };
+
+  const uint32_t signed_maximum =
+      static_cast<uint32_t>(std::numeric_limits<int>::max());
+  const uint32_t unrepresentable_values[] = {
+      signed_maximum + UINT32_C(1), std::numeric_limits<uint32_t>::max()};
+  for (uint32_t value : unrepresentable_values) {
+    CHECK(relative_rejects_without_mutation(value, 6));
+    CHECK(relative_rejects_without_mutation(100, value));
+    CHECK(pnp_rejects_without_mutation(value, 6));
+    CHECK(pnp_rejects_without_mutation(100, value));
+  }
+  CHECK(relative_rejects_without_mutation(0, 6));
+  CHECK(pnp_rejects_without_mutation(0, 6));
+
+  /*
+   * INT_MAX itself remains valid. These collinear fixtures reach the existing
+   * deterministic degeneracy gate without asking either robust solver to run
+   * an impractically large iteration budget.
+   */
+  Lardon3DSparseGeometryRelativePoseParameters relative_parameters =
+      {1.0, 0.999, signed_maximum, signed_maximum, 0.5, 1e-4, 0.5, 11};
+  Lardon3DSparseGeometryRelativePoseResult relative_result = {};
+  CHECK(lardon3d_sparse_geometry_relative_pose(
+            &calibration, &calibration, relative_a, relative_b, count,
+            &relative_parameters, &relative_result) ==
+        LARDON3D_SPARSE_GEOMETRY_DEGENERATE);
+  relative_parameters.max_iterations = 1;
+  relative_parameters.minimum_inliers = 0;
+  CHECK(lardon3d_sparse_geometry_relative_pose(
+            &calibration, &calibration, relative_a, relative_b, count,
+            &relative_parameters, &relative_result) ==
+        LARDON3D_SPARSE_GEOMETRY_DEGENERATE);
+
+  Lardon3DSparseGeometryPnPParameters pnp_parameters =
+      {1.0, 0.999, signed_maximum, signed_maximum, 0.5, 13};
+  Lardon3DSparseGeometryPnPResult pnp_result = {};
+  CHECK(lardon3d_sparse_geometry_pnp(
+            &calibration, pnp_points, pnp_pixels, count, &pnp_parameters,
+            &pnp_result) == LARDON3D_SPARSE_GEOMETRY_DEGENERATE);
+  pnp_parameters.max_iterations = 1;
+  pnp_parameters.minimum_inliers = 0;
+  CHECK(lardon3d_sparse_geometry_pnp(
+            &calibration, pnp_points, pnp_pixels, count, &pnp_parameters,
+            &pnp_result) == LARDON3D_SPARSE_GEOMETRY_DEGENERATE);
+  return 0;
+}
+
 static int matrix_test() {
   Lardon3DSparseGeometryCalibration calibration =
       {1280, 960, 800, 800, 640, 480, 0, 0, 0, 0};
@@ -502,6 +646,7 @@ static int resource_test() {
 }
 
 int main(int argc, char **argv) {
+  CHECK(signed_parameter_boundary_test() == 0);
   if (argc > 1)
     if (std::strcmp(argv[1], "matrix") == 0)
       return matrix_test();

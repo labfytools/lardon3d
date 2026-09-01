@@ -6,6 +6,9 @@ extern "C" {
 #include "task_internal.h"
 }
 
+#include "opencv_task_thread_guard.h"
+
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -18,6 +21,10 @@ namespace {
 constexpr unsigned char magic[8] = {'L', '3', 'D', 'A', 'C', 'T', '1', '\0'};
 constexpr size_t max_request_size =
     LARDON3D_ACQUISITION_CAMPAIGN_TASK_REQUEST_MAX_BYTES;
+constexpr uint64_t kRawWorkingBytes =
+    UINT64_C(2) * 1024u * 1024u * 1024u;
+constexpr uint64_t kCampaignWorkingBytes = UINT64_C(256) * 1024u;
+constexpr uint64_t kGroupWorkingBytes = UINT64_C(64) * 1024u;
 
 /* Codec is transport-safe and deterministic: no native struct serialization is
  * used, integers are fixed-width with explicit endianness, and strings/counts are
@@ -183,6 +190,20 @@ struct Context {
   std::vector<unsigned char> encoded;
   Lardon3DAcquisitionCampaignPlan plan{};
   Lardon3DAcquisitionIngestOptions options{};
+#ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_TESTING
+  enum { kTestGroupCapacity = 8 };
+  /* Test builds can substitute only S3-E's returned Capture IDs. The complete
+   * Task/DB/checkpoint/sequence-break path remains production code, while no
+   * filesystem decoder or scientific grouping behavior is replaced. Fixed
+   * storage keeps the production resource estimate deterministic in tests. */
+  uint64_t test_capture_ids[kTestGroupCapacity]{};
+  unsigned int test_observed_threads[kTestGroupCapacity]{};
+  size_t test_capture_count{};
+  size_t test_observed_count{};
+  uint32_t test_failure_group{};
+  unsigned int test_mutate_threads_before_break{};
+  bool test_materialization_fixture{};
+#endif
 };
 
 bool context_owned_bytes(const Context &context, uint64_t &bytes) {
@@ -207,6 +228,64 @@ bool context_owned_bytes(const Context &context, uint64_t &bytes) {
   }
   bytes = total;
   return true;
+}
+
+bool estimate_equals(const Lardon3DResourceEstimate &left,
+                     const Lardon3DResourceEstimate &right) {
+  return left.memory_fixed_bytes == right.memory_fixed_bytes &&
+         left.gpu_memory_fixed_bytes == right.gpu_memory_fixed_bytes &&
+         left.memory_bytes_per_item == right.memory_bytes_per_item &&
+         left.gpu_memory_bytes_per_item == right.gpu_memory_bytes_per_item &&
+         left.minimum_batch_size == right.minimum_batch_size &&
+         left.maximum_batch_size == right.maximum_batch_size &&
+         left.desired_cpu_threads == right.desired_cpu_threads &&
+         left.desired_gpu_slots == right.desired_gpu_slots &&
+         left.desired_io_slots == right.desired_io_slots &&
+         left.task_class == right.task_class;
+}
+
+bool campaign_estimate(const Context &context, bool historical,
+                       Lardon3DResourceEstimate &estimate) {
+  if (context.options.representation !=
+          LARDON3D_ACQUISITION_SELECT_JPEG_SOURCE &&
+      context.options.representation !=
+          LARDON3D_ACQUISITION_SELECT_DEVELOP_RAW)
+    return false;
+  uint64_t fixed = 0;
+  if (!context_owned_bytes(context, fixed) ||
+      kCampaignWorkingBytes > UINT64_MAX - fixed)
+    return false;
+  fixed += kCampaignWorkingBytes;
+  Lardon3DResourceTaskClass task_class = LARDON3D_RESOURCE_TASK_IMPORT;
+  if (!historical) {
+    const uint64_t transient_request =
+        static_cast<uint64_t>(context.encoded.size());
+    if (transient_request > UINT64_MAX - fixed)
+      return false;
+    fixed += transient_request;
+    if (context.options.representation ==
+        LARDON3D_ACQUISITION_SELECT_DEVELOP_RAW) {
+      if (kRawWorkingBytes > UINT64_MAX - fixed)
+        return false;
+      fixed += kRawWorkingBytes;
+      task_class = LARDON3D_RESOURCE_TASK_MIXED;
+    }
+  }
+  estimate = Lardon3DResourceEstimate{
+      fixed, 0, kGroupWorkingBytes, 0, 1, 1, 1, 0, 1, task_class};
+  return true;
+}
+
+bool apply_admitted_opencv_threads(
+    const Lardon3DTaskExecutionContract &contract) noexcept {
+  if (contract.cpu_threads == 0 || contract.cpu_threads > INT_MAX)
+    return false;
+  try {
+    cv::setNumThreads(static_cast<int>(contract.cpu_threads));
+    return cv::getNumThreads() == static_cast<int>(contract.cpu_threads);
+  } catch (...) {
+    return false;
+  }
 }
 
 void destroy(void *p) { delete static_cast<Context *>(p); }
@@ -234,18 +313,38 @@ bool checkpoint(Context *c, Lardon3DTask *t, uint32_t cursor) {
 bool run_impl(Lardon3DTask *t, void *p) {
   auto *c = static_cast<Context *>(p);
   Lardon3DProjectDbAcquisitionCampaignTask persisted{};
-  // Request is reconstructed from persisted blob and treated as immutable durable
-  // input during recovery and replay.
-  std::vector<unsigned char> blob(max_request_size);
+  /* The retained exact encoding is the immutable replay input and also bounds
+   * this transient verification buffer. A maximum-capacity allocation would
+   * charge almost 20 MiB even for a small campaign without adding safety. */
+  std::unique_ptr<unsigned char[]> blob(
+      new unsigned char[c->encoded.size()]);
   if (lardon3d_project_db_load_acquisition_campaign_task(
-          c->db, lardon3d_task_id(t), blob.data(), blob.size(), &persisted) !=
+          c->db, lardon3d_task_id(t), blob.get(), c->encoded.size(),
+          &persisted) !=
       LARDON3D_PROJECT_DB_OK)
     return lardon3d_task_fail(t, "Campagne durable introuvable.");
+  if (persisted.scanset_id != c->scanset ||
+      persisted.group_count != c->plan.group_count ||
+      persisted.request_size != c->encoded.size() ||
+      std::memcmp(blob.get(), c->encoded.data(), c->encoded.size()) != 0)
+    return lardon3d_task_fail(t, "Requête durable de campagne incohérente.");
+  if (!lardon3d_task_set_durable_progress(
+          t, persisted.next_group_id, persisted.group_count,
+          "Préfixe durable de campagne observé."))
+    return false;
   for (uint32_t cursor = persisted.next_group_id; cursor < c->plan.group_count;
        ++cursor) {
     const uint32_t group_id = cursor + 1u;
     if (!lardon3d_task_checkpoint(t))
       return false;
+#ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_TESTING
+    if (c->test_materialization_fixture) {
+      if (c->test_observed_count >= Context::kTestGroupCapacity)
+        return lardon3d_task_fail(t, "Trop d'observations CPU de test.");
+      c->test_observed_threads[c->test_observed_count++] =
+          static_cast<unsigned int>(cv::getNumThreads());
+    }
+#endif
     Lardon3DProjectDbAcquisitionCampaignCapture retained{};
     uint64_t resume = 0;
     /* Durable replay uses the stable mapping (task_id, group_id) -> capture_id.
@@ -258,20 +357,36 @@ bool run_impl(Lardon3DTask *t, void *p) {
       resume = retained.capture_id;
     else if (lr != LARDON3D_PROJECT_DB_NOT_FOUND)
       return lardon3d_task_fail(t, "Lecture de rétention impossible.");
+#ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_TESTING
+    if (c->test_materialization_fixture &&
+        c->test_failure_group == group_id)
+      return lardon3d_task_fail(t, "Échec de callback campagne injecté.");
+#endif
     auto options = c->options;
     options.grouping = LARDON3D_ACQUISITION_GROUP_CALLER_EXPLICIT;
     options.resume_capture_id = resume;
     options.producer_task_id = lardon3d_task_id(t);
-    Lardon3DAcquisitionIngestOutput out{};
-    Lardon3DAcquisitionIngestResult ir{};
-    Lardon3DAppState s;
-    runtime(c, s);
-    auto cr = lardon3d_acquisition_campaign_materialize_group(
-        &s, c->scanset, c->sources.data(), c->sources.size(), &c->plan,
-        group_id, &options, &out, &ir);
-    if (cr != LARDON3D_ACQUISITION_CAMPAIGN_OK ||
-        ir != LARDON3D_ACQUISITION_INGEST_OK || out.group_count != 1)
-      return lardon3d_task_fail(t, "Échec de matérialisation de campagne.");
+    uint64_t materialized_capture_id = 0;
+#ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_TESTING
+    if (c->test_materialization_fixture) {
+      if (group_id == 0 || group_id > c->test_capture_count)
+        return lardon3d_task_fail(t, "Fixture de Capture de campagne invalide.");
+      materialized_capture_id = c->test_capture_ids[group_id - 1u];
+    } else
+#endif
+    {
+      Lardon3DAcquisitionIngestOutput out{};
+      Lardon3DAcquisitionIngestResult ir{};
+      Lardon3DAppState s;
+      runtime(c, s);
+      auto cr = lardon3d_acquisition_campaign_materialize_group(
+          &s, c->scanset, c->sources.data(), c->sources.size(), &c->plan,
+          group_id, &options, &out, &ir);
+      if (cr != LARDON3D_ACQUISITION_CAMPAIGN_OK ||
+          ir != LARDON3D_ACQUISITION_INGEST_OK || out.group_count != 1)
+        return lardon3d_task_fail(t, "Échec de matérialisation de campagne.");
+      materialized_capture_id = out.groups[0].capture_id;
+    }
 #ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_TESTING
     const char *before_retention =
         std::getenv("LARDON3D_TEST_CAMPAIGN_FAIL_BEFORE_RETENTION");
@@ -279,7 +394,7 @@ bool run_impl(Lardon3DTask *t, void *p) {
       return lardon3d_task_fail(t, "Échec injecté avant rétention.");
 #endif
     if (lardon3d_project_db_retain_acquisition_campaign_capture(
-            c->db, lardon3d_task_id(t), group_id, out.groups[0].capture_id,
+            c->db, lardon3d_task_id(t), group_id, materialized_capture_id,
             group_id) != LARDON3D_PROJECT_DB_OK)
       return lardon3d_task_fail(t, "Rétention de Capture impossible.");
     /* Limite de reprise acceptée: entre le retour de S3-E et cette rétention
@@ -292,27 +407,51 @@ bool run_impl(Lardon3DTask *t, void *p) {
     if (after_retention && std::strcmp(after_retention, "1") == 0)
       return lardon3d_task_fail(t, "Échec injecté après rétention.");
 #endif
-    unsigned progress = static_cast<unsigned>(
-        (uint64_t(group_id) * 100u / c->plan.group_count));
-    if (!lardon3d_task_set_progress(t, progress,
-                                    "Groupe de campagne matérialisé.") ||
+    /* The retained mapping/cursor transaction above is the authority for this
+     * exact TUI count. Observation may lag it, but must never lead it. */
+    if (!lardon3d_task_set_durable_progress(
+            t, group_id, c->plan.group_count,
+            "Groupe de campagne matérialisé.") ||
         !checkpoint(c, t, group_id))
       return lardon3d_task_fail(t, "Checkpoint de campagne impossible.");
     if (group_id < c->plan.group_count) {
-      // sequence_break: libère la réservation courante et renégocie l'admission
-      // via le Governor avant le groupe suivant.
+      /* Campaign cardinality never extends a reservation lifetime: this
+       * boundary releases the current group admission and Task/Queue asks the
+       * Governor for a fresh bounded contract before the next group. */
       Lardon3DTaskExecutionContract contract{};
       Lardon3DResourceReservation *reservation = nullptr;
+#ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_TESTING
+      if (c->test_materialization_fixture &&
+          c->test_mutate_threads_before_break > 0) {
+        cv::setNumThreads(
+            static_cast<int>(c->test_mutate_threads_before_break));
+        if (cv::getNumThreads() !=
+            static_cast<int>(c->test_mutate_threads_before_break))
+          return lardon3d_task_fail(t, "Mutation OpenCV de test impossible.");
+      }
+#endif
       if (!lardon3d_task_sequence_break(t, c->governor, &reservation,
                                         &contract))
         return false;
+      if (!apply_admitted_opencv_threads(contract))
+        return lardon3d_task_fail(
+            t, "Contrat CPU OpenCV renouvelé de campagne invalide.");
     }
   }
   return true;
 }
 bool run(Lardon3DTask *t, void *p) noexcept {
   try {
-    return run_impl(t, p);
+    Lardon3DOpenCvTaskThreadGuard threads(t);
+    if (!threads.valid())
+      return lardon3d_task_fail(t, "Contrat CPU OpenCV de campagne invalide.");
+    /* Queue owns the sole campaign callback. Apply its admitted CPU count to
+     * OpenCV for direct in-task RAW/JPEG work; campaign execution does not
+     * create a nested Task or a second reservation owner. */
+    bool result = run_impl(t, p);
+    if (!threads.restore())
+      return lardon3d_task_fail(t, "Restauration OpenCV de campagne impossible.");
+    return result;
   } catch (const std::bad_alloc &) {
     return lardon3d_task_fail(t, "Mémoire insuffisante pour la campagne.");
   } catch (...) {
@@ -333,7 +472,9 @@ Context *make_context(const char *path, Lardon3DProjectDb *db,
                       Lardon3DResourceGovernor *g, uint64_t scanset,
                       const Lardon3DAcquisitionCampaignTaskRequest &r,
                       const unsigned char *encoded, size_t n) {
-  if (!path || !path[0])
+  if (!path || !path[0] || !db || !g || scanset == 0 || !r.sources ||
+      r.source_count == 0 || (r.confirmation_count > 0 && !r.confirmations) ||
+      !encoded || n == 0)
     return nullptr;
   std::unique_ptr<Context> c(new (std::nothrow) Context);
   if (!c)
@@ -346,8 +487,9 @@ Context *make_context(const char *path, Lardon3DProjectDb *db,
   c->governor = g;
   c->scanset = scanset;
   c->sources.assign(r.sources, r.sources + r.source_count);
-  c->confirmations.assign(r.confirmations,
-                          r.confirmations + r.confirmation_count);
+  if (r.confirmation_count > 0)
+    c->confirmations.assign(r.confirmations,
+                            r.confirmations + r.confirmation_count);
   c->options = r.ingest_options;
   c->encoded.assign(encoded, encoded + n);
   if (lardon3d_acquisition_campaign_plan(c->sources.data(), c->sources.size(),
@@ -360,26 +502,75 @@ Context *make_context(const char *path, Lardon3DProjectDb *db,
 }
 } // namespace
 
+#ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_TESTING
+extern "C" bool lardon3d_acquisition_campaign_task_test_configure_execution(
+    void *userdata, const uint64_t *capture_ids, size_t capture_count,
+    uint32_t failure_group, unsigned int mutate_threads_before_break) {
+  try {
+    auto *context = static_cast<Context *>(userdata);
+    if (!context || !capture_ids || capture_count == 0 ||
+        capture_count > Context::kTestGroupCapacity ||
+        capture_count != context->plan.group_count ||
+        failure_group > capture_count || mutate_threads_before_break > INT_MAX)
+      return false;
+    for (size_t index = 0; index < capture_count; ++index) {
+      if (capture_ids[index] == 0 || capture_ids[index] > INT64_MAX)
+        return false;
+      context->test_capture_ids[index] = capture_ids[index];
+    }
+    context->test_capture_count = capture_count;
+    context->test_observed_count = 0;
+    context->test_failure_group = failure_group;
+    context->test_mutate_threads_before_break = mutate_threads_before_break;
+    context->test_materialization_fixture = true;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+extern "C" bool lardon3d_acquisition_campaign_task_test_observed_threads(
+    void *userdata, unsigned int *threads, size_t capacity, size_t *count) {
+  if (count)
+    *count = 0;
+  auto *context = static_cast<Context *>(userdata);
+  if (!context || !count ||
+      (context->test_observed_count > 0 &&
+       (!threads || capacity < context->test_observed_count)))
+    return false;
+  if (context->test_observed_count > 0)
+    std::memcpy(threads, context->test_observed_threads,
+                context->test_observed_count * sizeof(*threads));
+  *count = context->test_observed_count;
+  return true;
+}
+#endif
+
 extern "C" bool
 lardon3d_acquisition_campaign_task_internal_configure_restored(
     Lardon3DTask *task, void *userdata) {
   try {
     auto *context = static_cast<Context *>(userdata);
-    uint64_t retained = 0;
-    if (!task || !context || !context_owned_bytes(*context, retained) ||
-        retained > UINT64_MAX - 256 * 1024)
+    Lardon3DTaskDurableSnapshot snapshot{};
+    Lardon3DResourceEstimate current{};
+    Lardon3DResourceEstimate historical{};
+    if (!task || !context || !lardon3d_task_durable_snapshot(task, &snapshot) ||
+        !campaign_estimate(*context, false, current) ||
+        !campaign_estimate(*context, true, historical) ||
+        (!estimate_equals(snapshot.estimate, current) &&
+         !estimate_equals(snapshot.estimate, historical)))
       return false;
     Lardon3DTaskCapability capability{};
-    capability.estimate = Lardon3DResourceEstimate{
-        retained + 256 * 1024, 0, 64 * 1024, 0, 1, 1, 1, 0, 1,
-        LARDON3D_RESOURCE_TASK_IMPORT};
+    capability.estimate = current;
     capability.backend = LARDON3D_RESOURCE_BACKEND_FIXED;
     capability.inflight_limit = 1;
     Lardon3DTaskCapabilityEnvelope envelope{};
     envelope.count = 1;
     envelope.capabilities[0] = capability;
-    /* Recovery may carry the historical under-estimate, but admission uses the
-     * exact newly reconstructed retained context. Durable bytes stay untouched. */
+    /* Exact v22 historical signatures remain recoverable, but admission uses
+     * the estimate derived from the immutable request. Operational policy is
+     * normalized only in memory; durable Task/scientific identities stay
+     * untouched and arbitrary estimate corruption is rejected. */
     return lardon3d_task_internal_set_capability_envelope(task, &envelope);
   } catch (...) {
     return false;
@@ -420,7 +611,8 @@ bool request_decode_impl(
   uint64_t imported, maxbytes;
   /* Version 1 is the only accepted codec shape; any mismatch rejects replay. */
   if (!q.bytes(m, 8) || std::memcmp(m, magic, 8) || !q.u32(version) ||
-      version != 1 || !q.u32(n) || n == 0 || n > sc ||
+      version != LARDON3D_ACQUISITION_CAMPAIGN_REQUEST_VERSION ||
+      !q.u32(n) || n == 0 || n > sc ||
       n > LARDON3D_ACQUISITION_CAMPAIGN_MAX_SOURCES || !q.u32(c) || c > cc ||
       c > n || !sources || (c > 0 && !confirmations) || !q.u32(rep) ||
       rep < 1 || rep > 2 || !q.u32(select) || select > 1 ||
@@ -488,10 +680,16 @@ bool task_reconstruct_impl(
   auto *rt = static_cast<Lardon3DTaskReconstructionContext *>(userdata);
   if (!s || !rt || !b)
     return false;
-  std::vector<unsigned char> blob(max_request_size);
+  Lardon3DProjectDbAcquisitionCampaignTask measured{};
+  if (lardon3d_project_db_load_acquisition_campaign_task(
+          rt->project_db, s->id, nullptr, 0, &measured) !=
+          LARDON3D_PROJECT_DB_OK)
+    return false;
+  std::unique_ptr<unsigned char[]> blob(
+      new unsigned char[measured.request_size]);
   Lardon3DProjectDbAcquisitionCampaignTask p{};
   if (lardon3d_project_db_load_acquisition_campaign_task(
-          rt->project_db, s->id, blob.data(), blob.size(), &p) !=
+          rt->project_db, s->id, blob.get(), measured.request_size, &p) !=
       LARDON3D_PROJECT_DB_OK)
     return false;
   std::vector<Lardon3DAcquisitionCampaignSource> sources(
@@ -500,17 +698,20 @@ bool task_reconstruct_impl(
       LARDON3D_ACQUISITION_CAMPAIGN_MAX_SOURCES);
   Lardon3DAcquisitionCampaignTaskRequest r{};
   if (!lardon3d_acquisition_campaign_request_decode(
-          blob.data(), p.request_size, sources.data(), sources.size(),
+          blob.get(), p.request_size, sources.data(), sources.size(),
           confirmations.data(), confirmations.size(), &r))
     return false;
   auto *c =
       make_context(rt->project_path, rt->project_db, rt->resource_governor,
-                   p.scanset_id, r, blob.data(), p.request_size);
-  if (!c)
+                   p.scanset_id, r, blob.get(), p.request_size);
+  if (!c || p.group_count != c->plan.group_count ||
+      p.next_group_id > c->plan.group_count) {
+    delete c;
     return false;
-  // This Task kind has no legacy operational-resource reconciliation. Keep
-  // every optional Registry hook explicit so a future binding extension
-  // cannot accidentally inherit non-null recovery behavior.
+  }
+  /* Binding owns the reconstructed context. Registry's private post-restore
+   * hook validates the exact current or historical operational estimate before
+   * Queue admission; the typed request itself is never rewritten. */
   *b = {};
   b->callback = run;
   b->userdata = c;
@@ -549,20 +750,19 @@ Lardon3DTask *create_task_impl(
     delete c;
     return nullptr;
   }
-  uint64_t retained = 0;
-  if (!context_owned_bytes(*c, retained) || retained > UINT64_MAX - 256 * 1024) {
+  Lardon3DResourceEstimate e{};
+  if (!campaign_estimate(*c, false, e)) {
     delete c;
     return nullptr;
   }
-  /* The request vectors and inline campaign plan remain live for the Task
-   * lifetime. Charge them before admission; the per-group working estimate is
-   * separate and this operational bound does not limit scientific cardinality. */
-  Lardon3DResourceEstimate e{
-      retained + 256 * 1024, 0, 64 * 1024, 0, 1,
-      1,          1, 0,         1, LARDON3D_RESOURCE_TASK_IMPORT};
+  /* Admission charges retained context, one exact transient request reload,
+   * and group work. DEVELOP_RAW additionally owns raw.develop's conservative
+   * 2 GiB callback allowance. These are per-execution operational bounds, not
+   * scientific limits on campaign cardinality. */
   auto *t = lardon3d_task_create_typed("Campagne d'acquisition", &e,
                                        LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND,
-                                       1, run, c, destroy);
+                                       LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND_VERSION,
+                                       run, c, destroy);
   if (!t || !lardon3d_task_assign_id(t, task_id) ||
       !lardon3d_task_set_finished_callback(t, finished, c) ||
       !checkpoint(c, t, 0)) {
@@ -633,18 +833,20 @@ extern "C" Lardon3DTask *lardon3d_project_create_acquisition_campaign_task(
 extern "C" bool lardon3d_project_enqueue_acquisition_campaign(
     Lardon3DAppState *s, uint64_t scanset,
     const Lardon3DAcquisitionCampaignTaskRequest *r, uint64_t *id) {
+  if (id)
+    *id = 0;
   try {
-  if (!s || !s->task_queue)
-    return false;
-  auto *t =
-      lardon3d_project_create_acquisition_campaign_task(s, scanset, r, id);
-  if (!t)
-    return false;
-  if (!lardon3d_task_queue_add(s->task_queue, t, nullptr)) {
-    lardon3d_task_destroy(t);
-    return false;
-  }
-  return true;
+    if (!s || !s->task_queue || !r || !id)
+      return false;
+    std::unique_ptr<Lardon3DTask, void (*)(Lardon3DTask *)> t(
+        lardon3d_project_create_acquisition_campaign_task(s, scanset, r, id),
+        lardon3d_task_destroy);
+    if (!t)
+      return false;
+    if (!lardon3d_task_queue_add(s->task_queue, t.get(), nullptr))
+      return false;
+    (void)t.release();
+    return true;
   } catch (const std::bad_alloc &) {
     return false;
   } catch (...) {

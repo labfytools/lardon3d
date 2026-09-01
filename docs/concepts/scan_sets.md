@@ -34,8 +34,9 @@ Project
   courante proposée au pipeline scientifique ultérieur. La sélection ne modifie
   ni l'image, ni son asset, ni les résultats existants.
 - Une dérivation asset bornée parent→enfant, versionnée par fingerprint, rend
-  possible une future image de travail RAW ou frame vidéo sans prétendre que
-  RAW ou vidéo sont déjà importés.
+  possible l'image de travail DERIVED de `raw.develop` sans confondre SOURCE et
+  dérivé. La frame vidéo reste future et ne doit pas être présentée comme
+  importée.
 
 Un contenu identique n'implique pas une identité logique unique. Dans un même
 ScanSet, le couple `(scanset_id, asset_id)` est unique : réimporter le même
@@ -135,6 +136,9 @@ Track Model / Track Builder v1 peuvent consommer le catalogue et ses assets.
 Les primitives géométriques Sparse SfM Gate C et le noyau incrémental
 synchrone en mémoire Gate D sont **IMPLEMENTED / PASS**.
 
-**PLANNED** — BA, orchestration Sparse SfM, MVS et relations géométriques
-entre ScanSets. La vérification/scrub des assets et la réconciliation globale
-restent également NOT_YET_WIRED.
+**IMPLEMENTED / PASS / FROZEN aux frontières acquises** — BA finale Gate E,
+orchestration Sparse SfM Gate F, admission Gate G et Phase H v1. MVS-M1 fournit
+la frontière externe bornée OpenMVS, mais pas une publication dense durable ni
+le pipeline dense complet. Les relations géométriques entre ScanSets,
+vérification/scrub des assets et réconciliation globale restent
+`NOT_YET_WIRED` ; ce futur n'annule pas les gates déjà acquises.

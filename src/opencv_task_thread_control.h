@@ -14,7 +14,9 @@ typedef struct {
 /* OpenCV owns one process-wide CPU pool. Queue's single callback owner makes
  * the change race-free, but configure may mutate before its verification
  * fails. Therefore begin attempts rollback on every post-capture failure and
- * end restores on every callback result. */
+ * end restores on every callback result. restore_required is cleared only
+ * after a verified rollback: a transient OpenCV failure must remain retryable
+ * rather than silently abandoning ownership of process-global state. */
 static inline bool lardon3d_opencv_task_threads_begin(
     Lardon3DTask *task, unsigned int validated_maximum,
     Lardon3DOpenCvTaskThreadControl *control) {
@@ -29,8 +31,9 @@ static inline bool lardon3d_opencv_task_threads_begin(
   control->restore_required = true;
   if (!lardon3d_feature_opencv_configure_threads(contract.cpu_threads)) {
     /* Verification failure is after a possibly successful setNumThreads(). */
-    (void)lardon3d_feature_opencv_configure_threads(control->previous);
-    control->restore_required = false;
+    if (lardon3d_feature_opencv_configure_threads(control->previous)) {
+      control->restore_required = false;
+    }
     return false;
   }
   return true;
@@ -39,8 +42,11 @@ static inline bool lardon3d_opencv_task_threads_begin(
 static inline bool lardon3d_opencv_task_threads_end(
     Lardon3DOpenCvTaskThreadControl *control) {
   if (!control || !control->restore_required) return false;
+  if (!lardon3d_feature_opencv_configure_threads(control->previous)) {
+    return false;
+  }
   control->restore_required = false;
-  return lardon3d_feature_opencv_configure_threads(control->previous);
+  return true;
 }
 
 #endif

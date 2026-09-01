@@ -2,6 +2,7 @@
 #define LARDON3D_TASK_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -31,6 +32,17 @@ typedef void (*Lardon3DTaskFinishedCallback)(
 );
 
 typedef struct {
+    size_t batch_size;
+    uint64_t memory_bytes;
+    uint64_t gpu_memory_bytes;
+    unsigned int cpu_threads;
+    unsigned int gpu_slots;
+    unsigned int io_slots;
+} Lardon3DTaskExecutionContract;
+
+/* Historical ABI snapshot. Its field order and size are frozen: additive
+ * runtime observability belongs to Lardon3DTaskObservation below. */
+typedef struct {
     uint64_t id;
     char name[LARDON3D_TASK_NAME_CAPACITY];
     unsigned int progress;
@@ -40,14 +52,32 @@ typedef struct {
     struct timespec finished_at;
 } Lardon3DTaskSnapshot;
 
+/* Additive, caller-owned, mutex-consistent runtime observation. The legacy
+ * prefix is deliberately repeated rather than extending TaskSnapshot: old
+ * binaries must never receive a write larger than their compiled object.
+ * Typed identity, durable progress, sequence count and the installed
+ * execution contract are operational observations only. Durable counts exist
+ * only after the typed owner publishes its committed prefix; they are never
+ * inferred from generic percentage, name, or message. When
+ * has_execution_contract is false every contract field is zero. */
 typedef struct {
-    size_t batch_size;
-    uint64_t memory_bytes;
-    uint64_t gpu_memory_bytes;
-    unsigned int cpu_threads;
-    unsigned int gpu_slots;
-    unsigned int io_slots;
-} Lardon3DTaskExecutionContract;
+    uint64_t id;
+    char name[LARDON3D_TASK_NAME_CAPACITY];
+    unsigned int progress;
+    Lardon3DTaskState state;
+    char message[LARDON3D_TASK_MESSAGE_CAPACITY];
+    struct timespec started_at;
+    struct timespec finished_at;
+    bool has_task_kind;
+    char task_kind[LARDON3D_TASK_KIND_CAPACITY];
+    uint32_t task_kind_version;
+    bool durable_progress_known;
+    uint64_t durable_completed;
+    uint64_t durable_total;
+    unsigned int sequence_count;
+    bool has_execution_contract;
+    Lardon3DTaskExecutionContract execution_contract;
+} Lardon3DTaskObservation;
 
 typedef struct {
     uint64_t id;
@@ -96,10 +126,31 @@ bool lardon3d_task_set_progress(
     unsigned int progress,
     const char *message
 );
+/* Publishes an already-durable typed-business prefix as operational
+ * observation and derives the generic percentage without overflow. The
+ * caller must invoke this only after its own transaction/cursor commit;
+ * Task/Queue do not persist or reinterpret these counts. A later ordinary
+ * set_progress clears them rather than retaining a stale exact-looking value.
+ * Untyped Tasks are rejected. Generic Task completion sets its percentage to
+ * 100 but never fabricates a missing typed-business commit. total must be
+ * positive and completed <= total. */
+bool lardon3d_task_set_durable_progress(
+    Lardon3DTask *task,
+    uint64_t completed,
+    uint64_t total,
+    const char *message
+);
 bool lardon3d_task_fail(Lardon3DTask *task, const char *message);
 bool lardon3d_task_snapshot(
     const Lardon3DTask *task,
     Lardon3DTaskSnapshot *snapshot
+);
+/* Copies one caller-owned coherent value under the Task mutex. A non-NULL
+ * output is zeroed before validation, so invalid Task arguments never leave a
+ * stale typed identity, durable count, or execution contract visible. */
+bool lardon3d_task_observation(
+    const Lardon3DTask *task,
+    Lardon3DTaskObservation *observation
 );
 bool lardon3d_task_durable_snapshot(
     const Lardon3DTask *task,

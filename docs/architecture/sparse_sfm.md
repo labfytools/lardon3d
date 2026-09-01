@@ -725,7 +725,11 @@ translations are exhaustive:
 
 Every row is fingerprinted. Integer fields require no normalization beyond
 their fixed-width little-endian translation; every floating field uses the
-canonical-zero rule above.
+canonical-zero rule above. The four relative-pose/PnP iteration/inlier fields
+retain this `u32` syntax for F0 compatibility, while an executable call through
+the public Gate C OpenCV boundary additionally requires the `INT_MAX` bound
+defined below. That operational validation neither rewrites nor normalizes
+fingerprint bytes.
 
 The policy IDs above freeze the full named Gate D and Gate E v1 semantics,
 including canonical order and tie breaks,
@@ -840,8 +844,8 @@ path. Swap, zram and external storage do not enlarge its RAM capacity.
 
 ### Gate F durable task payload
 
-**FROZEN.** Gate F advances the current Project Database schema head from v16
-to v17 with one strictly additive `sparse_sfm_tasks` table. The historical v16
+**FROZEN.** Gate F advanced the then-current Project Database schema head from
+v16 to v17 with one strictly additive `sparse_sfm_tasks` table. The historical v16
 migration and its immutable reconstruction model remain unchanged. The new
 table follows the existing one-to-one typed-task pattern: its primary key is a
 foreign key to `tasks(task_id)` with cascade cleanup, and creation records the
@@ -1133,6 +1137,26 @@ point-only binary64 refinement; PnP returns world-to-camera pose with explicit
 cheirality and inlier diagnostics. The tested v1 parameter set is frozen by the
 Gate C ground-truth and degeneracy evidence; future orchestration may choose
 other explicitly fingerprinted configurations.
+
+#### Public OpenCV signed-boundary contract
+
+The C17 parameter fields for relative pose and calibrated PnP remain
+`uint32_t`, but OpenCV accepts signed `int` iteration and inlier arguments.
+Consequently, both `max_iterations` and `minimum_inliers` must be at most
+`INT_MAX`; `max_iterations == 0` retains its existing invalid semantics, while
+`minimum_inliers == 0` retains the existing PnP effective minimum of four.
+Values above `INT_MAX` return `INVALID_ARGUMENT` before allocation, OpenCV,
+RNG work or mutation of the caller-owned result/mask. Conversion to `int`
+occurs only after that check.
+
+This is an operational language/library boundary, not a scientific-policy
+change. The public field widths, F0 `u32` encoding, FROZEN defaults, thresholds,
+seeds, fingerprints and every representable run remain byte-identical. The
+maintenance regression rejects `INT_MAX+1` and `UINT32_MAX` for both primitives
+without output mutation, while a degenerate no-solver fixture proves
+`INT_MAX` itself remains representable without attempting that many
+iterations. Focused validation passed 1/1 plus 20 repeats, targeted
+ASan/UBSan 1/1, GCC/Clang C17/C++17 inclusion and the application link.
 
 ### Gate C tested threshold set
 

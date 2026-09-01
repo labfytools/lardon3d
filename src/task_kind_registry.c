@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
@@ -23,11 +24,18 @@ extern bool lardon3d_acquisition_campaign_task_internal_configure_restored(
 enum {
     CANDIDATE_LEGACY_FIXED_BYTES = 128 * 1024,
     CANDIDATE_CURRENT_FIXED_BYTES = 256 * 1024,
-    CANDIDATE_PER_ITEM_BYTES = 64 * 1024,
+    CANDIDATE_LEGACY_PER_ITEM_BYTES = 64 * 1024,
+    CANDIDATE_CURRENT_PER_ITEM_BYTES = 8 * 1024 * 1024,
+    FEATURE_FIXED_BYTES = 64 * 1024 * 1024,
+    FEATURE_PER_ITEM_BYTES = 512 * 1024 * 1024,
     MATCHER_LEGACY_FIXED_BYTES = 10 * 1024 * 1024,
     MATCHER_CURRENT_PER_ITEM_BYTES = 10 * 1024 * 1024,
     MATCHER_GPU_FIXED_BYTES = 640 * 1024,
+    GEOMETRIC_VERIFIER_LEGACY_FIXED_BYTES = 4 * 1024 * 1024,
+    GEOMETRIC_VERIFIER_CURRENT_PER_ITEM_BYTES = 8 * 1024 * 1024,
     SIFT_FIXED_BYTES = 64 * 1024 * 1024,
+    VISUAL_INDEX_FIXED_BYTES = 8 * 1024 * 1024,
+    VISUAL_INDEX_PER_ITEM_BYTES = 2 * 1024 * 1024,
 };
 
 static bool
@@ -58,16 +66,35 @@ normalize_known_legacy_estimate(const char *kind,
     if (strcmp(kind, "candidate_pair.generate") == 0) {
         current = (Lardon3DResourceEstimate) {
             .memory_fixed_bytes = CANDIDATE_CURRENT_FIXED_BYTES,
-            .memory_bytes_per_item = CANDIDATE_PER_ITEM_BYTES,
+            .memory_bytes_per_item = CANDIDATE_CURRENT_PER_ITEM_BYTES,
             .minimum_batch_size = 1,
             .maximum_batch_size = 64,
-            .desired_cpu_threads = 12,
+            .desired_cpu_threads = 64,
             .desired_io_slots = 1,
             .task_class = LARDON3D_RESOURCE_TASK_CPU,
         };
         historical = current;
-        historical.memory_fixed_bytes = CANDIDATE_LEGACY_FIXED_BYTES;
-        historical.desired_cpu_threads = 1;
+        historical.memory_bytes_per_item = CANDIDATE_LEGACY_PER_ITEM_BYTES;
+        historical.desired_cpu_threads = 12;
+        oldest = historical;
+        oldest.memory_fixed_bytes = CANDIDATE_LEGACY_FIXED_BYTES;
+        oldest.desired_cpu_threads = 1;
+        has_oldest = true;
+    } else if (strcmp(kind, "features.extract") == 0) {
+        current = (Lardon3DResourceEstimate) {
+            .memory_fixed_bytes = FEATURE_FIXED_BYTES,
+            .memory_bytes_per_item = FEATURE_PER_ITEM_BYTES,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 1,
+            .desired_cpu_threads = INT_MAX,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_CPU,
+        };
+        historical = current;
+        historical.desired_cpu_threads = 12;
+        oldest = historical;
+        oldest.desired_cpu_threads = 1;
+        has_oldest = true;
     } else if (strcmp(kind, "matcher.run") == 0) {
         const bool gpu = durable->desired_gpu_slots == 1;
         current = (Lardon3DResourceEstimate) {
@@ -108,12 +135,53 @@ normalize_known_legacy_estimate(const char *kind,
             .memory_bytes_per_item = UINT64_C(1024) * 1024 * 1024,
             .minimum_batch_size = 1,
             .maximum_batch_size = 1,
-            .desired_cpu_threads = 12,
+            .desired_cpu_threads = INT_MAX,
             .desired_io_slots = 1,
             .task_class = LARDON3D_RESOURCE_TASK_CPU,
         };
         historical = current;
-        historical.desired_cpu_threads = 1;
+        historical.desired_cpu_threads = 12;
+        oldest = historical;
+        oldest.desired_cpu_threads = 1;
+        has_oldest = true;
+    } else if (strcmp(kind, "visual_index.update") == 0) {
+        current = (Lardon3DResourceEstimate) {
+            .memory_fixed_bytes = VISUAL_INDEX_FIXED_BYTES,
+            .memory_bytes_per_item = VISUAL_INDEX_PER_ITEM_BYTES,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 16,
+            .desired_cpu_threads = 16,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_CPU,
+        };
+        historical = current;
+        historical.desired_cpu_threads = 12;
+        /* An exact serial Visual Index Task signature predates bounded
+         * internal fan-out. Accept only that complete CPU1 durable shape. */
+        oldest = historical;
+        oldest.desired_cpu_threads = 1;
+        has_oldest = true;
+    } else if (strcmp(kind, "geometric_verifier.run") == 0) {
+        current = (Lardon3DResourceEstimate) {
+            .memory_bytes_per_item =
+                GEOMETRIC_VERIFIER_CURRENT_PER_ITEM_BYTES,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 16,
+            .desired_cpu_threads = 8,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_CPU,
+        };
+        historical = (Lardon3DResourceEstimate) {
+            .memory_fixed_bytes = GEOMETRIC_VERIFIER_LEGACY_FIXED_BYTES,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 8,
+            .desired_cpu_threads = 1,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_CPU,
+        };
+        /* CPU/batch/memory admission is operational, not GVR identity. Accept
+         * only the complete frozen serial envelope, normalize it in memory,
+         * and never publish an estimate-only checkpoint during recovery. */
     } else {
         *effective = *durable;
         return true;

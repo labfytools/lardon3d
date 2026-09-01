@@ -453,7 +453,11 @@ static bool read_project_ini(Lardon3DAppState *state, const char *path, ProjectM
           }
         }
         if (valid) {
-          (void)snprintf(metadata->stable_id, sizeof(metadata->stable_id), "%s", line + 10);
+          /* The v2 project identity is exactly 128 lowercase hexadecimal bits. Copying the
+           * validated width makes the no-truncation contract explicit to both readers and
+           * compiler diagnostics; project identity must never be accepted by prefix. */
+          memcpy(metadata->stable_id, line + 10, id_length);
+          metadata->stable_id[id_length] = '\0';
         }
       }
       stable_id_found = true;

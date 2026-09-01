@@ -12,8 +12,7 @@
 
 #include <lardon3d/image_catalog.h>
 
-Lardon3DImageCatalogAssetPublishResult lardon3d_image_catalog_test_copy_hash(
-    int input, int output);
+#include "../src/image_catalog_persistent_internal.h"
 
 #define CHECK(condition) do { if (!(condition)) { \
     (void)fprintf(stderr, "Échec ligne %d : %s\n", __LINE__, #condition); return false; \

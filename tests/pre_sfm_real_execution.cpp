@@ -1184,11 +1184,14 @@ bool end_geometric_evidence(Runtime &runtime) {
   const bool contract_valid =
       last_known && last.backend == LARDON3D_RESOURCE_BACKEND_FIXED &&
       last.actual_backend == LARDON3D_RESOURCE_BACKEND_FIXED &&
-      !last.backend_fallback && last.cpu_threads == 1 &&
+      !last.backend_fallback && last.cpu_threads >= 1 &&
+      last.cpu_threads <=
+          LARDON3D_GEOMETRIC_VERIFIER_TASK_VALIDATED_USEFUL_CPU_THREADS &&
       last.gpu_slots == 0 && last.io_slots == 1 &&
       last.batch_size >= LARDON3D_GEOMETRIC_VERIFIER_TASK_MINIMUM_BATCH &&
       last.batch_size <= LARDON3D_GEOMETRIC_VERIFIER_TASK_MAXIMUM_BATCH &&
-      last.memory_bytes == UINT64_C(4) * 1024 * 1024 &&
+      last.memory_bytes ==
+          UINT64_C(8) * 1024 * 1024 * last.batch_size &&
       last.gpu_memory_bytes == 0;
   const bool admission_valid =
       aggregate_known && !aggregate.saturated &&

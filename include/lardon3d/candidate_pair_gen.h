@@ -27,6 +27,12 @@ Lardon3DVisualIndexResult lardon3d_candidate_pair_generate_batch(
     Lardon3DCandidatePairGenStats *total_stats,
     uint64_t *last_feature_set_id);
 
+/* Produce the frozen Candidate-generation v1 SHA-256 fingerprint in caller-owned
+ * 32-byte storage. Integer inputs are encoded at fixed width, little-endian;
+ * the filter is one u32 and exclude_same_asset is exactly one 0/1 byte. This
+ * preserves acquired little-endian fingerprints while making identity portable.
+ * query_options may be NULL for the historical ID-only form; fingerprint must
+ * be non-NULL. */
 void lardon3d_candidate_pair_generation_fingerprint(
     uint64_t visual_index_id, uint64_t source_feature_set_id,
     const Lardon3DVisualIndexQueryOptions *query_options,

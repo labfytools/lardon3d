@@ -19,12 +19,20 @@
 enum {
     CANDIDATE_PAIR_MINIMUM_BATCH = 1,
     CANDIDATE_PAIR_MAXIMUM_BATCH = 64,
-    CANDIDATE_PAIR_CPU_THREADS = 12,
+    /* ALGORITHMIC / RESOURCE: a participant needs one independent source, so
+     * the existing 64-item batch bound is also the portable CPU safety bound.
+     * Governor admission may select fewer CPUs without changing Candidate
+     * identity, ordering, or the number of items admitted for this sequence. */
+    CANDIDATE_PAIR_CPU_MAX_SAFE = CANDIDATE_PAIR_MAXIMUM_BATCH,
     CANDIDATE_PAIR_WINDOW_PER_THREAD = 2,
-    CANDIDATE_PAIR_WINDOW_MAX =
-        CANDIDATE_PAIR_CPU_THREADS * CANDIDATE_PAIR_WINDOW_PER_THREAD,
+    CANDIDATE_PAIR_WINDOW_MAX = CANDIDATE_PAIR_MAXIMUM_BATCH,
+    CANDIDATE_PAIR_CHILD_STACK_BYTES = 4 * 1024 * 1024,
     CANDIDATE_PAIR_FIXED_MEMORY = 256 * 1024,
-    CANDIDATE_PAIR_MEMORY_PER_ITEM = 256 * 256,
+    /* RESOURCE: one admitted item can own one participant. Eight MiB covers
+     * its bounded 4 MiB pthread stack plus the Visual Index query buffers and
+     * private SQLite reader/cache allowance. This is sequence memory, not a
+     * dataset-size limit; Governor may reduce the batch on smaller hosts. */
+    CANDIDATE_PAIR_MEMORY_PER_ITEM = 8 * 1024 * 1024,
 };
 
 typedef struct {
@@ -87,6 +95,8 @@ typedef struct {
 #ifdef LARDON3D_CANDIDATE_PAIR_TASK_TESTING
 static atomic_size_t test_started_participants;
 static atomic_size_t test_computed_work_items;
+static atomic_size_t test_active_private_databases;
+static atomic_size_t test_fail_thread_create_after = SIZE_MAX;
 
 void lardon3d_candidate_pair_task_test_reset_parallel_counters(void) {
     atomic_store(&test_started_participants, 0);
@@ -100,7 +110,25 @@ size_t lardon3d_candidate_pair_task_test_started_participants(void) {
 size_t lardon3d_candidate_pair_task_test_computed_work_items(void) {
     return atomic_load(&test_computed_work_items);
 }
+
+size_t lardon3d_candidate_pair_task_test_active_private_databases(void) {
+    return atomic_load(&test_active_private_databases);
+}
+
+void lardon3d_candidate_pair_task_test_fail_thread_create_after(
+    size_t successful_children) {
+    atomic_store(&test_fail_thread_create_after, successful_children);
+}
 #endif
+
+static void close_worker_database(CandidateComputeWorker *worker) {
+    if (!worker || !worker->database) return;
+    lardon3d_project_db_close(worker->database);
+    worker->database = NULL;
+#ifdef LARDON3D_CANDIDATE_PAIR_TASK_TESTING
+    atomic_fetch_sub(&test_active_private_databases, 1);
+#endif
+}
 
 static void *compute_worker(void *userdata) {
     CandidateComputeWorker *worker = userdata;
@@ -121,9 +149,25 @@ static void *compute_worker(void *userdata) {
         }
 #endif
     }
-    lardon3d_project_db_close(worker->database);
-    worker->database = NULL;
+    close_worker_database(worker);
     return NULL;
+}
+
+static int create_compute_thread(pthread_t *thread,
+                                 const pthread_attr_t *attributes,
+                                 CandidateComputeWorker *worker,
+                                 size_t successful_children) {
+#ifdef LARDON3D_CANDIDATE_PAIR_TASK_TESTING
+    /* This private seam fails before pthread_create, after an exact number of
+     * successful children. It deterministically exercises the production
+     * join/handle cleanup path without creating an unowned thread. */
+    if (atomic_load(&test_fail_thread_create_after) == successful_children) {
+        return -1;
+    }
+#else
+    (void)successful_children;
+#endif
+    return pthread_create(thread, attributes, compute_worker, worker);
 }
 
 static unsigned int membership_progress(uint64_t completed, uint64_t total) {
@@ -161,12 +205,29 @@ static bool compute_window(const Lardon3DCandidatePairTaskContext *context,
                            unsigned int admitted_threads,
                            Lardon3DCandidatePairComputation *computations,
                            Lardon3DVisualIndexResult *results) {
+    if (!context || !query_options || !source_ids || !computations || !results ||
+        source_count == 0 || source_count > CANDIDATE_PAIR_WINDOW_MAX ||
+        admitted_threads == 0 ||
+        admitted_threads > CANDIDATE_PAIR_CPU_MAX_SAFE) {
+        return false;
+    }
     unsigned int worker_count = admitted_threads;
+    /* source_count is validated against the 64-item bound before narrowing. */
     if (worker_count > source_count) worker_count = (unsigned int)source_count;
-    CandidateComputeWorker workers[CANDIDATE_PAIR_CPU_THREADS];
-    pthread_t threads[CANDIDATE_PAIR_CPU_THREADS - 1];
+    CandidateComputeWorker workers[CANDIDATE_PAIR_CPU_MAX_SAFE];
+    pthread_t threads[CANDIDATE_PAIR_CPU_MAX_SAFE - 1];
     size_t created = 0;
     bool started = true;
+    pthread_attr_t attributes;
+    if (pthread_attr_init(&attributes) != 0) return false;
+    /* INVARIANT: child stack reservation is explicitly bounded and included
+     * in memory_bytes_per_item; relying on the host pthread default would make
+     * a 64-participant admission unaccountable and non-portable. */
+    if (pthread_attr_setstacksize(&attributes,
+                                  CANDIDATE_PAIR_CHILD_STACK_BYTES) != 0) {
+        (void)pthread_attr_destroy(&attributes);
+        return false;
+    }
     for (size_t i = 0; i < source_count; ++i) {
         results[i] = LARDON3D_VISUAL_INDEX_IO_ERROR;
     }
@@ -187,31 +248,58 @@ static bool compute_window(const Lardon3DCandidatePairTaskContext *context,
                                     &workers[i].database, error) !=
             LARDON3D_PROJECT_DB_OK) {
             for (unsigned int opened = 0; opened < i; ++opened) {
-                lardon3d_project_db_close(workers[opened].database);
-                workers[opened].database = NULL;
+                close_worker_database(&workers[opened]);
             }
+            (void)pthread_attr_destroy(&attributes);
             return false;
         }
+#ifdef LARDON3D_CANDIDATE_PAIR_TASK_TESTING
+        atomic_fetch_add(&test_active_private_databases, 1);
+#endif
     }
     for (unsigned int i = 1; i < worker_count; ++i) {
-        if (pthread_create(&threads[created], NULL, compute_worker, &workers[i]) != 0) {
+        if (create_compute_thread(&threads[created], &attributes, &workers[i],
+                                  created) != 0) {
             started = false;
             break;
         }
         ++created;
     }
+    if (pthread_attr_destroy(&attributes) != 0) started = false;
     if (worker_count > 0) (void)compute_worker(&workers[0]);
     for (size_t i = 0; i < created; ++i) {
         if (pthread_join(threads[i], NULL) != 0) started = false;
     }
     for (unsigned int i = (unsigned int)created + 1; i < worker_count; ++i) {
-        if (workers[i].database) {
-            lardon3d_project_db_close(workers[i].database);
-            workers[i].database = NULL;
-        }
+        close_worker_database(&workers[i]);
     }
     return started;
 }
+
+#ifdef LARDON3D_CANDIDATE_PAIR_TASK_TESTING
+bool lardon3d_candidate_pair_task_test_compute_window(
+    const char *project_path, Lardon3DProjectDb *database,
+    uint64_t visual_index_id,
+    const Lardon3DVisualIndexQueryOptions *query_options,
+    const uint64_t *source_ids, size_t source_count,
+    unsigned int admitted_threads,
+    Lardon3DCandidatePairComputation *computations,
+    Lardon3DVisualIndexResult *results) {
+    if (!project_path || !database) return false;
+    Lardon3DCandidatePairTaskContext context = {0};
+    int written = snprintf(context.project_path, sizeof(context.project_path),
+                           "%s", project_path);
+    if (written <= 0 || (size_t)written >= sizeof(context.project_path) ||
+        !lardon3d_project_db_copy_path(database, context.database_path)) {
+        return false;
+    }
+    /* The seam delegates to the production fan-out and owns no publication.
+     * Tests can therefore exercise all 64 participants without inventing Task
+     * progress, Candidate identities, or a second scheduling implementation. */
+    return compute_window(&context, visual_index_id, query_options, source_ids,
+                          source_count, admitted_threads, computations, results);
+}
+#endif
 
 static bool run(Lardon3DTask *task, void *userdata) {
     Lardon3DCandidatePairTaskContext *context = userdata;
@@ -245,7 +333,7 @@ static bool run(Lardon3DTask *task, void *userdata) {
             contract.batch_size < CANDIDATE_PAIR_MINIMUM_BATCH ||
             contract.batch_size > CANDIDATE_PAIR_MAXIMUM_BATCH ||
             contract.cpu_threads == 0 ||
-            contract.cpu_threads > CANDIDATE_PAIR_CPU_THREADS) {
+            contract.cpu_threads > CANDIDATE_PAIR_CPU_MAX_SAFE) {
             return lardon3d_task_fail(task, "Contrat de lot Candidate Pair invalide.");
         }
 
@@ -260,11 +348,12 @@ static bool run(Lardon3DTask *task, void *userdata) {
         while (processed_in_sequence < contract.batch_size) {
             if (!lardon3d_task_checkpoint(task)) return false;
             size_t remaining = contract.batch_size - processed_in_sequence;
-            size_t window_capacity = (size_t)contract.cpu_threads *
-                                     CANDIDATE_PAIR_WINDOW_PER_THREAD;
-            if (window_capacity > CANDIDATE_PAIR_WINDOW_MAX) {
-                window_capacity = CANDIDATE_PAIR_WINDOW_MAX;
-            }
+            size_t window_capacity = contract.cpu_threads >
+                                             CANDIDATE_PAIR_WINDOW_MAX /
+                                                 CANDIDATE_PAIR_WINDOW_PER_THREAD
+                                         ? CANDIDATE_PAIR_WINDOW_MAX
+                                         : (size_t)contract.cpu_threads *
+                                               CANDIDATE_PAIR_WINDOW_PER_THREAD;
             if (window_capacity > remaining) window_capacity = remaining;
             uint64_t source_ids[CANDIDATE_PAIR_WINDOW_MAX];
             size_t source_count = 0;
@@ -298,10 +387,12 @@ static bool run(Lardon3DTask *task, void *userdata) {
 
             Lardon3DCandidatePairComputation computations[CANDIDATE_PAIR_WINDOW_MAX];
             Lardon3DVisualIndexResult results[CANDIDATE_PAIR_WINDOW_MAX];
-            /* The Queue callback is one admitted CPU participant. At most
-             * cpu_threads-1 child threads are created, every reader owns a
-             * private SQLite handle, and all are joined before reservation
-             * release or sequence_break. */
+            /* CONTRACT: the Queue callback is one admitted CPU participant.
+             * At most cpu_threads-1 child threads are created, every useful
+             * participant owns one private SQLite handle, and all are joined
+             * and closed before reservation release or sequence_break. The
+             * per-item charge covers this bounded participant state and stack;
+             * batch=1 therefore cannot allocate idle CPU workers. */
             if (!compute_window(context, context->parameters.visual_index_id,
                                 &query_options, source_ids, source_count,
                                 contract.cpu_threads, computations, results)) {
@@ -472,12 +563,12 @@ Lardon3DTask *lardon3d_project_create_candidate_pair_generate_task(
     Lardon3DCandidatePairTaskContext *context =
         make_context(&runtime, &parameters);
     if (!context) return NULL;
-    unsigned int desired_cpu_threads = CANDIDATE_PAIR_CPU_THREADS;
+    unsigned int desired_cpu_threads = CANDIDATE_PAIR_CPU_MAX_SAFE;
 #ifdef LARDON3D_CANDIDATE_PAIR_TASK_TESTING
     const char *test_threads = getenv("LARDON3D_TEST_CANDIDATE_PAIR_THREADS");
     if (test_threads) {
         unsigned long parsed = strtoul(test_threads, NULL, 10);
-        if (parsed >= 1 && parsed <= CANDIDATE_PAIR_CPU_THREADS) {
+        if (parsed >= 1 && parsed <= CANDIDATE_PAIR_CPU_MAX_SAFE) {
             desired_cpu_threads = (unsigned int)parsed;
         }
     }

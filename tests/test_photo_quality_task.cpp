@@ -31,9 +31,9 @@ extern "C" const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_productio
 }
 
 static bool wait_terminal(Lardon3DTaskQueue *queue, uint64_t task_id,
-                          Lardon3DTaskSnapshot *snapshot) {
+                          Lardon3DTaskObservation *snapshot) {
   for (size_t attempt = 0; attempt < 500; ++attempt) {
-    if (lardon3d_task_queue_get(queue, task_id, snapshot) &&
+    if (lardon3d_task_queue_get_observation(queue, task_id, snapshot) &&
         (snapshot->state == TASK_COMPLETED || snapshot->state == TASK_FAILED ||
          snapshot->state == TASK_CANCELLED))
       return true;
@@ -111,9 +111,11 @@ int main() {
   cv::setNumThreads(3);
   uint64_t task_id = 0;
   CHECK(lardon3d_project_enqueue_photo_quality(&state, scanset.scanset_id, &request, &task_id));
-  Lardon3DTaskSnapshot terminal{};
+  Lardon3DTaskObservation terminal{};
   CHECK(wait_terminal(state.task_queue, task_id, &terminal));
-  CHECK(terminal.state == TASK_COMPLETED && terminal.progress == 100);
+  CHECK(terminal.state == TASK_COMPLETED && terminal.progress == 100 &&
+        terminal.durable_progress_known && terminal.durable_completed == 2 &&
+        terminal.durable_total == 2);
   CHECK(cv::getNumThreads() == 3);
   Lardon3DProjectDbPhotoQualityResult paired{}, raw_only{};
   CHECK(lardon3d_project_db_load_photo_quality_result(database, task_id, 1, &paired) ==
@@ -136,28 +138,105 @@ int main() {
             corrupt_request.size(), &completed_parameters) == LARDON3D_PROJECT_DB_OK);
   CHECK(completed_parameters.group_count == 2 && completed_parameters.next_group_id == 3);
   CHECK(lardon3d_resource_governor_reservation_count(state.resource_governor) == 0);
+  Lardon3DTaskDurableSnapshot mismatched_snapshot{};
+  mismatched_snapshot.id = task_id;
+  std::snprintf(mismatched_snapshot.name, sizeof(mismatched_snapshot.name),
+                "quality kind mismatch");
+  mismatched_snapshot.saved_state = mismatched_snapshot.recovery_state = TASK_PENDING;
+  CHECK(lardon3d_project_db_record_photo_quality_task(
+            database, &mismatched_snapshot,
+            LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND,
+            LARDON3D_ACQUISITION_CAMPAIGN_TASK_KIND_VERSION, nullptr,
+            &completed_parameters, 2) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
 
   /* Corrupt values above the v21 operational group bound must be rejected
    * while still 64-bit SQLite integers, before narrowing into public fields. */
   sqlite3 *corruptor = nullptr;
   CHECK(sqlite3_open(database_path.c_str(), &corruptor) == SQLITE_OK);
-  CHECK(sqlite3_exec(corruptor, "PRAGMA ignore_check_constraints=ON", nullptr, nullptr,
-                     nullptr) == SQLITE_OK);
+  CHECK(sqlite3_exec(corruptor,
+                     "PRAGMA foreign_keys=OFF;PRAGMA ignore_check_constraints=ON",
+                     nullptr, nullptr, nullptr) == SQLITE_OK);
   const auto execute_corruption = [&](const std::string &assignment) {
     const std::string sql = "UPDATE photo_quality_triage_tasks SET " + assignment +
                             " WHERE task_id=" + std::to_string(task_id);
     return sqlite3_exec(corruptor, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK;
   };
+  std::vector<unsigned char> corrupt_output(completed_parameters.request_size);
   Lardon3DProjectDbPhotoQualityTask corrupt_parameters{};
+  const auto expect_task_failure = [&](uint64_t corrupt_task_id,
+                                       Lardon3DProjectDbResult expected) {
+    std::memset(corrupt_output.data(), 0xa5, corrupt_output.size());
+    std::memset(&corrupt_parameters, 0xa5, sizeof(corrupt_parameters));
+    if (lardon3d_project_db_load_photo_quality_task(
+            database, corrupt_task_id, corrupt_output.data(),
+            corrupt_output.size(), &corrupt_parameters) != expected)
+      return false;
+    if (corrupt_parameters.task_id != 0 ||
+        corrupt_parameters.scanset_id != 0 ||
+        corrupt_parameters.next_group_id != 0 ||
+        corrupt_parameters.group_count != 0 || corrupt_parameters.request ||
+        corrupt_parameters.request_size != 0)
+      return false;
+    for (unsigned char byte : corrupt_output)
+      if (byte != 0xa5)
+        return false;
+    return true;
+  };
+  /* No typed business row is ordinary absence; only a present row with broken
+   * parent relations is durable corruption. Both failure classes hide outputs. */
+  CHECK(expect_task_failure(INT64_MAX, LARDON3D_PROJECT_DB_NOT_FOUND));
   for (const char *assignment : {"group_count=-1", "group_count=5000", "group_count=4294967296",
                                  "next_group_id=0", "next_group_id=4", "next_group_id=1e20",
-                                 "scanset_id=-1"}) {
+                                 "scanset_id=-1", "scanset_id=1e20",
+                                 "scanset_id=9223372036854775807"}) {
     CHECK(execute_corruption(assignment));
-    CHECK(lardon3d_project_db_load_photo_quality_task(database, task_id, corrupt_request.data(),
-              corrupt_request.size(), &corrupt_parameters) == LARDON3D_PROJECT_DB_CORRUPT);
+    CHECK(expect_task_failure(task_id, LARDON3D_PROJECT_DB_CORRUPT));
     CHECK(execute_corruption("scanset_id=" + std::to_string(scanset.scanset_id) +
                              ",group_count=2,next_group_id=3"));
   }
+  CHECK(execute_corruption("request=CAST(request AS TEXT)"));
+  CHECK(expect_task_failure(task_id, LARDON3D_PROJECT_DB_CORRUPT));
+  CHECK(execute_corruption("request=CAST(request AS BLOB)"));
+
+  const auto execute_generic_corruption = [&](const std::string &assignment) {
+    const std::string sql = "UPDATE tasks SET " + assignment +
+                            " WHERE task_id=" + std::to_string(task_id);
+    return sqlite3_exec(corruptor, sql.c_str(), nullptr, nullptr, nullptr) ==
+           SQLITE_OK;
+  };
+  CHECK(execute_generic_corruption("task_kind=task_kind||char(0)||'tail'"));
+  CHECK(expect_task_failure(task_id, LARDON3D_PROJECT_DB_CORRUPT));
+  CHECK(execute_generic_corruption("task_kind='photo_quality.triage'"));
+  CHECK(execute_generic_corruption("task_kind_version=2"));
+  CHECK(expect_task_failure(task_id, LARDON3D_PROJECT_DB_CORRUPT));
+  CHECK(execute_generic_corruption("task_kind_version=1"));
+  CHECK(execute_generic_corruption("task_kind_version=1e20"));
+  CHECK(expect_task_failure(task_id, LARDON3D_PROJECT_DB_CORRUPT));
+  CHECK(execute_generic_corruption("task_kind_version=1"));
+
+  /* The typed business row determines presence. Broken generic ownership must
+   * be reported as corruption instead of disappearing behind an inner join. */
+  uint64_t orphan_task_id = 0;
+  CHECK(lardon3d_project_db_allocate_task_id(database, &orphan_task_id) ==
+        LARDON3D_PROJECT_DB_OK);
+  Lardon3DTaskDurableSnapshot orphan_snapshot{};
+  orphan_snapshot.id = orphan_task_id;
+  std::snprintf(orphan_snapshot.name, sizeof(orphan_snapshot.name),
+                "quality orphan fixture");
+  orphan_snapshot.saved_state = orphan_snapshot.recovery_state = TASK_PENDING;
+  Lardon3DProjectDbPhotoQualityTask orphan_parameters{
+      orphan_task_id, scanset.scanset_id, 1, 2, corrupt_request.data(),
+      completed_parameters.request_size};
+  CHECK(lardon3d_project_db_record_photo_quality_task(
+            database, &orphan_snapshot, LARDON3D_PHOTO_QUALITY_TASK_KIND,
+            LARDON3D_PHOTO_QUALITY_TASK_KIND_VERSION, nullptr,
+            &orphan_parameters, 1) == LARDON3D_PROJECT_DB_OK);
+  CHECK(sqlite3_exec(
+            corruptor,
+            ("DELETE FROM tasks WHERE task_id=" +
+             std::to_string(orphan_task_id)).c_str(),
+            nullptr, nullptr, nullptr) == SQLITE_OK);
+  CHECK(expect_task_failure(orphan_task_id, LARDON3D_PROJECT_DB_CORRUPT));
 
   const auto execute_result_corruption = [&](const std::string &assignment) {
     const std::string sql = "UPDATE photo_quality_triage_results SET " + assignment +
@@ -308,7 +387,8 @@ int main() {
         restored != nullptr);
   CHECK(lardon3d_task_queue_add(state.task_queue, restored, nullptr));
   CHECK(wait_terminal(state.task_queue, restart_id, &terminal));
-  CHECK(terminal.state == TASK_COMPLETED);
+  CHECK(terminal.state == TASK_COMPLETED && terminal.durable_progress_known &&
+        terminal.durable_completed == 2 && terminal.durable_total == 2);
   Lardon3DProjectDbPhotoQualityResult retained{}, resumed_raw{};
   CHECK(lardon3d_project_db_load_photo_quality_result(database, restart_id, 1, &retained) ==
         LARDON3D_PROJECT_DB_OK && retained.metrics.sharpness_raw == 12345.0);

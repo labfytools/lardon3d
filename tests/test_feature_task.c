@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <math.h>
 #include <pthread.h>
 #include <sched.h>
@@ -153,7 +154,7 @@ typedef struct {
 static bool adaptive_extract_callback(Lardon3DTask *task, void *userdata) {
   AdaptiveExtractWork *work = userdata;
   Lardon3DOpenCvTaskThreadControl control;
-  if (!lardon3d_opencv_task_threads_begin(task, 12, &control) ||
+  if (!lardon3d_opencv_task_threads_begin(task, INT_MAX, &control) ||
       lardon3d_feature_opencv_thread_count() != work->expected_threads) {
     return false;
   }
@@ -175,6 +176,95 @@ static bool adaptive_extract_callback(Lardon3DTask *task, void *userdata) {
          lardon3d_task_set_progress(task, 100, "Extraction adaptative testée.");
 }
 
+static bool retry_failed_opencv_restoration(void) {
+  unsigned int original = lardon3d_feature_opencv_thread_count();
+  Lardon3DOpenCvTaskThreadControl control = {
+      .previous = original,
+      .restore_required = true,
+  };
+  unsigned int temporary = original == 1 ? 2 : 1;
+  if (!lardon3d_feature_opencv_configure_threads(temporary)) return false;
+  char failed_threads[32];
+  int written = snprintf(failed_threads, sizeof(failed_threads), "%u", original);
+  bool ok = written > 0 && (size_t)written < sizeof(failed_threads) &&
+            setenv("LARDON3D_TEST_OPENCV_CONFIGURE_FAILURE_THREADS", failed_threads, 1) == 0;
+  /* The injected failure occurs after setNumThreads(), so verification must
+   * retain the restoration obligation even though the observed value changed. */
+  ok = ok && !lardon3d_opencv_task_threads_end(&control) && control.restore_required;
+  ok = unsetenv("LARDON3D_TEST_OPENCV_CONFIGURE_FAILURE_THREADS") == 0 && ok;
+  ok = lardon3d_opencv_task_threads_end(&control) && !control.restore_required &&
+       lardon3d_feature_opencv_thread_count() == original && ok;
+  return ok;
+}
+
+static Lardon3DResourceSnapshot deterministic_resource_snapshot(double cpu_load_1m) {
+  return (Lardon3DResourceSnapshot) {
+      .memory_available_bytes = UINT64_C(12) * 1024 * 1024 * 1024,
+      .memory_free_bytes = UINT64_C(8) * 1024 * 1024 * 1024,
+      .cpu_load_1m = cpu_load_1m,
+      .cpu_pressure_known = true,
+      .cpu_pressure_avg10 = 0.0,
+      .memory_pressure_known = true,
+      .memory_pressure_avg10 = 0.0,
+      .io_pressure_known = true,
+      .io_pressure_avg10 = 0.0,
+      .swap_activity_known = true,
+      .swap_pages_in = 0,
+      .swap_pages_out = 0,
+  };
+}
+
+static bool deterministic_capture_preserves_load_gate(void) {
+  Lardon3DHardwareProfile profile = {
+      .logical_cpu_count = 5,
+      .page_size_bytes = 4096,
+      .memory_total_bytes = UINT64_C(16) * 1024 * 1024 * 1024,
+      .cpu_architecture = "test",
+  };
+  Lardon3DResourcePolicy policy = {
+      .system_cpu_reserve = 4,
+      .maximum_cpu_load_ratio = 1.0,
+      .maximum_io_pressure_avg10 = 100.0,
+      .io_slot_capacity = 1,
+  };
+  Lardon3DResourceGovernor *governor =
+      lardon3d_resource_governor_create(&profile, &policy);
+  if (!governor) return false;
+  Lardon3DResourceEstimate estimate = {
+      .minimum_batch_size = 1,
+      .maximum_batch_size = 1,
+      .desired_cpu_threads = 1,
+      .task_class = LARDON3D_RESOURCE_TASK_CPU,
+  };
+  Lardon3DResourceSnapshot snapshot = deterministic_resource_snapshot(5.0);
+  Lardon3DResourceDecision decision;
+  Lardon3DResourceReservation *reservation = NULL;
+  /* Equality is intentional: production rejects load >= logical CPUs times
+   * the configured ratio. The seam controls telemetry, not policy. */
+  bool ok = lardon3d_resource_governor_internal_set_capture_snapshot(
+          governor, &snapshot)
+      && lardon3d_resource_governor_reserve_available(
+          governor, &estimate, &decision, &reservation)
+      && decision.kind == LARDON3D_RESOURCE_WAIT
+      && reservation == NULL
+      && strcmp(decision.reason, "Charge CPU trop élevée.") == 0;
+  snapshot = deterministic_resource_snapshot(0.0);
+  ok = lardon3d_resource_governor_internal_set_capture_snapshot(
+          governor, &snapshot)
+      && lardon3d_resource_governor_reserve_available(
+          governor, &estimate, &decision, &reservation)
+      && decision.kind == LARDON3D_RESOURCE_START
+      && reservation != NULL
+      && ok;
+  if (reservation) {
+    ok = lardon3d_resource_governor_release(governor, reservation) && ok;
+  }
+  ok = lardon3d_resource_governor_internal_set_capture_snapshot(
+      governor, NULL) && ok;
+  lardon3d_resource_governor_destroy(governor);
+  return ok;
+}
+
 static bool run_adaptive_output_equivalence(const char *path) {
   cpu_set_t allowed_mask;
   CPU_ZERO(&allowed_mask);
@@ -190,7 +280,9 @@ static bool run_adaptive_output_equivalence(const char *path) {
     }
   }
   if (allowed_count == 0) return true;
-  const unsigned int requested[] = {1, 2, 4, 8, 12};
+  /* Counts above the historical host ceiling execute only when the process
+   * affinity genuinely exposes them; unavailable CPUs are never fabricated. */
+  const unsigned int requested[] = {1, 2, 4, 8, 12, 16, 32, 64};
   Lardon3DExtractedFeatures baseline[TEST_EXTRACT_COUNT] = {0};
   bool have_baseline[TEST_EXTRACT_COUNT] = {false};
   unsigned int previous_threads = lardon3d_feature_opencv_thread_count();
@@ -222,10 +314,13 @@ static bool run_adaptive_output_equivalence(const char *path) {
     for (unsigned int index = 0; index < threads; ++index) {
       topology.allowed_cpu_ids[index] = allowed_ids[index];
     }
+    Lardon3DResourceSnapshot resources = deterministic_resource_snapshot(0.0);
     Lardon3DTaskQueue *queue = NULL;
     if (!governor ||
         !lardon3d_resource_governor_internal_configure_cpu_topology(
             governor, &topology) ||
+        !lardon3d_resource_governor_internal_set_capture_snapshot(
+            governor, &resources) ||
         !(queue = lardon3d_task_queue_create(governor, TEST_EXTRACT_COUNT))) {
       lardon3d_task_queue_destroy(queue);
       lardon3d_resource_governor_destroy(governor);
@@ -237,7 +332,7 @@ static bool run_adaptive_output_equivalence(const char *path) {
     Lardon3DResourceEstimate estimate = {
         .minimum_batch_size = 1,
         .maximum_batch_size = 1,
-        .desired_cpu_threads = 12,
+        .desired_cpu_threads = INT_MAX,
         .task_class = LARDON3D_RESOURCE_TASK_CPU,
     };
     static const char *const task_kinds[TEST_EXTRACT_COUNT] = {
@@ -286,6 +381,10 @@ static bool run_adaptive_output_equivalence(const char *path) {
       lardon3d_extracted_features_destroy(&work[kind].output);
     }
     lardon3d_task_queue_destroy(queue);
+    if (!lardon3d_resource_governor_internal_set_capture_snapshot(
+            governor, NULL)) {
+      ok = false;
+    }
     lardon3d_resource_governor_destroy(governor);
   }
   for (size_t kind = 0; kind < TEST_EXTRACT_COUNT; ++kind) {
@@ -301,15 +400,29 @@ static bool runtime(Lardon3DAppState *s) {
   Lardon3DResourcePolicy p = {
       .maximum_cpu_load_ratio = 1, .maximum_io_pressure_avg10 = 100, .io_slot_capacity = 2};
   s->resource_governor = lardon3d_resource_governor_create(&s->hardware_profile, &p);
-  s->task_queue = s->resource_governor ? lardon3d_task_queue_create(s->resource_governor, 4) : NULL;
-  return s->task_queue != NULL;
+  if (!s->resource_governor) return false;
+  Lardon3DResourceSnapshot resources = deterministic_resource_snapshot(0.0);
+  if (!lardon3d_resource_governor_internal_set_capture_snapshot(
+          s->resource_governor, &resources)) {
+    lardon3d_resource_governor_destroy(s->resource_governor);
+    s->resource_governor = NULL;
+    s->task_queue = NULL;
+    return false;
+  }
+  s->task_queue = lardon3d_task_queue_create(s->resource_governor, 4);
+  if (!s->task_queue) {
+    lardon3d_resource_governor_destroy(s->resource_governor);
+    s->resource_governor = NULL;
+    return false;
+  }
+  return true;
 }
 static bool wait_state(Lardon3DTaskQueue *q, uint64_t id, Lardon3DTaskState wanted,
                        Lardon3DTaskSnapshot *out) {
   struct timespec deadline;
   if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) return false;
-  /* The equality fixture deliberately executes ORB/SIFT/RootSIFT at five CPU
-   * contracts. Instrumented OpenCV is slower than the normal build; keep the
+  /* The equality fixture executes every genuinely available requested CPU
+   * contract. Instrumented OpenCV is slower than the normal build; keep the
    * wait bounded without mistaking sanitizer overhead for scientific drift. */
   deadline.tv_sec += 30;
   for (;;) {
@@ -354,10 +467,12 @@ static void *consolidate_thread(void *userdata) {
 
 static bool run_test(void) {
   char root[] = "/tmp/lardon3d-feature-task-XXXXXX";
+  CHECK(deterministic_capture_preserves_load_gate());
   CHECK(mkdtemp(root) && setenv("LARDON3D_PROJECTS_ROOT", root, 1) == 0);
   char source[PATH_MAX];
   CHECK(join_path(source, root, "source.pgm") && write_pgm(source));
   CHECK(run_adaptive_output_equivalence(source));
+  CHECK(retry_failed_opencv_restoration());
   Lardon3DAppState state;
   lardon3d_app_state_init(&state);
   CHECK(runtime(&state) && lardon3d_project_create(&state, "Features"));
@@ -577,8 +692,8 @@ static bool run_test(void) {
         wait_state(state.task_queue, nondurable_rootsift_task, TASK_COMPLETED, &snapshot) &&
         last_sequence_is_no_work(&state, LARDON3D_ROOTSIFT_EXTRACT_TASK_KIND) &&
         unsetenv("LARDON3D_TEST_FEATURE_FAIL_DIRECTORY_SYNC") == 0);
-  /* SIFT and RootSIFT CPU1 checkpoints are exact historical operational
-   * signatures. Recovery uses CPU12 in memory without publishing an
+  /* SIFT and RootSIFT CPU12/CPU1 checkpoints are exact historical operational
+   * signatures. Recovery uses the portable OpenCV ceiling in memory without publishing an
    * estimate-only checkpoint; a neighboring CPU2 shape is corruption. */
   const uint64_t precision_task_ids[2] = {sift_task_id, rootsift_task_id};
   const char *precision_kinds[2] = {LARDON3D_SIFT_EXTRACT_TASK_KIND,
@@ -589,6 +704,53 @@ static bool run_test(void) {
       .resource_governor = state.resource_governor,
       .orb_vulkan_backend = state.orb_vulkan_backend,
   };
+  char orb_checkpoint[PATH_MAX];
+  CHECK(snprintf(orb_checkpoint, sizeof(orb_checkpoint),
+                 "%s/.lardon3d/checkpoints/%lu.chk", state.project_path,
+                 (unsigned long)task_id) > 0);
+  Lardon3DTaskDurableSnapshot current_orb;
+  CHECK(lardon3d_task_checkpoint_load(orb_checkpoint, &current_orb, NULL) ==
+            LARDON3D_TASK_CHECKPOINT_OK &&
+        current_orb.estimate.desired_cpu_threads == INT_MAX);
+  const unsigned int legacy_orb_counts[] = {12, 1};
+  for (size_t legacy = 0;
+       legacy < sizeof(legacy_orb_counts) / sizeof(legacy_orb_counts[0]);
+       ++legacy) {
+    Lardon3DTaskDurableSnapshot historical_orb = current_orb;
+    historical_orb.estimate.desired_cpu_threads = legacy_orb_counts[legacy];
+    historical_orb.progress = 50;
+    historical_orb.saved_state = TASK_RUNNING;
+    historical_orb.recovery_state = TASK_PENDING;
+    historical_orb.finished_at = (struct timespec){0};
+    Lardon3DTask *restored_orb = NULL;
+    CHECK(lardon3d_task_kind_registry_restore(
+              lardon3d_task_kind_registry_production(),
+              LARDON3D_FEATURE_EXTRACT_TASK_KIND,
+              LARDON3D_FEATURE_EXTRACT_TASK_KIND_VERSION, &historical_orb,
+              &precision_reconstruction, &restored_orb) ==
+              LARDON3D_TASK_KIND_OK &&
+          restored_orb);
+    Lardon3DResourceEstimate effective_orb;
+    CHECK(lardon3d_task_resource_estimate(restored_orb, &effective_orb) &&
+          effective_orb.desired_cpu_threads == INT_MAX);
+    lardon3d_task_destroy(restored_orb);
+  }
+  Lardon3DTaskDurableSnapshot malformed_orb = current_orb;
+  malformed_orb.estimate.desired_cpu_threads = 2;
+  Lardon3DTask *restored_orb = NULL;
+  CHECK(lardon3d_task_kind_registry_restore(
+            lardon3d_task_kind_registry_production(),
+            LARDON3D_FEATURE_EXTRACT_TASK_KIND,
+            LARDON3D_FEATURE_EXTRACT_TASK_KIND_VERSION, &malformed_orb,
+            &precision_reconstruction, &restored_orb) ==
+            LARDON3D_TASK_KIND_RECONSTRUCTION_FAILED &&
+        restored_orb == NULL);
+  Lardon3DTaskDurableSnapshot still_current_orb;
+  CHECK(lardon3d_task_checkpoint_load(orb_checkpoint, &still_current_orb,
+                                      NULL) ==
+            LARDON3D_TASK_CHECKPOINT_OK &&
+        still_current_orb.estimate.desired_cpu_threads == INT_MAX);
+
   for (size_t precision_index = 0; precision_index < 2; ++precision_index) {
     char precision_checkpoint[PATH_MAX];
     char precision_staged[PATH_MAX];
@@ -601,6 +763,25 @@ static bool run_test(void) {
     CHECK(lardon3d_task_checkpoint_load(precision_checkpoint,
                                         &current_precision, NULL) ==
           LARDON3D_TASK_CHECKPOINT_OK);
+    Lardon3DTaskDurableSnapshot cpu12_precision = current_precision;
+    cpu12_precision.estimate.desired_cpu_threads = 12;
+    cpu12_precision.progress = 50;
+    cpu12_precision.saved_state = TASK_RUNNING;
+    cpu12_precision.recovery_state = TASK_PENDING;
+    cpu12_precision.finished_at = (struct timespec){0};
+    Lardon3DTask *cpu12_restored = NULL;
+    CHECK(lardon3d_task_kind_registry_restore(
+              lardon3d_task_kind_registry_production(),
+              precision_kinds[precision_index],
+              LARDON3D_SIFT_EXTRACT_TASK_KIND_VERSION, &cpu12_precision,
+              &precision_reconstruction, &cpu12_restored) ==
+              LARDON3D_TASK_KIND_OK &&
+          cpu12_restored);
+    Lardon3DResourceEstimate cpu12_effective;
+    CHECK(lardon3d_task_resource_estimate(cpu12_restored,
+                                          &cpu12_effective) &&
+          cpu12_effective.desired_cpu_threads == INT_MAX);
+    lardon3d_task_destroy(cpu12_restored);
     Lardon3DTaskDurableSnapshot historical_precision = current_precision;
     historical_precision.estimate.desired_cpu_threads = 1;
     historical_precision.progress = 50;
@@ -627,7 +808,7 @@ static bool run_test(void) {
     Lardon3DResourceEstimate effective_precision;
     CHECK(lardon3d_task_resource_estimate(restored_precision,
                                           &effective_precision) &&
-          effective_precision.desired_cpu_threads == 12);
+          effective_precision.desired_cpu_threads == INT_MAX);
     lardon3d_task_destroy(restored_precision);
     Lardon3DTaskDurableSnapshot durable_precision;
     CHECK(lardon3d_task_checkpoint_load(precision_checkpoint,
@@ -831,6 +1012,19 @@ static bool run_test(void) {
   uint64_t visual_task_id = 0;
   CHECK(lardon3d_project_enqueue_visual_index_update(&state, visual_index_id, &visual_task_id));
   CHECK(wait_state(state.task_queue, visual_task_id, TASK_PAUSED, &snapshot));
+  char visual_checkpoint[PATH_MAX];
+  Lardon3DTaskDurableSnapshot historical_visual;
+  CHECK(snprintf(visual_checkpoint, sizeof(visual_checkpoint),
+                 "%s/.lardon3d/checkpoints/%lu.chk", state.project_path,
+                 (unsigned long)visual_task_id) > 0 &&
+        lardon3d_task_checkpoint_load(visual_checkpoint, &historical_visual,
+                                      NULL) ==
+            LARDON3D_TASK_CHECKPOINT_OK &&
+        historical_visual.estimate.desired_cpu_threads == 16);
+  historical_visual.estimate.desired_cpu_threads = 12;
+  CHECK(lardon3d_task_checkpoint_save(visual_checkpoint,
+                                      &historical_visual) ==
+        LARDON3D_TASK_CHECKPOINT_OK);
   lardon3d_task_queue_destroy(state.task_queue);
   state.task_queue = NULL;
   lardon3d_project_close(&state);

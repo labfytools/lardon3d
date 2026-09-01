@@ -1,4 +1,11 @@
-# Revue des fondations Lardon3D
+# Revue historique des fondations Lardon3D
+
+Ce document conserve l'état de la revue de fondation à son époque. Les limites
+« absence de persistance », tombstones et tickets recommandés ci-dessous ne
+décrivent plus l'état courant. Pour l'architecture active, voir
+[Task](task_system.md), [Queue](task_queue.md),
+[Resource Governor](resource_governor.md) et le
+[registre de maintenance](global_maintenance_audit.md).
 
 ## Objectif
 
@@ -51,7 +58,7 @@ Documenter la revue technique de la phase de fondation : task, task_queue, hardw
 6. Protection mutex unique du gouverneur
 7. Séparation stricte des rôles (scheduler ne décide pas des ressources)
 
-## Limites connues
+## Limites connues lors de cette revue historique
 
 - File à worker unique avec FIFO strict
 - Absence de notification automatique de libération externe
@@ -69,7 +76,7 @@ Documenter la revue technique de la phase de fondation : task, task_queue, hardw
 - Bornage de la mémoire
 - Indépendance de la publication atomique
 
-## Feuille de route
+## Feuille de route historique (désormais supersédée)
 
 ### Prochains tickets recommandés
 1. Sélectionner une tâche admissible sans blocage par la tête de file ✓
@@ -87,4 +94,4 @@ Documenter la revue technique de la phase de fondation : task, task_queue, hardw
 - TSan passé
 - git diff --check propre
 
-## Statut : DOCUMENTATION DE L'IMPLÉMENTATION ACTUELLE
+## Statut : ARCHIVE D'ÉVIDENCE HISTORIQUE

@@ -159,6 +159,79 @@ static bool same_pair_order(const Lardon3DProjectDbCandidatePair *a, size_t a_co
     return true;
 }
 
+static bool same_computation(const Lardon3DCandidatePairComputation *left,
+                             const Lardon3DCandidatePairComputation *right) {
+    if (left->source_feature_set_id != right->source_feature_set_id ||
+        left->queried_count != right->queried_count ||
+        left->proposal_count != right->proposal_count) {
+        return false;
+    }
+    for (size_t i = 0; i < left->proposal_count; ++i) {
+        if (left->proposals[i].image_id_a != right->proposals[i].image_id_a ||
+            left->proposals[i].image_id_b != right->proposals[i].image_id_b) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool run_portable_compute_contracts(
+    Lardon3DAppState *state, uint64_t visual_index_id,
+    const Lardon3DVisualIndexQueryOptions *options,
+    const uint64_t fixture_source_ids[3]) {
+    enum { SOURCE_COUNT = 64 };
+    uint64_t sources[SOURCE_COUNT];
+    Lardon3DCandidatePairComputation baseline[SOURCE_COUNT];
+    Lardon3DCandidatePairComputation parallel[SOURCE_COUNT];
+    Lardon3DVisualIndexResult baseline_results[SOURCE_COUNT];
+    Lardon3DVisualIndexResult parallel_results[SOURCE_COUNT];
+    for (size_t i = 0; i < SOURCE_COUNT; ++i) {
+        sources[i] = fixture_source_ids[i % 3];
+    }
+
+    lardon3d_candidate_pair_task_test_fail_thread_create_after(SIZE_MAX);
+    lardon3d_candidate_pair_task_test_reset_parallel_counters();
+    CHECK(lardon3d_candidate_pair_task_test_compute_window(
+              state->project_path, state->project_db, visual_index_id, options,
+              sources, SOURCE_COUNT, 1, baseline, baseline_results) &&
+          lardon3d_candidate_pair_task_test_started_participants() == 1 &&
+          lardon3d_candidate_pair_task_test_computed_work_items() == SOURCE_COUNT &&
+          lardon3d_candidate_pair_task_test_active_private_databases() == 0);
+
+    const unsigned int portable_counts[] = {16, 32, 64};
+    for (size_t run = 0;
+         run < sizeof(portable_counts) / sizeof(portable_counts[0]); ++run) {
+        lardon3d_candidate_pair_task_test_reset_parallel_counters();
+        CHECK(lardon3d_candidate_pair_task_test_compute_window(
+                  state->project_path, state->project_db, visual_index_id,
+                  options, sources, SOURCE_COUNT, portable_counts[run],
+                  parallel, parallel_results) &&
+              lardon3d_candidate_pair_task_test_started_participants() ==
+                  portable_counts[run] &&
+              lardon3d_candidate_pair_task_test_computed_work_items() ==
+                  SOURCE_COUNT &&
+              lardon3d_candidate_pair_task_test_active_private_databases() == 0);
+        for (size_t i = 0; i < SOURCE_COUNT; ++i) {
+            CHECK(baseline_results[i] == LARDON3D_VISUAL_INDEX_OK &&
+                  parallel_results[i] == baseline_results[i] &&
+                  same_computation(&parallel[i], &baseline[i]));
+        }
+    }
+
+    /* Fail after two children have started. The Queue-owner participant and
+     * those children may compute, but every child is joined and every one of
+     * the 16 preopened private DB handles is closed before failure returns. */
+    lardon3d_candidate_pair_task_test_reset_parallel_counters();
+    lardon3d_candidate_pair_task_test_fail_thread_create_after(2);
+    CHECK(!lardon3d_candidate_pair_task_test_compute_window(
+              state->project_path, state->project_db, visual_index_id, options,
+              sources, SOURCE_COUNT, 16, parallel, parallel_results) &&
+          lardon3d_candidate_pair_task_test_started_participants() == 3 &&
+          lardon3d_candidate_pair_task_test_active_private_databases() == 0);
+    lardon3d_candidate_pair_task_test_fail_thread_create_after(SIZE_MAX);
+    return true;
+}
+
 static bool wait_saved_cursor(Lardon3DProjectDb *database, uint64_t task_id,
                               uint64_t expected) {
     struct timespec deadline;
@@ -315,13 +388,17 @@ static bool run_test(void) {
     state.task_queue = lardon3d_task_queue_create(state.resource_governor, 4);
     CHECK(state.task_queue != NULL);
 
-    /* --- Test 1: déterminisme exact à 1/2/4 threads admis --- */
+    /* --- Test 1: déterminisme exact jusqu'au plafond portable de 64 --- */
     Lardon3DVisualIndexQueryOptions qopts = {
         .top_k = 16,
         .minimum_evidence_count = 10,
         .scanset_filter = LARDON3D_VISUAL_INDEX_ANY_SCANSET,
         .exclude_same_asset = false,
     };
+    const uint64_t portable_fixture_sources[3] = {
+        fs_a.feature_set_id, fs_b.feature_set_id, fs_c.feature_set_id};
+    CHECK(run_portable_compute_contracts(&state, visual_index_id, &qopts,
+                                         portable_fixture_sources));
 
     /* A healthy Governor admits two bounded sources per sequence. The six
      * durable memberships create three productive windows: initial admission
@@ -355,11 +432,11 @@ static bool run_test(void) {
     CHECK(unsetenv("LARDON3D_TEST_CANDIDATE_PAIR_MAXIMUM_BATCH") == 0 &&
           unsetenv("LARDON3D_TEST_CANDIDATE_PAIR_THREADS") == 0);
 
-    /* CPU admission does not authorize extra work. With twelve available
-     * CPUs but an admitted one-item batch, each of the six sequence breaks
+    /* CPU admission does not authorize extra work. With 64 CPUs requested but
+     * an admitted one-item batch, each of the six sequence breaks
      * has exactly one independent source and therefore one useful worker. */
     CHECK(reset_candidate_pairs(state.project_db) &&
-          setenv("LARDON3D_TEST_CANDIDATE_PAIR_THREADS", "12", 1) == 0 &&
+          setenv("LARDON3D_TEST_CANDIDATE_PAIR_THREADS", "64", 1) == 0 &&
           setenv("LARDON3D_TEST_CANDIDATE_PAIR_MAXIMUM_BATCH", "1", 1) == 0);
     lardon3d_candidate_pair_task_test_reset_parallel_counters();
     uint64_t pressure_task_id = 0;
@@ -375,11 +452,12 @@ static bool run_test(void) {
     CHECK(unsetenv("LARDON3D_TEST_CANDIDATE_PAIR_MAXIMUM_BATCH") == 0 &&
           unsetenv("LARDON3D_TEST_CANDIDATE_PAIR_THREADS") == 0);
 
-    const char *thread_counts[] = {"1", "2", "4"};
+    const char *thread_counts[] = {"1", "2", "4", "16", "32", "64"};
     uint64_t cp_task_id = 0;
     Lardon3DProjectDbCandidatePair baseline[32];
     size_t baseline_count = 0;
-    for (size_t run = 0; run < 3; ++run) {
+    for (size_t run = 0;
+         run < sizeof(thread_counts) / sizeof(thread_counts[0]); ++run) {
         CHECK(reset_candidate_pairs(state.project_db) &&
               setenv("LARDON3D_TEST_CANDIDATE_PAIR_THREADS", thread_counts[run], 1) == 0);
         uint64_t current_task_id = 0;
@@ -553,6 +631,30 @@ static bool run_test(void) {
     };
     Lardon3DTask *recovered = NULL;
 
+    /* The immediately preceding parallel form used fixed256/per-item64KiB
+     * with CPU12. It is independent from the oldest fixed128/CPU1 signature
+     * below and both normalize to the portable, fully accounted estimate. */
+    Lardon3DTaskDurableSnapshot historical_parallel =
+        candidate_recovery->snapshot;
+    historical_parallel.estimate.memory_fixed_bytes = 256 * 1024;
+    historical_parallel.estimate.memory_bytes_per_item = 64 * 1024;
+    historical_parallel.estimate.desired_cpu_threads = 12;
+    Lardon3DTask *historical_parallel_task = NULL;
+    CHECK(lardon3d_task_kind_registry_restore(
+              lardon3d_task_kind_registry_production(),
+              candidate_recovery->task_kind,
+              candidate_recovery->task_kind_version, &historical_parallel,
+              &reconstruction, &historical_parallel_task) ==
+              LARDON3D_TASK_KIND_OK &&
+          historical_parallel_task);
+    Lardon3DResourceEstimate historical_parallel_effective;
+    CHECK(lardon3d_task_resource_estimate(
+              historical_parallel_task, &historical_parallel_effective) &&
+          historical_parallel_effective.memory_bytes_per_item ==
+              8 * 1024 * 1024 &&
+          historical_parallel_effective.desired_cpu_threads == 64);
+    lardon3d_task_destroy(historical_parallel_task);
+
     /* Every field belongs to the historical signature. Neighboring estimates
      * are malformed rather than evidence for legacy operational policy. */
     Lardon3DTaskDurableSnapshot near_snapshots[4];
@@ -582,11 +684,11 @@ static bool run_test(void) {
     const Lardon3DResourceEstimate current_estimate = {
         .memory_fixed_bytes = 256 * 1024,
         .gpu_memory_fixed_bytes = 0,
-        .memory_bytes_per_item = 64 * 1024,
+        .memory_bytes_per_item = 8 * 1024 * 1024,
         .gpu_memory_bytes_per_item = 0,
         .minimum_batch_size = 1,
         .maximum_batch_size = 64,
-        .desired_cpu_threads = 12,
+        .desired_cpu_threads = 64,
         .desired_gpu_slots = 0,
         .desired_io_slots = 1,
         .task_class = LARDON3D_RESOURCE_TASK_CPU,
@@ -604,7 +706,7 @@ static bool run_test(void) {
           lardon3d_resource_governor_reserve(
               state.resource_governor, &resources, &recovered_estimate,
               &decision, &reservation) &&
-          decision.cpu_threads == 12 && decision.batch_size >= 1 &&
+          decision.cpu_threads >= 1 && decision.cpu_threads <= 64 &&
           decision.batch_size <= 64 && reservation);
     lardon3d_resource_governor_release(state.resource_governor, reservation);
 

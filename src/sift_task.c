@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <openssl/evp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -167,12 +168,19 @@ static bool run(Lardon3DTask *task, void *userdata) {
   struct timespec end = {0};
   bool timing_known = clock_gettime(CLOCK_MONOTONIC, &begin) == 0;
   Lardon3DOpenCvTaskThreadControl threads;
-  if (!lardon3d_opencv_task_threads_begin(task, 12, &threads)) {
+  if (!lardon3d_opencv_task_threads_begin(task, INT_MAX, &threads)) {
+    /* A failed configure can still mutate OpenCV. Retain and retry the captured
+     * restoration obligation once before returning across the C Task seam. */
+    if (threads.restore_required &&
+        !lardon3d_opencv_task_threads_end(&threads)) {
+      return lardon3d_task_fail(task, "Restauration OpenCV SIFT impossible.");
+    }
     return lardon3d_task_fail(task, "Contrat CPU OpenCV SIFT invalide.");
   }
-  /* SIFT/RootSIFT consume the immutable admitted 1..12 OpenCV count. Queue's
-   * single Task owner makes the process-wide set/restore deterministic and
-   * race-free without changing extractor identity or output semantics. */
+  /* EXTERNAL LIBRARY: OpenCV accepts a positive signed-int thread count.
+   * Governor clamps the portable INT_MAX capability to the host compute pool;
+   * Queue's single Task owner makes the process-wide set/restore deterministic
+   * without changing SIFT/RootSIFT identity or output semantics. */
   size_t durable_items = 0;
   bool result = run_body(task, userdata, &durable_items);
   if (!lardon3d_opencv_task_threads_end(&threads)) {
@@ -289,9 +297,9 @@ Lardon3DTask *lardon3d_project_create_sift_extract_task(
                                        .memory_bytes_per_item = 1024ULL * 1024 * 1024,
                                        .minimum_batch_size = 1,
                                        .maximum_batch_size = 1,
-                                       /* Canonical durable maximum; the admitted OpenCV count may
-                                        * adapt within the validated 1..12 range. */
-                                       .desired_cpu_threads = 12,
+                                       /* EXTERNAL LIBRARY: OpenCV's positive-int API is the safe
+                                        * ceiling; Governor supplies the portable host maximum. */
+                                       .desired_cpu_threads = INT_MAX,
                                        .desired_io_slots = 1,
                                        .task_class = LARDON3D_RESOURCE_TASK_CPU};
   const char *kind = parameters->rootsift ? LARDON3D_ROOTSIFT_EXTRACT_TASK_KIND

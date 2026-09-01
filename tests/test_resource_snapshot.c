@@ -169,6 +169,12 @@ run_test(void)
             && snapshot.captured_at.tv_nsec <= after.tv_nsec));
     CHECK(snapshot.memory_available_bytes > 0);
     CHECK(snapshot.memory_free_bytes <= profile.memory_total_bytes);
+    Lardon3DResourceObservation observation;
+    CHECK(lardon3d_resource_observation_capture(
+        &profile, &observation, error, sizeof(error)));
+    CHECK(observation.swap_total_known);
+    CHECK(observation.snapshot.swap_available_bytes
+        <= observation.swap_total_bytes);
     CHECK(snapshot.cpu_load_1m >= 0.0);
     CHECK(snapshot.cpu_load_5m >= 0.0);
     CHECK(snapshot.cpu_load_15m >= 0.0);

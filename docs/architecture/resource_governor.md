@@ -13,18 +13,27 @@ Cette couture privée est gelée ; seule une séquence ultérieure peut recevoir
 un autre contrat. Les dimensions retenues, le corpus S21 complet, les suites
 portable/Vulkan, les sanitizers et l'audit XHIGH ferment le statut v2.
 
-Sur le profil validé Ryzen 7 8845HS, le Governor lit le masque d'affinité permis
-et la topologie package/core Linux. Il réserve des groupes de coeurs physiques
-complets, frères SMT inclus, en préférant déterministiquement les plus grands
-IDs package/core. Avec le masque unrestricted 0–15 et une réserve logique de
-quatre, il dérive le pool lourd `0-5,8-13` et réserve `6,7,14,15` au desktop
-Arch/Sway, à l'audio et à l'interaction ordinaire. Si le caller est déjà limité
-à au plus `logical_total - reserve`, son masque permis devient directement le
-pool de calcul sans seconde soustraction. Sans affinité/topologie exploitable,
-le budget portable `logical_total - reserve` subsiste sans exclusion arbitraire
-de frères SMT et l'affinité est diagnostiquée inactive. Cette politique privée
-est **PASS / FROZEN** sur le profil validé ; aucun ID CPU n'est persisté ni ne
-devient une identité scientifique.
+**PORTABLE_HOST_POLICY_MAINTENANCE — IMPLEMENTED / VALIDATED / REVIEWED.** La
+maintenance ultérieure retire les plafonds matériels globaux issus de l'hôte
+de preuve, sans changer la science, les formats, les fingerprints ni la
+durabilité v2. Son lifecycle global reste suivi par
+[`GLOBAL_MAINTENANCE_AUDIT`](global_maintenance_audit.md).
+
+Le Governor lit le masque d'affinité permis et la topologie package/core Linux.
+La politique par défaut demande quatre CPU logiques de réserve lorsque c'est
+praticable et conserve au moins un CPU de calcul sur un petit hôte. Avec une
+topologie complète, elle réserve des groupes de coeurs physiques complets,
+frères SMT inclus, en choisissant le sous-ensemble déterministe dont le
+dépassement de la cible logique est minimal. Les CPU déjà exclus par un masque
+externe comptent dans la réserve hôte, donc la même capacité n'est jamais
+soustraite deux fois. Sans affinité/topologie exploitable, le budget de compte
+portable subsiste sans fabriquer de masque ni d'ID CPU.
+
+Sur le profil de preuve Ryzen 7 8845HS unrestricted 0–15, la cible logique de
+quatre donne le pool lourd `0-5,8-13` et la réserve `6,7,14,15` pour Arch/Sway,
+l'audio et l'interaction ordinaire. Ces IDs sont une observation historique de
+cet hôte, pas une politique portable. Aucun ID CPU n'est persisté ni ne devient
+une identité scientifique.
 
 Seul le worker lourd de l'unique Queue applique et relit son propre masque
 (`pid=0`) avant les callbacks. Le caller/main/TUI reste unrestricted et aucun
@@ -52,15 +61,20 @@ Le nombre de CPUs du pool borne directement l'admission.
 CPU Matcher reste validé dans `1..12`, indépendamment du lot :
 `cpu_threads=12, batch_size=1` demeure un contrat valide.
 
-La cible Compute Governor v2 conserve 3 GiB de `MemAvailable` et ne franchit
-pas intentionnellement le plancher dur de 2 GiB sur cette classe d'hôte 16 GiB.
+La politique par défaut conserve environ 3 GiB de `MemAvailable` comme réserve
+dure d'admission sur un hôte capable. Entre 3 et 4 GiB, elle entre en prudence
+YELLOW et bloque la croissance, mais ne soustrait jamais 4 GiB à la capacité et
+ne transforme pas cette bande stable en RED. Un hôte de moins de 3 GiB dégrade
+la réserve en fraction déterministe afin de garder une capacité bornée.
 Les entrées de pression actives sont `MemAvailable`, les PSI CPU/mémoire/I/O et
 les deltas swap-in/swap-out entre observations. L'occupation totale du swap est
 un état historique, pas à elle seule une activité récente. Ces objectifs v2 ne
 réécrivent pas rétroactivement les constantes Gate G core gelées ci-dessous.
 Les observations saines autorisent une croissance lente. Pour une dimension
-CPU réellement réductible, la rampe est exactement `1 → 2 → 4 → 8 → 12`,
-bornée par l'enveloppe et le compute-pool. Deux séquences établissent d'abord
+CPU réellement réductible, la rampe double depuis 1 et inclut toujours le
+maximum exact de la capacité lorsqu'il n'est pas une puissance de deux. Elle
+est bornée par l'enveloppe et le compute-pool, sans plafond global 12. Deux
+séquences établissent d'abord
 une référence de débit durable puis ouvrent un essai borné au palier supérieur.
 Les dimensions CPU/génériques conservent deux observations d'essai et un gain
 d'au moins 5 % avant une nouvelle croissance. Le lot ORB Vulkan normal exige
@@ -136,7 +150,8 @@ lorsque cette petite capacité reste incertaine. Sur l'hôte validé, les preuve
 exactes sont 512 Mio de VRAM visible et 7 986 020 352 octets de GTT pour environ
 16 Gio de RAM. Une classification UMA conservatrice d'un GPU à faible VRAM peut
 refuser inutilement une admission ; classer à tort cet iGPU comme mémoire libre
-séparée pourrait contourner les cibles 3 Gio/2 Gio et est interdit. La capacité
+séparée pourrait contourner la réserve dure de 3 Gio et la prudence 3–4 Gio,
+ce qui est interdit. La capacité
 rapportée ne forme donc aucun second budget VRAM indépendant sur UMA.
 
 La politique canonique v2 est GPU-first lorsqu'un backend est validé,
@@ -265,39 +280,42 @@ privée de sûreté/benchmark peut retenir deux slots, soit 1,25 Mio, seulement
 sous un contrat forcé depth 2. Device, pipeline, layouts et cache restent partagés; leurs
 allocations driver opaques ne reçoivent pas un coût inventé.
 
-| Kind v1 | Estimation courante | Dimensions réellement consommées / constat Phase 1 |
+| Kind v1 | Estimation courante | Dimension consommée et raison |
 | --- | --- | --- |
-| `raw.develop` | MIXED; CPU 1; lot 1; hôte `2 Gio + contexte`, 0/item; I/O 1; GPU 0 | Fixe et atomique. Un garde Queue applique CPU1 au pool OpenCV process-wide puis restaure la valeur précédente. |
-| `photo_quality.triage` | IMPORT; CPU 1; lot 1; hôte `contexte retenu + 20 Mio`, 0/item; I/O 1; GPU 0 | Un groupe par séquence. Un garde Queue applique/restaure CPU1 ; lot et contexte sont honnêtes. |
-| `acquisition_campaign.run` | IMPORT; CPU 1; lot 1; hôte `contexte retenu + 256 Kio` + 64 Kio/item; I/O 1; GPU 0 | Sources, confirmations, requête et plan sont chargés avant admission. La reprise remplace seulement l'enveloppe opérationnelle historique sous-estimée par ce coût exact ; le snapshot durable reste inchangé. |
-| `import.images` | IMPORT; CPU 1; lot 1..32; hôte 128 Kio + `NAME_MAX+64`/item; I/O 1; GPU 0 | Le callback consomme exactement le lot admis et réadmet entre lots. |
-| `features.extract` | CPU; CPU 1..12; lot 1; hôte 64 Mio + 512 Mio/item; I/O 1; GPU 0 | Une image. Le callback applique/restaure exactement le CPU admis dans OpenCV, y compris si la vérification échoue après mutation. Sortie égale à 1/2/4/8/12. |
-| `features.extract.sift` | CPU; CPU 1..12; lot 1; hôte 64 Mio + 1 Gio/item; I/O 1; GPU 0 | Même enforcement/rollback adaptatif. La forme durable courante reste CPU12 et la forme historique CPU1 exacte est normalisée en mémoire. |
-| `features.extract.rootsift` | CPU; CPU 1..12; lot 1; hôte 64 Mio + 1 Gio/item; I/O 1; GPU 0 | Même exécution adaptative que SIFT ; aucune couture GPU validée. |
-| `visual_index.update` | CPU; CPU 1..12; lot 1..16; hôte 8 Mio + 2 Mio/item; I/O 1; GPU 0 | CPU et lot sont lus du contrat; au plus `cpu_threads-1` enfants joints avant publication. |
-| `candidate_pair.generate` | CPU; CPU 1..12; lot 1..64; hôte 256 Kio + 64 Kio/item; I/O 1; GPU 0 | CPU et lot sont consommés; fenêtre `min(2*CPU, 24)`. La forme sérielle historique exacte est normalisée en mémoire. |
-| `matcher.run` | CPU: CPU 1..12, lot 1..12, hôte 0 + 10 Mio/item, I/O 1, GPU 0. ORB Vulkan normal: CPU 1, lot 1..8, même hôte/item, I/O 1, GPU 1 + 640 Kio, inflight 1. | ORB AUTO adapte seulement le lot sur huit observations pures par palier; CPU complet en fallback. Le benchmark privé conserve batch 12 et depth 2 (1,25 Mio), pas la politique normale. Vulkan explicite et contrôle synchrone restent depth 1; SIFT/RootSIFT et CPU explicite restent fixes. Helpers=0. |
-| `geometric_verifier.run` | CPU; CPU 1; lot 1..8; hôte 4 Mio, 0/item; I/O 1; GPU 0 | Le lot est consommé séquentiellement; USAC conserve `isParallel=false`. |
-| `track_builder.run` | CPU; CPU 1; lot 1; fixe `(4 Mio + arêtes * (48 + 2*160)) * facteur`, facteur 2 jusqu'à 400k arêtes puis 8; 0/item; I/O 1; GPU 0 | Rebuild atomique. La reprise valide le scope mais ne recalcule pas l'estimation avant admission. |
-| `sparse_sfm.run` | CPU; CPU 1; lot 1; fixe `ceil_Mio(128 Mio + 64 Kio/image + 2 Kio/track + 512 octets/observation)`; 0/item; I/O 1; GPU 0 | Exécution atomique; BA à un thread. La forme est redérivée à la reprise sans réconciliation de l'estimation persistée. |
-| `incremental_reconstruction.run` | CPU; CPU 1; lot 1; fixe `ceil_Mio(256 Mio + 128 Kio*(caméras base + images extension) + 4 Kio*(landmarks base + tracks extension) + 1 Kio*(observations base + extension))`; 0/item; I/O 1; GPU 0 | Exécution atomique; la forme est redérivée à la reprise sans réconciliation de l'estimation persistée. |
+| `raw.develop` | MIXED; CPU 1; lot 1; hôte `2 Gio + contexte`, 0/item; I/O 1; GPU 0 | Un Capture atomique. Le garde applique/restaure CPU1 au pool OpenCV global. Les 2 Gio sont une allowance de travail opérationnelle, pas une limite de dataset. |
+| `photo_quality.triage` | IMPORT; CPU 1; lot 1; hôte `contexte retenu + 20 Mio`, 0/item; I/O 1; GPU 0 | Un groupe par séquence ; garde OpenCV CPU1. Aucun scaling utile déterministe n'est acquis. |
+| `acquisition_campaign.run` | JPEG: IMPORT ; RAW: MIXED. CPU 1; lot 1; hôte `contexte retenu + requête transitoire exacte + 256 Kio` + 64 Kio/item ; DEVELOP_RAW ajoute 2 Gio; I/O 1; GPU 0 | Un groupe S3-E par séquence, sans Task imbriqué. La création et la reprise dérivent la même estimation ; la forme historique exacte est normalisée seulement en mémoire. |
+| `import.images` | IMPORT; CPU 1; lot 1..32; hôte 128 Kio + `NAME_MAX+64`/item; I/O 1; GPU 0 | Copie/hash I/O-bound. Le callback consomme le lot admis et réadmet entre lots. |
+| `features.extract` | CPU; CPU 1..compute-pool; lot 1; hôte 64 Mio + 512 Mio/item; I/O 1; GPU 0 | La demande durable emploie le maximum `int` positif de l'API OpenCV ; le Governor la borne à l'hôte. Le garde applique/restaure exactement le CPU admis. |
+| `features.extract.sift` | CPU; CPU 1..compute-pool; lot 1; hôte 64 Mio + 1 Gio/item; I/O 1; GPU 0 | Même contrat OpenCV. Les formes CPU12 et CPU1 historiques complètes sont acceptées et normalisées en mémoire. |
+| `features.extract.rootsift` | CPU; CPU 1..compute-pool; lot 1; hôte 64 Mio + 1 Gio/item; I/O 1; GPU 0 | Même contrat que SIFT ; aucune couture GPU scientifiquement compatible n'est validée. |
+| `visual_index.update` | CPU; CPU 1..16; lot 1..16; hôte 8 Mio + 2 Mio/item; I/O 1; GPU 0 | Le segment contient au plus 16 Feature Sets indépendants. Au plus `cpu_threads-1` enfants sont joints avant publication owner-only. |
+| `candidate_pair.generate` | CPU; CPU 1..64; lot 1..64; hôte 256 Kio + 8 Mio/item; I/O 1; GPU 0 | Le batch de 64 est la borne algorithmique et de ressources. Fenêtre `min(2*CPU, 64, reste_du_lot)`, un handle DB privé par participant, piles enfants de 4 Mio facturées. |
+| `matcher.run` | CPU: CPU 1..12, lot sûr 1..12, hôte 0 + 10 Mio/item, I/O 1, GPU 0. ORB Vulkan AUTO: CPU 1, lot utile 1..8, même hôte/item, GPU 1 + 640 Kio, inflight 1. | Le batch/participant 12 est une borne intrinsèque mesurée du Matcher. Batch 12 et depth 2 (1,25 Mio) restent sûrs pour preuves privées, mais insuffisamment utiles en AUTO. CPU complet est le fallback. |
+| `geometric_verifier.run` | CPU; CPU utile 1..8, fenêtre sûre 16; lot 1..16; hôte 0 + 8 Mio/item; I/O 1; GPU 0 | Des parents indépendants sont préparés en parallèle, puis publiés/checkpointés en ordre par le propriétaire. L'USAC scientifique conserve `isParallel=false`. |
+| `track_builder.run` | CPU; CPU 1; lot 1; fixe `(4 Mio + arêtes * (48 + 2*160)) * facteur`, facteur 2 jusqu'à 400k arêtes puis 8; 0/item; I/O 1; GPU 0 | Rebuild DSU atomique et publication owner-only ; aucune partition scientifiquement validée n'est acquise. |
+| `sparse_sfm.run` | CPU; CPU 1; lot 1; fixe `ceil_Mio(128 Mio + 64 Kio/image + 2 Kio/track + 512 octets/observation)`; 0/item; I/O 1; GPU 0 | Exécution atomique FROZEN ; Gate D/E et BA restent à un thread. |
+| `incremental_reconstruction.run` | CPU; CPU 1; lot 1; fixe `ceil_Mio(256 Mio + 128 Kio*(caméras base + images extension) + 4 Kio*(landmarks base + tracks extension) + 1 Kio*(observations base + extension))`; 0/item; I/O 1; GPU 0 | Recalcul atomique FROZEN depuis les entrées immuables, sans état solveur persistant. |
 
-Ces écarts sont des constats d'implémentation Compute Governor v2. Ils ne
-créent ni nouvelle limite scientifique, ni nouvelle identité, ni modification
-du schéma Project DB. Une enveloppe privée de capacités peut corriger la
-sélection/réconciliation sans modifier l'ABI C public du Task Kind Registry.
+Ces bornes sont opérationnelles, externes-library, algorithmiques, mesurées ou
+scientifiques selon la dernière colonne. Elles ne créent aucune limite de
+cardinalité scientifique, identité ou migration Project DB. Les formes
+historiques CPU1/CPU8/CPU12 citées sont des signatures exactes de reprise, pas
+des plafonds portables de production.
 
 ## SIFT v1A
 
-Une extraction SIFT demande jusqu'à douze threads CPU, un slot IO, aucun GPU,
-pour une image. L'estimation structurelle conservatrice est environ 1,06 Gio
+Une extraction SIFT demande jusqu'au compute-pool hôte, un slot IO, aucun GPU,
+pour une image. Sa demande durable utilise `INT_MAX`, borne valide de l'API
+OpenCV, mais ce nombre n'est jamais une admission matérielle. L'estimation
+structurelle conservatrice est environ 1,06 Gio
 (décodage, pyramides, candidats et F32×128), lot 1, pic de record batch zéro.
-Le callback applique exactement le contrat admis dans `1..12` au pool OpenCV
+Le callback applique exactement le contrat positif admis au pool OpenCV
 process-wide sous l'unique propriétaire Queue, puis restaure la valeur
 précédente sur toutes les sorties. Les tests déterministes ORB, SIFT et
 RootSIFT couvrent 1/2/4/8/12 et obtiennent les mêmes keypoints, descripteurs et
-métriques. Cette dimension opérationnelle ne change ni fingerprint ni Feature
-Set.
+métriques ; 12 reste une preuve de l'hôte courant, pas un maximum portable.
+Cette dimension opérationnelle ne change ni fingerprint ni Feature Set.
 
 ## Responsabilité
 
@@ -305,19 +323,20 @@ Le Resource Governor est l'unique propriétaire des budgets (RAM, GPU, CPU,
 IO). Il arbitre les ressources disponibles et calcule les lots adaptatifs pour
 chaque tâche.
 
-Le profil interactif par défaut conserve un quart de la RAM détectée et un
-quart des threads logiques pour le système hôte. Sur 16 Gio/16 threads, cela
-donne environ 3,8 Gio et 4 threads de headroom. Une nouvelle admission attend
-également lorsque PSI CPU `some avg10` atteint 20 %, ou PSI mémoire 1 %. Ces
-signaux n'interrompent jamais le petit job déjà réservé. Ces valeurs décrivent
-le profil Gate G core gelé; la cible opérationnelle v2 active est le couple
-3 GiB/2 GiB et les signaux différentiels définis en tête de document.
+Le profil interactif par défaut conserve quatre threads logiques lorsque
+praticable et au moins un thread de calcul sur un petit hôte. Sur 16 threads,
+cela donne 4 threads de headroom ; avec une topologie fiable, la sélection porte
+sur des coeurs physiques complets et peut dépasser minimalement la cible
+logique. Une nouvelle admission attend également lorsque PSI CPU `some avg10`
+atteint 20 %, ou PSI mémoire 1 %. Ces signaux n'interrompent jamais le petit job
+déjà réservé.
 
-La soft floor vaut un quart et la hard floor un huitième de la RAM détectée. La
-soft floor place le Governor au minimum en YELLOW ; la hard floor le place
-immédiatement en RED. Le premier delta swap entre deux snapshots produit
-YELLOW. Un second delta consécutif produit RED. Le premier snapshot ne constitue
-qu'une baseline et n'est jamais interprété comme une activité récente.
+La réserve dure/admission RAM vaut environ 3 GiB sur un hôte capable. La bande
+3–4 GiB place le Governor au minimum en YELLOW et remet la croissance à 1 sans
+soustraire 4 GiB de la capacité. La hard floor place immédiatement en RED. Le
+premier snapshot swap constitue seulement une baseline ; un delta actif produit
+YELLOW, puis RED s'il persiste. L'occupation totale du swap n'est pas un signal
+d'activité récente.
 
 La récupération interdit `RED → GREEN` : trois observations saines produisent
 RED vers YELLOW, puis trois autres YELLOW vers GREEN. Le plafond reste 1 pendant
@@ -326,8 +345,7 @@ le plafond : 1, 2, 4, 8, puis les paliers supérieurs utiles aux autres kinds.
 
 ## Contrat Gate G gelé
 
-**PASS / FROZEN.** Les constantes existantes ci-dessus
-restent inchangées. La RAM disponible conserve le modèle conservateur
+**PASS / FROZEN.** Le contrat d'admission conserve le modèle conservateur
 `min(MemAvailable, RAM physique) - réserve hôte - réservations actives`, borné à
 zéro. Le double comptage conservateur possible d'une allocation déjà visible
 dans `MemAvailable` est accepté : un faux `WAIT` est préféré à un overcommit.
@@ -350,6 +368,65 @@ ni stockage externe en RAM. Il ne modifie aucun paramètre scientifique. Aucun
 scratch, historique RSS long terme, redimensionnement de réservation depuis le
 RSS ou monitoring live n'appartient à Gate G core. L'observation courante
 bornée RSS/HWM de Compute Governor v2 reste strictement diagnostique.
+
+## Registre de stockage externe et leases scratch
+
+**EXTERNAL_STORAGE_OPERATIONAL_INTEGRATION — CURRENT / VALIDATED
+OPERATIONAL.** Cette couture additive postérieure ne modifie pas Gate G core,
+`Lardon3DResourceEstimate`, les budgets RAM/GPU/CPU/I/O ni une identité
+scientifique. Elle permet au contrôleur physique SSD exact d'enregistrer sous
+le mutex Governor une `Lardon3DResourceExternalStorage` bornée : génération
+source, état
+`ABSENT/DETECTED/AVAILABLE/IN_USE/DRAINING/SAFE/ERROR`, permission de nouvelle
+allocation, total/libre scratch connus ou inconnus, swap connu ou inconnu,
+nombre de leases, identité stable et raison.
+
+L'enregistrement est exclusif à un objet contrôleur emprunté. Les updates stale
+ne peuvent pas restaurer une disponibilité ; une observation malformée ou
+indéterminée devient `ERROR` conservateur et bloque les nouvelles allocations.
+Un changement matériel incrémente la génération Governor et réveille les
+waiters. L'état n'est ni persisté, ni relié à Project DB, ni interprété comme
+capacité RAM. Les détails physiques et les capacités F10 restent la propriété
+du contrôleur ; le panneau ressources lit l'usage enregistré auprès du
+Governor.
+
+La conversion contrôleur→Governor est fail-closed par état. Toute paire ou
+autorité exige détection courante du Drive et des deux partitions, identité
+Drive+deux UUID exacte/non vide, tailles de partition connues et positives,
+ainsi que mount, activité, leases, drain et capacités cohérents. `ABSENT`
+interdit tout fait détecté/actif/monté/loué/capacitaire ; `DETECTED` incomplet
+reste seulement observable. Un `ERROR` sticky peut conserver le tuple original
+malgré la disparition, mais n'alloue rien ; il n'offre un drain qu'après preuve
+du même tuple complètement reconnecté. Aucun état amical ni bit
+`pairing_valid` ne remplace cette preuve physique.
+
+Les wrappers `lardon3d_resource_governor_acquire_scratch()` et
+`lardon3d_resource_governor_release_scratch()` sont l'unique entrée de
+production pour les leases. Ils exigent le contrôleur exactement enregistré,
+son identité courante et l'autorité explicite d'allocation. `DRAINING`,
+`ERROR`, absence, remplacement, état stale ou non-enregistré refusent une
+acquisition ; une release exacte reste possible pendant le drain ou l'erreur.
+Le Governor ne tient jamais son mutex pendant un appel contrôleur, et le
+contrôleur ne rappelle jamais le Governor. La génération et l'état sont
+revalidés avant publication afin que la transition ne crée ni inversion de
+verrou ni lease non comptée.
+
+`UINT64_MAX` est une saturation source valide, pas un sentinel. L'API publique
+continue de refuser une update matériellement différente au même watermark et
+ne peut donc pas réaccorder une autorité stale. Seule la complétion du wrapper
+exact, déjà sérialisé pour l'objet contrôleur et l'adresse de lease enregistrés,
+peut réconcilier à `UINT64_MAX` sa propre acquisition/libération. Le compte
+interne fondé sur les adresses reste l'autorité ; une erreur de complétion peut
+retirer l'autorité mais ne peut jamais recopier un ancien compte physique.
+
+Le teardown production suit strictement : Queue détruite/jointe et chaque
+lease Task rendu, worker SSD joint puis unregister vérifié, contrôleur détruit,
+Governor détruit. Un unregister est refusé tant qu'une opération wrapper ou un
+lease exact subsiste. Les quatorze Task kinds courants n'ont aucun consommateur
+scratch : le compte normal est donc réellement zéro et la capacité disponible
+n'autorise aucun usage implicite. Une future Task consommatrice devra définir
+son propre contrat d'éligibilité et son ownership sans transformer scratch ou
+swap en RAM.
 
 ## API principale
 
@@ -376,9 +453,19 @@ bornée RSS/HWM de Compute Governor v2 reste strictement diagnostique.
 - `lardon3d_resource_governor_wait_for_change()` - Attendre un changement
 - `lardon3d_resource_governor_pressure()` - Lire GREEN, YELLOW ou RED
 
+### Stockage externe additif
+- `lardon3d_resource_governor_register_external_storage()` /
+  `lardon3d_resource_governor_update_external_storage()` /
+  `lardon3d_resource_governor_unregister_external_storage()` /
+  `lardon3d_resource_governor_get_external_storage()` - Copier et observer
+  l'état physique borné d'un contrôleur exact
+- `lardon3d_resource_governor_acquire_scratch()` /
+  `lardon3d_resource_governor_release_scratch()` - Posséder un lease scratch
+  de production sous l'orchestration du Governor
+
 ## Invariants
 
-1. Le scheduler ne décide jamais des ressources
+1. La Queue/runtime ne décide jamais des ressources
 2. Le Resource Governor est l'unique propriétaire des budgets
 3. Les réservations sont obligatoires avant toute exécution
 4. Les réservations sont libérées exactement une fois
@@ -386,6 +473,9 @@ bornée RSS/HWM de Compute Governor v2 reste strictement diagnostique.
 6. L'historique des métriques est strictement borné (8 entrées par classe)
 7. Un contrat de séquence est immutable jusqu'à sa libération; seule la
    séquence suivante peut être adaptée
+8. Swap, scratch et espace SSD n'augmentent jamais la capacité RAM
+9. Un lease scratch de production passe par le Governor et reste attaché à
+   l'objet lease exact jusqu'à sa libération
 
 ## Cycle de vie
 
@@ -424,35 +514,44 @@ bornée RSS/HWM de Compute Governor v2 reste strictement diagnostique.
   l'échantillon peut conserver taille/durée mais n'alimente jamais l'adaptation
   mémoire.
 - Pas de communication inter-classes de tâches
-- `features.extract` réserve un lot de 1, demande jusqu'à douze threads CPU et
+- `features.extract` réserve un lot de 1, demande la borne positive `int`
+  d'OpenCV et
   un slot I/O, avec
   64 Mio fixes et 512 Mio par image. Cette estimation conservatrice couvre le
   chemin actuel sans prétendre mesurer les allocations internes d'OpenCV.
-  l'admission choisit 1..`min(12, compute_pool)` et le callback applique ce
+  L'admission choisit 1..`compute_pool` et le callback applique ce
   nombre immutable au pool OpenCV. `record_batch` couvre la validation source,
   le décodage, ORB, la publication
   et la finalisation DB ; `peak_memory_bytes == 0` signifie « mesure inconnue ».
-- `visual_index.update` demande jusqu'à douze threads CPU, un slot I/O, 8 Mio
+- `visual_index.update` demande jusqu'à seize threads CPU, un slot I/O, 8 Mio
   fixes et 2 Mio par Feature Set, par lots de 1 à 16. Le GPU vaut zéro. Le
   callback compte comme participant et crée au plus `cpu_threads - 1` enfants,
   tous joints avant publication et rupture de séquence. Chaque participant
   possède au plus un reader/FD Feature File ; les tranches de postings privées
   partitionnent le buffer borné du segment. `record_batch` compte uniquement
   les memberships commités et conserve la mémoire inconnue à zéro.
-- `candidate_pair.generate` demande jusqu'à douze threads CPU, un slot I/O,
-  256 Kio fixes et 64 Kio par Feature Set, par lots de 1 à 64. Le GPU vaut
-  zéro. La reconstruction reconnaît uniquement l'ancienne estimation exacte
-  (128 Kio fixes, 64 Kio par item, un thread CPU, un slot I/O, aucun GPU, lots
-  1 à 64, classe CPU) et la normalise éphémèrement vers l'estimation courante
-  complète ; aucun checkpoint d'estimation seule n'est publié et une forme
-  voisine n'est jamais réinterprétée comme legacy.
+- `candidate_pair.generate` demande jusqu'à soixante-quatre threads CPU, un
+  slot I/O, 256 Kio fixes et 8 Mio par Feature Set, par lots de 1 à 64. Le GPU vaut
+  zéro. La reconstruction reconnaît la forme immédiatement antérieure exacte
+  (256 Kio fixes, 64 Kio par item, CPU12) et la plus ancienne forme sérielle
+  exacte (128 Kio fixes, 64 Kio par item, CPU1), toutes deux à lot 1..64,
+  I/O1, GPU0, classe CPU. Elle les normalise éphémèrement vers la forme courante
+  256 Kio + 8 Mio/item, CPU64 ; aucun checkpoint d'estimation seule n'est
+  publié et une forme voisine n'est jamais réinterprétée comme legacy.
   `record_batch` compte le nombre de paires générées par séquence et la durée
   réelle du lot ; `peak_memory_bytes == 0` signifie « mesure inconnue ».
   Chaque séquence interroge le Visual Index pour jusqu'à 64 memberships. Le
   calcul emploie des fenêtres internes d'au plus deux sources par thread admis
-  et 24 sources au total ; le propriétaire de Task persiste ensuite seul et en
+  et 64 sources au total ; le propriétaire de Task persiste ensuite seul et en
   ordre canonique. Cette estimation opérationnelle ne limite pas la taille
   scientifique du dataset.
+- `geometric_verifier.run` réserve 8 Mio par Match Result admis, un slot I/O,
+  CPU 1..8 utile et lot 1..16. La fenêtre/participant est indépendamment sûre
+  jusqu'à 16, mais CPU12 n'a ajouté que 2,68 % sur CPU8 dans la preuve réelle
+  de 4113 parents, sous le deadband 5 %. Les enfants préparent des parents
+  indépendants et sont tous joints avant la publication owner-only, le curseur
+  contigu, le checkpoint et `sequence_break`. L'USAC interne garde
+  `isParallel=false`; CPU/lot ne modifient ni fingerprint ni GVR.
 - `matcher.run` demande jusqu'à douze threads CPU, un slot IO et 10 Mio par
   Candidate Pair admise, correspondant au working set contrôlé inférieur à
   environ 10 Mio par paire au
@@ -554,3 +653,10 @@ sont gelées ; il ne reste aucune décision humaine Gate G.
 ## Statut
 
 **GATE G — PASS / FROZEN.**
+
+L'intégration opérationnelle SSD/Governor ci-dessus est
+**CURRENT / VALIDATED OPERATIONAL**. Le jalon global qui la contient est
+`GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN`. Les validations fraîches
+portable/Vulkan, ASan/UBSan, LSan qualifié, TSan et ABI sont acquises ; l'unique
+revue finale indépendante a conclu PASS sans finding bloquant. Le gel porte sur
+la frontière auditée et ne crée aucun consommateur scratch ni budget RAM.

@@ -34,7 +34,7 @@ through an explicitly authorized, explicitly scoped human ticket:
 - F0 — PASS/FROZEN
 - Phase H v1 — PASS/FROZEN
 - MVS-M1 — PASS/FROZEN
-- Project DB v22 — PASS/FROZEN
+- Project DB v22 scientific/persistence foundation — PASS/FROZEN
 - Calibration Bootstrap v1 — PASS/FROZEN
 - Selected Scientific Execution — PASS/FROZEN
 - Photo Quality Triage / Acquisition Selection — PASS/FROZEN
@@ -42,14 +42,26 @@ through an explicitly authorized, explicitly scoped human ticket:
 - S2 Capture-safe Standard Ingestion — PASS/FROZEN
 - S3 Capture / Acquisition Ingestion — PASS/FROZEN
 - Durable Acquisition-Campaign Execution — PASS/FROZEN
+- Global Maintenance Audit — PASS/FROZEN
 
 Detailed subcontracts remain defined by their canonical documents. This file
 does not duplicate every S3 substage, scientific threshold, migration detail,
 or persistence format.
 
-Historical references to older Project DB versions remain valid when they
-describe the actual historical contract or migration path. Do not rewrite
-legitimate v16/v17/v18/v19 history merely because v22 is current.
+Project DB v23 is the current additive optical-context overlay. It preserves
+the v22 scientific/persistence foundation and must not infer or backfill optical
+identity from historical data. Historical references to older Project DB
+versions remain valid when they describe the actual historical contract or
+migration path. Do not rewrite legitimate v16–v22 history merely because v23
+is current.
+
+The global maintenance implementation, fresh portable/Vulkan/sanitizer/
+concurrency validation and independent final review are acquired. Its lifecycle
+is `GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN`. The review independently passed the
+portable build, 64/64 complete suite, 15/15 focused matrix, 76/76 strict header
+probes across 19 modified/new public headers, ABI and production-seam checks,
+retained-manifest verification and diff validation, with zero blocking findings.
+Do not reopen this boundary or infer a new scientific policy from the freeze.
 
 When a ticket declares `NO_NEW_SUBSYSTEM`, do not introduce an unrelated:
 
@@ -130,6 +142,11 @@ require a clean worktree unless the ticket explicitly requires one.
   termination semantics.
 - If a public function may be retried, its idempotency or conflict behavior
   must be explicit where non-obvious.
+- Sparse SfM relative-pose and PnP `max_iterations`/`minimum_inliers` remain
+  fixed-width `uint32_t` scientific fields, but their public OpenCV boundary is
+  operationally limited to `INT_MAX`. Reject a larger value before narrowing,
+  allocation, solver execution or output mutation; do not alter the FROZEN
+  defaults, encodings or fingerprints to accommodate an unsafe cast.
 
 Compiler success alone is not proof of API, ABI, persistence, or scientific
 contract correctness.
@@ -173,6 +190,21 @@ explicitly defines such an identity.
   to canonical architecture.
 - Keep ncurses on its designated/main thread wherever the canonical contract
   requires it.
+- The current TUI is a validated operational observatory/control center. Keep
+  Queue/Task/host observation coalesced and bounded, keep durable scientific
+  progress distinct from generic runtime percentage, and keep unknown
+  provenance visibly UNKNOWN. Full layout starts at 100x30, compact is
+  supported through 60x15 (72x20 is the reference compact boundary), and only
+  the bounded "Terminal trop petit" fallback is allowed below that minimum.
+- Preserve the contextual key contract. `F10 SSD` remains literally visible at
+  60 columns in idle, text-input and import-running modes; text input owns only
+  Enter/Escape/F10 and a running import owns only cancel (`X`) and F10 while
+  quit/Escape are visibly disabled. ncurses input and rendering remain on the
+  main thread.
+- Opening, closing, or switching a project is a Queue/DB lifetime boundary:
+  destroy and join the sole Queue, including finished callbacks, before Project
+  DB close; then recreate one empty Queue and rebind observers. Never sample
+  running/pending counts as a substitute for that boundary.
 - Extend validated abstractions rather than rewriting validated modules.
 - Reuse the existing Task / Queue / Scheduler / Resource Governor ownership
   model rather than creating parallel runtime infrastructure.
@@ -203,9 +235,29 @@ Resource-sensitive work must identify, where relevant:
 - cancellation cleanup;
 - whether the bound is operational or scientific.
 
-External USB SSD scratch/swap support remains a planned resource-management
-capability. Do not implement ad-hoc mounting, formatting, `swapon`, scratch
-ownership, or device cleanup outside an explicitly authorized ticket.
+The reviewed external USB SSD controller is the authorized physical-lifecycle
+boundary for the exact UDisks Drive/label/UUID contract. Its validated snapshot
+is registered with the Resource Governor; the Governor wrappers are the sole
+production orchestrator for scratch-lease acquire/release. The controller does
+not replace the Governor or invent Task scratch eligibility, and swap/scratch
+never become RAM. The application lifetime order is strict: destroy/join the
+Queue so every Task lease is released, checked-join/unregister the SSD binding,
+destroy the controller, then destroy the Governor. The current fourteen Task
+kinds have no scratch consumer, so availability is capability, not fabricated
+usage. Do not add ad-hoc discovery, mounting, formatting, `swapon`, cleanup,
+force-drain, shell commands, or a second resource/scheduling subsystem outside
+the reviewed controller/Governor APIs.
+
+Snapshot conversion is fail-closed by physical state. Any pairing or authority
+requires current detection of the Drive and both UUID-bearing partitions,
+positive known partition extents, and coherent mount/activity/capability facts;
+partial `DETECTED` state is observable but non-actionable. A disconnected sticky
+hazard may retain identity only as non-allocating `ERROR`, and drain authority
+requires the exact reconnected original tuple. Controller generation
+`UINT64_MAX` is legal saturation: arbitrary equal-generation public updates
+remain stale and cannot regrant authority, while only the serialized Governor
+lease wrapper may reconcile its own exact completion and address-backed lease
+count at that watermark.
 
 ## 7. Code quality and readability
 
@@ -552,8 +604,8 @@ Persistence changes require explicit attention to:
 
 For Project DB:
 
-- preserve current v22 semantics unless a ticket explicitly authorizes a schema
-  change;
+- preserve the FROZEN v22 semantics and the current additive v23 optical
+  overlay unless a ticket explicitly authorizes a later schema change;
 - schema-version changes require explicit human authorization;
 - migrations must be additive unless a different migration is explicitly
   authorized;
@@ -578,9 +630,11 @@ make retries convenient.
   behavior.
 - Roadmap documents may describe future behavior, but future capabilities must
   be clearly marked as planned/later/exploratory.
-- Never describe future viewer, Capture Guidance, video/keyframe, SSD scratch,
-  or camera-control capabilities as implemented before they are actually
-  validated.
+- Never describe future viewer, Capture Guidance, video/keyframe, Task scratch
+  consumption, or camera-control capabilities as implemented before they are
+  actually validated. The current TUI/F10 and controller-to-Governor registry
+  are validated operationally, but no current Task kind consumes scratch and
+  those interfaces do not make dense/scratch-consuming workflows complete.
 - Statuses such as `PLANNED`, `IMPLEMENTED`, `VALIDATION PENDING`, and
   `PASS/FROZEN` are authoritative lifecycle statements.
 - Update lifecycle state only when implementation, validation, and review

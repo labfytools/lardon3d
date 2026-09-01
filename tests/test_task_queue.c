@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@
 
 #include "../src/resource_governor_internal.h"
 #include "../src/task_internal.h"
+#include "../src/task_queue_internal.h"
 #include "resource_snapshot_test_utils.h"
 
 #define CHECK(condition) \
@@ -28,6 +30,117 @@
 enum {
     TASK_COUNT = 400,
 };
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    Lardon3DTaskQueue *queue;
+    bool block_registered;
+    bool release_registered;
+    bool registered;
+    bool producer_waiting;
+    bool closing;
+} QueueIngressProbe;
+
+static _Atomic(QueueIngressProbe *) active_queue_ingress_probe;
+
+/* Strong definition for the private seam compiled into this test binary.
+ * Events acknowledge exact Queue-internal linearization points; no elapsed-
+ * time assumption is permitted in lifetime/destruction tests. */
+void
+lardon3d_task_queue_internal_test_event(
+    Lardon3DTaskQueue *queue,
+    Lardon3DTaskQueueTestEvent event
+)
+{
+    QueueIngressProbe *probe = atomic_load_explicit(
+        &active_queue_ingress_probe, memory_order_acquire);
+    if (!probe || probe->queue != queue) {
+        return;
+    }
+    (void)pthread_mutex_lock(&probe->mutex);
+    if (event == LARDON3D_TASK_QUEUE_TEST_CALL_REGISTERED) {
+        probe->registered = true;
+        (void)pthread_cond_broadcast(&probe->condition);
+        while (probe->block_registered && !probe->release_registered) {
+            (void)pthread_cond_wait(&probe->condition, &probe->mutex);
+        }
+    } else if (event == LARDON3D_TASK_QUEUE_TEST_PRODUCER_WAITING) {
+        probe->producer_waiting = true;
+        (void)pthread_cond_broadcast(&probe->condition);
+    } else if (event == LARDON3D_TASK_QUEUE_TEST_CLOSING) {
+        probe->closing = true;
+        (void)pthread_cond_broadcast(&probe->condition);
+    }
+    (void)pthread_mutex_unlock(&probe->mutex);
+}
+
+static bool
+queue_ingress_probe_init(
+    QueueIngressProbe *probe,
+    Lardon3DTaskQueue *queue,
+    bool block_registered
+)
+{
+    if (pthread_mutex_init(&probe->mutex, NULL) != 0) {
+        return false;
+    }
+    if (pthread_cond_init(&probe->condition, NULL) != 0) {
+        (void)pthread_mutex_destroy(&probe->mutex);
+        return false;
+    }
+    probe->queue = queue;
+    probe->block_registered = block_registered;
+    atomic_store_explicit(
+        &active_queue_ingress_probe, probe, memory_order_release);
+    return true;
+}
+
+static void
+queue_ingress_probe_disable(QueueIngressProbe *probe)
+{
+    atomic_store_explicit(
+        &active_queue_ingress_probe, NULL, memory_order_release);
+    (void)pthread_cond_destroy(&probe->condition);
+    (void)pthread_mutex_destroy(&probe->mutex);
+}
+
+static bool
+queue_ingress_probe_wait(
+    QueueIngressProbe *probe,
+    Lardon3DTaskQueueTestEvent event
+)
+{
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+        return false;
+    }
+    deadline.tv_sec += 10;
+    (void)pthread_mutex_lock(&probe->mutex);
+    bool *observed = &probe->closing;
+    if (event == LARDON3D_TASK_QUEUE_TEST_CALL_REGISTERED) {
+        observed = &probe->registered;
+    } else if (event == LARDON3D_TASK_QUEUE_TEST_PRODUCER_WAITING) {
+        observed = &probe->producer_waiting;
+    }
+    int result = 0;
+    while (!*observed && result == 0) {
+        result = pthread_cond_timedwait(
+            &probe->condition, &probe->mutex, &deadline);
+    }
+    bool reached = *observed;
+    (void)pthread_mutex_unlock(&probe->mutex);
+    return reached && result == 0;
+}
+
+static void
+queue_ingress_probe_release(QueueIngressProbe *probe)
+{
+    (void)pthread_mutex_lock(&probe->mutex);
+    probe->release_registered = true;
+    (void)pthread_cond_broadcast(&probe->condition);
+    (void)pthread_mutex_unlock(&probe->mutex);
+}
 
 typedef struct {
     pthread_mutex_t mutex;
@@ -76,6 +189,266 @@ queue_callback(Lardon3DTask *task, void *userdata)
 }
 
 static bool
+immediate_callback(Lardon3DTask *task, void *userdata)
+{
+    (void)task;
+    (void)userdata;
+    return true;
+}
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    size_t started;
+    size_t finished;
+    size_t destroyed;
+    bool release;
+    bool release_finished;
+} LifetimeTracker;
+
+typedef struct {
+    LifetimeTracker *tracker;
+    bool block;
+    bool fail;
+} OwnedQueueWork;
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    Lardon3DTaskQueue *queue;
+    uint64_t task_id;
+    bool identity_ready;
+    bool observed;
+    bool observation_ok;
+} FinishedQueueObservation;
+
+static bool
+lifetime_tracker_init(LifetimeTracker *tracker)
+{
+    if (pthread_mutex_init(&tracker->mutex, NULL) != 0) {
+        return false;
+    }
+    if (pthread_cond_init(&tracker->condition, NULL) != 0) {
+        (void)pthread_mutex_destroy(&tracker->mutex);
+        return false;
+    }
+    return true;
+}
+
+static void
+lifetime_tracker_destroy(LifetimeTracker *tracker)
+{
+    (void)pthread_cond_destroy(&tracker->condition);
+    (void)pthread_mutex_destroy(&tracker->mutex);
+}
+
+static bool
+wait_tracker_count(
+    LifetimeTracker *tracker,
+    bool wait_for_destroyed,
+    size_t wanted
+)
+{
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+        return false;
+    }
+    deadline.tv_sec += 10;
+    (void)pthread_mutex_lock(&tracker->mutex);
+    size_t *value = wait_for_destroyed ? &tracker->destroyed : &tracker->started;
+    int result = 0;
+    while (*value < wanted && result == 0) {
+        result = pthread_cond_timedwait(
+            &tracker->condition, &tracker->mutex, &deadline);
+    }
+    bool reached = *value >= wanted;
+    (void)pthread_mutex_unlock(&tracker->mutex);
+    return reached && result == 0;
+}
+
+static size_t
+tracker_destroyed(LifetimeTracker *tracker)
+{
+    (void)pthread_mutex_lock(&tracker->mutex);
+    size_t destroyed = tracker->destroyed;
+    (void)pthread_mutex_unlock(&tracker->mutex);
+    return destroyed;
+}
+
+static size_t
+tracker_started(LifetimeTracker *tracker)
+{
+    (void)pthread_mutex_lock(&tracker->mutex);
+    size_t started = tracker->started;
+    (void)pthread_mutex_unlock(&tracker->mutex);
+    return started;
+}
+
+static bool
+wait_tracker_finished(LifetimeTracker *tracker, size_t wanted)
+{
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+        return false;
+    }
+    deadline.tv_sec += 10;
+    (void)pthread_mutex_lock(&tracker->mutex);
+    int result = 0;
+    while (tracker->finished < wanted && result == 0) {
+        result = pthread_cond_timedwait(
+            &tracker->condition, &tracker->mutex, &deadline);
+    }
+    bool reached = tracker->finished >= wanted;
+    (void)pthread_mutex_unlock(&tracker->mutex);
+    return reached && result == 0;
+}
+
+static void
+release_tracker_callbacks(LifetimeTracker *tracker)
+{
+    (void)pthread_mutex_lock(&tracker->mutex);
+    tracker->release = true;
+    (void)pthread_cond_broadcast(&tracker->condition);
+    (void)pthread_mutex_unlock(&tracker->mutex);
+}
+
+static void
+release_tracker_finished(LifetimeTracker *tracker)
+{
+    (void)pthread_mutex_lock(&tracker->mutex);
+    tracker->release_finished = true;
+    (void)pthread_cond_broadcast(&tracker->condition);
+    (void)pthread_mutex_unlock(&tracker->mutex);
+}
+
+static bool
+owned_queue_callback(Lardon3DTask *task, void *userdata)
+{
+    OwnedQueueWork *work = userdata;
+    (void)pthread_mutex_lock(&work->tracker->mutex);
+    ++work->tracker->started;
+    (void)pthread_cond_broadcast(&work->tracker->condition);
+    while (work->block && !work->tracker->release) {
+        (void)pthread_cond_wait(
+            &work->tracker->condition, &work->tracker->mutex);
+    }
+    (void)pthread_mutex_unlock(&work->tracker->mutex);
+    return lardon3d_task_checkpoint(task) && !work->fail;
+}
+
+static void
+owned_queue_work_destroy(void *userdata)
+{
+    OwnedQueueWork *work = userdata;
+    LifetimeTracker *tracker = work->tracker;
+    (void)pthread_mutex_lock(&tracker->mutex);
+    ++tracker->destroyed;
+    (void)pthread_cond_broadcast(&tracker->condition);
+    (void)pthread_mutex_unlock(&tracker->mutex);
+    free(work);
+}
+
+static void
+owned_finished_callback(const Lardon3DTask *task, void *userdata)
+{
+    (void)task;
+    LifetimeTracker *tracker = userdata;
+    (void)pthread_mutex_lock(&tracker->mutex);
+    ++tracker->finished;
+    (void)pthread_cond_broadcast(&tracker->condition);
+    while (!tracker->release_finished) {
+        (void)pthread_cond_wait(&tracker->condition, &tracker->mutex);
+    }
+    (void)pthread_mutex_unlock(&tracker->mutex);
+}
+
+static bool
+finished_observation_work(Lardon3DTask *task, void *userdata)
+{
+    FinishedQueueObservation *observation = userdata;
+    (void)pthread_mutex_lock(&observation->mutex);
+    while (!observation->identity_ready) {
+        (void)pthread_cond_wait(
+            &observation->condition, &observation->mutex);
+    }
+    (void)pthread_mutex_unlock(&observation->mutex);
+    return lardon3d_task_checkpoint(task);
+}
+
+static void
+observe_queue_from_finished(const Lardon3DTask *task, void *userdata)
+{
+    (void)task;
+    FinishedQueueObservation *observation = userdata;
+    Lardon3DTaskSnapshot by_id;
+    Lardon3DTaskSnapshot newest;
+    Lardon3DTaskQueueSummary summary;
+    bool ok = lardon3d_task_queue_get(
+            observation->queue, observation->task_id, &by_id)
+        && by_id.id == observation->task_id
+        && by_id.state == TASK_COMPLETED
+        && lardon3d_task_queue_snapshot(
+            observation->queue, &newest, 1, &summary) == 1
+        && newest.id == observation->task_id
+        && summary.completed == 1 && summary.total == 1;
+    (void)pthread_mutex_lock(&observation->mutex);
+    observation->observation_ok = ok;
+    observation->observed = true;
+    (void)pthread_cond_broadcast(&observation->condition);
+    (void)pthread_mutex_unlock(&observation->mutex);
+}
+
+static bool
+wait_finished_observation(FinishedQueueObservation *observation)
+{
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+        return false;
+    }
+    deadline.tv_sec += 10;
+    (void)pthread_mutex_lock(&observation->mutex);
+    int result = 0;
+    while (!observation->observed && result == 0) {
+        result = pthread_cond_timedwait(
+            &observation->condition, &observation->mutex, &deadline);
+    }
+    bool ok = observation->observed && observation->observation_ok;
+    (void)pthread_mutex_unlock(&observation->mutex);
+    return result == 0 && ok;
+}
+
+static Lardon3DTask *
+create_owned_task(
+    const char *name,
+    const Lardon3DResourceEstimate *estimate,
+    LifetimeTracker *tracker,
+    bool block,
+    bool fail
+)
+{
+    OwnedQueueWork *work = calloc(1, sizeof(*work));
+    if (!work) {
+        return NULL;
+    }
+    work->tracker = tracker;
+    work->block = block;
+    work->fail = fail;
+    Lardon3DTask *task = lardon3d_task_create_typed(
+        name,
+        estimate,
+        "test.queue_lifetime",
+        1,
+        owned_queue_callback,
+        work,
+        owned_queue_work_destroy
+    );
+    if (!task) {
+        free(work);
+    }
+    return task;
+}
+
+static bool
 wait_terminal(Lardon3DTaskQueue *queue, uint64_t id, Lardon3DTaskSnapshot *result)
 {
     for (size_t attempt = 0; attempt < 10000; ++attempt) {
@@ -91,6 +464,36 @@ wait_terminal(Lardon3DTaskQueue *queue, uint64_t id, Lardon3DTaskSnapshot *resul
     return false;
 }
 
+static bool
+wait_full_terminal_history(
+    Lardon3DTaskQueue *queue,
+    size_t expected_completed
+)
+{
+    for (size_t attempt = 0; attempt < 10000; ++attempt) {
+        Lardon3DTaskSnapshot records[
+            LARDON3D_TASK_QUEUE_HISTORY_CAPACITY + 1];
+        Lardon3DTaskQueueSummary summary;
+        size_t count = lardon3d_task_queue_snapshot(
+            queue,
+            records,
+            LARDON3D_TASK_QUEUE_HISTORY_CAPACITY + 1,
+            &summary
+        );
+        /* A just-finished Task is terminal before the worker retires it. With
+         * full history that valid transition exposes 65 records; exactly 64
+         * proves the live Task has been destroyed and inserted into history. */
+        if (count == LARDON3D_TASK_QUEUE_HISTORY_CAPACITY
+            && summary.running == 0 && summary.pending == 0
+            && summary.completed == expected_completed
+            && summary.total == expected_completed) {
+            return true;
+        }
+        short_pause();
+    }
+    return false;
+}
+
 typedef struct {
     Lardon3DTaskQueue *queue;
     Lardon3DResourceEstimate estimate;
@@ -98,6 +501,16 @@ typedef struct {
     uint64_t id;
     bool added;
 } ProducerThread;
+
+typedef struct {
+    Lardon3DTaskQueue *queue;
+    size_t count;
+} QueueCountThread;
+
+typedef struct {
+    Lardon3DTaskQueue *queue;
+    atomic_bool returned;
+} QueueDestroyThread;
 
 static void *
 producer_thread(void *context)
@@ -121,6 +534,23 @@ producer_thread(void *context)
     if (!producer->added) {
         lardon3d_task_destroy(task);
     }
+    return NULL;
+}
+
+static void *
+queue_count_thread(void *context)
+{
+    QueueCountThread *call = context;
+    call->count = lardon3d_task_queue_count(call->queue);
+    return NULL;
+}
+
+static void *
+queue_destroy_thread(void *context)
+{
+    QueueDestroyThread *call = context;
+    lardon3d_task_queue_destroy(call->queue);
+    atomic_store_explicit(&call->returned, true, memory_order_release);
     return NULL;
 }
 
@@ -151,6 +581,96 @@ hold_resources(
         &decision,
         reservation
     );
+}
+
+static bool
+test_registered_ingress_blocks_destroy(Lardon3DResourceGovernor *governor)
+{
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 1);
+    CHECK(queue);
+    QueueIngressProbe probe = {0};
+    CHECK(queue_ingress_probe_init(&probe, queue, true));
+
+    QueueCountThread count_call = {.queue = queue, .count = SIZE_MAX};
+    pthread_t count_thread;
+    CHECK(pthread_create(
+        &count_thread, NULL, queue_count_thread, &count_call) == 0);
+    CHECK(queue_ingress_probe_wait(
+        &probe, LARDON3D_TASK_QUEUE_TEST_CALL_REGISTERED));
+
+    QueueDestroyThread destroy_call = {.queue = queue};
+    atomic_init(&destroy_call.returned, false);
+    pthread_t destroy_thread;
+    CHECK(pthread_create(
+        &destroy_thread, NULL, queue_destroy_thread, &destroy_call) == 0);
+    CHECK(queue_ingress_probe_wait(
+        &probe, LARDON3D_TASK_QUEUE_TEST_CLOSING));
+    CHECK(!atomic_load_explicit(&destroy_call.returned, memory_order_acquire));
+
+    /* The registered call is still before queue->mutex. Destroy has closed
+     * ingress and must remain alive until this exact reference can observe
+     * stopping, release its pin, and return. */
+    queue_ingress_probe_release(&probe);
+    CHECK(pthread_join(count_thread, NULL) == 0);
+    CHECK(count_call.count == 0);
+    CHECK(pthread_join(destroy_thread, NULL) == 0);
+    CHECK(atomic_load_explicit(&destroy_call.returned, memory_order_acquire));
+    queue_ingress_probe_disable(&probe);
+    return true;
+}
+
+static bool
+test_generated_id_exhaustion_is_sticky(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 2);
+    CHECK(queue);
+    Lardon3DTaskSnapshot snapshot;
+
+    /* A restored penultimate ID advances the generator to its final value.
+     * Removing both terminal records proves exhaustion is lifetime state, not
+     * an accidental consequence of retained collision records. */
+    Lardon3DTask *penultimate = lardon3d_task_create(
+        "Restored penultimate ID", &estimate, immediate_callback, NULL);
+    CHECK(penultimate && lardon3d_task_assign_id(penultimate, UINT64_MAX - 1));
+    CHECK(lardon3d_task_queue_add(queue, penultimate, NULL));
+    CHECK(wait_terminal(queue, UINT64_MAX - 1, &snapshot));
+    CHECK(lardon3d_task_queue_remove(queue, UINT64_MAX - 1));
+
+    Lardon3DTask *last = lardon3d_task_create(
+        "Generated final ID", &estimate, immediate_callback, NULL);
+    uint64_t last_id = 0;
+    CHECK(last && lardon3d_task_queue_add(queue, last, &last_id));
+    CHECK(last_id == UINT64_MAX);
+    CHECK(wait_terminal(queue, UINT64_MAX, &snapshot));
+    CHECK(lardon3d_task_queue_remove(queue, UINT64_MAX));
+
+    Lardon3DTask *rejected = lardon3d_task_create(
+        "Generation exhausted", &estimate, immediate_callback, NULL);
+    CHECK(rejected);
+    CHECK(lardon3d_task_queue_try_add_ex(queue, rejected, NULL)
+        == LARDON3D_TASK_QUEUE_ADD_ERROR);
+    lardon3d_task_destroy(rejected);
+
+    Lardon3DTask *lower = lardon3d_task_create(
+        "Lower restored ID", &estimate, immediate_callback, NULL);
+    CHECK(lower && lardon3d_task_assign_id(lower, 7));
+    CHECK(lardon3d_task_queue_add(queue, lower, NULL));
+    CHECK(wait_terminal(queue, 7, &snapshot));
+    CHECK(lardon3d_task_queue_remove(queue, 7));
+
+    rejected = lardon3d_task_create(
+        "Generation remains exhausted", &estimate, immediate_callback, NULL);
+    CHECK(rejected);
+    CHECK(lardon3d_task_queue_try_add_ex(queue, rejected, NULL)
+        == LARDON3D_TASK_QUEUE_ADD_ERROR);
+    lardon3d_task_destroy(rejected);
+    lardon3d_task_queue_destroy(queue);
+    return true;
 }
 
 static bool
@@ -211,6 +731,7 @@ run_test(void)
     Lardon3DTaskSnapshot snapshot;
     CHECK(wait_terminal(queue, ids[TASK_COUNT - 1], &snapshot));
     CHECK(snapshot.state == TASK_COMPLETED);
+    CHECK(wait_full_terminal_history(queue, TASK_COUNT));
     CHECK(log.count == TASK_COUNT);
     for (size_t index = 0; index < TASK_COUNT; ++index) {
         CHECK(log.order[index] == index);
@@ -218,17 +739,42 @@ run_test(void)
         CHECK(work[index].contract.batch_size == 1);
     }
     Lardon3DTaskQueueSummary summary;
-    Lardon3DTaskSnapshot listed[8];
-    CHECK(lardon3d_task_queue_snapshot(queue, listed, 8, &summary) == 8);
+    Lardon3DTaskSnapshot listed[LARDON3D_TASK_QUEUE_HISTORY_CAPACITY + 1];
+    CHECK(lardon3d_task_queue_snapshot(
+        queue,
+        listed,
+        LARDON3D_TASK_QUEUE_HISTORY_CAPACITY + 1,
+        &summary
+    ) == LARDON3D_TASK_QUEUE_HISTORY_CAPACITY);
     CHECK(summary.total == TASK_COUNT);
     CHECK(summary.running == 0);
     CHECK(summary.pending == 0);
     CHECK(summary.completed == TASK_COUNT);
     CHECK(lardon3d_task_queue_get_at(queue, 0, &snapshot));
-    CHECK(snapshot.id == ids[0]);
-    CHECK(!lardon3d_task_queue_get_at(queue, TASK_COUNT, &snapshot));
-    CHECK(lardon3d_task_queue_remove(queue, ids[0]));
+    CHECK(snapshot.id == ids[TASK_COUNT - 1]);
+    CHECK(listed[0].id == ids[TASK_COUNT - 1]);
+    CHECK(listed[LARDON3D_TASK_QUEUE_HISTORY_CAPACITY - 1].id
+        == ids[TASK_COUNT - LARDON3D_TASK_QUEUE_HISTORY_CAPACITY]);
+    CHECK(!lardon3d_task_queue_get_at(
+        queue, LARDON3D_TASK_QUEUE_HISTORY_CAPACITY, &snapshot));
     CHECK(!lardon3d_task_queue_get(queue, ids[0], &snapshot));
+    CHECK(!lardon3d_task_queue_remove(queue, ids[0]));
+    Lardon3DTask *after_eviction = lardon3d_task_create(
+        "Après éviction", &estimate, immediate_callback, NULL);
+    uint64_t after_eviction_id = 0;
+    CHECK(after_eviction && lardon3d_task_queue_add(
+        queue, after_eviction, &after_eviction_id));
+    CHECK(after_eviction_id == TASK_COUNT + 1);
+    CHECK(wait_terminal(queue, after_eviction_id, &snapshot));
+    CHECK(snapshot.state == TASK_COMPLETED);
+    CHECK(wait_full_terminal_history(queue, TASK_COUNT + 1));
+    CHECK(lardon3d_task_queue_get_at(queue, 0, &snapshot)
+        && snapshot.id == after_eviction_id);
+    CHECK(lardon3d_task_queue_remove(queue, ids[TASK_COUNT - 1]));
+    CHECK(!lardon3d_task_queue_get(queue, ids[TASK_COUNT - 1], &snapshot));
+    CHECK(lardon3d_task_queue_snapshot(queue, NULL, 0, &summary) == 0);
+    CHECK(summary.total == TASK_COUNT + 1
+        && summary.completed == TASK_COUNT + 1);
     CHECK(lardon3d_task_queue_count(queue) == 0);
     lardon3d_task_queue_destroy(queue);
     CHECK(pthread_mutex_destroy(&log.mutex) == 0);
@@ -279,7 +825,7 @@ run_test(void)
         }
         short_pause();
     }
-    CHECK(lardon3d_task_pause(slow_task));
+    CHECK(lardon3d_task_queue_pause(queue, slow_id));
     for (size_t attempt = 0; attempt < 1000; ++attempt) {
         CHECK(lardon3d_task_queue_get(queue, slow_id, &snapshot));
         if (snapshot.state == TASK_PAUSED) {
@@ -290,7 +836,7 @@ run_test(void)
     CHECK(snapshot.state == TASK_PAUSED);
     CHECK(lardon3d_resource_governor_reservation_count(governor) == 1);
     CHECK(lardon3d_task_queue_cancel(queue, cancelled_id));
-    CHECK(lardon3d_task_resume(slow_task));
+    CHECK(lardon3d_task_queue_resume(queue, slow_id));
     CHECK(wait_terminal(queue, slow_id, &snapshot));
     CHECK(snapshot.state == TASK_COMPLETED);
     CHECK(wait_terminal(queue, cancelled_id, &snapshot));
@@ -558,6 +1104,357 @@ run_test(void)
 }
 
 static bool
+test_finished_read_only_reentrancy(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    FinishedQueueObservation observation = {0};
+    CHECK(pthread_mutex_init(&observation.mutex, NULL) == 0);
+    CHECK(pthread_cond_init(&observation.condition, NULL) == 0);
+    observation.queue = lardon3d_task_queue_create(governor, 1);
+    CHECK(observation.queue);
+    Lardon3DTask *task = lardon3d_task_create(
+        "Observation de fin",
+        &estimate,
+        finished_observation_work,
+        &observation
+    );
+    CHECK(task && lardon3d_task_set_finished_callback(
+        task, observe_queue_from_finished, &observation));
+    CHECK(lardon3d_task_queue_add(
+        observation.queue, task, &observation.task_id));
+    (void)pthread_mutex_lock(&observation.mutex);
+    observation.identity_ready = true;
+    (void)pthread_cond_broadcast(&observation.condition);
+    (void)pthread_mutex_unlock(&observation.mutex);
+    CHECK(wait_finished_observation(&observation));
+    lardon3d_task_queue_destroy(observation.queue);
+    CHECK(pthread_cond_destroy(&observation.condition) == 0);
+    CHECK(pthread_mutex_destroy(&observation.mutex) == 0);
+    return true;
+}
+
+static bool
+test_terminal_lifetime(Lardon3DResourceGovernor *governor)
+{
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    LifetimeTracker tracker = {0};
+    CHECK(lifetime_tracker_init(&tracker));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, 4);
+    CHECK(queue);
+    Lardon3DTaskObservation absent_observation = {.id = UINT64_MAX};
+    CHECK(!lardon3d_task_queue_get_observation(
+        queue, UINT64_MAX, &absent_observation));
+    CHECK(absent_observation.id == 0
+        && !absent_observation.has_execution_contract);
+
+    Lardon3DTask *active = create_owned_task(
+        "Durée active", &estimate, &tracker, true, false);
+    uint64_t active_id = 0;
+    CHECK(active && lardon3d_task_queue_add(queue, active, &active_id));
+    CHECK(wait_tracker_count(&tracker, false, 1));
+
+    Lardon3DTask *pending = create_owned_task(
+        "Durée attente", &estimate, &tracker, false, false);
+    uint64_t pending_id = 0;
+    CHECK(pending && lardon3d_task_queue_add(queue, pending, &pending_id));
+    CHECK(tracker_destroyed(&tracker) == 0);
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(lardon3d_task_queue_get(queue, active_id, &snapshot)
+        && snapshot.state == TASK_RUNNING);
+    CHECK(lardon3d_task_queue_get(queue, pending_id, &snapshot)
+        && snapshot.state == TASK_PENDING);
+    CHECK(!lardon3d_task_queue_remove(queue, active_id));
+    CHECK(!lardon3d_task_queue_remove(queue, pending_id));
+
+    /* Pending cancellation completes its finished callback synchronously; the
+     * userdata must be gone before Queue destruction while its snapshot stays
+     * observable. The active Task remains owned until its callback exits. */
+    CHECK(lardon3d_task_queue_cancel(queue, pending_id));
+    CHECK(wait_tracker_count(&tracker, true, 1));
+    CHECK(lardon3d_task_queue_get(queue, pending_id, &snapshot)
+        && snapshot.state == TASK_CANCELLED);
+    CHECK(tracker_destroyed(&tracker) == 1);
+    Lardon3DTaskSnapshot live_first[2];
+    Lardon3DTaskQueueSummary live_summary;
+    CHECK(lardon3d_task_queue_snapshot(
+        queue, live_first, 2, &live_summary) == 2);
+    CHECK(live_first[0].id == active_id
+        && live_first[0].state == TASK_RUNNING);
+    CHECK(live_first[1].id == pending_id
+        && live_first[1].state == TASK_CANCELLED);
+    CHECK(live_summary.running == 1 && live_summary.pending == 0
+        && live_summary.completed == 1 && live_summary.total == 2);
+
+    release_tracker_callbacks(&tracker);
+    CHECK(wait_tracker_count(&tracker, true, 2));
+    CHECK(lardon3d_task_queue_get(queue, active_id, &snapshot)
+        && snapshot.state == TASK_COMPLETED);
+
+    Lardon3DTask *failed = create_owned_task(
+        "Durée échec", &estimate, &tracker, false, true);
+    uint64_t failed_id = 0;
+    CHECK(failed && lardon3d_task_queue_add(queue, failed, &failed_id));
+    CHECK(wait_tracker_count(&tracker, true, 3));
+    CHECK(lardon3d_task_queue_get(queue, failed_id, &snapshot)
+        && snapshot.state == TASK_FAILED);
+
+    Lardon3DTask *finished = create_owned_task(
+        "Durée finalisation", &estimate, &tracker, false, false);
+    uint64_t finished_id = 0;
+    CHECK(finished && lardon3d_task_set_finished_callback(
+        finished, owned_finished_callback, &tracker));
+    CHECK(lardon3d_task_queue_add(queue, finished, &finished_id));
+    CHECK(wait_tracker_finished(&tracker, 1));
+    CHECK(tracker_destroyed(&tracker) == 3);
+    CHECK(lardon3d_task_queue_get(queue, finished_id, &snapshot)
+        && snapshot.state == TASK_COMPLETED);
+    release_tracker_finished(&tracker);
+    CHECK(wait_tracker_count(&tracker, true, 4));
+    CHECK(lardon3d_task_queue_get(queue, finished_id, &snapshot)
+        && snapshot.state == TASK_COMPLETED);
+
+    CHECK(lardon3d_task_queue_cancel(queue, active_id));
+    CHECK(!lardon3d_task_queue_pause(queue, active_id));
+    CHECK(!lardon3d_task_queue_resume(queue, active_id));
+
+    Lardon3DTaskSnapshot ordered[4];
+    Lardon3DTaskQueueSummary summary;
+    CHECK(lardon3d_task_queue_snapshot(queue, ordered, 4, &summary) == 4);
+    CHECK(ordered[0].id == finished_id
+        && ordered[0].state == TASK_COMPLETED);
+    CHECK(ordered[1].id == failed_id && ordered[1].state == TASK_FAILED);
+    CHECK(ordered[2].id == active_id && ordered[2].state == TASK_COMPLETED);
+    CHECK(ordered[3].id == pending_id && ordered[3].state == TASK_CANCELLED);
+    CHECK(summary.running == 0 && summary.pending == 0
+        && summary.completed == 4 && summary.total == 4);
+    CHECK(lardon3d_task_queue_remove(queue, failed_id));
+    CHECK(!lardon3d_task_queue_get(queue, failed_id, &snapshot));
+    CHECK(!lardon3d_task_queue_remove(queue, failed_id));
+    CHECK(lardon3d_task_queue_snapshot(queue, NULL, 0, &summary) == 0);
+    CHECK(summary.completed == 4 && summary.total == 4);
+
+    lardon3d_task_queue_destroy(queue);
+    CHECK(tracker_destroyed(&tracker) == 4);
+    lifetime_tracker_destroy(&tracker);
+    return true;
+}
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    size_t ready;
+    bool go;
+} AccessGate;
+
+typedef struct {
+    Lardon3DTaskQueue *queue;
+    AccessGate *gate;
+    size_t task_count;
+    bool remove;
+    bool ok;
+} QueueAccessStress;
+
+static void *
+queue_access_stress(void *userdata)
+{
+    QueueAccessStress *stress = userdata;
+    (void)pthread_mutex_lock(&stress->gate->mutex);
+    ++stress->gate->ready;
+    (void)pthread_cond_broadcast(&stress->gate->condition);
+    while (!stress->gate->go) {
+        (void)pthread_cond_wait(&stress->gate->condition, &stress->gate->mutex);
+    }
+    (void)pthread_mutex_unlock(&stress->gate->mutex);
+
+    stress->ok = true;
+    for (size_t iteration = 0; iteration < 10000; ++iteration) {
+        Lardon3DTaskSnapshot snapshots[LARDON3D_TASK_QUEUE_HISTORY_CAPACITY];
+        Lardon3DTaskQueueSummary summary;
+        size_t count = lardon3d_task_queue_snapshot(
+            stress->queue,
+            snapshots,
+            LARDON3D_TASK_QUEUE_HISTORY_CAPACITY,
+            &summary
+        );
+        if (count > LARDON3D_TASK_QUEUE_HISTORY_CAPACITY
+            || summary.total < summary.completed) {
+            stress->ok = false;
+            break;
+        }
+        uint64_t id = (uint64_t)(iteration % stress->task_count) + 1;
+        Lardon3DTaskSnapshot snapshot;
+        if (lardon3d_task_queue_get(stress->queue, id, &snapshot)
+            && snapshot.id != id) {
+            stress->ok = false;
+            break;
+        }
+        if (stress->remove) {
+            (void)lardon3d_task_queue_remove(stress->queue, id);
+        }
+    }
+    return NULL;
+}
+
+static bool
+test_concurrent_terminal_access(Lardon3DResourceGovernor *governor)
+{
+    enum { STRESS_TASKS = 128, ACCESS_THREADS = 2 };
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    LifetimeTracker tracker = {0};
+    CHECK(lifetime_tracker_init(&tracker));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, STRESS_TASKS);
+    CHECK(queue);
+    for (size_t index = 0; index < STRESS_TASKS; ++index) {
+        Lardon3DTask *task = create_owned_task(
+            "Accès concurrent", &estimate, &tracker, true, false);
+        uint64_t id = 0;
+        CHECK(task && lardon3d_task_queue_add(queue, task, &id));
+        CHECK(id == index + 1);
+    }
+    CHECK(wait_tracker_count(&tracker, false, 1));
+
+    AccessGate gate = {0};
+    CHECK(pthread_mutex_init(&gate.mutex, NULL) == 0);
+    CHECK(pthread_cond_init(&gate.condition, NULL) == 0);
+    QueueAccessStress stress[ACCESS_THREADS] = {
+        {.queue = queue, .gate = &gate, .task_count = STRESS_TASKS},
+        {.queue = queue, .gate = &gate, .task_count = STRESS_TASKS, .remove = true},
+    };
+    pthread_t threads[ACCESS_THREADS];
+    for (size_t index = 0; index < ACCESS_THREADS; ++index) {
+        CHECK(pthread_create(
+            &threads[index], NULL, queue_access_stress, &stress[index]) == 0);
+    }
+    (void)pthread_mutex_lock(&gate.mutex);
+    while (gate.ready < ACCESS_THREADS) {
+        (void)pthread_cond_wait(&gate.condition, &gate.mutex);
+    }
+    gate.go = true;
+    (void)pthread_cond_broadcast(&gate.condition);
+    (void)pthread_mutex_unlock(&gate.mutex);
+    release_tracker_callbacks(&tracker);
+    for (size_t index = 0; index < ACCESS_THREADS; ++index) {
+        CHECK(pthread_join(threads[index], NULL) == 0 && stress[index].ok);
+    }
+    CHECK(wait_tracker_count(&tracker, true, STRESS_TASKS));
+
+    Lardon3DTaskSnapshot retained[LARDON3D_TASK_QUEUE_HISTORY_CAPACITY + 1];
+    Lardon3DTaskQueueSummary summary;
+    size_t retained_count = lardon3d_task_queue_snapshot(
+        queue,
+        retained,
+        LARDON3D_TASK_QUEUE_HISTORY_CAPACITY + 1,
+        &summary
+    );
+    CHECK(retained_count <= LARDON3D_TASK_QUEUE_HISTORY_CAPACITY);
+    for (size_t index = 1; index < retained_count; ++index) {
+        CHECK(retained[index - 1].id > retained[index].id);
+    }
+    CHECK(summary.running == 0 && summary.pending == 0);
+    CHECK(summary.completed == STRESS_TASKS && summary.total == STRESS_TASKS);
+    lardon3d_task_queue_destroy(queue);
+    CHECK(tracker_destroyed(&tracker) == STRESS_TASKS);
+    CHECK(pthread_cond_destroy(&gate.condition) == 0);
+    CHECK(pthread_mutex_destroy(&gate.mutex) == 0);
+    lifetime_tracker_destroy(&tracker);
+    return true;
+}
+
+static bool
+test_shutdown_userdata_exact_once(Lardon3DResourceGovernor *governor)
+{
+    enum { SHUTDOWN_TASKS = 3 };
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DResourceReservation *reservation = NULL;
+    CHECK(hold_resources(governor, &reservation));
+    LifetimeTracker tracker = {0};
+    CHECK(lifetime_tracker_init(&tracker));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(governor, SHUTDOWN_TASKS);
+    CHECK(queue);
+    for (size_t index = 0; index < SHUTDOWN_TASKS; ++index) {
+        Lardon3DTask *task = create_owned_task(
+            "Arrêt exact", &estimate, &tracker, false, false);
+        CHECK(task && lardon3d_task_queue_add(queue, task, NULL));
+    }
+    CHECK(tracker_destroyed(&tracker) == 0);
+    lardon3d_task_queue_destroy(queue);
+    CHECK(tracker_started(&tracker) == 0);
+    CHECK(tracker_destroyed(&tracker) == SHUTDOWN_TASKS);
+    CHECK(lardon3d_resource_governor_release(governor, reservation));
+    lifetime_tracker_destroy(&tracker);
+    return true;
+}
+
+static bool
+test_saturation_observes_active(Lardon3DResourceGovernor *governor)
+{
+    enum {
+        PENDING_TASKS = 64,
+        OBSERVATION_CAPACITY =
+            2 * LARDON3D_TASK_QUEUE_HISTORY_CAPACITY + 1,
+    };
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    LifetimeTracker tracker = {0};
+    CHECK(lifetime_tracker_init(&tracker));
+    Lardon3DTaskQueue *queue = lardon3d_task_queue_create(
+        governor, PENDING_TASKS);
+    CHECK(queue);
+    Lardon3DTask *active = create_owned_task(
+        "Saturation active", &estimate, &tracker, true, false);
+    uint64_t active_id = 0;
+    CHECK(active && lardon3d_task_queue_add(queue, active, &active_id));
+    CHECK(wait_tracker_count(&tracker, false, 1));
+    for (size_t index = 0; index < PENDING_TASKS; ++index) {
+        Lardon3DTask *pending = create_owned_task(
+            "Saturation pending", &estimate, &tracker, false, false);
+        CHECK(pending && lardon3d_task_queue_add(queue, pending, NULL));
+    }
+
+    Lardon3DTaskObservation observations[OBSERVATION_CAPACITY];
+    Lardon3DTaskQueueSummary summary;
+    size_t count = lardon3d_task_queue_observe(
+        queue, observations, OBSERVATION_CAPACITY, &summary);
+    CHECK(count == PENDING_TASKS + 1);
+    CHECK(summary.running == 1 && summary.pending == PENDING_TASKS);
+    bool active_found = false;
+    for (size_t index = 0; index < count; ++index) {
+        if (observations[index].id == active_id) {
+            active_found = observations[index].state == TASK_RUNNING
+                && observations[index].has_execution_contract
+                && observations[index].execution_contract.cpu_threads > 0;
+        }
+    }
+    CHECK(active_found);
+
+    release_tracker_callbacks(&tracker);
+    CHECK(wait_tracker_count(
+        &tracker, true, (size_t)PENDING_TASKS + 1));
+    lardon3d_task_queue_destroy(queue);
+    lifetime_tracker_destroy(&tracker);
+    return true;
+}
+
+static bool
 test_enqueue_under_capacity(Lardon3DResourceGovernor *governor)
 {
     const Lardon3DResourceEstimate estimate = {
@@ -637,14 +1534,17 @@ test_capacity_reached_blocks(Lardon3DResourceGovernor *governor)
         .estimate = estimate,
         .work = &work[2],
     };
+    QueueIngressProbe probe = {0};
+    CHECK(queue_ingress_probe_init(&probe, queue, false));
     pthread_t thread;
     CHECK(pthread_create(&thread, NULL, producer_thread, &producer) == 0);
-    short_pause();
-    CHECK(!producer.added);
+    CHECK(queue_ingress_probe_wait(
+        &probe, LARDON3D_TASK_QUEUE_TEST_PRODUCER_WAITING));
     CHECK(lardon3d_resource_governor_release(governor, reservation));
     lardon3d_task_queue_resources_changed(queue);
     CHECK(pthread_join(thread, NULL) == 0);
     CHECK(producer.added);
+    queue_ingress_probe_disable(&probe);
     Lardon3DTaskSnapshot snapshot;
     for (size_t index = 0; index < 2; ++index) {
         CHECK(wait_terminal(queue, ids[index], &snapshot));
@@ -689,10 +1589,12 @@ test_release_unblocks_producer(Lardon3DResourceGovernor *governor)
         .estimate = estimate,
         .work = &work[1],
     };
+    QueueIngressProbe probe = {0};
+    CHECK(queue_ingress_probe_init(&probe, queue, false));
     pthread_t thread;
     CHECK(pthread_create(&thread, NULL, producer_thread, &producer) == 0);
-    short_pause();
-    CHECK(!producer.added);
+    CHECK(queue_ingress_probe_wait(
+        &probe, LARDON3D_TASK_QUEUE_TEST_PRODUCER_WAITING));
     CHECK(lardon3d_resource_governor_release(governor, reservation));
     lardon3d_task_queue_resources_changed(queue);
     Lardon3DTaskSnapshot snapshot;
@@ -701,6 +1603,7 @@ test_release_unblocks_producer(Lardon3DResourceGovernor *governor)
     CHECK(lardon3d_task_queue_remove(queue, first_id));
     CHECK(pthread_join(thread, NULL) == 0);
     CHECK(producer.added);
+    queue_ingress_probe_disable(&probe);
     CHECK(wait_terminal(queue, producer.id, &snapshot));
     CHECK(snapshot.state == TASK_COMPLETED);
     lardon3d_task_queue_destroy(queue);
@@ -788,15 +1691,19 @@ test_shutdown_unblocks_producer(Lardon3DResourceGovernor *governor)
         .estimate = estimate,
         .work = &work[1],
     };
+    QueueIngressProbe probe = {0};
+    CHECK(queue_ingress_probe_init(&probe, queue, false));
     pthread_t thread;
     CHECK(pthread_create(&thread, NULL, producer_thread, &producer) == 0);
-    short_pause();
-    CHECK(!producer.added);
-    // destroy réveille le producteur via broadcast(&not_full)
+    CHECK(queue_ingress_probe_wait(
+        &probe, LARDON3D_TASK_QUEUE_TEST_PRODUCER_WAITING));
+    /* The hook fires with the Queue mutex held after producer registration and
+     * immediately before not_full wait. Destroy must wake and await that exact
+     * in-progress add call, not a thread presumed to have run after a sleep. */
     lardon3d_task_queue_destroy(queue);
-    // Le producteur peut maintenant sortir de add et terminer
     CHECK(pthread_join(thread, NULL) == 0);
     CHECK(!producer.added);
+    queue_ingress_probe_disable(&probe);
     CHECK(lardon3d_resource_governor_release(governor, reservation));
     CHECK(pthread_mutex_destroy(&log.mutex) == 0);
     return true;
@@ -1328,7 +2235,14 @@ main(void)
     if (!governor) {
         return EXIT_FAILURE;
     }
-    bool ok = test_enqueue_under_capacity(governor)
+    bool ok = test_registered_ingress_blocks_destroy(governor)
+        && test_generated_id_exhaustion_is_sticky(governor)
+        && test_finished_read_only_reentrancy(governor)
+        && test_terminal_lifetime(governor)
+        && test_concurrent_terminal_access(governor)
+        && test_shutdown_userdata_exact_once(governor)
+        && test_saturation_observes_active(governor)
+        && test_enqueue_under_capacity(governor)
         && test_capacity_reached_blocks(governor)
         && test_release_unblocks_producer(governor)
         && test_multiple_producers(governor)

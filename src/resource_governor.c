@@ -122,6 +122,10 @@ struct Lardon3DResourceGovernor {
     bool internal_now_known;
     struct timespec internal_now;
     bool internal_force_capture_failure;
+#if defined(LARDON3D_RESOURCE_GOVERNOR_CAPTURE_TESTING)
+    bool internal_capture_snapshot_override;
+    Lardon3DResourceSnapshot internal_capture_snapshot;
+#endif
     /* Host observations are private operational evidence. In particular RSS
      * is never charged as Task-owned memory and pool utilization never
      * substitutes for Gate G load/pressure admission. Cumulative inputs are
@@ -136,6 +140,22 @@ struct Lardon3DResourceGovernor {
     uint64_t telemetry_swap_pages_out;
     Lardon3DResourceReservation *active;
     Lardon3DResourceReservation *released;
+    /* The Governor owns orchestration metadata, never the physical controller
+     * or caller lease storage. The fixed address registry makes wrapper
+     * release exact and bounds all external-resource bookkeeping. */
+    bool external_storage_registered;
+    Lardon3DSsdController *external_storage_controller;
+    Lardon3DResourceExternalStorage external_storage;
+    /* Begin freezes provenance and the last physical count before releasing
+     * this mutex. Finish may then distinguish its exact saturated completion
+     * from an arbitrary equal-generation public copy. */
+    bool external_storage_operation_active;
+    bool external_storage_operation_acquire;
+    Lardon3DSsdScratchLease *external_storage_operation_lease;
+    size_t external_storage_operation_start_lease_count;
+    Lardon3DSsdScratchLease *external_storage_leases[
+        LARDON3D_SSD_MAX_SCRATCH_LEASES];
+    size_t external_storage_lease_count;
 };
 
 static bool cpu_mask_test(
@@ -665,9 +685,10 @@ lardon3d_resource_governor_internal_configure_driver_policy(void)
 }
 
 static void
-cpu_policy_fallback(
-    const Lardon3DHardwareProfile *profile,
-    const Lardon3DResourcePolicy *policy,
+cpu_policy_count_fallback(
+    unsigned int allowed_cpu_count,
+    unsigned int reserve_cpu_count,
+    bool externally_constrained,
     Lardon3DResourceCpuPolicyDiagnostic *diagnostic,
     const char *reason
 )
@@ -677,9 +698,9 @@ cpu_policy_fallback(
     *diagnostic = (Lardon3DResourceCpuPolicyDiagnostic) {
         .runtime_thread_policy_active = mesa_cache_disabled,
         .mesa_shader_cache_disabled = mesa_cache_disabled,
-        .compute_cpu_count = profile->logical_cpu_count
-            - policy->system_cpu_reserve,
-        .reserved_cpu_count = policy->system_cpu_reserve,
+        .externally_constrained = externally_constrained,
+        .compute_cpu_count = allowed_cpu_count - reserve_cpu_count,
+        .reserved_cpu_count = reserve_cpu_count,
     };
     (void)snprintf(diagnostic->reason, sizeof(diagnostic->reason), "%s",
         reason);
@@ -688,6 +709,22 @@ cpu_policy_fallback(
         mesa_cache_disabled
             ? "worker-self-affinity-plus-mesa-disk-cache-disabled"
             : "mesa-disk-cache-safety-policy-not-established");
+}
+
+static unsigned int
+additional_allowed_cpu_reserve(
+    const Lardon3DHardwareProfile *profile,
+    const Lardon3DResourcePolicy *policy,
+    size_t allowed_cpu_count
+)
+{
+    /* CPUs already removed by an external affinity mask are host capacity the
+     * application cannot consume. Count them toward the requested reserve so
+     * the Governor does not subtract the same host allowance twice. */
+    unsigned int unavailable = profile->logical_cpu_count
+        - (unsigned int)allowed_cpu_count;
+    return policy->system_cpu_reserve > unavailable
+        ? policy->system_cpu_reserve - unavailable : 0;
 }
 
 static bool
@@ -743,7 +780,8 @@ build_cpu_policy(
     Lardon3DResourceCpuPolicyDiagnostic *diagnostic
 )
 {
-    cpu_policy_fallback(profile, policy, diagnostic,
+    cpu_policy_count_fallback(profile->logical_cpu_count,
+        policy->system_cpu_reserve, false, diagnostic,
         "fallback-portable-affinity-unavailable");
     if (!input || !input->affinity_available) {
         return;
@@ -753,17 +791,19 @@ build_cpu_policy(
     unsigned int core_ids[LARDON3D_RESOURCE_CPU_MAX] = {0};
     if (!cpu_topology_input_masks(input, allowed, package_ids, core_ids)
         || input->allowed_cpu_count > profile->logical_cpu_count) {
-        cpu_policy_fallback(profile, policy, diagnostic,
+        cpu_policy_count_fallback(profile->logical_cpu_count,
+            policy->system_cpu_reserve, false, diagnostic,
             "fallback-portable-affinity-invalid");
         return;
     }
     memcpy(diagnostic->allowed_mask, allowed, sizeof(allowed));
-    unsigned int portable_budget = profile->logical_cpu_count
-        - policy->system_cpu_reserve;
-    if (input->allowed_cpu_count < profile->logical_cpu_count
-        && input->allowed_cpu_count <= portable_budget) {
+    bool externally_constrained =
+        input->allowed_cpu_count < profile->logical_cpu_count;
+    unsigned int requested_reserve = additional_allowed_cpu_reserve(
+        profile, policy, input->allowed_cpu_count);
+    if (requested_reserve == 0) {
         diagnostic->affinity_configured = true;
-        diagnostic->externally_constrained = true;
+        diagnostic->externally_constrained = externally_constrained;
         diagnostic->compute_cpu_count = (unsigned int)input->allowed_cpu_count;
         diagnostic->reserved_cpu_count = 0;
         memcpy(diagnostic->compute_mask, allowed, sizeof(allowed));
@@ -772,65 +812,115 @@ build_cpu_policy(
         return;
     }
     if (!input->topology_available) {
-        cpu_policy_fallback(profile, policy, diagnostic,
+        cpu_policy_count_fallback(
+            (unsigned int)input->allowed_cpu_count, requested_reserve,
+            externally_constrained, diagnostic,
             "fallback-portable-topology-unavailable");
         memcpy(diagnostic->allowed_mask, allowed, sizeof(allowed));
         return;
     }
 
+    typedef struct {
+        unsigned int package_id;
+        unsigned int core_id;
+        unsigned int cpu_count;
+    } CpuCoreGroup;
+    CpuCoreGroup groups[LARDON3D_RESOURCE_CPU_MAX];
+    size_t group_count = 0;
+    for (size_t index = 0; index < input->allowed_cpu_count; ++index) {
+        unsigned int cpu = input->allowed_cpu_ids[index];
+        size_t group = 0;
+        while (group < group_count
+            && (groups[group].package_id != package_ids[cpu]
+                || groups[group].core_id != core_ids[cpu])) {
+            ++group;
+        }
+        if (group == group_count) {
+            groups[group_count++] = (CpuCoreGroup) {
+                .package_id = package_ids[cpu],
+                .core_id = core_ids[cpu],
+            };
+        }
+        ++groups[group].cpu_count;
+    }
+    /* Descending physical identity preserves the established deterministic
+     * preference when several whole-core subsets have the same minimal size. */
+    for (size_t left = 0; left < group_count; ++left) {
+        for (size_t right = left + 1; right < group_count; ++right) {
+            if (groups[right].package_id > groups[left].package_id
+                || (groups[right].package_id == groups[left].package_id
+                    && groups[right].core_id > groups[left].core_id)) {
+                CpuCoreGroup temporary = groups[left];
+                groups[left] = groups[right];
+                groups[right] = temporary;
+            }
+        }
+    }
+
+    /* Fixed CPU_MAX subset DP finds the smallest complete-core reserve at or
+     * above the logical target. It performs bounded O(CPU_MAX^2) work during
+     * Governor construction/policy changes only; no scheduler or heap state is
+     * introduced. Parent links reconstruct one deterministic selected subset. */
+    bool reachable[LARDON3D_RESOURCE_CPU_MAX + 1] = {false};
+    unsigned int parent_sum[LARDON3D_RESOURCE_CPU_MAX + 1] = {0};
+    size_t parent_group[LARDON3D_RESOURCE_CPU_MAX + 1] = {0};
+    reachable[0] = true;
+    unsigned int allowed_count = (unsigned int)input->allowed_cpu_count;
+    for (size_t group = 0; group < group_count; ++group) {
+        unsigned int amount = groups[group].cpu_count;
+        for (unsigned int sum = allowed_count - amount + 1; sum-- > 0;) {
+            unsigned int next = sum + amount;
+            if (reachable[sum] && !reachable[next]) {
+                reachable[next] = true;
+                parent_sum[next] = sum;
+                parent_group[next] = group;
+            }
+        }
+    }
+    unsigned int reserved_count = requested_reserve;
+    while (reserved_count < allowed_count && !reachable[reserved_count]) {
+        ++reserved_count;
+    }
+    if (reserved_count >= allowed_count) {
+        /* Tiny/asymmetric hosts may have no whole-core subset large enough to
+         * meet the logical target while leaving compute capacity. Prefer the
+         * largest complete-core reserve below target over splitting SMT peers. */
+        reserved_count = requested_reserve;
+        while (reserved_count > 0 && !reachable[reserved_count]) {
+            --reserved_count;
+        }
+    }
+    if (reserved_count == 0) {
+        cpu_policy_count_fallback(allowed_count, requested_reserve,
+            externally_constrained, diagnostic,
+            "fallback-portable-topology-unsplittable");
+        memcpy(diagnostic->allowed_mask, allowed, sizeof(allowed));
+        return;
+    }
+
+    bool selected_groups[LARDON3D_RESOURCE_CPU_MAX] = {false};
+    for (unsigned int sum = reserved_count; sum != 0;
+         sum = parent_sum[sum]) {
+        selected_groups[parent_group[sum]] = true;
+    }
     uint64_t compute[LARDON3D_RESOURCE_CPU_MASK_WORDS];
     uint64_t reserved[LARDON3D_RESOURCE_CPU_MASK_WORDS] = {0};
     memcpy(compute, allowed, sizeof(compute));
-    unsigned int compute_count = (unsigned int)input->allowed_cpu_count;
-    unsigned int reserved_count = 0;
-    while (reserved_count < policy->system_cpu_reserve) {
-        bool group_found = false;
-        unsigned int selected_package = 0;
-        unsigned int selected_core = 0;
-        for (size_t index = 0; index < input->allowed_cpu_count; ++index) {
-            unsigned int cpu = input->allowed_cpu_ids[index];
-            if (!cpu_mask_test(compute, cpu)) {
-                continue;
-            }
-            if (!group_found || package_ids[cpu] > selected_package
-                || (package_ids[cpu] == selected_package
-                    && core_ids[cpu] > selected_core)) {
-                selected_package = package_ids[cpu];
-                selected_core = core_ids[cpu];
-                group_found = true;
-            }
-        }
-        unsigned int group_count = 0;
-        if (group_found) {
-            for (size_t index = 0; index < input->allowed_cpu_count; ++index) {
-                unsigned int cpu = input->allowed_cpu_ids[index];
-                if (cpu_mask_test(compute, cpu)
-                    && package_ids[cpu] == selected_package
-                    && core_ids[cpu] == selected_core) {
-                    ++group_count;
-                }
-            }
-        }
-        if (!group_found || group_count == 0 || group_count >= compute_count) {
-            cpu_policy_fallback(profile, policy, diagnostic,
-                "fallback-portable-topology-incomplete");
-            memcpy(diagnostic->allowed_mask, allowed, sizeof(allowed));
-            return;
-        }
-        for (size_t index = 0; index < input->allowed_cpu_count; ++index) {
-            unsigned int cpu = input->allowed_cpu_ids[index];
-            if (cpu_mask_test(compute, cpu)
-                && package_ids[cpu] == selected_package
-                && core_ids[cpu] == selected_core) {
+    for (size_t index = 0; index < input->allowed_cpu_count; ++index) {
+        unsigned int cpu = input->allowed_cpu_ids[index];
+        for (size_t group = 0; group < group_count; ++group) {
+            if (selected_groups[group]
+                && groups[group].package_id == package_ids[cpu]
+                && groups[group].core_id == core_ids[cpu]) {
                 compute[cpu / 64] &= ~(UINT64_C(1) << (cpu % 64));
                 cpu_mask_set(reserved, cpu);
+                break;
             }
         }
-        compute_count -= group_count;
-        reserved_count += group_count;
     }
     diagnostic->affinity_configured = true;
-    diagnostic->compute_cpu_count = compute_count;
+    diagnostic->externally_constrained = externally_constrained;
+    diagnostic->compute_cpu_count = allowed_count - reserved_count;
     diagnostic->reserved_cpu_count = reserved_count;
     memcpy(diagnostic->compute_mask, compute, sizeof(compute));
     memcpy(diagnostic->reserved_mask, reserved, sizeof(reserved));
@@ -1532,10 +1622,10 @@ static unsigned int
 next_trial_cpu(unsigned int current, unsigned int maximum)
 {
     if (current >= maximum) return maximum;
-    unsigned int next = current < 2 ? 2
-        : current < 4 ? 4
-        : current < 8 ? 8
-        : 12;
+    /* CPU trials are portable capability rungs, not a fingerprint of any
+     * validation host. Double without overflow, then use a
+     * non-power-of-two capability/compute maximum as the exact final rung. */
+    unsigned int next = current > UINT_MAX / 2 ? maximum : current * 2;
     return next < maximum ? next : maximum;
 }
 
@@ -1608,25 +1698,64 @@ open_next_capability_trial_locked(
     feedback->trial_dimension = LARDON3D_CAPABILITY_TRIAL_NONE;
 }
 
+typedef struct {
+    uint64_t admission_floor;
+    uint64_t caution_floor;
+    uint64_t hard_floor;
+    bool caution_is_non_escalating_band;
+} Lardon3DMemoryFloors;
+
+static uint64_t
+default_host_memory_reserve(uint64_t total)
+{
+    const uint64_t normal = UINT64_C(3) * 1024 * 1024 * 1024;
+    if (total > normal) {
+        return normal;
+    }
+    /* A sub-3-GiB host cannot retain the normal absolute floor and still admit
+     * any work. Keep a deterministic quarter for the host; clipping avoids a
+     * zero/invalid reserve on synthetic tiny profiles without underflow. */
+    uint64_t degraded = total / 4;
+    if (degraded == 0 && total > 1) {
+        degraded = 1;
+    }
+    return degraded < total ? degraded : total - 1;
+}
+
+static uint64_t
+default_host_memory_caution(uint64_t total, uint64_t admission_floor)
+{
+    const uint64_t normal = UINT64_C(3) * 1024 * 1024 * 1024;
+    const uint64_t caution = UINT64_C(4) * 1024 * 1024 * 1024;
+    if (admission_floor == normal) {
+        return total < caution ? total : caution;
+    }
+    uint64_t degraded = total / 3;
+    return degraded > admission_floor ? degraded : admission_floor;
+}
+
 static void
-internal_pressure_floors_locked(
+internal_memory_floors_locked(
     const Lardon3DResourceGovernor *governor,
-    uint64_t *soft_floor,
-    uint64_t *hard_floor
+    Lardon3DMemoryFloors *floors
 )
 {
-    *soft_floor = governor->policy.system_memory_reserve_bytes;
-    *hard_floor = governor->policy.emergency_memory_floor_bytes;
-    const uint64_t gib = 1024ULL * 1024ULL * 1024ULL;
-    const uint64_t total = governor->profile.memory_total_bytes;
-    /* Compute Governor v2's validated current-host operating point is scoped
-     * to the default 16 GiB policy. Generic Gate G defaults remain unchanged
-     * for every other profile or an explicitly customized policy. */
-    if (total >= 15 * gib && total <= 17 * gib
-        && governor->policy.system_memory_reserve_bytes == total / 4
-        && governor->policy.emergency_memory_floor_bytes == total / 8) {
-        *soft_floor = 3 * gib;
-        *hard_floor = 2 * gib;
+    uint64_t default_floor = default_host_memory_reserve(
+        governor->profile.memory_total_bytes);
+    *floors = (Lardon3DMemoryFloors) {
+        .admission_floor = governor->policy.system_memory_reserve_bytes,
+        .caution_floor = governor->policy.system_memory_reserve_bytes,
+        .hard_floor = governor->policy.emergency_memory_floor_bytes,
+    };
+    if (governor->policy.system_memory_reserve_bytes == default_floor
+        && governor->policy.emergency_memory_floor_bytes == default_floor) {
+        /* Default capacity always subtracts the hard reserve, never the 4 GiB
+         * caution level. The caution band only abandons aggressive trials and
+         * reduces current work while MemAvailable remains above the reserve. */
+        floors->caution_floor = default_host_memory_caution(
+            governor->profile.memory_total_bytes, default_floor);
+        floors->hard_floor = default_floor;
+        floors->caution_is_non_escalating_band = true;
     }
 }
 
@@ -1763,13 +1892,16 @@ lardon3d_resource_policy_default(
     if (!valid_profile(profile) || !policy) {
         return false;
     }
-    unsigned int cpu_reserve = profile->logical_cpu_count / 4;
-    if (cpu_reserve == 0 && profile->logical_cpu_count > 2) {
-        cpu_reserve = 1;
-    }
+    /* Four logical CPUs are the normal host reserve. Small systems degrade
+     * deterministically by retaining one compute CPU; complete topology may
+     * later adjust this logical target to whole physical-core groups. */
+    unsigned int cpu_reserve = profile->logical_cpu_count > 4
+        ? 4 : profile->logical_cpu_count - 1;
+    uint64_t memory_reserve = default_host_memory_reserve(
+        profile->memory_total_bytes);
     *policy = (Lardon3DResourcePolicy) {
-        .system_memory_reserve_bytes = profile->memory_total_bytes / 4,
-        .emergency_memory_floor_bytes = profile->memory_total_bytes / 8,
+        .system_memory_reserve_bytes = memory_reserve,
+        .emergency_memory_floor_bytes = memory_reserve,
         .gpu_memory_reserve_bytes = profile->gpu_memory_known
             ? profile->gpu_memory_total_bytes / 8
             : 0,
@@ -1894,6 +2026,808 @@ lardon3d_resource_governor_set_policy(
     }
     (void)pthread_mutex_unlock(&governor->mutex);
     return accepted;
+}
+
+bool
+lardon3d_resource_governor_get_policy(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourcePolicy *policy
+)
+{
+    if (!governor || !policy) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    *policy = governor->policy;
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return true;
+}
+
+static bool
+bounded_text_terminated(const char *text, size_t capacity)
+{
+    return text && memchr(text, '\0', capacity) != NULL;
+}
+
+static bool
+bounded_exact_identity(const char *text, size_t capacity)
+{
+    return bounded_text_terminated(text, capacity) && text[0] != '\0'
+        && strcmp(text, "UNKNOWN") != 0;
+}
+
+static bool
+ssd_snapshot_has_complete_pair(const Lardon3DSsdSnapshot *snapshot)
+{
+    return snapshot->device_detected && snapshot->swap_detected
+        && snapshot->scratch_detected && snapshot->pairing_valid
+        && bounded_exact_identity(snapshot->drive_identity,
+            sizeof(snapshot->drive_identity))
+        && bounded_exact_identity(snapshot->swap_uuid,
+            sizeof(snapshot->swap_uuid))
+        && bounded_exact_identity(snapshot->scratch_uuid,
+            sizeof(snapshot->scratch_uuid))
+        && snapshot->swap_partition_size_known
+        && snapshot->swap_partition_size_bytes > 0
+        && snapshot->scratch_partition_size_known
+        && snapshot->scratch_partition_size_bytes > 0;
+}
+
+static bool
+valid_ssd_controller_snapshot(const Lardon3DSsdSnapshot *snapshot)
+{
+    unsigned int action_count = snapshot
+        ? (unsigned int)snapshot->can_enable
+            + (unsigned int)snapshot->can_disable
+            + (unsigned int)snapshot->can_cancel_drain
+        : 0;
+    if (!snapshot || snapshot->state < LARDON3D_SSD_ABSENT
+        || snapshot->state > LARDON3D_SSD_ERROR
+        || !bounded_text_terminated(snapshot->model, sizeof(snapshot->model))
+        || !bounded_text_terminated(snapshot->serial, sizeof(snapshot->serial))
+        || !bounded_text_terminated(snapshot->drive_identity,
+            sizeof(snapshot->drive_identity))
+        || !bounded_text_terminated(snapshot->swap_uuid,
+            sizeof(snapshot->swap_uuid))
+        || !bounded_text_terminated(snapshot->scratch_uuid,
+            sizeof(snapshot->scratch_uuid))
+        || !bounded_text_terminated(snapshot->swap_device,
+            sizeof(snapshot->swap_device))
+        || !bounded_text_terminated(snapshot->scratch_device,
+            sizeof(snapshot->scratch_device))
+        || !bounded_text_terminated(snapshot->scratch_mount_path,
+            sizeof(snapshot->scratch_mount_path))
+        || !bounded_text_terminated(snapshot->reason,
+            sizeof(snapshot->reason))
+        || (!snapshot->connection_speed_known
+            && snapshot->connection_speed_mbps != 0)
+        || snapshot->scratch_lease_capacity
+            != LARDON3D_SSD_MAX_SCRATCH_LEASES
+        || snapshot->scratch_lease_count > snapshot->scratch_lease_capacity
+        || (!snapshot->swap_partition_size_known
+            && snapshot->swap_partition_size_bytes != 0)
+        || (snapshot->swap_partition_size_known
+            && (snapshot->swap_partition_size_bytes == 0
+                || !snapshot->swap_detected))
+        || (!snapshot->scratch_partition_size_known
+            && snapshot->scratch_partition_size_bytes != 0)
+        || (snapshot->scratch_partition_size_known
+            && (snapshot->scratch_partition_size_bytes == 0
+                || !snapshot->scratch_detected))
+        || (!snapshot->swap_total_known
+            && snapshot->swap_total_bytes != 0)
+        || (!snapshot->swap_used_known
+            && snapshot->swap_used_bytes != 0)
+        || (!snapshot->scratch_total_known
+            && snapshot->scratch_total_bytes != 0)
+        || (!snapshot->scratch_free_known
+            && snapshot->scratch_free_bytes != 0)
+        || (snapshot->swap_used_known
+            && (!snapshot->swap_total_known
+                || snapshot->swap_used_bytes > snapshot->swap_total_bytes))
+        || (snapshot->scratch_free_known
+            && (!snapshot->scratch_total_known
+                || snapshot->scratch_free_bytes
+                    > snapshot->scratch_total_bytes))
+        || snapshot->device_detected
+            != (snapshot->swap_detected || snapshot->scratch_detected)
+        || (snapshot->swap_active && !snapshot->swap_detected)
+        || (snapshot->scratch_mounted && !snapshot->scratch_detected)
+        || (snapshot->swap_total_known && !snapshot->swap_detected)
+        || (snapshot->scratch_total_known && !snapshot->scratch_detected)
+        || (snapshot->scratch_mounted
+            && !bounded_exact_identity(snapshot->scratch_mount_path,
+                sizeof(snapshot->scratch_mount_path)))
+        || (!snapshot->scratch_mounted
+            && bounded_exact_identity(snapshot->scratch_mount_path,
+                sizeof(snapshot->scratch_mount_path)))
+        || action_count > 1) {
+        return false;
+    }
+
+    const bool complete_pair = ssd_snapshot_has_complete_pair(snapshot);
+    const bool authority_bearing = snapshot->scratch_allocations_allowed
+        || action_count != 0;
+    const bool complete_pair_state = snapshot->state == LARDON3D_SSD_ENABLING
+        || snapshot->state == LARDON3D_SSD_ENABLED
+        || snapshot->state == LARDON3D_SSD_IN_USE
+        || snapshot->state == LARDON3D_SSD_DRAINING
+        || snapshot->state == LARDON3D_SSD_SAFE_TO_UNPLUG;
+    if ((snapshot->pairing_valid || authority_bearing || complete_pair_state)
+        && !complete_pair) {
+        /* CONTRACT: neither a friendly state nor a capability bit can stand
+         * in for the controller's complete Drive/UUID/detection/extent proof.
+         * Incomplete DETECTED and disconnected sticky ERROR remain observable
+         * only because they carry no authority. */
+        return false;
+    }
+
+    if (snapshot->scratch_allocations_allowed
+        && (!complete_pair || snapshot->drain_requested
+            || !snapshot->swap_active || !snapshot->scratch_mounted
+            || strcmp(snapshot->scratch_mount_path,
+                   LARDON3D_SSD_SCRATCH_MOUNT_PATH) != 0
+            || (snapshot->state != LARDON3D_SSD_ENABLED
+                && snapshot->state != LARDON3D_SSD_IN_USE)
+            || snapshot->scratch_lease_count
+                >= snapshot->scratch_lease_capacity)) {
+        return false;
+    }
+    if (snapshot->can_enable
+        && (!complete_pair
+            || (snapshot->state != LARDON3D_SSD_DETECTED
+                && snapshot->state != LARDON3D_SSD_SAFE_TO_UNPLUG)
+            || snapshot->swap_active || snapshot->scratch_mounted
+            || snapshot->drain_requested
+            || snapshot->scratch_lease_count != 0)) {
+        return false;
+    }
+    if (snapshot->can_disable
+        && (!complete_pair
+            || (snapshot->state != LARDON3D_SSD_DETECTED
+                && snapshot->state != LARDON3D_SSD_ENABLED
+                && snapshot->state != LARDON3D_SSD_IN_USE
+                && snapshot->state != LARDON3D_SSD_ERROR)
+            || (snapshot->state == LARDON3D_SSD_DETECTED
+                && !snapshot->swap_active && !snapshot->scratch_mounted))) {
+        return false;
+    }
+    if (snapshot->can_cancel_drain
+        && (!complete_pair || !snapshot->drain_requested
+            || snapshot->state != LARDON3D_SSD_DRAINING)) {
+        return false;
+    }
+
+    switch (snapshot->state) {
+    case LARDON3D_SSD_ABSENT:
+        /* ABSENT is absence, not a bucket for contradictory stale telemetry.
+         * Sticky ownership is represented as ERROR with its retained tuple. */
+        return !snapshot->device_detected && !snapshot->pairing_valid
+            && !snapshot->model_known && !snapshot->serial_known
+            && !snapshot->connection_speed_known
+            && !snapshot->swap_detected && !snapshot->scratch_detected
+            && !snapshot->swap_partition_size_known
+            && !snapshot->scratch_partition_size_known
+            && !snapshot->swap_active && !snapshot->swap_total_known
+            && !snapshot->swap_used_known && !snapshot->scratch_mounted
+            && !snapshot->scratch_total_known
+            && !snapshot->scratch_free_known
+            && snapshot->scratch_lease_count == 0
+            && !snapshot->drain_requested
+            && !snapshot->scratch_allocations_allowed
+            && action_count == 0
+            && !bounded_exact_identity(snapshot->drive_identity,
+                sizeof(snapshot->drive_identity))
+            && !bounded_exact_identity(snapshot->swap_uuid,
+                sizeof(snapshot->swap_uuid))
+            && !bounded_exact_identity(snapshot->scratch_uuid,
+                sizeof(snapshot->scratch_uuid));
+    case LARDON3D_SSD_DETECTED:
+        if (!snapshot->device_detected
+            || snapshot->scratch_lease_count != 0
+            || snapshot->drain_requested
+            || snapshot->scratch_allocations_allowed
+            || (snapshot->swap_active && snapshot->scratch_mounted)) {
+            return false;
+        }
+        if (!snapshot->pairing_valid) {
+            return action_count == 0;
+        }
+        return snapshot->swap_active || snapshot->scratch_mounted
+            ? snapshot->can_disable
+            : snapshot->can_enable;
+    case LARDON3D_SSD_ENABLING:
+        return snapshot->scratch_lease_count == 0
+            && !snapshot->drain_requested
+            && !snapshot->scratch_allocations_allowed
+            && action_count == 0;
+    case LARDON3D_SSD_ENABLED:
+        return snapshot->scratch_lease_count == 0
+            && snapshot->swap_active && snapshot->scratch_mounted
+            && !snapshot->drain_requested && snapshot->can_disable
+            && !snapshot->can_enable && !snapshot->can_cancel_drain
+            && strcmp(snapshot->scratch_mount_path,
+                LARDON3D_SSD_SCRATCH_MOUNT_PATH) == 0;
+    case LARDON3D_SSD_IN_USE:
+        return snapshot->scratch_lease_count > 0
+            && snapshot->swap_active && snapshot->scratch_mounted
+            && !snapshot->drain_requested && snapshot->can_disable
+            && !snapshot->can_enable && !snapshot->can_cancel_drain
+            && strcmp(snapshot->scratch_mount_path,
+                LARDON3D_SSD_SCRATCH_MOUNT_PATH) == 0;
+    case LARDON3D_SSD_DRAINING:
+        return snapshot->drain_requested
+            && !snapshot->scratch_allocations_allowed
+            && snapshot->can_cancel_drain && !snapshot->can_enable
+            && !snapshot->can_disable;
+    case LARDON3D_SSD_SAFE_TO_UNPLUG:
+        return snapshot->scratch_lease_count == 0
+            && !snapshot->swap_active && !snapshot->scratch_mounted
+            && !snapshot->drain_requested
+            && !snapshot->scratch_allocations_allowed
+            && snapshot->can_enable && !snapshot->can_disable
+            && !snapshot->can_cancel_drain;
+    case LARDON3D_SSD_ERROR:
+        /* A disconnected sticky hazard may retain the exact tuple and leases
+         * without current detection. Drain authority is accepted only for the
+         * controller-published, completely reconnected pair. */
+        return !snapshot->scratch_allocations_allowed
+            && !snapshot->can_enable && !snapshot->can_cancel_drain;
+    }
+    return false;
+}
+
+static bool
+normalize_external_storage(
+    const Lardon3DResourceExternalStorage *input,
+    Lardon3DResourceExternalStorage *output
+)
+{
+    if (output) {
+        memset(output, 0, sizeof(*output));
+    }
+    if (!input || !output
+        || input->status < LARDON3D_RESOURCE_EXTERNAL_STORAGE_ABSENT
+        || input->status > LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR
+        || !bounded_text_terminated(input->stable_identity,
+            sizeof(input->stable_identity))
+        || !bounded_text_terminated(input->reason, sizeof(input->reason))
+        || (!input->scratch_total_known && input->scratch_total_bytes != 0)
+        || (!input->scratch_free_known && input->scratch_free_bytes != 0)
+        || (input->scratch_free_known
+            && (!input->scratch_total_known
+                || input->scratch_free_bytes > input->scratch_total_bytes))
+        || (!input->swap_total_known && input->swap_total_bytes != 0)
+        || (!input->swap_used_known && input->swap_used_bytes != 0)
+        || (input->swap_used_known
+            && (!input->swap_total_known
+                || input->swap_used_bytes > input->swap_total_bytes))
+        || input->active_scratch_leases
+            > LARDON3D_SSD_MAX_SCRATCH_LEASES
+        || (input->new_scratch_allocations_allowed
+            && input->status != LARDON3D_RESOURCE_EXTERNAL_STORAGE_AVAILABLE
+            && input->status != LARDON3D_RESOURCE_EXTERNAL_STORAGE_IN_USE)
+        || (input->status == LARDON3D_RESOURCE_EXTERNAL_STORAGE_AVAILABLE
+            && input->active_scratch_leases != 0)
+        || (input->status == LARDON3D_RESOURCE_EXTERNAL_STORAGE_IN_USE
+            && input->active_scratch_leases == 0)
+        || ((input->status == LARDON3D_RESOURCE_EXTERNAL_STORAGE_ABSENT
+                || input->status
+                    == LARDON3D_RESOURCE_EXTERNAL_STORAGE_DETECTED
+                || input->status == LARDON3D_RESOURCE_EXTERNAL_STORAGE_SAFE)
+            && input->active_scratch_leases != 0)
+        || (input->active_scratch_leases > 0
+            && input->status != LARDON3D_RESOURCE_EXTERNAL_STORAGE_IN_USE
+            && input->status != LARDON3D_RESOURCE_EXTERNAL_STORAGE_DRAINING
+            && input->status != LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR)
+        || ((input->status == LARDON3D_RESOURCE_EXTERNAL_STORAGE_AVAILABLE
+                || input->status == LARDON3D_RESOURCE_EXTERNAL_STORAGE_IN_USE
+                || input->status
+                    == LARDON3D_RESOURCE_EXTERNAL_STORAGE_DRAINING
+                || input->status == LARDON3D_RESOURCE_EXTERNAL_STORAGE_SAFE)
+            && !bounded_exact_identity(input->stable_identity,
+                sizeof(input->stable_identity)))) {
+        return false;
+    }
+
+    output->generation = input->generation;
+    output->status = input->status;
+    output->new_scratch_allocations_allowed =
+        input->new_scratch_allocations_allowed;
+    output->scratch_total_known = input->scratch_total_known;
+    output->scratch_free_known = input->scratch_free_known;
+    output->scratch_total_bytes = input->scratch_total_known
+        ? input->scratch_total_bytes : 0;
+    output->scratch_free_bytes = input->scratch_free_known
+        ? input->scratch_free_bytes : 0;
+    output->swap_total_known = input->swap_total_known;
+    output->swap_used_known = input->swap_used_known;
+    output->swap_total_bytes = input->swap_total_known
+        ? input->swap_total_bytes : 0;
+    output->swap_used_bytes = input->swap_used_known
+        ? input->swap_used_bytes : 0;
+    output->active_scratch_leases = input->active_scratch_leases;
+    (void)snprintf(output->stable_identity,
+        sizeof(output->stable_identity), "%s", input->stable_identity);
+    (void)snprintf(output->reason, sizeof(output->reason), "%s",
+        input->reason);
+    return true;
+}
+
+bool
+lardon3d_resource_external_storage_from_ssd_snapshot(
+    const Lardon3DSsdSnapshot *snapshot,
+    Lardon3DResourceExternalStorage *storage
+)
+{
+    if (storage) {
+        memset(storage, 0, sizeof(*storage));
+    }
+    if (!storage || !valid_ssd_controller_snapshot(snapshot)) {
+        return false;
+    }
+    Lardon3DResourceExternalStorageStatus status;
+    switch (snapshot->state) {
+    case LARDON3D_SSD_ABSENT:
+        status = LARDON3D_RESOURCE_EXTERNAL_STORAGE_ABSENT;
+        break;
+    case LARDON3D_SSD_DETECTED:
+    case LARDON3D_SSD_ENABLING:
+        status = LARDON3D_RESOURCE_EXTERNAL_STORAGE_DETECTED;
+        break;
+    case LARDON3D_SSD_ENABLED:
+        status = LARDON3D_RESOURCE_EXTERNAL_STORAGE_AVAILABLE;
+        break;
+    case LARDON3D_SSD_IN_USE:
+        status = LARDON3D_RESOURCE_EXTERNAL_STORAGE_IN_USE;
+        break;
+    case LARDON3D_SSD_DRAINING:
+        status = LARDON3D_RESOURCE_EXTERNAL_STORAGE_DRAINING;
+        break;
+    case LARDON3D_SSD_SAFE_TO_UNPLUG:
+        status = LARDON3D_RESOURCE_EXTERNAL_STORAGE_SAFE;
+        break;
+    case LARDON3D_SSD_ERROR:
+        status = LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR;
+        break;
+    default:
+        return false;
+    }
+    *storage = (Lardon3DResourceExternalStorage) {
+        .generation = snapshot->generation,
+        .status = status,
+        .new_scratch_allocations_allowed =
+            snapshot->scratch_allocations_allowed,
+        .scratch_total_known = snapshot->scratch_total_known,
+        .scratch_free_known = snapshot->scratch_free_known,
+        .scratch_total_bytes = snapshot->scratch_total_known
+            ? snapshot->scratch_total_bytes : 0,
+        .scratch_free_bytes = snapshot->scratch_free_known
+            ? snapshot->scratch_free_bytes : 0,
+        .swap_total_known = snapshot->swap_total_known,
+        .swap_used_known = snapshot->swap_used_known,
+        .swap_total_bytes = snapshot->swap_total_known
+            ? snapshot->swap_total_bytes : 0,
+        .swap_used_bytes = snapshot->swap_used_known
+            ? snapshot->swap_used_bytes : 0,
+        .active_scratch_leases = snapshot->scratch_lease_count,
+    };
+    (void)snprintf(storage->stable_identity,
+        sizeof(storage->stable_identity), "%s", snapshot->drive_identity);
+    (void)snprintf(storage->reason, sizeof(storage->reason), "%s",
+        snapshot->reason);
+    return true;
+}
+
+static bool
+external_storage_material_equal(
+    const Lardon3DResourceExternalStorage *left,
+    const Lardon3DResourceExternalStorage *right
+)
+{
+    return left->status == right->status
+        && left->new_scratch_allocations_allowed
+            == right->new_scratch_allocations_allowed
+        && left->scratch_total_known == right->scratch_total_known
+        && left->scratch_free_known == right->scratch_free_known
+        && left->scratch_total_bytes == right->scratch_total_bytes
+        && left->scratch_free_bytes == right->scratch_free_bytes
+        && left->swap_total_known == right->swap_total_known
+        && left->swap_used_known == right->swap_used_known
+        && left->swap_total_bytes == right->swap_total_bytes
+        && left->swap_used_bytes == right->swap_used_bytes
+        && left->active_scratch_leases == right->active_scratch_leases
+        && strcmp(left->stable_identity, right->stable_identity) == 0
+        && strcmp(left->reason, right->reason) == 0;
+}
+
+static void
+external_storage_notify_locked(Lardon3DResourceGovernor *governor)
+{
+    if (governor->generation != UINT64_MAX) {
+        ++governor->generation;
+    }
+    (void)pthread_cond_broadcast(&governor->cond);
+}
+
+typedef enum {
+    EXTERNAL_STORAGE_APPLY_PUBLIC = 0,
+    EXTERNAL_STORAGE_APPLY_WRAPPER_COMPLETION,
+} ExternalStorageApplyProvenance;
+
+static bool
+external_storage_apply_locked(
+    Lardon3DResourceGovernor *governor,
+    const Lardon3DResourceExternalStorage *storage,
+    ExternalStorageApplyProvenance provenance
+)
+{
+    Lardon3DResourceExternalStorage next;
+    if (!normalize_external_storage(storage, &next)
+        || (next.status != LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR
+            && next.active_scratch_leases
+                < governor->external_storage_lease_count)) {
+        return false;
+    }
+
+    const Lardon3DResourceExternalStorage *current =
+        &governor->external_storage;
+    bool same_material = external_storage_material_equal(current, &next);
+    const bool exact_saturated_wrapper = provenance
+            == EXTERNAL_STORAGE_APPLY_WRAPPER_COMPLETION
+        && current->generation == UINT64_MAX
+        && next.generation == UINT64_MAX;
+    const bool exact_wrapper_error = provenance
+            == EXTERNAL_STORAGE_APPLY_WRAPPER_COMPLETION
+        && next.generation == current->generation
+        && next.status == LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR;
+    /* UINT64_MAX is a legal saturated controller watermark: only the exact
+     * serialized wrapper that already owns operation_active may publish a
+     * material equal-watermark completion. Public telemetry retains the
+     * ordinary stale rule and therefore cannot regrant authority at MAX. An
+     * equal-watermark wrapper ERROR may always revoke authority and reconcile
+     * its exact address-backed count. */
+    if ((next.generation < current->generation
+            || (next.generation == current->generation
+                && !exact_saturated_wrapper && !exact_wrapper_error))
+        && !same_material) {
+        if (next.status != LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR) {
+            return false;
+        }
+        /* WHY: malformed/stale telemetry may revoke authority immediately,
+         * but it may not splice stale device metrics or identity into a newer
+         * exact observation. Preserve the current watermark and evidence. */
+        Lardon3DResourceExternalStorage conservative = *current;
+        conservative.status = LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR;
+        conservative.new_scratch_allocations_allowed = false;
+        (void)snprintf(conservative.reason, sizeof(conservative.reason), "%s",
+            next.reason);
+        next = conservative;
+        same_material = external_storage_material_equal(current, &next);
+    }
+    if (next.status == LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR
+        && next.active_scratch_leases
+            < governor->external_storage_lease_count) {
+        next.active_scratch_leases = governor->external_storage_lease_count;
+    }
+    if (same_material) {
+        if (next.generation > current->generation) {
+            governor->external_storage.generation = next.generation;
+        }
+        return true;
+    }
+    governor->external_storage = next;
+    external_storage_notify_locked(governor);
+    return true;
+}
+
+bool
+lardon3d_resource_governor_register_external_storage(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller,
+    const Lardon3DResourceExternalStorage *storage
+)
+{
+    Lardon3DResourceExternalStorage normalized;
+    if (!governor || !controller
+        || !normalize_external_storage(storage, &normalized)) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    if (governor->external_storage_registered) {
+        (void)pthread_mutex_unlock(&governor->mutex);
+        return false;
+    }
+    governor->external_storage_registered = true;
+    governor->external_storage_controller = controller;
+    governor->external_storage = normalized;
+    external_storage_notify_locked(governor);
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return true;
+}
+
+bool
+lardon3d_resource_governor_update_external_storage(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller,
+    const Lardon3DResourceExternalStorage *storage
+)
+{
+    Lardon3DResourceExternalStorage normalized;
+    if (!governor || !controller
+        || !normalize_external_storage(storage, &normalized)) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+#ifdef LARDON3D_RESOURCE_EXTERNAL_STORAGE_TESTING
+    lardon3d_resource_governor_external_update_engaged_for_test(
+        governor, controller);
+#endif
+    bool exact_registration = governor->external_storage_registered
+        && governor->external_storage_controller == controller;
+    bool deferred_release_snapshot = exact_registration
+        && governor->external_storage_operation_active
+        && normalized.active_scratch_leases
+            < governor->external_storage_lease_count;
+    /* A controller release becomes visible just before the wrapper removes
+     * its address under this mutex. Coalesce that narrow observation instead
+     * of publishing an impossible under-count; finish immediately applies its
+     * own post-operation cached snapshot. */
+    bool updated = exact_registration
+        && (deferred_release_snapshot
+            || external_storage_apply_locked(governor, &normalized,
+                EXTERNAL_STORAGE_APPLY_PUBLIC));
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return updated;
+}
+
+bool
+lardon3d_resource_governor_unregister_external_storage(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller
+)
+{
+    if (!governor || !controller) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    if (!governor->external_storage_registered
+        || governor->external_storage_controller != controller
+        || governor->external_storage_operation_active
+        || governor->external_storage_lease_count != 0
+        || governor->external_storage.active_scratch_leases != 0) {
+        (void)pthread_mutex_unlock(&governor->mutex);
+        return false;
+    }
+    governor->external_storage_registered = false;
+    governor->external_storage_controller = NULL;
+    governor->external_storage = (Lardon3DResourceExternalStorage) {0};
+    external_storage_notify_locked(governor);
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return true;
+}
+
+bool
+lardon3d_resource_governor_get_external_storage(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DResourceExternalStorage *storage
+)
+{
+    if (storage) {
+        memset(storage, 0, sizeof(*storage));
+    }
+    if (!governor || !storage) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    bool registered = governor->external_storage_registered;
+    if (registered) {
+        *storage = governor->external_storage;
+    }
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return registered;
+}
+
+bool
+lardon3d_resource_governor_internal_begin_scratch_operation(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller,
+    Lardon3DSsdScratchLease *lease,
+    bool acquire
+)
+{
+    if (!governor || !controller || !lease) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    bool permitted = governor->external_storage_registered
+        && governor->external_storage_controller == controller
+        && !governor->external_storage_operation_active;
+    size_t found = LARDON3D_SSD_MAX_SCRATCH_LEASES;
+    for (size_t index = 0;
+         index < governor->external_storage_lease_count; ++index) {
+        if (governor->external_storage_leases[index] == lease) {
+            found = index;
+            break;
+        }
+    }
+    if (acquire) {
+        permitted = permitted
+            && found == LARDON3D_SSD_MAX_SCRATCH_LEASES
+            && governor->external_storage_lease_count
+                < LARDON3D_SSD_MAX_SCRATCH_LEASES
+            && governor->external_storage.new_scratch_allocations_allowed
+            && (governor->external_storage.status
+                    == LARDON3D_RESOURCE_EXTERNAL_STORAGE_AVAILABLE
+                || governor->external_storage.status
+                    == LARDON3D_RESOURCE_EXTERNAL_STORAGE_IN_USE);
+    } else {
+        permitted = permitted
+            && found != LARDON3D_SSD_MAX_SCRATCH_LEASES;
+    }
+    if (permitted) {
+        governor->external_storage_operation_active = true;
+        governor->external_storage_operation_acquire = acquire;
+        governor->external_storage_operation_lease = lease;
+        governor->external_storage_operation_start_lease_count =
+            governor->external_storage.active_scratch_leases;
+    }
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return permitted;
+}
+
+static void
+external_storage_operation_error_locked(
+    Lardon3DResourceGovernor *governor,
+    size_t expected_physical_lease_count
+)
+{
+    Lardon3DResourceExternalStorage error = governor->external_storage;
+    error.status = LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR;
+    error.new_scratch_allocations_allowed = false;
+    /* The current copied count may already contain an updater's pre/post-call
+     * view. The frozen start count plus the physical outcome is the only
+     * serialized evidence that cannot double-apply acquire/release. */
+    error.active_scratch_leases = expected_physical_lease_count;
+    (void)snprintf(error.reason, sizeof(error.reason), "%s",
+        "SSD lease completed but cached reconciliation was malformed; "
+        "new scratch allocation is blocked");
+    (void)external_storage_apply_locked(governor, &error,
+        EXTERNAL_STORAGE_APPLY_WRAPPER_COMPLETION);
+}
+
+bool
+lardon3d_resource_governor_internal_finish_scratch_operation(
+    Lardon3DResourceGovernor *governor,
+    Lardon3DSsdController *controller,
+    Lardon3DSsdScratchLease *lease,
+    bool acquire,
+    bool physical_success,
+    const Lardon3DResourceExternalStorage *storage
+)
+{
+    if (!governor || !controller || !lease) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    if (!governor->external_storage_registered
+        || governor->external_storage_controller != controller
+        || !governor->external_storage_operation_active
+        || governor->external_storage_operation_acquire != acquire
+        || governor->external_storage_operation_lease != lease) {
+        (void)pthread_mutex_unlock(&governor->mutex);
+        return false;
+    }
+
+    size_t expected_physical_lease_count =
+        governor->external_storage_operation_start_lease_count;
+    bool physical_count_valid = true;
+    if (physical_success && acquire) {
+        if (expected_physical_lease_count
+            == LARDON3D_SSD_MAX_SCRATCH_LEASES) {
+            physical_count_valid = false;
+        } else {
+            ++expected_physical_lease_count;
+        }
+    } else if (physical_success) {
+        if (expected_physical_lease_count == 0) {
+            physical_count_valid = false;
+        } else {
+            --expected_physical_lease_count;
+        }
+    }
+
+    bool bookkeeping_valid = true;
+    size_t found = LARDON3D_SSD_MAX_SCRATCH_LEASES;
+    for (size_t index = 0;
+         index < governor->external_storage_lease_count; ++index) {
+        if (governor->external_storage_leases[index] == lease) {
+            found = index;
+            break;
+        }
+    }
+    if (physical_success && acquire) {
+        if (found != LARDON3D_SSD_MAX_SCRATCH_LEASES
+            || governor->external_storage_lease_count
+                >= LARDON3D_SSD_MAX_SCRATCH_LEASES) {
+            bookkeeping_valid = false;
+        } else {
+            governor->external_storage_leases[
+                governor->external_storage_lease_count++] = lease;
+        }
+    } else if (physical_success) {
+        if (found == LARDON3D_SSD_MAX_SCRATCH_LEASES) {
+            bookkeeping_valid = false;
+        } else {
+            --governor->external_storage_lease_count;
+            governor->external_storage_leases[found] =
+                governor->external_storage_leases[
+                    governor->external_storage_lease_count];
+            governor->external_storage_leases[
+                governor->external_storage_lease_count] = NULL;
+        }
+    }
+
+    Lardon3DResourceExternalStorage normalized;
+    if (expected_physical_lease_count
+        < governor->external_storage_lease_count) {
+        physical_count_valid = false;
+        expected_physical_lease_count =
+            governor->external_storage_lease_count;
+    }
+
+    bool reconciled = bookkeeping_valid && physical_count_valid
+        && normalize_external_storage(storage, &normalized);
+    if (reconciled) {
+        reconciled = normalized.active_scratch_leases
+                == expected_physical_lease_count
+            && external_storage_apply_locked(governor, &normalized,
+                EXTERNAL_STORAGE_APPLY_WRAPPER_COMPLETION);
+        /* A concurrently published newer controller generation is already the
+         * stronger exact evidence and need not be overwritten by this copy. */
+        if (!reconciled
+            && normalized.generation < governor->external_storage.generation
+            && governor->external_storage.active_scratch_leases
+                >= governor->external_storage_lease_count) {
+            reconciled = true;
+        }
+    }
+    if (!reconciled) {
+        external_storage_operation_error_locked(governor,
+            expected_physical_lease_count);
+    }
+    governor->external_storage_operation_active = false;
+    governor->external_storage_operation_acquire = false;
+    governor->external_storage_operation_lease = NULL;
+    governor->external_storage_operation_start_lease_count = 0;
+    (void)pthread_mutex_unlock(&governor->mutex);
+    /* A successful physical acquire must be reported to its owner so the
+     * caller can later release it, even if telemetry had to fail closed. */
+    return physical_success && bookkeeping_valid;
+}
+
+const char *
+lardon3d_resource_external_storage_status_name(
+    Lardon3DResourceExternalStorageStatus status
+)
+{
+    switch (status) {
+    case LARDON3D_RESOURCE_EXTERNAL_STORAGE_ABSENT:
+        return "ABSENT";
+    case LARDON3D_RESOURCE_EXTERNAL_STORAGE_DETECTED:
+        return "DETECTED";
+    case LARDON3D_RESOURCE_EXTERNAL_STORAGE_AVAILABLE:
+        return "AVAILABLE";
+    case LARDON3D_RESOURCE_EXTERNAL_STORAGE_IN_USE:
+        return "IN_USE";
+    case LARDON3D_RESOURCE_EXTERNAL_STORAGE_DRAINING:
+        return "DRAINING";
+    case LARDON3D_RESOURCE_EXTERNAL_STORAGE_SAFE:
+        return "SAFE";
+    case LARDON3D_RESOURCE_EXTERNAL_STORAGE_ERROR:
+        return "ERROR";
+    }
+    return "UNKNOWN";
 }
 
 static bool
@@ -2046,8 +2980,7 @@ evaluate_locked(
     const Lardon3DResourceEstimate *estimate,
     Lardon3DResourceDecision *decision,
     bool update_pressure,
-    uint64_t soft_memory_floor,
-    uint64_t hard_memory_floor
+    const Lardon3DMemoryFloors *floors
 )
 {
     if (!valid_estimate(estimate)) {
@@ -2088,12 +3021,13 @@ evaluate_locked(
             governor->last_swap_pages_out = snapshot->swap_pages_out;
             governor->swap_baseline_known = true;
         }
-        bool hard_memory_pressure = hard_memory_floor > 0
-            && snapshot->memory_available_bytes <= hard_memory_floor;
-        bool soft_memory_pressure = soft_memory_floor > 0
-            && snapshot->memory_available_bytes <= soft_memory_floor;
-        bool pressure_signal = soft_memory_pressure || psi_pressure
-            || swap_changed;
+        bool hard_memory_pressure = floors->hard_floor > 0
+            && snapshot->memory_available_bytes <= floors->hard_floor;
+        bool caution_memory_pressure = floors->caution_floor > 0
+            && snapshot->memory_available_bytes <= floors->caution_floor;
+        bool pressure_signal = psi_pressure || swap_changed
+            || (caution_memory_pressure
+                && !floors->caution_is_non_escalating_band);
 
         if (hard_memory_pressure) {
             governor->pressure = LARDON3D_RESOURCE_PRESSURE_RED;
@@ -2115,6 +3049,19 @@ evaluate_locked(
                 governor->slow_start_limit = 1;
                 governor->slow_start_active = true;
             } else {
+                governor->pressure = LARDON3D_RESOURCE_PRESSURE_YELLOW;
+            }
+        } else if (caution_memory_pressure) {
+            /* The default 3..4 GiB band is caution, not exhaustion: hold the
+             * Governor at YELLOW and reset aggressive growth without promoting
+             * a stable caution-only host to RED. Capacity below still subtracts
+             * the hard admission floor, so work that would cross it must WAIT. */
+            governor->pressure_streak = 0;
+            governor->recovery_streak = 0;
+            governor->slow_start_streak = 0;
+            governor->slow_start_limit = 1;
+            governor->slow_start_active = true;
+            if (governor->pressure != LARDON3D_RESOURCE_PRESSURE_RED) {
                 governor->pressure = LARDON3D_RESOURCE_PRESSURE_YELLOW;
             }
         } else {
@@ -2189,7 +3136,7 @@ evaluate_locked(
 
     size_t theoretical_batch = batch_capacity(
         governor->profile.memory_total_bytes
-            - soft_memory_floor,
+            - floors->admission_floor,
         memory_fixed,
         memory_per_item
     );
@@ -2245,7 +3192,7 @@ evaluate_locked(
     if (!availability_locked(
             governor,
             snapshot,
-            soft_memory_floor,
+            floors->admission_floor,
             &available
         )) {
         set_decision(decision, LARDON3D_RESOURCE_REJECT, 0, 0, 0, 0, "Instantané de ressources invalide.");
@@ -2431,14 +3378,15 @@ lardon3d_resource_governor_reserve(
         free(created);
         return false;
     }
+    Lardon3DMemoryFloors floors;
+    internal_memory_floors_locked(governor, &floors);
     if (!evaluate_locked(
             governor,
             snapshot,
             estimate,
             decision,
             true,
-            governor->policy.system_memory_reserve_bytes,
-            governor->policy.emergency_memory_floor_bytes
+            &floors
         )) {
         (void)pthread_mutex_unlock(&governor->mutex);
         free(created);
@@ -2476,11 +3424,27 @@ lardon3d_resource_governor_reserve_available(
     (void)pthread_mutex_lock(&governor->mutex);
     Lardon3DHardwareProfile profile = governor->profile;
     bool force_capture_failure = governor->internal_force_capture_failure;
+#if defined(LARDON3D_RESOURCE_GOVERNOR_CAPTURE_TESTING)
+    bool override_capture = governor->internal_capture_snapshot_override;
+    Lardon3DResourceSnapshot override_snapshot =
+        governor->internal_capture_snapshot;
+#endif
     (void)pthread_mutex_unlock(&governor->mutex);
     if (force_capture_failure) {
         return false;
     }
     Lardon3DResourceSnapshot snapshot;
+#if defined(LARDON3D_RESOURCE_GOVERNOR_CAPTURE_TESTING)
+    /* TEST CONTRACT: exact-output fixtures must not inherit ambient host load
+     * or pressure. The template is per-Governor and copied under its mutex;
+     * only freshness is regenerated at the same boundary as production. */
+    if (override_capture) {
+        snapshot = override_snapshot;
+        if (clock_gettime(CLOCK_MONOTONIC, &snapshot.captured_at) != 0) {
+            return false;
+        }
+    } else
+#endif
     if (!lardon3d_resource_snapshot_capture(&profile, &snapshot, NULL, 0)) {
         return false;
     }
@@ -2706,14 +3670,15 @@ lardon3d_resource_governor_decide(
         (void)pthread_mutex_unlock(&governor->mutex);
         return false;
     }
+    Lardon3DMemoryFloors floors;
+    internal_memory_floors_locked(governor, &floors);
     bool success = evaluate_locked(
         governor,
         snapshot,
         &estimate,
         decision,
         true,
-        governor->policy.system_memory_reserve_bytes,
-        governor->policy.emergency_memory_floor_bytes
+        &floors
     );
     (void)pthread_mutex_unlock(&governor->mutex);
     return success;
@@ -2777,8 +3742,7 @@ try_capability_locked(
     const Lardon3DTaskCapability *capability,
     size_t capability_index,
     bool update_pressure,
-    uint64_t soft_floor,
-    uint64_t hard_floor,
+    const Lardon3DMemoryFloors *floors,
     Lardon3DResourceCapabilitySelection *selection
 )
 {
@@ -2828,8 +3792,7 @@ try_capability_locked(
             &operational,
             &decision,
             update_pressure,
-            soft_floor,
-            hard_floor
+            floors
         )) {
         return false;
     }
@@ -3038,9 +4001,8 @@ lardon3d_resource_governor_internal_reserve_capability(
         free(created);
         return false;
     }
-    uint64_t soft_floor;
-    uint64_t hard_floor;
-    internal_pressure_floors_locked(governor, &soft_floor, &hard_floor);
+    Lardon3DMemoryFloors floors;
+    internal_memory_floors_locked(governor, &floors);
     bool pressure_updated = false;
     bool saw_wait = false;
     bool evaluated = false;
@@ -3064,8 +4026,7 @@ lardon3d_resource_governor_internal_reserve_capability(
                     capability,
                     index,
                     !pressure_updated,
-                    soft_floor,
-                    hard_floor,
+                    &floors,
                     &candidate
                 )) {
                 (void)pthread_mutex_unlock(&governor->mutex);
@@ -3186,6 +4147,11 @@ lardon3d_resource_governor_internal_reserve_capability_available(
     (void)pthread_mutex_lock(&governor->mutex);
     Lardon3DHardwareProfile profile = governor->profile;
     bool force_capture_failure = governor->internal_force_capture_failure;
+#if defined(LARDON3D_RESOURCE_GOVERNOR_CAPTURE_TESTING)
+    bool override_capture = governor->internal_capture_snapshot_override;
+    Lardon3DResourceSnapshot override_snapshot =
+        governor->internal_capture_snapshot;
+#endif
     (void)pthread_mutex_unlock(&governor->mutex);
     if (force_capture_failure) {
         return false;
@@ -3195,6 +4161,17 @@ lardon3d_resource_governor_internal_reserve_capability_available(
      * snapshot. Its failure leaves private fields unknown only. */
     capture_host_telemetry(governor);
     Lardon3DResourceSnapshot snapshot;
+#if defined(LARDON3D_RESOURCE_GOVERNOR_CAPTURE_TESTING)
+    /* Keep the deterministic seam at the stable Gate G capture boundary.
+     * Optional host diagnostics above remain observational and never acquire
+     * admission authority from this test template. */
+    if (override_capture) {
+        snapshot = override_snapshot;
+        if (clock_gettime(CLOCK_MONOTONIC, &snapshot.captured_at) != 0) {
+            return false;
+        }
+    } else
+#endif
     if (!lardon3d_resource_snapshot_capture(&profile, &snapshot, NULL, 0)) {
         return false;
     }
@@ -4036,6 +5013,29 @@ lardon3d_resource_governor_internal_force_capture_failure(
     governor->internal_force_capture_failure = force_failure;
     (void)pthread_mutex_unlock(&governor->mutex);
 }
+
+#if defined(LARDON3D_RESOURCE_GOVERNOR_CAPTURE_TESTING)
+bool
+lardon3d_resource_governor_internal_set_capture_snapshot(
+    Lardon3DResourceGovernor *governor,
+    const Lardon3DResourceSnapshot *snapshot
+)
+{
+    if (!governor) {
+        return false;
+    }
+    (void)pthread_mutex_lock(&governor->mutex);
+    if (snapshot && !valid_snapshot(&governor->profile, snapshot)) {
+        (void)pthread_mutex_unlock(&governor->mutex);
+        return false;
+    }
+    governor->internal_capture_snapshot_override = snapshot != NULL;
+    governor->internal_capture_snapshot = snapshot
+        ? *snapshot : (Lardon3DResourceSnapshot) {0};
+    (void)pthread_mutex_unlock(&governor->mutex);
+    return true;
+}
+#endif
 
 const char *
 lardon3d_resource_decision_name(Lardon3DResourceDecisionKind kind)

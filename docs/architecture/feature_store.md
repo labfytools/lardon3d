@@ -28,13 +28,12 @@ porte sur les 24 octets canoniques `L3DORBP1`, version et trois entiers
 little-endian. Il ne dépend ni du padding, ni de la locale. Le contrat ORB v1
 produit 32 octets binaires par point.
 
-Au démarrage, avant la création des workers, Lardon3D configure la limite de
-threads interne process-wide d'OpenCV à
-`min(12, logical_cpu_count - system_cpu_reserve)`. La borne douze est
-opérationnelle et correspond au plafond audité. `features.extract` demande
-jusqu'à douze threads au Resource Governor ; celui-ci réduit l'admission au
-budget hôte, donc à la limite OpenCV configurée. La Queue conserve un callback actif ; aucun pool Lardon3D
-supplémentaire n'est créé pour ORB.
+Au démarrage, avant la création du worker Queue, Lardon3D configure la baseline
+OpenCV process-wide depuis le compute-pool réel. `features.extract` publie la
+borne positive `int` acceptée par OpenCV ; le Resource Governor réduit toujours
+l'admission au budget hôte. Douze threads demeure une cohorte de validation,
+pas un plafond portable. La Queue conserve un callback actif ; aucun pool
+Lardon3D supplémentaire n'est créé pour ORB.
 
 Cette limite est une configuration opérationnelle, jamais un paramètre
 scientifique : elle n'entre ni dans le fingerprint ORB v1, ni dans l'identité

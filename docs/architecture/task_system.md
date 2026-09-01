@@ -41,6 +41,21 @@ une opération de réadmission, pas un état supplémentaire.
 | `lardon3d_task_sequence_break()` | Libère puis renouvelle la réservation |
 | `lardon3d_task_snapshot()` | Copie l'état d'observation runtime |
 
+### Observation additive et ABI
+
+`Lardon3DTaskSnapshot` conserve exactement son layout historique. La structure
+additive `Lardon3DTaskObservation` répète ce préfixe dans un autre type et ajoute
+kind/version, compteurs durables, nombre de séquences et copie du contrat
+d'exécution installé. `lardon3d_task_observation()` initialise une sortie
+caller-owned et cohérente sous le mutex Task ; aucun pointeur interne ne sort.
+
+`lardon3d_task_set_durable_progress()` ne peut être appelé par un owner typé
+qu'après publication de son préfixe métier. Ces compteurs ne sont ni déduits du
+pourcentage générique, ni d'un message, ni du nom de Task. Un
+`set_progress()` ultérieur les efface afin qu'une observation ne conserve pas
+une valeur exacte devenue stale. Cette couture sert la TUI mais ne change ni le
+codec checkpoint, ni l'identité scientifique, ni l'estimation immutable.
+
 ### API durable
 
 | Fonction | Description |
@@ -80,8 +95,9 @@ compteur de séquences. Les timestamps et l'estimation complète ne sont pas
 dupliqués par la DB et ne participent donc pas à ce test. Un canonique valide
 dont ce résumé correspond est prioritaire ; une `.next` absente, périmée ou
 corrompue est alors ignorée. Sinon, une `.next` valide qui correspond au même
-résumé est promue sous le même verrou puis reprise. Un ancien projet v22 qui ne
-possède que `.chk` reste ainsi récupérable. Toute autre absence, version non
+résumé est promue sous le même verrou puis reprise. Un ancien projet v22 ou
+antérieur qui ne possède que `.chk` reste ainsi récupérable. Toute autre
+absence, version non
 supportée, corruption ou divergence interdit la reprise de cette tâche sans
 affecter les autres entrées de l'inventaire.
 
@@ -98,8 +114,8 @@ affecter les autres entrées de l'inventaire.
    `lardon3d_task_checkpoint()`. Aucun autre thread ne force son arrêt.
 4. **Progression bornée** : la progression ne peut jamais dépasser la valeur
    maximale définie par l'estimation.
-5. **Reprise réadmise** : une tâche restaurée non terminale repasse par la file,
-   le scheduler et le Resource Governor avec une nouvelle réservation.
+5. **Reprise réadmise** : une tâche restaurée non terminale repasse par la
+   Queue/runtime et le Resource Governor avec une nouvelle réservation.
 6. **Snapshot court** : seuls les champs durables sont copiés sous le mutex ;
    la sérialisation et les I/O ont lieu après déverrouillage.
 
@@ -178,8 +194,10 @@ n'avancent pas la rampe.
 L'A/B forcé ABBA a mesuré seulement +2,077617 % à depth 2
 (54,661652238 contre 55,797311953 paires/s), sous le deadband 5 %, avec digest identique,
 quatre séquences de fallback local par exécution et zéro panne/discard. Depth 2 est donc
-**REJECTED_WITH_MEASURED_REASON** pour AUTO normal. Compute Governor v2 reste
-en cours jusqu'aux réconciliations restantes.
+**REJECTED_WITH_MEASURED_REASON** pour AUTO normal. Cette décision Matcher est
+gelée ; l'intégration TUI, la validation exécutable et la revue finale
+indépendante sont acquises. L'audit global qui contient cette frontière est
+désormais `GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN`.
 
 Pour Matcher Vulkan, le lease privé de capacité matérialise le contrat de la
 séquence seulement après son admission. Il alloue un ou deux payloads de
@@ -190,8 +208,9 @@ complète; elle ne laisse ni réservation suivante sous-facturée, ni résultat
 Vulkan partiel.
 
 Cette boucle est maintenant `observe → choose → execute → measure → adapt next`.
-Les CPU réductibles progressent uniquement par `1/2/4/8/12`, bornés par le
-compute-pool ; CPU et lot ne sont jamais essayés ensemble. Les observations
+Les CPU réductibles progressent par paliers de puissances de deux, puis vers la
+capacité exacte du kind ou du compute-pool lorsque ce dernier palier diffère ;
+CPU et lot ne sont jamais essayés ensemble. Les observations
 hôte privées comprennent utilisation du pool, mémoire/PSI/swap actif, GPU busy
 et RSS observé, sans confondre RSS et réservation. Le dernier diagnostic peut
 être tiré par numéro de série ou formaté dans un buffer borné ; le runtime ne
@@ -266,7 +285,9 @@ lors de sa soumission explicite à la file.
 **IMPLEMENTED** — resoumission automatique sélective des tâches production à
 l'ouverture du projet.
 
-**NOT_YET_WIRED** — autosave générique et dépendances entre tâches.
+**NOT_YET_WIRED** — dépendances/DAG entre Tasks. Il n'existe volontairement pas
+de timer autosave générique : chaque kind persiste d'abord son curseur métier à
+sa frontière atomique, puis publie son checkpoint générique.
 
 **IMPLEMENTED** — `visual_index.update` traite jusqu'à seize Feature Sets par
 séquence, checkpoint après commit de segment et repasse par le Governor.
@@ -280,7 +301,7 @@ Governor via `sequence_break`. La reprise est idempotente avec le curseur
 **PASS / FROZEN — Compute Governor v2.** `matcher.run` traite une
 Candidate Pair atomique à la fois, par lots opérationnels bornés jusqu'à 12.
 Le code courant consomme honnêtement CPU, lot et GPU du contrat choisi. Feature,
-SIFT et RootSIFT appliquent l'admission OpenCV `1..12`; RAW et Photo Quality
+SIFT et RootSIFT appliquent l'admission OpenCV `1..compute-pool`; RAW et Photo Quality
 restent CPU1. Pour ORB normal, le Governor choisit GPU-first ou CPU complet pour la prochaine
 séquence, sans mutation pendant son exécution. Ces dimensions ne changent ni
 identité scientifique ni publication. Le callback persiste le curseur
@@ -297,11 +318,13 @@ handles encore privés. Les buffers du second slot ne sont mappés que pendant
 une séquence depth 2 admise et sont libérés avant la rupture suivante. Helpers
 reste 0 et le contrôle synchrone force depth 1.
 
-**IMPLEMENTED** — `geometric_verifier.run` v1 traite un Match Result atomique à
-la fois, par lots adaptatifs de 1, 2, 4 ou 8. Project DB v13 conserve sa
-configuration scientifique et `after_match_result_id`. Chaque résultat est
-publié avant le curseur ; pause, annulation, checkpoint et rupture de séquence
-restent coopératifs aux frontières des parents et des lots.
+**IMPLEMENTED** — `geometric_verifier.run` v1 traite des Match Results
+indépendants sous un callback propriétaire, avec jusqu'à 16 participants sûrs,
+8 utiles et 16 parents par lot. Project DB v13 conserve sa configuration
+scientifique et `after_match_result_id`. L'USAC interne reste
+`isParallel=false`; le propriétaire publie le préfixe canonique ordonné avant
+le curseur. Pause, annulation, checkpoint et rupture de séquence restent
+coopératifs aux frontières des parents et des lots.
 
 **IMPLEMENTED** — `track_builder.run` v1 est une tâche durable de rebuild
 complet. Le scope GVR est persistant et immuable ; la reprise rejoue depuis le
@@ -340,12 +363,18 @@ avant l'appel hors mutex. `join()` attend la fin du callback ; le userdata reste
 donc valide pendant celui-ci et son destructeur n'est appelé qu'ensuite par la
 destruction de la tâche.
 
+L'observation TUI ne change pas cette ownership : elle ne retient ni Task ni
+userdata et ne pilote aucune transition. Le contrat installé de la Task active
+est l'unique source exacte pour CPU/lot ; un diagnostic Governor par kind ne
+peut pas être attribué à cette Task sans association Task+séquence.
+
 Une tâche reconstruite mais refusée avant transfert à la queue est abandonnée
 localement : son userdata est détruit, sans callback terminal ni écriture
 durable d'une fausse annulation. Une annulation explicitement demandée conserve
 le contrat de notification terminale.
 
-La Project Database v7 peut enregistrer transactionnellement un résumé
+Depuis Project Database v7, la base peut enregistrer transactionnellement un
+résumé
 `Lardon3DTaskDurableSnapshot` et la référence de son checkpoint. Elle ne stocke
 ni estimation sérialisée complète, ni callback, ni réservation, et ne remplace
 pas la validation du fichier checkpoint avant `task_restore()`.
@@ -357,9 +386,17 @@ snapshots dont le codec/version et le résumé DB ont été validés, mais ne pe
 appeler `task_restore()` que via un descriptor connu ; aucun pointeur n'est
 persistant.
 
+## Project DB courant
+
+Le schéma Project DB courant est v23. Cette évolution additive ne modifie ni le
+codec checkpoint v1, ni les règles de reprise ci-dessus ; elle ajoute le modèle
+optique générique décrit dans [Project Database](project_database.md).
+
 ## Limites
 
-- Aucune priorité interne : l'ordre est uniquement FIFO.
+- Aucune priorité interne : l'ordre est FIFO stable avec bypass des seuls
+  `WAIT` ressources.
 - Pas encore de DAG pour ordonner des reprises interdépendantes.
 - Aucune dépendance inter-tâches (pas de DAG).
-- Pas encore de références d'artefacts métier validés.
+- Pas encore de références génériques d'artefacts métier validés dans le codec
+  checkpoint ; les payloads typés conservent leurs propres références durables.

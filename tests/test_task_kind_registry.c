@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -116,18 +117,41 @@ snapshot(void)
 }
 
 static bool
+same_estimate(const Lardon3DResourceEstimate *left,
+              const Lardon3DResourceEstimate *right)
+{
+    return left->memory_fixed_bytes == right->memory_fixed_bytes
+        && left->gpu_memory_fixed_bytes == right->gpu_memory_fixed_bytes
+        && left->memory_bytes_per_item == right->memory_bytes_per_item
+        && left->gpu_memory_bytes_per_item == right->gpu_memory_bytes_per_item
+        && left->minimum_batch_size == right->minimum_batch_size
+        && left->maximum_batch_size == right->maximum_batch_size
+        && left->desired_cpu_threads == right->desired_cpu_threads
+        && left->desired_gpu_slots == right->desired_gpu_slots
+        && left->desired_io_slots == right->desired_io_slots
+        && left->task_class == right->task_class;
+}
+
+static bool
 run_legacy_estimate_validation_test(void)
 {
     static const Lardon3DTaskKindDescriptor descriptors[] = {
         {.kind = "candidate_pair.generate", .kind_version = 1,
          .reconstruct = reconstruct},
+        {.kind = "features.extract", .kind_version = 1,
+         .reconstruct = reconstruct},
         {.kind = "features.extract.sift", .kind_version = 1,
          .reconstruct = reconstruct},
         {.kind = "features.extract.rootsift", .kind_version = 1,
          .reconstruct = reconstruct},
+        {.kind = "visual_index.update", .kind_version = 1,
+         .reconstruct = reconstruct},
+        {.kind = "geometric_verifier.run", .kind_version = 1,
+         .reconstruct = reconstruct},
     };
     Lardon3DTaskKindRegistry registry;
-    CHECK(lardon3d_task_kind_registry_init(&registry, descriptors, 3));
+    CHECK(lardon3d_task_kind_registry_init(
+        &registry, descriptors, sizeof(descriptors) / sizeof(descriptors[0])));
     int destroyed = 0;
     int finished = 0;
     ReconstructContext context = {
@@ -136,10 +160,13 @@ run_legacy_estimate_validation_test(void)
     };
     const char *kinds[] = {
         "candidate_pair.generate",
+        "features.extract",
         "features.extract.sift",
         "features.extract.rootsift",
+        "visual_index.update",
+        "geometric_verifier.run",
     };
-    for (size_t index = 0; index < 3; ++index) {
+    for (size_t index = 0; index < sizeof(kinds) / sizeof(kinds[0]); ++index) {
         Lardon3DTaskDurableSnapshot corrupt = snapshot();
         corrupt.estimate = (Lardon3DResourceEstimate) {0};
         Lardon3DTask *task = NULL;
@@ -152,48 +179,139 @@ run_legacy_estimate_validation_test(void)
         CHECK(!task && destroyed == (int)index + 1);
     }
 
-    const Lardon3DResourceEstimate historical[] = {
-        {
-            .memory_fixed_bytes = 128 * 1024,
-            .memory_bytes_per_item = 64 * 1024,
-            .minimum_batch_size = 1,
-            .maximum_batch_size = 64,
-            .desired_cpu_threads = 1,
-            .desired_io_slots = 1,
-            .task_class = LARDON3D_RESOURCE_TASK_CPU,
-        },
-        {
-            .memory_fixed_bytes = 64ULL * 1024 * 1024,
-            .memory_bytes_per_item = 1024ULL * 1024 * 1024,
-            .minimum_batch_size = 1,
-            .maximum_batch_size = 1,
-            .desired_cpu_threads = 1,
-            .desired_io_slots = 1,
-            .task_class = LARDON3D_RESOURCE_TASK_CPU,
-        },
-        {
-            .memory_fixed_bytes = 64ULL * 1024 * 1024,
-            .memory_bytes_per_item = 1024ULL * 1024 * 1024,
-            .minimum_batch_size = 1,
-            .maximum_batch_size = 1,
-            .desired_cpu_threads = 1,
-            .desired_io_slots = 1,
-            .task_class = LARDON3D_RESOURCE_TASK_CPU,
-        },
+    typedef struct {
+        const char *kind;
+        Lardon3DResourceEstimate durable;
+        Lardon3DResourceEstimate effective;
+    } EstimateCase;
+    const Lardon3DResourceEstimate candidate_current = {
+        .memory_fixed_bytes = 256 * 1024,
+        .memory_bytes_per_item = 8 * 1024 * 1024,
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 64,
+        .desired_cpu_threads = 64,
+        .desired_io_slots = 1,
+        .task_class = LARDON3D_RESOURCE_TASK_CPU,
     };
-    for (size_t index = 0; index < 3; ++index) {
+    const Lardon3DResourceEstimate feature_current = {
+        .memory_fixed_bytes = 64ULL * 1024 * 1024,
+        .memory_bytes_per_item = 512ULL * 1024 * 1024,
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = INT_MAX,
+        .desired_io_slots = 1,
+        .task_class = LARDON3D_RESOURCE_TASK_CPU,
+    };
+    const Lardon3DResourceEstimate sift_current = {
+        .memory_fixed_bytes = 64ULL * 1024 * 1024,
+        .memory_bytes_per_item = 1024ULL * 1024 * 1024,
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = INT_MAX,
+        .desired_io_slots = 1,
+        .task_class = LARDON3D_RESOURCE_TASK_CPU,
+    };
+    const Lardon3DResourceEstimate visual_current = {
+        .memory_fixed_bytes = 8ULL * 1024 * 1024,
+        .memory_bytes_per_item = 2ULL * 1024 * 1024,
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 16,
+        .desired_cpu_threads = 16,
+        .desired_io_slots = 1,
+        .task_class = LARDON3D_RESOURCE_TASK_CPU,
+    };
+    const Lardon3DResourceEstimate geometric_current = {
+        .memory_bytes_per_item = 8ULL * 1024 * 1024,
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 16,
+        .desired_cpu_threads = 8,
+        .desired_io_slots = 1,
+        .task_class = LARDON3D_RESOURCE_TASK_CPU,
+    };
+    EstimateCase accepted[] = {
+        {.kind = "candidate_pair.generate",
+         .durable = candidate_current, .effective = candidate_current},
+        {.kind = "candidate_pair.generate",
+         .durable = candidate_current, .effective = candidate_current},
+        {.kind = "candidate_pair.generate",
+         .durable = candidate_current, .effective = candidate_current},
+        {.kind = "features.extract",
+         .durable = feature_current, .effective = feature_current},
+        {.kind = "features.extract",
+         .durable = feature_current, .effective = feature_current},
+        {.kind = "features.extract",
+         .durable = feature_current, .effective = feature_current},
+        {.kind = "features.extract.sift",
+         .durable = sift_current, .effective = sift_current},
+        {.kind = "features.extract.sift",
+         .durable = sift_current, .effective = sift_current},
+        {.kind = "features.extract.sift",
+         .durable = sift_current, .effective = sift_current},
+        {.kind = "features.extract.rootsift",
+         .durable = sift_current, .effective = sift_current},
+        {.kind = "features.extract.rootsift",
+         .durable = sift_current, .effective = sift_current},
+        {.kind = "features.extract.rootsift",
+         .durable = sift_current, .effective = sift_current},
+        {.kind = "visual_index.update",
+         .durable = visual_current, .effective = visual_current},
+        {.kind = "visual_index.update",
+         .durable = visual_current, .effective = visual_current},
+        {.kind = "visual_index.update",
+         .durable = visual_current, .effective = visual_current},
+        {.kind = "geometric_verifier.run",
+         .durable = geometric_current, .effective = geometric_current},
+        {.kind = "geometric_verifier.run",
+         .durable = geometric_current, .effective = geometric_current},
+    };
+    /* The first five groups contain current, immediately preceding, and oldest
+     * exact signatures. GV has only current plus its frozen serial envelope.
+     * No neighboring estimate is accepted. */
+    accepted[1].durable.memory_bytes_per_item = 64 * 1024;
+    accepted[1].durable.desired_cpu_threads = 12;
+    accepted[2].durable = accepted[1].durable;
+    accepted[2].durable.memory_fixed_bytes = 128 * 1024;
+    accepted[2].durable.desired_cpu_threads = 1;
+    accepted[4].durable.desired_cpu_threads = 12;
+    accepted[5].durable.desired_cpu_threads = 1;
+    accepted[7].durable.desired_cpu_threads = 12;
+    accepted[8].durable.desired_cpu_threads = 1;
+    accepted[10].durable.desired_cpu_threads = 12;
+    accepted[11].durable.desired_cpu_threads = 1;
+    accepted[13].durable.desired_cpu_threads = 12;
+    accepted[14].durable.desired_cpu_threads = 1;
+    accepted[16].durable.memory_fixed_bytes = 4ULL * 1024 * 1024;
+    accepted[16].durable.memory_bytes_per_item = 0;
+    accepted[16].durable.maximum_batch_size = 8;
+    accepted[16].durable.desired_cpu_threads = 1;
+
+    for (size_t index = 0;
+         index < sizeof(accepted) / sizeof(accepted[0]); ++index) {
         Lardon3DTaskDurableSnapshot durable = snapshot();
-        durable.estimate = historical[index];
+        durable.estimate = accepted[index].durable;
         Lardon3DTask *task = NULL;
         CHECK(lardon3d_task_kind_registry_restore(
-            &registry, kinds[index], 1, &durable, &context, &task
+            &registry, accepted[index].kind, 1, &durable, &context, &task
         ) == LARDON3D_TASK_KIND_OK);
         Lardon3DResourceEstimate effective;
         CHECK(task && lardon3d_task_resource_estimate(task, &effective));
-        CHECK(effective.desired_cpu_threads == 12);
+        CHECK(same_estimate(&effective, &accepted[index].effective));
         lardon3d_task_destroy(task);
     }
-    CHECK(destroyed == 6);
+
+    size_t before_malformed = (size_t)destroyed;
+    const size_t historical_case[] = {1, 4, 7, 10, 13, 16};
+    for (size_t index = 0; index < sizeof(kinds) / sizeof(kinds[0]); ++index) {
+        Lardon3DTaskDurableSnapshot malformed = snapshot();
+        malformed.estimate = accepted[historical_case[index]].durable;
+        ++malformed.estimate.desired_cpu_threads;
+        Lardon3DTask *task = NULL;
+        CHECK(lardon3d_task_kind_registry_restore(
+            &registry, kinds[index], 1, &malformed, &context, &task
+        ) == LARDON3D_TASK_KIND_RECONSTRUCTION_FAILED && !task);
+    }
+    CHECK((size_t)destroyed == before_malformed +
+          sizeof(kinds) / sizeof(kinds[0]));
     return true;
 }
 

@@ -38,7 +38,9 @@ vagues et relations géométriques entre acquisitions restent planifiées.
 | **Asset** | Le contenu physique est identifié par `asset_id`, SHA-256, taille et chemin géré. Plusieurs images logiques peuvent partager cet asset. |
 
 **Statut :** IMPLEMENTED v1 — catalogue SQLite paginé et assets
-content-addressed. Les états Feature/Matching/Reconstruction restent planifiés.
+content-addressed. Feature Sets, Match Results, GVR, Tracks et Sparse
+Reconstruction sont désormais persistés par leurs relations spécialisées ; ils
+ne deviennent pas pour autant un champ d'état mutable de l'image catalogue.
 
 ---
 
@@ -69,7 +71,8 @@ descriptors.
 | **Proximité temporelle comme signal secondaire** | Lorsque les images portent un horodatage EXIF, la proximité temporelle sert de signal complémentaire au contenu visuel, mais ne remplace jamais l'analyse visuelle. |
 
 **Statut :** IMPLEMENTED v1 — LSH binaire déterministe, segments immuables,
-updates incrémentales et query top-K bornée. Le générateur de paires reste planifié.
+updates incrémentales et query top-K bornée. Le générateur de paires en aval est
+également implémenté et conserve sa propre identité/persistance.
 
 ---
 
@@ -405,7 +408,7 @@ Ces invariants s'appliquent à toutes les étapes du pipeline :
    points 3D existants ne jamais supprimés implicitement. Toute
    suppression est une action explicite et traçable.
 
-4. **Le scheduler ne décide jamais des ressources.**
+4. **La Queue/runtime ne décide jamais des ressources.**
    Seul le Resource Governor arbitre les budgets, les lots et les
    réservations.
 

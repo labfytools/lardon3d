@@ -38,6 +38,20 @@ Lardon3DVisualIndexResult lardon3d_candidate_pair_publish(
 void lardon3d_candidate_pair_task_test_reset_parallel_counters(void);
 size_t lardon3d_candidate_pair_task_test_started_participants(void);
 size_t lardon3d_candidate_pair_task_test_computed_work_items(void);
+/* Deterministic failure/ownership seam for the production partial-create
+ * cleanup path. SIZE_MAX disables failure; the active-handle count must return
+ * to zero before the callback exits on every result. */
+void lardon3d_candidate_pair_task_test_fail_thread_create_after(
+    size_t successful_children);
+size_t lardon3d_candidate_pair_task_test_active_private_databases(void);
+bool lardon3d_candidate_pair_task_test_compute_window(
+    const char *project_path, Lardon3DProjectDb *database,
+    uint64_t visual_index_id,
+    const Lardon3DVisualIndexQueryOptions *query_options,
+    const uint64_t *source_ids, size_t source_count,
+    unsigned int admitted_threads,
+    Lardon3DCandidatePairComputation *computations,
+    Lardon3DVisualIndexResult *results);
 #endif
 
 #endif

@@ -1,5 +1,76 @@
 # Base de données projet Lardon3D
 
+## Contexte optique générique — Project DB v23
+
+**IMPLEMENTED / VALIDATED / REVIEWED.** La tête courante v23 est une migration
+transactionnelle additive au-dessus de la fondation scientifique et de
+persistance v22 **PASS / FROZEN**. Elle crée neuf tables sans aucune ligne :
+`camera_body_profiles`, `camera_body_aliases`, `lens_profiles`,
+`lens_profile_aliases`, `optical_configurations`,
+`acquisition_campaign_group_optics`, `capture_optical_configurations`,
+`optical_calibration_profiles` et `capture_calibration_selections`.
+
+Boîtier, objectif, configuration optique et calibration sont quatre identités
+distinctes. Une configuration lie exactement un boîtier, un objectif et une
+focale entière optionnelle en micromètres. Un objectif manuel sans EXIF est un
+cas normal : son profil explicite ne requiert aucun alias metadata. Le fixture
+Meike vérifie ce chemin générique ; il ne crée aucun branchement produit par
+marque ou modèle. Les alias make/model, lorsqu'ils existent, sont des couples
+exacts `BINARY`, jamais une recherche fuzzy, une correction de casse ou une
+preuve d'identité implicite.
+
+Une campagne peut assigner une configuration différente à chaque groupe avant
+sa matérialisation. Lorsque S3-E retourne le Capture, la même transaction
+retient la correspondance groupe→Capture, copie l'affectation optique avec sa
+provenance campagne et avance le curseur. Un rollback tardif annule les trois
+mutations. Une affectation explicite post-import est possible seulement pour un
+Capture encore non affecté ; l'absence reste `NOT_FOUND` et ne crée pas de
+profil « inconnu ».
+
+Un profil de calibration référence une calibration sparse immuable existante et
+une seule configuration exacte. Il ne copie, recalcule, interpole ni fabrique
+aucun coefficient. Les listes compatibles filtrent uniquement cette identité
+exacte. La sélection sur Capture est toujours explicite et exige la même
+configuration des deux côtés ; plusieurs profils compatibles restent ambigus
+jusqu'à cette sélection. Retry exact et naturel converge, un conflit durable
+valide retourne `CONSTRAINT`, tandis qu'une ligne ou dépendance persistée
+malformée retourne `CORRUPT` avant comparaison avec une demande alternative.
+
+La migration v22→v23 n'inspecte ni EXIF, chemin, basename, SHA-256, dimensions,
+nom d'appareil, ni calibration historique. Elle ne réinterprète donc aucune
+Capture, image ou calibration v16–v22. Le marqueur `schema_version=23` est le
+point de publication durable ; un échec de création ou un update de marqueur
+qui ne cible pas exactement la v22 rollbacke toute la migration.
+
+La validation a migré via l'API production des copies des projets réels S21 et
+A6000 : version 23, `integrity_check` et clés étrangères propres, comptes et
+lignes scientifiques inchangés, neuf tables optiques vides et SHA-256 des
+sources inchangés. La suite normale 57/57, dix tests focalisés, cinq cibles
+ASan/UBSan, les contrôles de headers C17/C++ et la revue indépendante après
+correction sont acquis. Cette preuve porte sur l'overlay et sa compatibilité ;
+elle ne crée aucune calibration scientifique pour ces campagnes.
+
+### Workflow TUI optique courant
+
+La TUI v23 appelle exclusivement les API publiques bornées ; elle ne modifie
+pas directement SQLite. Elle peut inspecter un Capture, rechercher des alias
+metadata par égalité exacte, parcourir par pages de 16 les boîtiers, objectifs,
+configurations et calibrations compatibles, créer un nouveau profil ou une
+nouvelle configuration immuable, puis affecter explicitement un groupe de
+campagne ou un Capture lorsque le contrat ci-dessus l'autorise. Un objectif
+Meike manuel sans électronique ni alias reste une donnée normale, et un lookup
+sans correspondance demeure unresolved.
+
+La sélection d'une calibration reste explicite et exige l'exacte configuration
+du Capture. Une absence, plusieurs candidats, une incompatibilité, `BUSY`, I/O
+ou corruption sont présentés comme tels ; la TUI ne fabrique jamais de profil
+« inconnu », de compatibilité ou d'identité. `R` permet un retry explicite après
+un échec de bind/chargement. `[` revient à la première page et `]` charge la
+suivante ; chaque libellé annonce seulement le compte de la page courante et
+l'existence exacte d'une suite. Le modèle TUI emprunte la DB jusqu'à unbind et
+doit être détaché avant la fermeture projet, conformément au
+[runtime](runtime.md#observatoire-tui-actuel).
+
 ## Snapshot d'exécution scientifique sélectionnée — Project DB v22
 
 **PASS / FROZEN.** La migration additive v21→v22 ajoute
@@ -76,7 +147,9 @@ avancement de `k` vers `k+1` après publication du résultat `k`, et valeur term
 Un éventuel `group_index = group_id - 1` reste strictement privé à l'exécuteur. Résultat et
 curseur sont atomiques avant le checkpoint Task générique. Les lectures valident les types,
 signes, bornes et relations dans les valeurs SQLite 64 bits avant toute conversion vers
-les champs C étroits. Recommandation mesurée et override humain restent distincts.
+les champs C étroits et exigent le dispatch générique exact
+`photo_quality.triage/v1`. Recommandation mesurée et override humain restent
+distincts.
 
 ## Capture / Asset Provenance v1 — Project DB v19 (historique FROZEN)
 
@@ -189,7 +262,7 @@ mutation de campagne complète n'a été effectuée.
 
 Restent hors S3 : TUI, scrub d'assets et réconciliation des orphelins, ainsi
 que vidéo et reconstruction aval lorsqu'ils sont applicables. L'identité
-opérationnelle persistante de campagne, son exécution par Task/Scheduler/Governor
+opérationnelle persistante de campagne, son exécution par Task/Queue/Governor
 et sa reprise sont définies par Project DB v20 ci-dessous ; ils ne modifient pas
 le contrat S3.
 
@@ -205,9 +278,12 @@ existante ; un échec de migration laisse la v19 complète et utilisable.
 `task_id`, qui est l'identité opérationnelle de la campagne. La création et les
 checkpoints enregistrent dans une même transaction le snapshot Task générique,
 sa référence de checkpoint et le record typé de campagne. Ce record conserve le
-`scanset_id`, le curseur `next_group_id`, le nombre de groupes et une requête
-immuable : un upsert ne peut faire progresser le curseur que si ScanSet, nombre
-de groupes et octets de requête sont identiques.
+`scanset_id`, le curseur historique `next_group_id`, le nombre de groupes et
+une requête immuable. Pour cette table de campagne, malgré son nom historique,
+le curseur est une position de prochain travail à base zéro dans `0..N` : sa
+valeur est le nombre de groupes one-based déjà retenus. Un upsert ne peut le
+faire progresser que si ScanSet, nombre de groupes et octets de requête sont
+identiques.
 
 La requête v1 est un codec borné, déterministe, à magic/version explicites et
 champs entiers de largeur fixe little-endian. Elle sérialise les sources, leurs
@@ -219,11 +295,15 @@ et ne confèrent que la basis `CALLER_EXPLICIT`, jamais une inférence `STRONG`.
 Les groupes de plan gardent leurs IDs un-based. Pour chaque groupe achevé,
 `acquisition_campaign_captures` conserve la relation unique
 `(task_id, group_id) → capture_id` et interdit qu'un même Capture corresponde à
-deux groupes de la même tâche. Après le retour de S3-E, une transaction unique
-retient cette relation et avance `next_group_id`, avant la progression générique
-et le checkpoint. La reprise peut alors transmettre le `capture_id` retenu à
-S3-E, sans réhoming ni inférence depuis un chemin, SHA, basename, timestamp,
-métadonnée ou `image_id`.
+deux groupes de la même tâche. L'état durable valide contient exactement le
+préfixe de mappings `1..next_group_id`, aucun trou et aucun mapping en avance ;
+chaque Capture existe dans le ScanSet de la campagne. Après le retour de S3-E,
+une transaction unique retient la relation du groupe courant et avance ce
+curseur, avant la progression générique et le checkpoint. La reprise peut alors
+transmettre le `capture_id` retenu à S3-E, sans réhoming ni inférence depuis un
+chemin, SHA, basename, timestamp, métadonnée ou `image_id`. Une storage class,
+borne, dispatch kind/version ou relation durable malformée retourne `CORRUPT`
+avant toute mutation et ne fournit jamais un faux `resume_capture_id`.
 
 Chaque séquence matérialise un seul groupe. Pause et annulation restent
 coopératives aux frontières de groupe ; après un groupe non terminal,
@@ -291,9 +371,9 @@ exactes conservent leur sémantique.
 ## Gate F — décision historique Project DB v17
 
 **PASS / FROZEN.** La migration historique v15→v16 et le
-modèle de reconstruction Sparse SfM v16 restent inchangés. Gate F fait avancer
-la tête de schéma à v17 par une migration strictement additive contenant une
-seule table métier de tâche : `sparse_sfm_tasks`.
+modèle de reconstruction Sparse SfM v16 restent inchangés. Gate F a fait
+avancer la tête de schéma alors courante à v17 par une migration strictement
+additive contenant une seule table métier de tâche : `sparse_sfm_tasks`.
 
 Cette table suit le modèle des autres Task Kinds durables : une ligne par
 `task_id`, clé primaire et clé étrangère vers `tasks(task_id)` avec suppression
@@ -326,8 +406,10 @@ persistée exactement ; seule une composante de graphe non reconstruite est
 omise. Les comptes et métriques globaux décrivent exclusivement la géométrie
 effectivement persistée. Aucun placeholder ni table diagnostique n'est ajouté.
 
-> Version courante : **v20**. La migration transactionnelle additive v19→v20
-> ajoute les records de campagne durable décrits ci-dessus sans modifier les
+> Version publiée par cette section historique : **v20** ; la tête actuelle
+> est v23 comme défini en ouverture du document. La migration transactionnelle
+> additive v19→v20 ajoute les records de campagne durable décrits ci-dessus
+> sans modifier les
 > tables ni identités Capture/Asset de v19. La migration transactionnelle
 > v18→v19 ajoute la fondation Capture/Asset Provenance sans modifier les tables
 > scientifiques historiques. La migration transactionnelle v17→v18 ajoute le
@@ -924,23 +1006,27 @@ fermeture/réouverture et payload corrompu.
 
 ## Ouverture et migrations
 
-Une DB vide reçoit la chaîne de schémas jusqu'à v15 dans une transaction
+Une DB vide reçoit la chaîne de schémas jusqu'à v23 dans une transaction
 `BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
 `task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
 `NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
 artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1
-à v14 sont migrées séquentiellement vers v15.
+à v22 sont migrées séquentiellement vers v23.
 Une v10 publiée est validée comme telle avant que v10→v11 crée
 `matcher_tasks` ; son absence n'est donc pas une corruption. Une version future est refusée et une DB contenant
 des tables sans métadonnée de version est considérée corrompue. La fonction
 interne de migration applique uniquement la chaîne séquentielle connue jusqu'à
-v15 ; une valeur hors de 1..15 est refusée. La failure injectée v12 rollbacke
+v23 ; une valeur hors de 1..23 est refusée. Les failures injectées de chaque
+étape rollbackent les objets et le marqueur de version de cette étape. Par
+exemple, la failure v12 rollbacke
 la table, l'index et le changement de version, laissant une vraie v11 utilisable.
 La failure injectée v13 conserve une vraie v12 sans `geometric_verifier_tasks` ;
 un retry applique ensuite v12→v13. La failure injectée v14 conserve une vraie
 v13 sans `track_sets` ; un retry applique ensuite v13→v14. La failure injectée
 v15 conserve une vraie v14 sans `track_builder_tasks` ; un retry applique
-ensuite v14→v15.
+ensuite v14→v15. Le même contrat couvre v16→v22 ; en v23, aucune des neuf
+tables optiques ni aucun marqueur v23 ne subsiste après la failure injectée, et
+un retry exact converge depuis la v22 intacte.
 
 Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
 
@@ -1066,7 +1152,7 @@ l'attente. Il choisit le canonique codec/version valide dont les champs du
 résumé DB correspondent exactement. Ce choix est prioritaire et ignore une
 `.next` périmée ou corrompue. Si le canonique ne correspond pas, une `.next`
 codec/version valide dont le même résumé correspond est promue sous le verrou
-puis utilisée. L'absence de `.next` reste normale pour un projet v22 legacy
+puis utilisée. L'absence de `.next` reste normale pour un projet v22 ou antérieur
 contenant seulement `.chk`; toute autre absence, corruption, version future ou
 divergence classe seulement la tâche comme non récupérable.
 
@@ -1089,9 +1175,17 @@ ouvert.
 
 ## Statut
 
-**PASS / FROZEN** — SQLite système, schéma v20 et migrations séquentielles
-v1→v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14→v15→v16→v17→v18→v19→v20, identité projet, transactions
-tâche+checkpoint, pagination de reprise et artefacts génériques.
+**IMPLEMENTED / VALIDATED / REVIEWED** — SQLite système, tête de schéma v23 et
+migrations séquentielles v1→…→v23, identité projet, transactions
+tâche+checkpoint, pagination de reprise, artefacts génériques et overlay
+optique additif. Les contrats scientifiques et de persistance v16–v22 conservent
+leurs statuts historiques PASS / FROZEN.
+
+**IMPLEMENTED / VALIDATED / REVIEWED — Project DB v23** : profils boîtier et
+objectif data-driven, alias exacts optionnels, configurations multiples par
+campagne/Capture, profils de calibration exactement compatibles et sélection
+explicite. La migration ne backfill aucune identité ; les projets v22 restent
+récupérables et scientifiquement inchangés.
 
 **PASS / FROZEN** — Project DB v20 : migration additive
 v19→v20, record typé de campagne lié au Task ID, requête immuable bornée,

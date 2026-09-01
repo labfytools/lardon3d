@@ -53,6 +53,14 @@ typedef struct {
 typedef struct {
   double robust_threshold_px;
   double confidence;
+  /*
+   * OpenCV's robust-estimator ABI accepts signed iteration/inlier counts.
+   * max_iterations must be in [1, INT_MAX] and minimum_inliers in
+   * [0, INT_MAX]. A value outside those bounds returns INVALID_ARGUMENT
+   * before allocation, OpenCV execution, or mutation of the caller-owned
+   * result and inlier mask. The signed bound is operational only; it does not
+   * change the FROZEN defaults or scientific identity of representable runs.
+   */
   uint32_t max_iterations;
   uint32_t minimum_inliers;
   double minimum_inlier_ratio;
@@ -73,6 +81,14 @@ typedef struct {
 typedef struct {
   double reprojection_threshold_px;
   double confidence;
+  /*
+   * OpenCV's robust-estimator ABI accepts signed iteration/inlier counts.
+   * max_iterations must be in [1, INT_MAX] and minimum_inliers in
+   * [0, INT_MAX]. A value outside those bounds returns INVALID_ARGUMENT
+   * before allocation, OpenCV execution, or mutation of the caller-owned
+   * result and inlier mask. minimum_inliers == 0 retains the established PnP
+   * effective minimum of four correspondences.
+   */
   uint32_t max_iterations;
   uint32_t minimum_inliers;
   double minimum_inlier_ratio;

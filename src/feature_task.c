@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <openssl/evp.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -206,13 +207,21 @@ static bool run(Lardon3DTask *task, void *userdata) {
   struct timespec end = {0};
   bool timing_known = clock_gettime(CLOCK_MONOTONIC, &begin) == 0;
   Lardon3DOpenCvTaskThreadControl threads;
-  if (!lardon3d_opencv_task_threads_begin(task, 12, &threads)) {
+  if (!lardon3d_opencv_task_threads_begin(task, INT_MAX, &threads)) {
+    /* begin may have changed OpenCV before verification failed. If its first
+     * rollback was transiently unsuccessful, this bounded second attempt must
+     * discharge the process-global ownership before the callback returns. */
+    if (threads.restore_required &&
+        !lardon3d_opencv_task_threads_end(&threads)) {
+      return lardon3d_task_fail(task, "Restauration OpenCV Features impossible.");
+    }
     return lardon3d_task_fail(task, "Contrat CPU OpenCV Features invalide.");
   }
-  /* Queue has one callback owner, so this process-wide OpenCV setting cannot
-   * race another Task. The immutable admission selects 1..12, and this guard
-   * applies exactly that count before extraction and restores it on every
-   * return without changing Feature identity. */
+  /* EXTERNAL LIBRARY: OpenCV accepts a positive signed-int thread count.
+   * Queue has one callback owner, so this process-wide setting cannot race
+   * another Task. Governor clamps the portable INT_MAX capability to the host
+   * compute pool; the guard applies that immutable admission and restores it
+   * on every return without changing Feature identity. */
   size_t durable_items = 0;
   bool result = run_body(task, userdata, &durable_items);
   if (!lardon3d_opencv_task_threads_end(&threads)) {
@@ -331,9 +340,9 @@ lardon3d_project_create_feature_extract_task(Lardon3DAppState *state, uint64_t i
                                        .memory_bytes_per_item = 512ULL * 1024 * 1024,
                                        .minimum_batch_size = 1,
                                        .maximum_batch_size = 1,
-                                       /* Canonical durable maximum. Governor admission may select
-                                        * any validated OpenCV count in 1..12 for this execution. */
-                                       .desired_cpu_threads = 12,
+                                       /* EXTERNAL LIBRARY: OpenCV's positive-int API is the safe
+                                        * ceiling; Governor supplies the portable host maximum. */
+                                       .desired_cpu_threads = INT_MAX,
                                        .desired_io_slots = 1,
                                        .task_class = LARDON3D_RESOURCE_TASK_CPU};
   Lardon3DTask *task = lardon3d_task_create_typed("Extraction de features", &estimate,

@@ -1,9 +1,13 @@
-# Profil de performance de la machine cible
+# Profil de performance de l'hôte de validation
 
 Ce document décrit une politique de performance mesurée. Il ne modifie aucun
 contrat de correction du Matcher, du Match Store ou du Match Result.
 
-## Cible principale actuelle
+## Hôte principal de validation
+
+Ce profil est une preuve de performance et de stabilité pour la politique
+portable. Il ne constitue ni une identité produit, ni une exigence matérielle,
+ni un plafond CPU/GPU applicable aux autres hôtes.
 
 - AMD Ryzen 7 8845HS, Zen 4, 8 cœurs et 16 threads SMT ;
 - Radeon 780M à mémoire système partagée ;
@@ -22,18 +26,22 @@ Le sysfs amdgpu de cet hôte expose 512 Mio dans `mem_info_vram_total` et
 aperture/GTT à l'échelle de la RAM suffit à classer ce GPU shared/UMA sans
 hardcoder son device ID. Le Governor débite alors les ressources GPU exactement
 une fois de `MemAvailable` et n'utilise jamais cet aperture comme mémoire libre
-séparée pour contourner les objectifs 3 Gio/2 Gio.
+séparée pour contourner la réserve dure de 3 Gio et la zone de prudence jusqu'à
+4 Gio.
 
 Le runtime actuel de Lardon3D possède un worker lourd. Le profil interactif
-établit au démarrage une baseline/plafond OpenCV de 12 threads et réserve quatre
-threads logiques au desktop. Pour chaque séquence, l'unique callback Queue
-applique temporairement le compte CPU immuable admis dans `1..12`, le vérifie et
+établit au démarrage une baseline OpenCV depuis le compute-pool réellement
+disponible. Sur cet hôte précis, le Governor réserve quatre threads logiques au
+desktop et en admet douze ; douze est une observation matérielle, pas un plafond
+produit. Pour chaque séquence, l'unique callback Queue applique temporairement
+le compte CPU immuable admis dans `1..compute-pool`, le vérifie et
 restaure la baseline sur toute sortie. `cv::setNumThreads()` reste une
 configuration process-wide : sa mutation concurrente par plusieurs workers
 n'est pas supportée. Un futur pool multi-worker devrait donc changer ce modèle
 explicitement, pas multiplier silencieusement ces mutations globales.
 
-Le worker Queue applique à lui-même le compute-pool `0-5,8-13`, tandis que le
+Sur cette machine mesurée, le worker Queue applique à lui-même le compute-pool
+`0-5,8-13`, tandis que le
 creator/main reste unrestricted `0-15`. Certains helpers de cache disque Mesa
 observés avaient réélargi leur affinité après l'initialisation lazy. Comme un
 pidfd ne stabilise pas le TID numérique pour `sched_setaffinity(tid)`, Lardon3D
@@ -96,9 +104,10 @@ environ 0,10, 0,96, 14,7 et 59,6 ms pour BFMatcher CPU lors de la campagne
 production. L'initialisation lazy mesurée vaut environ 129–136 ms. Le seuil
 `feature_count_a × feature_count_b >= 768²` évite le GPU pour les petits travaux.
 
-La mémoire directement contrôlée vaut 640 Kio par slot; rolling AUTO peut
-réserver un ou deux slots, soit au plus 1,25 Mio, débités une fois de la RAM sur
-la 780M UMA. Le backend mappe exactement cette capacité pendant la séquence et
+La mémoire directement contrôlée vaut 640 Kio par slot. Rolling AUTO normal
+réserve exactement un slot ; seule la couture privée de sûreté/benchmark peut
+réserver deux slots, soit au plus 1,25 Mio, débités une fois de la RAM sur la
+780M UMA. Le backend mappe exactement cette capacité pendant la séquence et
 rend le second slot avant une admission depth 1 suivante. Les tests de parité
 couvrent exactement le top-2 jusqu'à 8192, le Match File complet et le fallback
 CPU. Ces nombres décrivent la machine mesurée et ne sont pas un contrat portable
@@ -131,13 +140,22 @@ des proxies objectifs, pas une mesure subjective de fluidité.
 Le coût court et le faible working set rendent Vulkan `NOT_JUSTIFIED` pour ce verifier sur la
 Radeon 780M. Le GPU reste utilisé uniquement par le Matcher ORB existant.
 
-Le profil production réserve un CPU logique, 4 Mio et un worker, avec lots 1/2/4/8. Un run de la
-vraie Task sur 1000 parents, suivi de ses chemins de reprise/configuration, a traversé environ
+La validation scientifique initiale réservait un CPU logique, 4 Mio et un
+worker, avec lots 1/2/4/8. Un run de la vraie Task sur 1000 parents, suivi de
+ses chemins de reprise/configuration, a traversé environ
 2001 parents réutilisés en 5,870 s (environ 341/s). Ce chiffre inclut DB, checkpoints et fixture ;
 il ne remplace pas la latence estimator-only Gate A. Le processus de test a culminé à 25 964 Kio
 RSS. `MemAvailable` a varié de 10 702 988 à 10 692 916 Kio, sans swap ; PSI avg10 final était
 0,34 % CPU et 0 % mémoire/I/O. Les latences médiane/p95 par parent et le RSS début/fin n'étaient
 pas mesurables avec ce harness et ne sont donc pas extrapolés.
+
+La maintenance ultérieure a conservé les octets GVR et l'USAC interne sériel,
+mais parallélisé les parents indépendants sous un callback propriétaire. Sur le
+fixture réel de 4113 parents, CPU1/2/4/8/12 donnent respectivement
+60,7514/83,9556/104,7545/116,6329/119,7606 parents/s, avec digest littéral
+identique. La capacité sûre est 16 participants et 16 parents par lot ; la
+politique utile s'arrête à CPU8, car CPU12 n'ajoute que 2,68 %. Ces chiffres
+restent une preuve locale, pas une identité ni un optimum portable.
 
 ## Feasibility Vulkan SIFT / RootSIFT
 
@@ -151,8 +169,10 @@ et 1,11×. Les quatre paires asymétriques testées perdent face au CPU. FP64
 atteint environ 271 ms à 8192².
 
 La campagne numérique trouve une divergence top-2 sur des sommes égales
-adversariales pour FP32 comme FP64, des distances et Match Files différents,
-mais aucune divergence Lowe sur le corpus testé. Le backend devrait donc porter
+adversariales pour FP32 comme FP64. Sur 24 160 requêtes SIFT et 24 161 requêtes
+RootSIFT, elle compte respectivement une divergence d'index, 20 251 divergences
+de bits de distance et zéro divergence Lowe, puis une divergence d'index,
+20 824 divergences de bits et zéro divergence Lowe. Le backend devrait donc porter
 une identité scientifique propre et ne pourrait pas employer le fallback CPU
 transparent d'ORB. Cette complexité n'est pas justifiée par le profil de
 performance : SIFT et RootSIFT Vulkan sont rejetés pour Lardon3D v1 sur cette

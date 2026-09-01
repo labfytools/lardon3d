@@ -53,15 +53,15 @@ même fichier. Le détail chiffré des capacités est centralisé dans l'[audit 
 | --- | --- | --- |
 | `raw.develop` | `raw_development_task.cpp`; `lardon3d_raw_development_task_reconstruct`; `run` | Aucune |
 | `photo_quality.triage` | `photo_quality_task.cpp`; `lardon3d_photo_quality_task_reconstruct`; `run` | Aucune |
-| `acquisition_campaign.run` | `acquisition_campaign_task.cpp`; `lardon3d_acquisition_campaign_task_reconstruct`; `run` | Aucune |
+| `acquisition_campaign.run` | `acquisition_campaign_task.cpp`; `lardon3d_acquisition_campaign_task_reconstruct`; `run` | Forme courante ou forme v22 exacte vérifiée contre la requête immuable → capacité courante en mémoire |
 | `import.images` | `import_task.c`; `lardon3d_image_import_reconstruct`; `run_image_import` | Aucune |
-| `features.extract` | `feature_task.c`; `lardon3d_feature_extract_reconstruct`; `run` | Durable CPU12; admission/runtime OpenCV 1..12 |
-| `features.extract.sift` | `sift_task.c`; `lardon3d_sift_extract_reconstruct`; `run` | CPU1 historique exact → durable CPU12; runtime 1..12 |
-| `features.extract.rootsift` | `sift_task.c`; `lardon3d_sift_extract_reconstruct`; `run` | CPU1 historique exact → durable CPU12; runtime 1..12 |
-| `visual_index.update` | `visual_index_task.c`; `lardon3d_visual_index_update_reconstruct`; `run` | CPU runtime 1..12 ; feedback par segment durable |
-| `candidate_pair.generate` | `candidate_pair_task.c`; `lardon3d_candidate_pair_generate_reconstruct`; `run` | Forme sérielle historique exacte → CPU12 ; runtime CPU 1..12 et lot 1..64 |
+| `features.extract` | `feature_task.c`; `lardon3d_feature_extract_reconstruct`; `run` | Formes CPU12/CPU1 historiques exactes → demande OpenCV portable ; runtime borné au compute-pool |
+| `features.extract.sift` | `sift_task.c`; `lardon3d_sift_extract_reconstruct`; `run` | CPU12/CPU1 historiques exacts → demande OpenCV portable ; runtime borné au compute-pool |
+| `features.extract.rootsift` | `sift_task.c`; `lardon3d_sift_extract_reconstruct`; `run` | Même réconciliation SIFT ; aucune voie GPU validée |
+| `visual_index.update` | `visual_index_task.c`; `lardon3d_visual_index_update_reconstruct`; `run` | Formes CPU12/CPU1 historiques exactes → CPU/lot 1..16 |
+| `candidate_pair.generate` | `candidate_pair_task.c`; `lardon3d_candidate_pair_generate_reconstruct`; `run` | Formes CPU12 et CPU1 historiques exactes → CPU/lot 1..64 |
 | `matcher.run` | `matcher_task.c`; `lardon3d_matcher_task_reconstruct`; `run` | Signatures CPU/Vulkan historiques exactes → formes courantes en mémoire |
-| `geometric_verifier.run` | `geometric_verifier_task.c`; `lardon3d_geometric_verifier_task_reconstruct`; `run` | Aucune |
+| `geometric_verifier.run` | `geometric_verifier_task.c`; `lardon3d_geometric_verifier_task_reconstruct`; `run` | Forme sérielle CPU1/batch8 exacte → CPU utile 1..8, lot 1..16 |
 | `track_builder.run` | `track_builder_task.cpp`; `lardon3d_track_builder_task_reconstruct`; `run` | Aucune |
 | `sparse_sfm.run` | `sparse_sfm_task.cpp`; `lardon3d_sparse_sfm_task_reconstruct`; `run` | Aucune |
 | `incremental_reconstruction.run` | `incremental_reconstruction_task.cpp`; `lardon3d_incremental_reconstruction_task_reconstruct`; `run` | Aucune |
@@ -87,10 +87,11 @@ diagnostic ; ni l'enveloppe ni ce choix ne sont persistés.
 
 La politique CPU hôte reste privée au Governor : masque permis, groupes
 package/core/SMT, compute-pool et résultat d'application du worker Queue. Le
-compute-pool borne l'admission de chaque kind, y compris une capacité durable
-CPU12. Feature/SIFT/RootSIFT consomment le compte immutable 1..12 dans OpenCV ;
-les kinds CPU1 restent fixes. Aucun ID CPU ou choix d'affinité n'entre dans le
-descriptor, le checkpoint ou le Project DB.
+compute-pool borne l'admission de chaque kind. Feature/SIFT/RootSIFT utilisent
+le maximum `int` positif comme borne de l'API OpenCV, puis consomment le compte
+immutable réellement admis ; les CPU12 durables ne sont plus que des signatures
+historiques exactes. Les kinds CPU1 justifiés restent fixes. Aucun ID CPU ou
+choix d'affinité n'entre dans le descriptor, le checkpoint ou le Project DB.
 
 Le feedback ne requalifie pas un succès de reprise en travail durable : les
 kinds Feature/SIFT/RootSIFT comptent un item seulement après extraction et
@@ -99,8 +100,10 @@ incertaine compte zéro ; Visual Index compte pareillement zéro pour un segment
 `PUBLISHED_NOT_DURABLE`.
 
 L'état privé par kind/backend coordonne désormais une seule dimension d'essai.
-Les CPU validés slow-startent `1/2/4/8/12`; après deux observations de baseline,
-deux observations à au moins +5 % sont nécessaires pour accepter le palier.
+Les CPU réductibles slow-startent par doubles successifs depuis 1, puis le
+maximum exact de leur capacité, toujours bornés par le compute-pool. Après deux
+observations de baseline, deux observations à au moins +5 % sont nécessaires
+pour accepter le palier.
 Une fois CPU stabilisé, seuls les kinds dont le callback consomme réellement
 son lot peuvent ouvrir un essai de lot. `features.extract`, SIFT et RootSIFT
 enregistrent une observation atomique réussie partagée entre Tasks ; Visual
@@ -127,7 +130,9 @@ userdata sans `AppState *` ancien.
 **IMPLEMENTED** — `project_open()` utilise la registry production immutable
 pour restaurer hors mutex DB et transférer chaque tâche acceptée à la queue.
 
-**NOT_YET_WIRED** — autosave complet et réconciliation orpheline.
+**NOT_YET_WIRED** — réconciliation orpheline et dépendances/DAG. Les kinds
+reconstructibles checkpointent déjà à leurs frontières métier ; la Registry ne
+possède pas un timer autosave et ne doit pas devancer leurs curseurs durables.
 
 **IMPLEMENTED** — `features.extract` version 1 reconstruit une extraction ORB
 depuis `image_id` et ses paramètres bornés.
@@ -138,11 +143,11 @@ depuis `image_id` et ses paramètres bornés.
 **IMPLEMENTED** — `candidate_pair.generate`, version 1, recharge
 `visual_index_id + after_feature_set_id + top_k + minimum_evidence_count
 + scanset_filter + exclude_same_asset` depuis `candidate_pair_generate_tasks`
-et reconstruit un contexte boundé. La restauration reconnaît uniquement le
-snapshot opérationnel sériel historique v1 exact et remplace éphémèrement sa
-demande d'un thread CPU par douze avant admission. Le checkpoint historique et
-le curseur typé restent inchangés. Les snapshots Candidate courants et tous les
-autres kinds restent inchangés.
+et reconstruit un contexte boundé. La restauration reconnaît le snapshot
+opérationnel sériel historique v1 exact et la forme CPU12 immédiatement
+antérieure, puis les remplace éphémèrement par la demande courante CPU64 avec
+8 Mio par item avant admission. Le checkpoint historique et le curseur typé
+restent inchangés ; une forme voisine est rejetée.
 
 **PASS / FROZEN — Compute Governor v2.** `matcher.run`, version 1,
 recharge la configuration Matcher, l'identité Feature Set et le curseur
@@ -227,17 +232,21 @@ une Task Matcher doit être reprise. La Registry continue donc à reconstruire
 uniquement la politique AUTO/fixe déduite de la signature durable, jamais un
 pipeline de benchmark.
 
-**IMPLEMENTED** — `features.extract.sift` et `features.extract.rootsift`
-acceptent leur forme CPU12 courante et normalisent uniquement leur forme CPU1
-historique exacte. ORB/SIFT/RootSIFT appliquent ensuite le compte CPU admis dans
-`1..12`; les sorties testées à 1/2/4/8/12 restent égales. Cette compatibilité
-opérationnelle n'altère ni fingerprint, Feature Set, checkpoint durable, ni
-politique scientifique.
+**IMPLEMENTED** — ORB, SIFT et RootSIFT acceptent leurs formes CPU12/CPU1
+historiques complètes et les normalisent vers la demande OpenCV portable
+`INT_MAX`. Le Governor borne l'exécution au compute-pool ; les sorties testées
+à 1/2/4/8/12 restent égales. Cette compatibilité opérationnelle n'altère ni
+fingerprint, Feature Set, checkpoint durable, ni politique scientifique.
 
 **IMPLEMENTED** — `geometric_verifier.run`, version 1, recharge la configuration
 Fundamental immuable, en revalide le fingerprint et reprend `after_match_result_id`.
 Project DB v13 ajoute uniquement `geometric_verifier_tasks`, car le checkpoint
 générique v1 ne possède aucun payload propre au kind.
+
+La forme historique série exacte (4 Mio fixes, CPU1, batch 1..8) est normalisée
+en mémoire vers 8 Mio par item, CPU utile 8 et batch maximal 16. Cette évolution
+ne touche ni fingerprint, GVR, ordre, curseur ni checkpoint historique ; une
+forme voisine est refusée.
 
 **IMPLEMENTED** — `track_builder.run`, version 1, reconstruit un scope explicite
 depuis son payload Project DB v15 et son asset little-endian validé. Le callback

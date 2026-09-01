@@ -13,7 +13,8 @@ les paramètres, l'ordre et l'acceptance v1, mais ajoute avant USAC le support m
 observations canoniques distinctes décrit ci-dessous. V3 est la policy de production courante :
 après les mêmes validations intégrales, elle compose ce support v2 avec la preuve exacte de
 faisabilité d'acceptation `match_count >= min_inlier_count`. Chaque policy possède sa version et son
-fingerprint distincts ; Project DB v22 stocke déjà ces champs et ne nécessite aucune migration.
+fingerprint distincts ; le schéma les stocke déjà depuis v12 et la tête courante
+Project DB v23 ne nécessite aucune migration GV.
 
 ## Inputs
 
@@ -233,14 +234,24 @@ environ 761 Kio hors petits objets et scratch OpenCV. Les cartes appartiennent �
 libérées au retour ; leur borne Feature Store est opérationnelle et n'ajoute aucune limite
 scientifique. Aucun descriptor ni matrice A×B n'est lu. Massif mesure 2,445 Mio de heap au pic
 du test E2E complet, incluant SQLite, OpenCV, fixtures Feature Store et toutes les séquences de test.
-Une réservation conservatrice de 4 Mio par job couvre ce profil mesuré.
+La forme sérielle historique réservait 4 Mio fixes. La Task outer-parallel
+courante réserve 8 Mio par item admis afin de couvrir aussi la pile enfant
+bornée de 4 Mio, l'objet préparé, les readers et le scratch opaque. Avec un lot
+maximal 16, cette charge reste bornée à 128 Mio et ne limite pas la cardinalité
+du dataset.
 
 ## CPU policy
 
-Le parallélisme OpenCV reste configuré process-wide. Le benchmark mesurera les threads réellement
-consommés ; le verifier ne change pas `cv::setNumThreads()` par paire.
+Le parallélisme scientifique interne OpenCV reste explicitement désactivé :
+`UsacParams::isParallel=false` appartient au fingerprint FROZEN. Le verifier ne
+change pas `cv::setNumThreads()` par paire.
 
-La campagne a consommé environ 99 % d'un CPU logique : réservation v1 d'un thread et un worker.
+Le parallélisme courant porte uniquement sur des Match Results indépendants.
+Le Governor peut admettre CPU1..8 pour une fenêtre/lot d'au plus 16 ; le
+callback Queue compte comme participant, crée au plus `cpu_threads-1` enfants,
+les joint, puis publie seul dans l'ordre. La fenêtre participant a été validée
+sûre jusqu'à 16, mais CPU8 est le maximum utile mesuré. Ce choix opérationnel
+n'entre ni dans le fingerprint, ni dans le GVR.
 
 ## GPU policy
 
@@ -270,9 +281,12 @@ sélectionne v3 ; le payload et l'ABI publique de configuration restent inchang�
 démarre avec une identité neuve et ne reprend ni ne ré-étiquette une tâche v1/v2.
 
 Le Task Kind production est `geometric_verifier.run` version 1. Il pagine les Match Results par ID
-strictement croissant avec une page de `batch + 1`, et traite des lots Governor 1/2/4/8. Les
-parents autres que `MATCHED` avec `match_count > 0` sont seulement traversés par le curseur. Une
-unité éligible appelle le core, qui reuse l'identité exacte avant toute lecture d'asset.
+strictement croissant avec une page de `batch + 1`, et traite des lots Governor
+1..16 avec CPU utile 1..8. Les préparations éligibles peuvent s'exécuter en
+parallèle, mais la publication, l'avancement du curseur contigu et le checkpoint
+restent owner-only et ordonnés. Les parents autres que `MATCHED` avec
+`match_count > 0` sont seulement traversés par le curseur. Une unité éligible
+appelle le core, qui reuse l'identité exacte avant toute lecture d'asset.
 
 WHY GENERIC TASK PERSISTENCE IS INSUFFICIENT: aucun champ de payload métier dans le snapshot v1.
 
@@ -388,7 +402,8 @@ Le dernier contrat est GREEN, CPU 1, GPU 0, I/O 1, batch 8, hôte 4 Mio et GPU 0
 compute `0-5,8-13` et reserve `6,7,14,15`. Sur l'échantillonnage coalescé de 21 590 changements,
 le minimum `MemAvailable` vaut 8 907 714 560 octets, le RSS/HWM processus maximal 45 690 880
 octets, le PSI mémoire maximal 0,90 %, le PSI I/O maximal 50,17 % et les deltas swap-in/out sont
-0/0. Les réserves 3 Gio/2 Gio restent respectées ; aucune voie GPU GV n'est créée.
+0/0. Les réserves 3 Gio/2 Gio alors en vigueur pour ce run historique restent
+respectées ; aucune voie GPU GV n'est créée.
 
 La seconde reprise complète crée la Task 2833, traverse le même curseur et crée zéro GVR. Les
 172 275 lignes avant/après sont égales sur toutes leurs colonnes par `EXCEPT` dans les deux sens,
@@ -405,6 +420,47 @@ test runner ciblé passe aussi sous ASan/UBSan. `REAL_S21_GV_V3`, `RESTART_IDEMP
 `DETERMINISM`, `GOVERNOR_ADMISSION` et `DOWNSTREAM_STOP` sont donc `PASS/FROZEN`. Ce gel porte sur
 la preuve réelle de la policy v3 déjà gelée ; il ne rouvre ni algorithme, seuil, RNG, fingerprint,
 Project DB v22, Matcher/Governor v2, Track Builder ou Sparse SfM.
+
+## Maintenance outer-parallel — preuve représentative réelle
+
+**IMPLEMENTED / VALIDATED / REVIEWED.** La maintenance sépare la préparation
+scientifique de la publication sans modifier la policy v3. Une préparation
+valide tout l'input immuable et produit un objet opaque borné ; elle n'écrit
+jamais Project DB. Après jointure, le callback propriétaire publie ces objets
+en ordre de `match_result_id`, détruit chacun exactement une fois et checkpoint
+le seul préfixe contigu. Les pannes de création partielle, calcul, publication,
+annulation et reprise ne peuvent donc ni publier un suffixe devant un trou, ni
+laisser un enfant/handle vivant à la libération de réservation.
+
+Le corpus représentatif réel contient 4 113 parents, dont 4 102 applicables,
+578 `GEOMETRIC_VERIFIED` et 3 524 `GEOMETRIC_REJECTED`. CPU1/2/4/8/12
+conservent les mêmes IDs 1..4102, toutes les colonnes scientifiques et le digest
+`9401ef6168804b6f1d51f4cdf64cd6b33cbebd2934e5294c8feacc87f9c8ce86`.
+Les walls Task complets sont 67,521078032/48,859141912/39,158236068/
+35,170176868/34,251675780 s, soit 60,7514/83,9556/104,7545/116,6329/
+119,7606 parents/s. Le gain CPU8→CPU12 vaut seulement 2,68 %, sous le seuil de
+5 %. La capacité production est donc CPU utile 8, batch 16 et fenêtre sûre 16.
+
+Les tests focalisés finaux passent 8/8, les répétitions de stress 60/60,
+ASan/UBSan 3/3 et TSan 3/3, avec contrôles C17 GCC/Clang. La preuve S21
+historique ci-dessus reste le run complet CPU1/batch8 acquis ; aucun rerun
+complet de 3 221 s n'est revendiqué pour cette maintenance bornée. Le manifest
+retenu de cette preuve a le SHA-256
+`52a4412299c74050a66d5690122a793c9451c79faf47e32b6e65a5958f804856`.
+Il compare littéralement les 4 102 GVR applicables — ordre/IDs 1..4102,
+statut, compteur/masque d'inliers, présence et octets binary64 du modèle — et
+vérifie intégrité DB, clés étrangères, absence de replay amont et absence de
+travail Tracks/Sparse. Le run S21 complet acquis couvre déjà la policy v3 et
+sa persistance FROZEN ; la maintenance ne change que la préparation externe et
+la publication owner-only. Cette combinaison réelle bornée + tests ciblés de
+panne/checkpoint/reprise discrimine donc le changement sans payer un second run
+scientifique intégral ni prétendre l'avoir exécuté.
+
+La validation globale fraîche qui englobe ce delta passe aussi dans le graphe
+Clang portable Vulkan-off 931/931 et sa suite 64/64, puis le graphe Vulkan-on
+939/939 et sa suite 65/65. Le TSan global reste volontairement Vulkan-disabled
+et couvre les deux cibles GV dans sa matrice 14/14 plus répétitions ; il utilise
+uniquement les suppressions externes OpenCV/TBB documentées par le projet.
 
 ## Out of scope
 

@@ -227,7 +227,7 @@ static bool matcher_exact_memory_boundary_test(void) {
   CHECK(matcher_capability_boundary_case(
       &forced, forced_total - 1, forced_total - 1,
       LARDON3D_RESOURCE_REJECT, LARDON3D_RESOURCE_BACKEND_FIXED, 0, 0, 0));
-  /* Exact sizing never weakens the 2 GiB hard floor: an otherwise valid
+  /* Exact sizing never weakens the 3 GiB host reserve: an otherwise valid
    * forced capability waits and owns no reservation at that current snapshot. */
   CHECK(matcher_capability_boundary_case(
       &forced, forced_total, 2 * gib, LARDON3D_RESOURCE_WAIT,
@@ -360,6 +360,14 @@ static bool downgrade_project_to_historical_v10(const char *database_path) {
   }
   static const char sql[] =
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE IF EXISTS capture_calibration_selections;"
+      "DROP TABLE IF EXISTS optical_calibration_profiles;"
+      "DROP TABLE IF EXISTS capture_optical_configurations;"
+      "DROP INDEX IF EXISTS acquisition_campaign_capture_identity_v23;"
+      "DROP TABLE IF EXISTS acquisition_campaign_group_optics;"
+      "DROP TABLE IF EXISTS optical_configurations;"
+      "DROP TABLE IF EXISTS lens_profile_aliases;DROP TABLE IF EXISTS lens_profiles;"
+      "DROP TABLE IF EXISTS camera_body_aliases;DROP TABLE IF EXISTS camera_body_profiles;"
       "DROP TABLE IF EXISTS asset_derivations;"
       "DROP TABLE IF EXISTS capture_selections;"
       "DROP TABLE IF EXISTS capture_assets;"

@@ -53,6 +53,26 @@ static bool create_v9_database(const char *path) {
     return false;
   static const char sql[] =
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      /* This database is a true v9 fixture, not a current database whose
+         metadata alone was relabelled while additive v20-v23 objects survived. */
+      "DROP TABLE IF EXISTS capture_calibration_selections;"
+      "DROP TABLE IF EXISTS optical_calibration_profiles;"
+      "DROP TABLE IF EXISTS capture_optical_configurations;"
+      "DROP INDEX IF EXISTS acquisition_campaign_capture_identity_v23;"
+      "DROP TABLE IF EXISTS acquisition_campaign_group_optics;"
+      "DROP TABLE IF EXISTS optical_configurations;"
+      "DROP TABLE IF EXISTS lens_profile_aliases;"
+      "DROP TABLE IF EXISTS lens_profiles;"
+      "DROP TABLE IF EXISTS camera_body_aliases;"
+      "DROP TABLE IF EXISTS camera_body_profiles;"
+      "DROP TABLE IF EXISTS selected_execution_items;"
+      "DROP TABLE IF EXISTS selected_executions;"
+      "DROP TABLE IF EXISTS raw_development_tasks;"
+      "DROP TABLE IF EXISTS capture_source_assets;"
+      "DROP TABLE IF EXISTS photo_quality_triage_results;"
+      "DROP TABLE IF EXISTS photo_quality_triage_tasks;"
+      "DROP TABLE IF EXISTS acquisition_campaign_captures;"
+      "DROP TABLE IF EXISTS acquisition_campaign_tasks;"
       "DROP TABLE IF EXISTS asset_derivations;"
       "DROP TABLE IF EXISTS capture_selections;"
       "DROP TABLE IF EXISTS capture_assets;"

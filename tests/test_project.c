@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <lardon3d/project.h>
+#include <lardon3d/runtime_session.h>
 #include <lardon3d/task_checkpoint.h>
 #include <lardon3d/task_queue.h>
 
@@ -110,6 +111,194 @@ release_rendezvous(int socket)
 {
     const unsigned char token = 1;
     return write(socket, &token, sizeof(token)) == (ssize_t)sizeof(token);
+}
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    Lardon3DAppState *state;
+    bool callback_entered;
+    bool callback_release;
+    bool callback_finished;
+    bool database_read_ok;
+    bool boundary_started;
+    bool boundary_finished;
+    bool boundary_result;
+} ProjectBoundaryProbe;
+
+static void
+project_boundary_finished_callback(
+    const Lardon3DTask *task,
+    void *userdata
+)
+{
+    (void)task;
+    ProjectBoundaryProbe *probe = userdata;
+    (void)pthread_mutex_lock(&probe->mutex);
+    probe->callback_entered = true;
+    (void)pthread_cond_broadcast(&probe->condition);
+    while (!probe->callback_release) {
+        (void)pthread_cond_wait(&probe->condition, &probe->mutex);
+    }
+    (void)pthread_mutex_unlock(&probe->mutex);
+
+    Lardon3DProjectDbProject project;
+    bool database_read_ok = probe->state->project_db
+        && lardon3d_project_db_get_project(probe->state->project_db, &project)
+            == LARDON3D_PROJECT_DB_OK;
+    (void)pthread_mutex_lock(&probe->mutex);
+    probe->database_read_ok = database_read_ok;
+    probe->callback_finished = true;
+    (void)pthread_cond_broadcast(&probe->condition);
+    (void)pthread_mutex_unlock(&probe->mutex);
+}
+
+static void *
+project_boundary_thread(void *userdata)
+{
+    ProjectBoundaryProbe *probe = userdata;
+    (void)pthread_mutex_lock(&probe->mutex);
+    probe->boundary_started = true;
+    (void)pthread_cond_broadcast(&probe->condition);
+    (void)pthread_mutex_unlock(&probe->mutex);
+    bool result = lardon3d_runtime_project_boundary(probe->state, 64);
+    (void)pthread_mutex_lock(&probe->mutex);
+    probe->boundary_result = result;
+    probe->boundary_finished = true;
+    (void)pthread_cond_broadcast(&probe->condition);
+    (void)pthread_mutex_unlock(&probe->mutex);
+    return NULL;
+}
+
+static bool
+remove_empty_project(const char *root, const char *name)
+{
+    char path[512];
+    const char *files[] = {"project.db", "project.ini"};
+    const char *directories[] = {
+        ".lardon3d/checkpoints", ".lardon3d", "images",
+        "reconstruction", "exports", "logs",
+    };
+    for (size_t index = 0; index < sizeof(files) / sizeof(files[0]); ++index) {
+        if (snprintf(path, sizeof(path), "%s/%s/%s", root, name,
+                files[index]) <= 0 || unlink(path) != 0) {
+            return false;
+        }
+    }
+    for (size_t index = 0;
+         index < sizeof(directories) / sizeof(directories[0]); ++index) {
+        if (snprintf(path, sizeof(path), "%s/%s/%s", root, name,
+                directories[index]) <= 0 || rmdir(path) != 0) {
+            return false;
+        }
+    }
+    return snprintf(path, sizeof(path), "%s/%s", root, name) > 0
+        && rmdir(path) == 0;
+}
+
+static bool
+test_runtime_project_boundary(void)
+{
+    char root[] = "/tmp/lardon3d-project-boundary-XXXXXX";
+    CHECK(mkdtemp(root));
+    CHECK(setenv("LARDON3D_PROJECTS_ROOT", root, 1) == 0);
+    Lardon3DAppState state;
+    lardon3d_app_state_init(&state);
+    Lardon3DHardwareProfile profile = {
+        /* Keep admission deterministic even when the host running this
+         * lifecycle test has unrelated background load. */
+        .logical_cpu_count = 64,
+        .page_size_bytes = 4096,
+        .memory_total_bytes = UINT64_MAX,
+        .cpu_architecture = "test",
+    };
+    Lardon3DResourcePolicy policy = {
+        .maximum_cpu_load_ratio = 1.0,
+        .maximum_io_pressure_avg10 = 100.0,
+        .io_slot_capacity = 1,
+    };
+    state.resource_governor = lardon3d_resource_governor_create(
+        &profile, &policy);
+    state.task_queue = state.resource_governor
+        ? lardon3d_task_queue_create(state.resource_governor, 64) : NULL;
+    CHECK(state.task_queue);
+    CHECK(lardon3d_project_create(&state, "Boundary A"));
+
+    ProjectBoundaryProbe probe = {.state = &state};
+    CHECK(pthread_mutex_init(&probe.mutex, NULL) == 0);
+    CHECK(pthread_cond_init(&probe.condition, NULL) == 0);
+    const Lardon3DResourceEstimate estimate = {
+        .minimum_batch_size = 1,
+        .maximum_batch_size = 1,
+        .desired_cpu_threads = 1,
+    };
+    Lardon3DTask *first = lardon3d_task_create(
+        "Project A task", &estimate, unused_callback, NULL);
+    CHECK(first && lardon3d_task_set_finished_callback(
+        first, project_boundary_finished_callback, &probe));
+    uint64_t first_id = 0;
+    CHECK(lardon3d_task_queue_add(state.task_queue, first, &first_id));
+    CHECK(first_id == 1);
+    (void)pthread_mutex_lock(&probe.mutex);
+    while (!probe.callback_entered) {
+        (void)pthread_cond_wait(&probe.condition, &probe.mutex);
+    }
+    (void)pthread_mutex_unlock(&probe.mutex);
+
+    pthread_t boundary;
+    CHECK(pthread_create(&boundary, NULL, project_boundary_thread, &probe) == 0);
+    (void)pthread_mutex_lock(&probe.mutex);
+    while (!probe.boundary_started) {
+        (void)pthread_cond_wait(&probe.condition, &probe.mutex);
+    }
+    CHECK(!probe.boundary_finished);
+    probe.callback_release = true;
+    (void)pthread_cond_broadcast(&probe.condition);
+    while (!probe.callback_finished) {
+        (void)pthread_cond_wait(&probe.condition, &probe.mutex);
+    }
+    (void)pthread_mutex_unlock(&probe.mutex);
+    CHECK(pthread_join(boundary, NULL) == 0);
+    CHECK(probe.database_read_ok);
+    CHECK(probe.boundary_result && probe.boundary_finished);
+    CHECK(!state.project_loaded && !state.project_db && state.task_queue);
+    Lardon3DTaskSnapshot snapshot;
+    CHECK(!lardon3d_task_queue_get(state.task_queue, first_id, &snapshot));
+
+    /* Project B may legitimately reuse operational Task ID 1 because the
+     * Project switch destroyed A's Queue/history before B was opened. */
+    CHECK(lardon3d_project_create(&state, "Boundary B"));
+    (void)pthread_mutex_lock(&probe.mutex);
+    probe.callback_entered = false;
+    probe.callback_finished = false;
+    probe.database_read_ok = false;
+    (void)pthread_mutex_unlock(&probe.mutex);
+    Lardon3DTask *second = lardon3d_task_create(
+        "Project B task", &estimate, unused_callback, NULL);
+    uint64_t second_id = 0;
+    CHECK(second && lardon3d_task_set_finished_callback(
+        second, project_boundary_finished_callback, &probe)
+        && lardon3d_task_queue_add(state.task_queue, second, &second_id));
+    CHECK(second_id == first_id);
+    (void)pthread_mutex_lock(&probe.mutex);
+    while (!probe.callback_finished) {
+        (void)pthread_cond_wait(&probe.condition, &probe.mutex);
+    }
+    CHECK(probe.database_read_ok);
+    (void)pthread_mutex_unlock(&probe.mutex);
+
+    lardon3d_task_queue_destroy(state.task_queue);
+    state.task_queue = NULL;
+    lardon3d_project_close(&state);
+    lardon3d_resource_governor_destroy(state.resource_governor);
+    state.resource_governor = NULL;
+    CHECK(pthread_cond_destroy(&probe.condition) == 0);
+    CHECK(pthread_mutex_destroy(&probe.mutex) == 0);
+    CHECK(remove_empty_project(root, "Boundary A"));
+    CHECK(remove_empty_project(root, "Boundary B"));
+    CHECK(rmdir(root) == 0);
+    CHECK(unsetenv("LARDON3D_PROJECTS_ROOT") == 0);
+    return true;
 }
 
 static bool
@@ -458,4 +647,7 @@ run_test(void)
     return true;
 }
 
-int main(void) { return run_test() ? EXIT_SUCCESS : EXIT_FAILURE; }
+int main(void) {
+    return run_test() && test_runtime_project_boundary()
+        ? EXIT_SUCCESS : EXIT_FAILURE;
+}

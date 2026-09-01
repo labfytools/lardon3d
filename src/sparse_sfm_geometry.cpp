@@ -13,6 +13,14 @@ namespace {
 
 using Result = Lardon3DSparseGeometryResult;
 
+/*
+ * OpenCV exposes these robust-estimator controls as signed int. Keep the
+ * public fixed-width encoding unchanged, but reject an unrepresentable value
+ * before allocation, RNG mutation, output mutation, or entry into OpenCV.
+ */
+constexpr uint32_t kOpenCvSignedMaximum =
+    static_cast<uint32_t>(std::numeric_limits<int>::max());
+
 struct RngGuard {
   uint64_t saved;
   explicit RngGuard(uint64_t seed) : saved(cv::theRNG().state) {
@@ -187,8 +195,12 @@ extern "C" Lardon3DSparseGeometryResult lardon3d_sparse_geometry_relative_pose(
     const Lardon3DSparseGeometryRelativePoseParameters *parameters,
     Lardon3DSparseGeometryRelativePoseResult *result) {
   if (!calibration_a || !calibration_b || !pixels_a || !pixels_b ||
-      !parameters || !result || count > static_cast<size_t>(INT_MAX) ||
-      parameters->max_iterations == 0 || parameters->confidence <= 0.0 ||
+      !parameters || !result ||
+      count > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+      parameters->max_iterations == 0 ||
+      parameters->max_iterations > kOpenCvSignedMaximum ||
+      parameters->minimum_inliers > kOpenCvSignedMaximum ||
+      parameters->confidence <= 0.0 ||
       parameters->confidence >= 1.0 || parameters->robust_threshold_px <= 0.0 ||
       parameters->minimum_parallax_rad < 0.0 ||
       parameters->minimum_cheirality_ratio <= 0.0 ||
@@ -200,6 +212,8 @@ extern "C" Lardon3DSparseGeometryResult lardon3d_sparse_geometry_relative_pose(
     return LARDON3D_SPARSE_GEOMETRY_INVALID_ARGUMENT;
   if (!points_finite(pixels_a, count) || !points_finite(pixels_b, count))
     return LARDON3D_SPARSE_GEOMETRY_NONFINITE_INPUT;
+  const int max_iterations = static_cast<int>(parameters->max_iterations);
+  const int minimum_inliers = static_cast<int>(parameters->minimum_inliers);
   result->inlier_count = 0;
   result->inlier_ratio = 0.0;
   result->median_parallax_rad = 0.0;
@@ -266,14 +280,14 @@ extern "C" Lardon3DSparseGeometryResult lardon3d_sparse_geometry_relative_pose(
     cv::Mat essential = cv::findEssentialMat(
         points_a, points_b, 1.0, cv::Point2d(0, 0), cv::RANSAC,
         parameters->confidence, normalized_threshold,
-        static_cast<int>(parameters->max_iterations), mask);
+        max_iterations, mask);
     if (essential.empty())
       return LARDON3D_SPARSE_GEOMETRY_ESTIMATION_FAILED;
     cv::Mat rotation, translation;
     int inliers = cv::recoverPose(essential, points_a, points_b, rotation,
                                   translation, 1.0, cv::Point2d(0, 0), mask);
     double count_value = static_cast<double>(count);
-    if (inliers < static_cast<int>(parameters->minimum_inliers) ||
+    if (inliers < minimum_inliers ||
         static_cast<double>(inliers) / count_value <
             parameters->minimum_inlier_ratio ||
         !rotation_valid(rotation) || cv::norm(translation) < 1e-12)
@@ -519,8 +533,12 @@ extern "C" Lardon3DSparseGeometryResult lardon3d_sparse_geometry_pnp(
     const Lardon3DSparseGeometryPnPParameters *parameters,
     Lardon3DSparseGeometryPnPResult *result) {
   if (!calibration || !points || !pixels || !parameters || !result ||
-      count < 4 || count > static_cast<size_t>(INT_MAX) ||
-      parameters->max_iterations == 0 || parameters->confidence <= 0.0 ||
+      count < 4 ||
+      count > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+      parameters->max_iterations == 0 ||
+      parameters->max_iterations > kOpenCvSignedMaximum ||
+      parameters->minimum_inliers > kOpenCvSignedMaximum ||
+      parameters->confidence <= 0.0 ||
       parameters->confidence >= 1.0 || parameters->reprojection_threshold_px <= 0.0 ||
       parameters->minimum_inlier_ratio <= 0.0 ||
       parameters->minimum_inlier_ratio > 1.0)
@@ -534,6 +552,9 @@ extern "C" Lardon3DSparseGeometryResult lardon3d_sparse_geometry_pnp(
         !finite_value(points[index].z) || !finite_value(pixels[index].x) ||
         !finite_value(pixels[index].y))
       return LARDON3D_SPARSE_GEOMETRY_NONFINITE_INPUT;
+  const int max_iterations = static_cast<int>(parameters->max_iterations);
+  const int minimum_inliers =
+      std::max(static_cast<int>(parameters->minimum_inliers), 4);
   try {
     std::vector<cv::Point3d> object_points;
     std::vector<cv::Point2d> image_points;
@@ -561,12 +582,11 @@ extern "C" Lardon3DSparseGeometryResult lardon3d_sparse_geometry_pnp(
     RngGuard rng(parameters->deterministic_seed);
     bool solved = cv::solvePnPRansac(
         object_points, image_points, camera_matrix(*calibration),
-        distortion(*calibration), rvec, tvec, false, parameters->max_iterations,
+        distortion(*calibration), rvec, tvec, false, max_iterations,
         static_cast<float>(parameters->reprojection_threshold_px),
         parameters->confidence, inliers, cv::SOLVEPNP_EPNP);
-    uint32_t minimum = std::max<uint32_t>(parameters->minimum_inliers, 4);
     double count_value = static_cast<double>(count);
-    if (!solved || inliers.rows < static_cast<int>(minimum) ||
+    if (!solved || inliers.rows < minimum_inliers ||
         static_cast<double>(inliers.rows) / count_value <
             parameters->minimum_inlier_ratio)
       return LARDON3D_SPARSE_GEOMETRY_ESTIMATION_FAILED;

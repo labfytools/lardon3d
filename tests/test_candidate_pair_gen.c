@@ -289,6 +289,23 @@ static bool run_test(void) {
   lardon3d_candidate_pair_generation_fingerprint(index_id, feature_sets[0].feature_set_id,
                                                  &options, fp2);
   CHECK(memcmp(fp1, fp2, 32) == 0);
+  static const unsigned char canonical_fingerprint[32] = {
+      0x60, 0x61, 0x4b, 0x22, 0xa6, 0x2f, 0xe5, 0x10,
+      0x8a, 0x63, 0x07, 0xb1, 0xa1, 0x69, 0x11, 0x29,
+      0xd2, 0xee, 0xc4, 0xa4, 0x0e, 0x4f, 0x6c, 0x50,
+      0x83, 0x78, 0xc0, 0xfa, 0x23, 0x6d, 0x7b, 0x09,
+  };
+  Lardon3DVisualIndexQueryOptions canonical_options = {
+      .top_k = 4,
+      .minimum_evidence_count = 3,
+      .scanset_filter = LARDON3D_VISUAL_INDEX_OTHER_SCANSETS,
+      .exclude_same_asset = true,
+  };
+  lardon3d_candidate_pair_generation_fingerprint(
+      1, 2, &canonical_options, fp2);
+  /* This vector equals the acquired x86 v1 output and now also proves that
+   * native integer/enum/bool representation cannot enter scientific identity. */
+  CHECK(memcmp(fp2, canonical_fingerprint, sizeof(fp2)) == 0);
   options.top_k = 8;
   lardon3d_candidate_pair_generation_fingerprint(index_id, feature_sets[0].feature_set_id,
                                                  &options, fp2);

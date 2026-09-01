@@ -218,7 +218,8 @@ static bool auto_vulkan_backend_candidate(Lardon3DOrbVulkanBackend *backend) {
 static bool auto_vulkan_runtime_candidate(const Lardon3DAppState *state) {
   /* AUTO creation is caller-thread metadata work only. Memory sizing does not
    * belong here: the Governor owns the exact reconstructed batch/depth, UMA
-   * charge, current MemAvailable/PSI/swap snapshot, and 3 GiB/2 GiB policy.
+   * charge, current MemAvailable/PSI/swap snapshot, and the 3 GiB hard reserve
+   * plus the 3--4 GiB caution policy.
    * A caller-side maximum-window guess could suppress a safe depth-1 contract
    * before CPU fallback was even considered. Driver initialization remains
    * deferred to begin() on Queue's affinity-constrained worker. */

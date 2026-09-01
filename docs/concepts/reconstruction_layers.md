@@ -8,7 +8,11 @@ L'idée centrale est de décomposer la reconstruction en couches de complexité 
 
 ## Statut
 
-**PLANNED** — Concept architectural pour la décomposition du pipeline de reconstruction. Pas encore implémenté.
+**ARCHIVE / PLANNED POUR CETTE ABSTRACTION GÉNÉRIQUE.** Le type de snapshot et
+les cinq layers proposés ci-dessous ne sont pas une API implémentée. Les jalons
+réels Track, Sparse SfM, BA, Phase H et MVS-M1 ont depuis été acquis par leurs
+contrats canoniques distincts ; ils ne valident ni ce modèle générique de
+layers, ni Dense complet, mesh, texturing ou viewer.
 
 ## Place dans le pipeline
 
@@ -124,7 +128,7 @@ Les snapshots sont persistés sur disque et consultables par le viewer.
 | **Matching & Tracks** | Fournissent l'entrée de la couche 0. |
 | **Geometric Constraints** | Utilisées dans toutes les couches pour filtrer et valider. |
 | **Resource Governor** | Le gouverneur alloue les budgets pour chaque couche et contrôle la taille des lots. |
-| **Task** | Chaque couche est une tâche candidate. Les couches sont séquencées par le scheduler. |
+| **Task** | Chaque couche est une tâche candidate. Les couches sont séquencées par le runtime/Queue. |
 | **Hardware Profile** | Les couches 2-4 peuvent exploiter le GPU si disponible. |
 | **Image Catalog** | Les couches 2-4 lisent les images originales pour le dense matching et texturing. |
 | **Viewer** | Le viewer affiche les snapshots des couches validées. |

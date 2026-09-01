@@ -67,6 +67,11 @@ bool run_impl(Lardon3DTask *task, void *value) {
   if (lardon3d_project_db_load_photo_quality_task(context->db, lardon3d_task_id(task),
           context->encoded.data(), context->encoded.size(), &persisted) != LARDON3D_PROJECT_DB_OK)
     return lardon3d_task_fail(task, "Triage photo durable introuvable.");
+  if (persisted.next_group_id == 0 ||
+      !lardon3d_task_set_durable_progress(
+          task, persisted.next_group_id - 1u, persisted.group_count,
+          "Préfixe durable de triage observé."))
+    return lardon3d_task_fail(task, "Curseur durable de triage invalide.");
 
   for (uint32_t group_id = persisted.next_group_id; group_id <= context->plan.group_count;
        ++group_id) {
@@ -103,9 +108,11 @@ bool run_impl(Lardon3DTask *task, void *value) {
     if (lardon3d_project_db_record_photo_quality_result(context->db, &result, next_group_id) !=
         LARDON3D_PROJECT_DB_OK)
       return lardon3d_task_fail(task, "Publication du résultat de triage impossible.");
-    unsigned progress = static_cast<unsigned>((uint64_t(group_id) * 100u) /
-                                               context->plan.group_count);
-    if (!lardon3d_task_set_progress(task, progress, "Groupe photo analysé.") ||
+    /* The typed result/cursor transaction is already committed. Publish the
+     * exact count only now, so a live snapshot cannot lead durable science. */
+    if (!lardon3d_task_set_durable_progress(
+            task, group_id, context->plan.group_count,
+            "Groupe photo analysé.") ||
         !checkpoint(context, task, next_group_id))
       return lardon3d_task_fail(task, "Checkpoint du triage photo impossible.");
     if (group_id < context->plan.group_count) {

@@ -80,6 +80,14 @@ failure_callback(Lardon3DTask *task, void *userdata)
     return lardon3d_task_fail(task, "Erreur contrôlée.") && false;
 }
 
+static bool
+success_callback(Lardon3DTask *task, void *userdata)
+{
+    (void)task;
+    (void)userdata;
+    return true;
+}
+
 typedef struct {
     Lardon3DResourceGovernor *governor;
     bool sequence_rejected;
@@ -190,12 +198,9 @@ run_test(void)
     CHECK(!lardon3d_task_join(NULL));
 
     Work work = {.steps = 100, .pause_ns = 1000000};
-    Lardon3DTask *task = lardon3d_task_create(
-        "Tâche de test",
-        &estimate,
-        work_callback,
-        &work
-    );
+    Lardon3DTask *task = lardon3d_task_create_typed(
+        "Tâche de test", &estimate, "test.durable", 1,
+        work_callback, &work, NULL);
     CHECK(task);
     FinishProbe completed_probe = {.governor = governor};
     CHECK(lardon3d_task_set_finished_callback(task, finished_callback,
@@ -204,10 +209,39 @@ run_test(void)
     CHECK(!lardon3d_task_assign_id(task, 43));
     CHECK(lardon3d_task_id(task) == 42);
     Lardon3DTaskSnapshot snapshot;
+    Lardon3DTaskObservation observation = {.id = UINT64_MAX};
+    CHECK(!lardon3d_task_observation(NULL, &observation));
+    CHECK(observation.id == 0 && !observation.has_task_kind
+        && !observation.durable_progress_known
+        && !observation.has_execution_contract);
     CHECK(lardon3d_task_snapshot(task, &snapshot));
     CHECK(snapshot.state == TASK_PENDING);
     CHECK(snapshot.progress == 0);
     CHECK(strcmp(snapshot.name, "Tâche de test") == 0);
+    CHECK(!lardon3d_task_set_durable_progress(task, 1, 0, NULL));
+    CHECK(!lardon3d_task_set_durable_progress(task, 8, 7, NULL));
+    CHECK(lardon3d_task_set_durable_progress(
+        task, 2, 7, "Préfixe durable."));
+    CHECK(lardon3d_task_observation(task, &observation));
+    CHECK(observation.durable_progress_known);
+    CHECK(observation.durable_completed == 2
+        && observation.durable_total == 7);
+    CHECK(observation.progress == 28);
+    CHECK(lardon3d_task_set_durable_progress(
+        task, UINT64_MAX - 1, UINT64_MAX, NULL));
+    CHECK(lardon3d_task_observation(task, &observation));
+    CHECK(observation.durable_completed == UINT64_MAX - 1);
+    CHECK(observation.durable_total == UINT64_MAX);
+    CHECK(observation.progress == 99);
+    CHECK(lardon3d_task_set_durable_progress(
+        task, UINT64_MAX, UINT64_MAX, NULL));
+    CHECK(lardon3d_task_observation(task, &observation));
+    CHECK(observation.progress == 100);
+    CHECK(lardon3d_task_set_progress(task, 0, "Réinitialisé."));
+    CHECK(lardon3d_task_observation(task, &observation));
+    CHECK(!observation.durable_progress_known);
+    CHECK(observation.durable_completed == 0
+        && observation.durable_total == 0);
 
     pthread_t thread;
     CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
@@ -241,6 +275,27 @@ run_test(void)
         && completed_probe.state == TASK_COMPLETED
         && completed_probe.reservation_released);
     CHECK(!lardon3d_task_start(task, NULL, NULL));
+    lardon3d_task_destroy(task);
+
+    task = lardon3d_task_create(
+        "Tâche sans type", &estimate, success_callback, NULL);
+    CHECK(task);
+    CHECK(!lardon3d_task_set_durable_progress(task, 1, 2, NULL));
+    lardon3d_task_destroy(task);
+
+    task = lardon3d_task_create_typed(
+        "Préfixe partiel", &estimate, "test.partial", 1,
+        success_callback, NULL, NULL);
+    CHECK(task && lardon3d_task_set_durable_progress(task, 2, 7, NULL));
+    CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
+    CHECK(lardon3d_resource_governor_reserve(
+        governor, &resource_snapshot, &estimate, &decision, &reservation));
+    CHECK(lardon3d_task_start(task, governor, reservation));
+    CHECK(lardon3d_task_observation(task, &observation));
+    CHECK(observation.state == TASK_COMPLETED && observation.progress == 100);
+    CHECK(observation.durable_progress_known
+        && observation.durable_completed == 2
+        && observation.durable_total == 7);
     lardon3d_task_destroy(task);
 
     work = (Work) {.steps = 1000, .pause_ns = 1000000};
@@ -335,6 +390,12 @@ run_test(void)
     CHECK(task
         && lardon3d_task_internal_set_capability_envelope(
             task, &adaptive_envelope));
+    CHECK(lardon3d_task_observation(task, &observation));
+    CHECK(observation.has_task_kind);
+    CHECK(strcmp(observation.task_kind, "test.direct.adaptive") == 0);
+    CHECK(observation.task_kind_version == 1);
+    CHECK(observation.sequence_count == 0);
+    CHECK(!observation.has_execution_contract);
     CHECK(lardon3d_test_resource_snapshot_make_fresh(&resource_snapshot));
     CHECK(lardon3d_resource_governor_reserve(
         governor, &resource_snapshot, &adaptive_estimate, &decision,

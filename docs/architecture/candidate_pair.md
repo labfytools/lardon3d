@@ -238,18 +238,21 @@ registry production et resoumise à la queue.
 
 Les anciens snapshots v1 produits avec l'estimation opérationnelle exacte
 128 Kio fixes, 64 Kio par item, lot 1–64, CPU 1, IO 1 et GPU 0 sont normalisés
-éphémèrement par la registry à la forme courante CPU12 avant admission. Le
+éphémèrement par la registry à la forme courante CPU64 avant admission. La
+forme historique immédiatement précédente CPU12/256 Kio fixes/64 Kio par item
+est elle aussi reconnue exactement. Le
 snapshot durable original reste la source du reconstructeur ; aucun checkpoint
 d'estimation seule n'est stagé, promu ou publié sous le même résumé. Une panne
 pré-terminale répète donc cette normalisation exacte. Aucun autre snapshot,
 curseur ou paramètre scientifique n'est réinterprété.
 
-### Intégration scheduler
+### Intégration Task/Queue/Governor
 
-La tâche utilise le scheduler générique via le pattern standard :
-- Estimation opérationnelle (256 Kio fixes, 64 Kio par item, lot 1–64).
-  La Queue conserve un callback ; jusqu'à douze participants CPU admis peuvent
-  calculer une fenêtre interne bornée sans modifier l'identité scientifique.
+La tâche utilise le runtime générique via le pattern standard :
+- Estimation opérationnelle (256 Kio fixes, 8 Mio par item, lot 1–64).
+  La Queue conserve un callback ; jusqu'à soixante-quatre participants CPU
+  admis peuvent calculer une fenêtre interne bornée sans modifier l'identité
+  scientifique.
 - Réservation CPU + IO avant exécution
 - `lardon3d_task_sequence_break()` entre chaque lot pour réadmission Governor
 - Callback terminal checkpoint après `COMPLETED`/`FAILED`/`CANCELLED`
@@ -365,7 +368,7 @@ canonicalisation, idempotence, batch projet, fingerprint et
 réutilisation/invalidation.
 
 **IMPLEMENTED** — tâche durable `candidate_pair.generate` v1
-via le scheduler générique, avec estimation immuable,
+via le runtime/Queue générique, avec estimation immuable,
 checkpoint par curseur, reprise idempotente et intégration
 dans la registry production.
 

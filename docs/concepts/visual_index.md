@@ -85,7 +85,7 @@ Image → [Feature 1, Feature 2, ..., Feature N]
 | **Image Catalog** | Le catalogue fournit les métadonnées nécessaires à l'indexation (dimensions, modèle caméra). |
 | **Image View** | Les vues peuvent filtrer les images avant indexation (par zone, par qualité). |
 | **Resource Governor** | Le gouverneur alloue la mémoire pour la structure d'index et contrôle la taille des lots d'indexation. |
-| **Task** | L'indexation visuelle est une tâche candidate pour le scheduler. Elle est CPU-intensive mais parallélisable. |
+| **Task** | L'indexation visuelle est une tâche candidate pour le runtime/Queue. Elle est CPU-intensive mais parallélisable. |
 | **Hardware Profile** | Le profil matériel détermine le type d'index optimal (KD-Tree pour peu de features, LSH pour beaucoup). |
 
 ## Contraintes de conception

@@ -161,7 +161,7 @@ valide. La reprise recommence au dernier curseur commité et l'unicité des
 memberships rend le rejeu idempotent.
 
 **IMPLEMENTED — parallélisme interne borné.** La Queue exécute toujours un seul
-callback. L'estimation demande jusqu'à douze threads CPU, un slot I/O, GPU zéro,
+callback. L'estimation demande jusqu'à seize threads CPU, un slot I/O, GPU zéro,
 8 Mio fixes et 2 Mio par Feature Set, lot 1..16. Le callback compte comme un
 participant et crée au plus `cpu_threads - 1` enfants. Chaque enfant lit
 exclusivement des Feature Files immuables et écrit une tranche privée ; il ne

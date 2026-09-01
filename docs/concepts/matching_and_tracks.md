@@ -6,13 +6,15 @@
 > [tracks.md](../architecture/tracks.md). Les différences notables :
 > le Track Model v1 ne contient aucune coordonnée 3D, aucun statut
 > (ACTIVE/OPTIMIZED/REJECTED), aucune matrice de co-visibilité et aucun
-> plafond de longueur arbitraire. La triangulation, le Sparse SfM et le
-> Bundle Adjustment sont des étapes ultérieures séparées.
+> plafond de longueur arbitraire. Le Matcher, le Geometric Verifier et le
+> Track Builder réels sont désormais implémentés et documentés par leurs
+> contrats d'architecture ; triangulation, Sparse SfM et Bundle Adjustment
+> demeurent des étapes séparées de ce concept historique.
 
 > Frontière v1A : les groupes de support ORB/SIFT sont uniquement des preuves
 > locales intra-image. Ils ne comparent pas les espaces Hamming et L2, ne sont
-> pas des matches multivues et ne créent aucun track. Le futur matcher choisira
-> explicitement SIFT ou RootSIFT après génération des paires.
+> pas des matches multivues et ne créent aucun track. Le Matcher production
+> choisit explicitement le Feature kind retenu après génération des paires.
 
 ## Définition
 
@@ -22,8 +24,10 @@ Le matching transforme les features individuelles en relations inter-images. Les
 
 ## Statut
 
-**PLANNED** — Étape critique du pipeline, pas encore implémentée. Visual Index
-v1 fournit désormais les candidats, leur score et leurs preuves distinctes.
+**ARCHIVE HISTORIQUE — SUPERSEDED.** Candidate Pair, Matching v1, Geometric
+Verification v3 et Track Model/Builder v1 sont implémentés et gelés dans leurs
+documents d'architecture. Les structures et politiques conceptuelles ci-dessous
+ne redéfinissent pas ces contrats courants.
 
 ## Place dans le pipeline
 
@@ -44,10 +48,10 @@ Reconstruction Layers (triangulation)
 Le matching est le pont entre les caractéristiques 2D des images et la structure 3D de la scène.
 
 Le score Visual Index est un signal de retrieval. Il ne constitue ni un match
-descriptor-descriptor final, ni une preuve épipolaire. La chaîne reste :
-candidate Visual Index → futur matching → vérification géométrique → tracks.
+descriptor-descriptor final, ni une preuve épipolaire. La chaîne courante reste :
+candidate Visual Index → matching → vérification géométrique → tracks.
 
-La génération future de paires candidates combinera `image_id`, appartenance
+La génération production de paires candidates combine `image_id`, appartenance
 au ScanSet, résultats du Visual Index et provenance. Une proximité temporelle
 pourra servir de signal secondaire ; la proximité dans un dossier et le nom de
 fichier ne constituent jamais l'identité principale.

@@ -8,7 +8,14 @@ Ces contraintes exploitent la géométrie projective des caméras, la structure 
 
 ## Statut
 
-**PLANNED** — Concepts mathématiques fondamentaux, pas encore implémentés comme module distinct. Utilisés implicitement dans les futurs algorithmes de matching et reconstruction.
+**MIXED / EXPLICIT BOUNDARIES.** Il n'existe pas de module générique unique
+« Geometric Constraints ». La matrice fondamentale et son support sont
+implémentés/PASS-FROZEN dans Geometric Verifier v3. Essential, pose relative,
+cheirality, parallaxe, triangulation et reprojection calibrées sont
+implémentées/PASS-FROZEN dans Sparse SfM Gates C–G. La compétition explicite
+Fundamental/Essential/Homography, les contraintes d'occlusion complètes et les
+relations entre ScanSets restent futures. Ces distinctions remplacent
+l'ancienne formule où tout le matching et la reconstruction étaient futurs.
 
 ## Place dans le pipeline
 
@@ -128,7 +135,7 @@ typedef struct {
 
 ### 6. Triangle Quality Constraints
 
-La qualité des triangles de triangulation影响 la précision de la reconstruction :
+La qualité des triangles de triangulation influence la précision de la reconstruction :
 
 | Métrique | Seuil recommandé | Description |
 |----------|------------------|-------------|
@@ -149,9 +156,12 @@ La qualité des triangles de triangulation影响 la précision de la reconstruct
 
 ## Contraintes de conception
 
-- Les seuils géométriques (parallaxe minimale, erreur de reprojection) sont calibrables mais immuables pendant un traitement.
+- Les seuils géométriques courants sont explicites, fingerprintés lorsqu'ils
+  appartiennent à l'identité, et immuables pendant un traitement ; les valeurs
+  FROZEN ne sont pas « calibrables » implicitement.
 - L'estimation de F ou E utilise RANSAC avec un nombre d'itérations borné.
-- Les homographies sont détectées automatiquement mais ne remplacent pas E pour les scènes non planes.
+- La compétition/détection Homography explicite reste future et ne doit pas
+  être attribuée au Geometric Verifier v3 actuel.
 - Les contraintes de visibilité sont recalculées à chaque ajout de caméra.
 - Les résultats de filtrage géométrique sont auditables (log des rejets avec raison).
 - En cas d'incertitude, les contraintes sont conservatistes (rejeter plutôt qu'accepter).
