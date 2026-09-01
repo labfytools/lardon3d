@@ -217,8 +217,9 @@ Le solveur doit :
 - prendre les coordonnées physiques mesurées de la planche et les coordonnées
   image subpixel des coins identifiés ;
 - estimer exactement les huit paramètres autorisés et une pose par vue ;
-- utiliser au minimum `binary64` pour la géométrie, les résidus, l'optimisation
-  et les rapports ;
+- conserver `binary64` pour la géométrie de calcul, l'optimisation, les
+  résidus, les projections indépendantes et les rapports faisant autorité,
+  sous la seule exception de transport d'observations définie ci-dessous ;
 - ne pas fixer `fx=fy`, le point principal, ni les coefficients de distorsion ;
 - ne pas optimiser d'intrinsics par image dans un même groupe ;
 - détecter les systèmes de rang insuffisant, valeurs non finies, paramètres
@@ -230,6 +231,45 @@ Le solveur doit :
   huit champs `L3DCALB1` ;
 - exécuter avec graine déterministe ou sans aléa et produire les mêmes octets
   de rapport lors de répétitions identiques.
+
+### Exception contrôlée : transport d'observations `binary32`
+
+Les observations 2D image et 3D objet **passées à une API de solveur externe
+qualifiée** peuvent être en IEEE-754 `binary32` seulement lorsque toutes les
+conditions suivantes sont satisfaites :
+
+1. l'API qualifiée exige cette représentation ;
+2. la mesure ou représentation source n'est elle-même nativement pas plus
+   précise que `binary32` ;
+3. la conversion est faite exactement une fois, de façon déterministe ;
+4. aucune quantification supplémentaire de l'observation ne survient après
+   cette conversion ;
+5. le bundle de provenance enregistre le chemin de conversion ;
+6. le bundle mesure et rapporte l'erreur maximale de conversion par
+   coordonnée, dans l'unité de la coordonnée concernée ;
+7. pour chaque coordonnée image, cette borne mesurée est strictement
+   inférieure au seuil gelé d'équivalence de coordonnées, soit `0.01 px` ;
+   pour chaque coordonnée objet, le bundle rapporte la borne en unité physique
+   de la cible et la représentation source qui justifie l'exception.
+
+Cette exception est une frontière de transport, non une baisse de précision
+scientifique. Elle ne s'applique jamais aux paramètres publiés
+`fx, fy, cx, cy, k1, k2, p1, p2`, à la sortie faisant autorité
+`cameraMatrix/distCoeffs`, aux poses archivées, aux projections et vecteurs
+de résidu indépendants, aux RMSE par vue et global, au résidu maximal, à la
+fraction de résidus élevés, aux métriques fit/hold-out, à
+`maximum_parameter_delta`, à la validation d'équivalence de coordonnées,
+aux décisions finales de validation ni aux champs numériques `L3DCALB1`.
+Toutes ces quantités restent en IEEE-754 `binary64`.
+
+La justification qualifiée pour l'échelle d'image prise en charge est la
+suivante : à `8192 px`, l'arrondi `binary32` est borné à environ
+`0.0005 px` par composante, très en dessous de `0.01 px`. La détection
+ChArUco qualifiée produit nativement des `Point2f` ; promouvoir ces mesures
+en `binary64` ne restaure donc aucune précision de mesure. Chaque session
+doit néanmoins rapporter sa borne réellement mesurée : les seuils de §4, §6,
+§7 et §8, ainsi que tous leurs calculs de validation en `binary64`, restent
+inchangés.
 
 La convergence est valide seulement si la terminaison déclarée par le solveur
 est une convergence réussie, tous les paramètres/résidus sont finis, et tous
@@ -364,7 +404,7 @@ Le producteur conserve un bundle immuable, puis place ses quatre SHA-256 dans
 | `solver_executable_sha256` | binaire exact du solveur, version, plateforme et SHA-256 du binaire. |
 | `solver_configuration_sha256` | modèle huit paramètres, paramètres numériques, règles d'outliers, ordre des entrées, graines et version de dictionnaire ChArUco. |
 | `initialization_evidence_sha256` | manifeste de cible, mesures physiques, identifiant de planche, état optique de groupe, liste/sha des vues et initialisation effectivement utilisée. |
-| `validation_evidence_sha256` | résidus par coin et vue, vues rejetées/motifs, contrôles §4–§8, répétitions, partitions, projections de comparaison et résultat flag par flag. |
+| `validation_evidence_sha256` | résidus par coin et vue, vues rejetées/motifs, contrôles §4–§8, répétitions, partitions, projections de comparaison, chemin/bornes de conversion d'observations si §5 s'applique, et résultat flag par flag. |
 
 Le bundle doit en outre archiver : fichier générateur de cible et son SHA,
 photographies originales de calibration et SHA, snapshots EXIF complets,

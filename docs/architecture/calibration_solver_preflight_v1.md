@@ -30,11 +30,22 @@ de détection. `CharucoBoard::matchImagePoints` associe ID, pixel et point objet
 en mètres. Une vue est explicitement rejetée, avec motif, si elle ne satisfait
 pas Science v1.
 
-Les coordonnées détectées `Point2f` ne sont pas le format de calcul publié :
-l'exécutable les convertit une fois en `Point2d`; il reconstruit les points
-objets `Point3d` depuis les IDs et la grille mesurée, plutôt que de propager les
-`float` de commodité de la planche. `calibrateCamera` reçoit donc des matrices
-`CV_64F`, et ses paramètres, poses et résidus sont conservés en `binary64`.
+Dans le chemin OpenCV 5.0.x qualifié, la détection ChArUco fournit les
+observations image en `Point2f` et la planche fournit les observations objet
+en `Point3f`. `calibrateCamera` reçoit donc ces observations
+`binary32` : c'est l'exception explicite de transport de
+`CALIBRATION_SCIENCE_V1`, et non une troncature silencieuse. Le chemin de
+conversion, l'absence de quantification ultérieure et les bornes maximales
+mesurées sont archivés pour chaque session : chaque coordonnée image est
+strictement inférieure à `0.01 px`; chaque coordonnée objet est rapportée
+dans l'unité physique de la cible, avec la représentation source `Point3f`
+de la planche qui justifie cette exception.
+
+La voie qualifiée convertit les données de calibration dans son calcul interne
+`CV_64F` là où OpenCV 5.0.x l'établit. La `cameraMatrix` et les
+`distCoeffs` faisant autorité sont `CV_64F`; les huit paramètres publiés,
+les poses archivées, les projections/résidus indépendants et toutes les
+métriques de validation restent `binary64`.
 
 Le solveur appelle la surcharge étendue `cv::calibrateCamera` :
 
@@ -68,8 +79,10 @@ d'état optique, cible/mesures et chaîne de décodage-orientation. Les vues son
 triées par SHA-256 source avant détection. Détection et solve sont deux étapes
 matérialisées (`detection.json` et `solve.json`) d'un seul exécutable : IDs,
 pixels subpixel, décisions et rejets sont ainsi vérifiables avant les trois
-solves. Les fichiers ont ordre canonique, nombres `binary64` hexadécimaux,
-tableaux ordonnés et limites déclarées.
+solves. Les fichiers ont ordre canonique, nombres `binary64` hexadécimaux
+pour les quantités faisant autorité, représentation et chemin de conversion
+`binary32` explicitement archivés pour les observations d'API, tableaux
+ordonnés et limites déclarées.
 
 La sortie archive nom/version/SHA de l'exécutable, OS/architecture, build
 OpenCV et bibliothèques, configuration hachée, identité de session, vues et
