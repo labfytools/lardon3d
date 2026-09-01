@@ -155,11 +155,12 @@ Le protocole vaut pour **un seul groupe optique**. Une variation de la clé de
    ce surplus n'est pas une précision statistique prétendue, il réserve des
    vues pour les quatre zones de champ, les quatre inclinaisons et les
    validations hold-out ci-dessous.
-4. Dans chaque quart de l'image (haut-gauche, haut-droit, bas-gauche,
-   bas-droit), accepter au minimum six vues dont le centre de la cible est dans
-   ce quart ; au minimum huit vues supplémentaires ont le centre dans la zone
-   centrale. Une vue compte pour un seul compartiment. Cette règle empêche une
-   calibration centralisée de prétendre mesurer la distorsion de bord.
+4. Dans chaque région externe (haut-gauche, haut-droit, bas-gauche,
+   bas-droit) définie en §4.1, accepter au minimum six vues dont le centre de
+   la cible appartient à cette région ; au minimum huit vues supplémentaires
+   ont le centre dans la région centrale de §4.1. Une vue compte pour une et
+   une seule région. Cette règle empêche une calibration centralisée de
+   prétendre mesurer la distorsion de bord.
 5. La cible doit occuper entre **20 % et 80 %** de la plus petite dimension de
    l'image. Sous 20 %, les 30 mm et les coins subpixel deviennent trop petits
    face à la quantification ; au-dessus de 80 %, la cible ne contraint plus
@@ -197,6 +198,69 @@ Le protocole vaut pour **un seul groupe optique**. Une variation de la clé de
     versionné et identique aux futures images ; JPEG source est accepté
     lorsqu'il est cette représentation. Toute transformation doit être la même
     avant calibration et features, et doit posséder le manifeste de §8.
+
+### 4.1 Régions de cadre : définition normative
+
+La région est calculée après le décodage et la normalisation d'orientation
+gelés, dans l'image géométrique de largeur orientée W et hauteur orientée H.
+W et H sont des entiers strictement positifs. Pour une vue acceptée, prendre
+tous ses coins ChArUco interpolés retenus, trier leurs paires
+(corner_id, x, y) par corner_id croissant, et rejeter la vue si un ID est
+dupliqué, si un x/y n'est pas fini, ou si la liste est vide. Son centre est le
+centroïde arithmétique calculé en IEEE-754 binary64 :
+
+    x_c = (Σ x_i) / n
+    y_c = (Σ y_i) / n
+    u = x_c / W
+    v = y_c / H
+
+Les x_i,y_i sont les coordonnées continues après orientation, sans
+compensation de demi-pixel. Elles suivent donc l'origine haut-gauche, x vers
+la droite, y vers le bas et les centres de pixels demi-entiers déjà gelés. Le
+dénominateur est exactement la dimension orientée W ou H, jamais W-1, H-1 ni
+une dimension JPEG non orientée. Le centre est valide seulement si
+0 <= u < 1 et 0 <= v < 1 ; autrement, la vue est rejetée avant la
+classification.
+
+La région centrale est le rectangle normalisé fermé :
+
+    1/3 <= u <= 2/3  et  1/3 <= v <= 2/3
+
+Les fractions 1/3 et 2/3 sont normatives : une implémentation doit les évaluer
+ou les comparer avec la même sémantique IEEE-754 binary64, et ne peut les
+remplacer par une constante décimale arrondie non spécifiée. Si le centre
+appartient à ce rectangle, sa classe est la région centrale (4).
+
+Sinon, la classe externe est déterminée par les comparaisons suivantes :
+
+    u < 1/2, v < 1/2   -> haut-gauche  (0)
+    u >= 1/2, v < 1/2  -> haut-droit   (1)
+    u < 1/2, v >= 1/2  -> bas-gauche   (2)
+    u >= 1/2, v >= 1/2 -> bas-droit    (3)
+
+La priorité est donc centrale, puis externe. Les quatre bords et les quatre
+coins du rectangle central appartiennent à la classe 4 ; ils priment sur les
+axes u=1/2 et v=1/2. Hors région centrale, un centre exactement sur u=1/2 est
+à droite et un centre exactement sur v=1/2 est en bas. Cette partition est
+mutuellement exclusive et exhaustive pour tout centre valide.
+
+Le rectangle central, symétrique et d'aire 1/9 de l'image, fournit un
+échantillon autour de l'axe optique sans absorber la majorité du champ. Les
+quatre régions externes conservent chacune une obligation indépendante de
+mesure des bords et des coins. Le choix répond donc à l'observabilité de la
+distorsion et du point principal, non à une recherche de répartition
+statistiquement uniforme.
+
+La classe dépend seulement de ce centre : une cible peut traverser plusieurs
+régions et ne compte néanmoins que dans une classe. Elle ne remplace ni
+l'occupation de cible 20 %..80 %, ni les coins minimum, ni la couverture des
+coins de cible, ni les diversités angulaire et de distance.
+
+Dans la clé de stratification gelée
+(quadrant, distance_band, angle_class, source_sha256), le terme historique
+quadrant désigne cette classe de région de cadre à cinq valeurs 0..4, centrale
+incluse. L'algorithme « chaque cinquième vue de chaque strate » et les minimums
+fit/hold-out ne changent pas.
 
 Les seuils de diversité sont des **HARD REJECTS** : ils sont des contraintes
 d'observabilité, non des recommandations de confort. La recommandation de base
