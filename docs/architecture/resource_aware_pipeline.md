@@ -1,158 +1,498 @@
-# Pipeline Feature + Matcher sensible aux ressources
+# Lardon3D Resource-Aware Pipeline
 
-## Contrat portable
+## Status
 
-Une unité lourde ne démarre qu'avec une réservation active. Elle termine son
-petit travail courant sans être tuée sur une mesure instantanée, publie le
-résultat atomiquement, checkpoint, libère ses buffers, puis repasse par le
-Governor avant la séquence suivante. Les files restent bornées et le swap n'est
-jamais ajouté au budget de travail.
+This document describes the current production resource model for the selected pre-SfM pipeline and
+its resource-sensitive execution paths.
 
-Le mode normal est interactif : il réserve de la RAM et des threads logiques au
-desktop. Les signaux d'admission combinent `MemAvailable`, charge CPU, PSI CPU,
-PSI mémoire, PSI I/O et deltas `pswpin`/`pswpout`. Un seuil dépassé empêche une
-nouvelle admission ; il ne rompt pas une réservation saine déjà active.
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
+CURRENT_PRODUCTION_TASK_KINDS=16
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+REAL_S21_TRACKS=PASS/FROZEN
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
 
-Le Governor maintient trois zones. GREEN emploie le lot adapté normal. La zone
-de prudence RAM entre 3 et 4 Gio, un PSI au seuil ou un premier intervalle avec
-swap actif produit YELLOW et interdit toute croissance. Deux observations de
-pression consécutives, ou `MemAvailable` sous la réserve dure de 3 Gio,
-produisent RED et suspendent toute admission. Le premier snapshot swap établit
-seulement la baseline.
+The scientific contracts of Feature Store, Candidate Pair, Matcher, Geometric Verification and Track
+Builder remain owned by their specialized documents. This document owns the operational view:
+admission, bounded work, internal concurrency, publication boundaries, pressure response and
+reference-host measurements.
 
-La récupération possède deux phases distinctes : trois observations saines
-font `RED → YELLOW`, puis trois nouvelles observations saines font
-`YELLOW → GREEN`. Après RED, le plafond de lot reste 1. En GREEN, trois
-observations saines sont nécessaires à chaque palier `1 → 2 → 4 → 8`. Une
-nouvelle pression réinitialise cette progression. Cette mémoire est
-process-local, bornée et protégée par le mutex du Governor.
+## Canonical execution rule
 
-Gate G gèle le rafraîchissement initial : lorsqu'il existe du travail PENDING
-en `WAIT` de ressources, le worker unique de la Task Queue dort au plus 500 ms
-avant de rescanner la file et de recapturer les ressources. Un signal explicite
-le réveille plus tôt. Cette cadence ne remplace pas les 50 ms existantes d'une
-tâche déjà active qui attend sa réadmission à une frontière de séquence.
+A heavy production unit starts only while an active Resource Governor reservation authorizes it.
 
-**Gate G — PASS / FROZEN.** Cette réévaluation bornée, la
-fraîcheur des snapshots et l'identité GPU sélectionnée sont raccordées aux
-chemins de production existants et leur validation finale est terminée.
+The normal sequence is:
 
-Les snapshots emploient `CLOCK_MONOTONIC` et leur âge maximal est 1000 ms. Une
-capture complète impossible est une erreur opérationnelle, tandis qu'une PSI
-ou télémétrie swap optionnelle absente reste inconnue. Compute Governor v2
-observe maintenant le RSS/HWM courant dans un buffer borné, uniquement comme
-diagnostic du processus : il ne le confond ni avec la réservation Task ni avec
-un coût attribuable. Le modèle cible un hôte Linux natif non contraint ; cgroups,
-limites systemd/RLIMIT, multi-GPU, historique/monitoring RSS long terme,
-redimensionnement d'admission depuis le RSS et consommation Task du scratch
-restent différés. Le contrôleur SSD optionnel gère le cycle de vie physique ;
-son état est enregistré auprès du Governor, qui est l'unique orchestrateur des
-leases scratch de production. Aucun des quatorze kinds actuels ne les consomme,
-et ni le registre, ni les leases, ni le swap ne créent un budget RAM.
+```text
+immutable Task payload
+-> Governor admission
+-> bounded preparation / computation
+-> deterministic owner publication
+-> durable cursor / checkpoint
+-> release sequence-local buffers and reservation
+-> next admission
+```
+
+The Queue keeps one active Task callback. That does not require a Task callback itself to perform all
+independent work serially. Where a Task owns multiple independent units, bounded internal participants
+may prepare those units concurrently when the scientific and persistence contracts permit it.
+
+Canonical policy:
+
+```text
+MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF
+```
+
+Per-item atomicity does not imply cross-item serialization. Owner-only or ordered durable publication
+does not imply serial preparation.
+
+A long-running CPU1 or batch1 path is acceptable only when a concrete dependency, measured scaling
+knee, RAM limit, I/O limit, validated GPU path or another documented operational constraint proves
+that more concurrency would not be safely useful.
+
+## Host reserve and pressure model
+
+Lardon3D preserves the interactive host reserve first, then gives the active workload the safe and
+useful remaining capacity.
+
+On the current validation host, the normal observed outcome is approximately:
+
+```text
+16 logical CPUs total
+4 logical CPUs reserved for interactive host use
+12 logical CPUs available to the compute pool
+~3 GiB MemAvailable preserved as the hard RAM reserve
+Radeon 780M UMA available to validated and useful GPU backends
+```
+
+These values are evidence for the current host, not portable product constants.
+
+The Governor may use `MemAvailable`, CPU pressure, memory PSI, I/O PSI, active `pswpin` / `pswpout`
+deltas, selected-GPU state, and Task-declared fixed, per-participant and transient costs.
+
+Swap, zram and external scratch never enlarge admitted RAM. UMA GPU allocations are charged exactly
+once against host RAM.
+
+Pressure may reduce admission. When pressure clears, safe and useful capacity must be re-admitted
+rather than leaving the process permanently throttled.
+
+## Queue and sequence boundaries
+
+The Task Queue remains bounded and has one active callback.
+
+When pending work exists but all candidates receive `WAIT`, the Queue worker performs the validated
+bounded wait and retries normal admission with a fresh snapshot. A running sequential Task may also
+cross `sequence_break`, which releases the current reservation and requires fresh admission for the
+next sequence.
+
+The current architecture separates:
+
+```text
+cross-Task dispatch          -> one active Queue callback
+inside-Task independent work -> bounded participants when justified
+durable publication          -> owner-only where required
+```
+
+No second scheduler, uncontrolled worker pool, detached-thread system or parallel persistence
+subsystem is introduced.
+
+## Current Task inventory
+
+The production registry contains 16 Task kinds.
+
+The two additive kinds beyond the historical fourteen-kind maintenance inventory are:
+
+```text
+raw.develop.batch/1
+features.extract.batch/1
+```
+
+Historical documents that correctly recorded fourteen kinds at their checkpoint remain historical
+evidence. Fourteen is not the current production count.
 
 ## Feature Extraction
 
-ORB est déjà une tâche durable par image : source validée, extraction,
-publication Feature Store, métadonnées DB, checkpoint terminal et libération du
-buffer. Le batch vaut donc une image et la granularité de reprise est une image.
-Le worker unique et la file bornée fournissent la backpressure actuelle.
+### Scientific atomicity
 
-Le démarrage configure une baseline OpenCV issue du compute-pool réellement
-disponible avant la création de Queue. L'unique callback lourd applique ensuite
-temporairement le compte CPU immuable admis pour sa séquence, dans
-`1..compute-pool`, et restaure la baseline sur toute
-sortie, y compris après une mutation suivie d'un échec de vérification. La tâche
-réserve donc le nombre réellement appliqué au lieu d'annoncer artificiellement
-un thread pendant qu'une primitive interne en utilise davantage. Une mutation
-process-wide concurrente par plusieurs workers n'est pas supportée ; Queue
-conserve un seul callback actif.
+A Feature Set remains an immutable per-image scientific result.
+
+The historical production path remains valid:
+
+```text
+features.extract/1
+one image
+-> feature preparation
+-> Feature File publication
+-> Project DB metadata
+-> terminal Task checkpoint
+```
+
+That path remains important for legacy Tasks and exact restart compatibility.
+
+### Current selected-execution batch path
+
+Project DB v25 adds the current operational path:
+
+```text
+features.extract.batch/1
+```
+
+The durable owner is bound to one immutable selected execution, the exact ORB domain and a monotone
+`next_item_index`. The selected item order remains authoritative.
+
+The batch path is:
+
+```text
+one admitted owner Task
+-> bounded independent selected-image participants
+-> each participant prepares one per-image Feature result without SQLite access
+-> join all admitted participants
+-> owner validates / reuses the exact READY Feature Set
+-> owner publishes in selected-item order
+-> owner advances the durable Feature cursor
+-> generic Task checkpoint follows
+```
+
+A crash may leave the generic checkpoint or Feature-batch cursor behind an already immutable Feature
+Set. Restart revalidates and reuses that exact result; it does not infer a new identity.
+
+Per-image Feature atomicity is therefore preserved while cross-image preparation may be concurrent.
+
+### Feature CPU control
+
+OpenCV thread count is process-wide state, so it must remain controlled.
+
+The runtime establishes the validated baseline from the available compute pool before Queue
+execution. The active heavy callback temporarily applies the admitted count required by its current
+contract and restores the baseline on every exit path.
+
+The Queue still has one active callback, so unrelated Tasks do not race process-wide OpenCV thread
+configuration.
+
+For `features.extract.batch/1`, cross-image participants are the concurrency mechanism. Additional
+internal OpenCV threads inside every participant are not multiplied blindly.
+
+The current coupled Feature-batch admission exists because increasing CPU while the admitted item
+window remains one cannot exercise additional independent images. CPU and batch may therefore move
+together for this Task where the validated rung contract requires it.
+
+This is an explicit operational exception, not a universal Governor rule.
+
+## RAW selected-execution batch
+
+Project DB v24 provides `raw.develop.batch/1`.
+
+Its pattern is analogous at the execution boundary:
+
+```text
+one admitted owner Task
+-> bounded independent RAW participants
+-> join
+-> deterministic owner-only publication by selected_item_index
+-> durable selected-execution cursor advancement
+```
+
+Per-Capture RAW publication remains atomic. Cross-Capture preparation need not be serial.
+
+The retained real A6000 proof completed all 689 selected RAW representations through this path.
+
+## Visual Index
+
+Visual Index remains a bounded CPU path.
+
+Its scientific identity and segment publication are unchanged. Internal parallelism may be used only
+within its validated contract; no GPU path is promoted merely to make the accelerator busy.
+
+The current GPU audit rejected Visual Index as a useful production GPU candidate. That rejection is a
+measured backend decision, not permission to leave useful CPU capacity idle.
+
+## Candidate Pair generation
+
+Candidate Pair generation processes bounded Visual Index input and publishes deterministic canonical
+pairs.
+
+Current resource behavior distinguishes per-pair scientific identity from cross-item execution.
+
+The validated Candidate path may use coupled CPU/batch rungs because additional CPU cannot exercise
+additional independent source work while the admitted item window remains one.
+
+The current operational model therefore permits:
+
+```text
+bounded source/item window
++ bounded CPU participants
+-> deterministic Candidate preparation
+-> owner publication
+```
+
+The exact current memory model and batch limits are owned by [`candidate_pair.md`](candidate_pair.md).
+A historical CPU1/batch1 descriptor or older window estimate is not a permanent product ceiling.
 
 ## Matcher
 
-`matcher.run` v1 est une tâche durable. Son unité atomique est une Candidate
-Pair et son lot vaut 1, 2, 4 ou 8 paires. La tâche page la DB par
-`candidate_pair_id`, sans supposer des IDs continus, et ne conserve jamais la
-liste entière. Chaque paire publie immédiatement son Match Result avant que le
-curseur ne soit avancé en mémoire.
+`matcher.run` v1 is durable. Its scientific atomic unit is one Candidate Pair.
 
-Project DB v10 porte le Match Result publié. La migration transactionnelle
-v10→v11 ajoute uniquement `matcher_tasks`, qui porte la configuration et ce
-curseur durable.
+The normal Task pages Project DB by `candidate_pair_id`; it does not assume contiguous IDs and does
+not retain the whole Candidate Pair set in memory.
 
-Après chaque lot, la tâche persiste le curseur, checkpoint, puis appelle
-`lardon3d_task_sequence_break()`. Pause et annulation sont vérifiées avant
-chaque paire et entre les lots. Un crash après publication mais avant le
-checkpoint revoit la paire : le Matcher réutilise alors le Match Result et ne
-recalcule pas les descripteurs.
+The durable Matcher sequence is:
+
+```text
+bounded Candidate Pair page
+-> match one or more admitted pairs
+-> publish each exact Match Result
+-> advance durable cursor
+-> checkpoint
+-> sequence_break
+```
+
+The current adaptive batch rungs are:
+
+```text
+1 -> 2 -> 4 -> 8
+```
+
+A published Match Result may precede its generic checkpoint after a crash. Restart finds and reuses
+the exact durable Match Result rather than recomputing or inventing identity.
+
+### ORB Vulkan
+
+The validated ORB Matcher Vulkan backend is GPU-first when eligible.
+
+The Radeon 780M is UMA, so backend memory is host RAM and is charged once.
+
+The current production Vulkan contract retains:
+
+```text
+normal useful inflight depth = 1
+validated private safety capacity = 2
+helpers = 0
+```
+
+Depth 2 was measured and rejected as the normal useful setting because its improvement remained below
+the accepted deadband. It remains a validated private capacity, not a production default.
+
+The backend preserves canonical Match Result identity and exact CPU fallback. An ineligible pair or
+backend failure is recomputed completely on CPU; no partial GPU result is published.
+
+SIFT and RootSIFT remain CPU OpenCV L2 paths. Their Vulkan feasibility work did not reach production
+eligibility and therefore receives no authoritative production GPU reservation.
 
 ## Geometric Verification
 
-Project DB v12 stocke un résultat borné à 1024 octets de masque et neuf
-binary64. `geometric_verifier.run` v1 traite chaque Match Result comme unité
-scientifique atomique, publie par une transaction courte puis checkpoint son
-curseur par lots 1..16 avant
-`task_sequence_break()`. Sa ligne durable appartient à Project DB v13. Le job
-peut employer jusqu'à huit participants utiles et seize participants sûrs, par
-lots au plus seize, avec 8 Mio par parent et sans slot GPU. Le propriétaire
-publie le préfixe canonique dans l'ordre. Admission, pression, lots et
-slow-start restent exclusivement décidés par Runtime et Governor ; l'USAC
-scientifique interne conserve `isParallel=false`.
+The current production verifier lineage is Geometric Verifier v3.
 
-## GPU et files
+One Match Result remains the scientific atomic input.
 
-La Radeon 780M est UMA : toute mémoire GPU compte aussi comme pression RAM.
-Vulkan 1.4.354 énumère la 780M RADV et une file compute dédiée. Le backend ORB
-top-2 de production possède un contexte lazy réutilisable et jusqu'à deux jobs
-privés en vol sur cette file, sans helper hôte. Chaque slot mappé vaut 640 Kio.
-Le backend part de zéro et retient exactement un slot après une initialisation
-ou séquence AUTO normale depth 1. Il n'alloue le second que sous un contrat
-privé de sûreté/benchmark depth 2 déjà admis, puis le libère avant de franchir
-la prochaine admission depth 1. Les
-publications restent strictement ordonnées et le fallback CPU reste exact. Le
-CPU reste le fallback portable si Vulkan est absent, incompatible ou désactivé
-pour la session.
+The bounded execution shape is:
 
-La feasibility SIFT/RootSIFT a borné son prototype Vulkan à 8,125 Mio de
-payload lazy, mais n'a pas franchi la Gate de production. Le Governor ne réserve
-donc aucun slot ni budget GPU pour SIFT/RootSIFT ; leur estimation CPU publiée
-reste inchangée.
+```text
+one admitted owner Task
+-> bounded independent GVR preparation
+-> join
+-> owner publishes the canonical prefix in order
+-> durable cursor / checkpoint
+```
 
-## Profil interactif 8845HS mesuré
+The validated path may use up to eight useful participants and sixteen safe participants, with
+admitted windows up to sixteen Match Results.
 
-- budget CPU Lardon3D observé : 12 threads logiques, 4 réservés au desktop ;
-- réserve dure `MemAvailable` : 3 Gio ;
-- zone de prudence `MemAvailable` : de 3 à 4 Gio ;
-- Feature workers : 1 ; batch : 1 image ;
-- Matcher workers : 1 ; lots adaptatifs 1, 2, 4 ou 8 Candidate Pairs ;
-- Geometric Verifier : un callback propriétaire, jusqu'à 8 participants utiles,
-  lots adaptatifs jusqu'à 16 Match Results ;
-- profondeur de la Task Queue : 64 tâches légères, un seul callback actif ;
-- PSI CPU avg10 : nouvelle admission suspendue à 20 % ;
-- PSI mémoire avg10 : nouvelle admission suspendue à 1 % ;
-- PSI I/O avg10 : seuil existant 80 %.
+The internal USAC/MAGSAC scientific solver keeps its validated `isParallel=false` behavior. Cross-item
+parallelism belongs outside that per-item solver and does not modify scientific thresholds or identity.
 
-Le benchmark Matcher 8192 mesure environ 70 ms ORB et 135 ms SIFT à 12 threads,
-contre 68 ms et 127 ms à 16 threads : le profil interactif abandonne environ
-3–7 % de latence isolée pour réserver quatre threads logiques au desktop.
+The retained real A6000 continuation completed:
 
-Le run soutenu Geometric Verifier traverse environ 2001 parents réutilisés en
-5,870 s via Task, DB, checkpoints et Governor. Le processus de test culmine à
-25 964 Kio RSS ; `MemAvailable` reste au-dessus de 10,69 Gio et les compteurs
-swap restent nuls. PSI avg10 final vaut 0,34 % CPU et 0 % mémoire/I/O. Cette
-mesure valide le chemin resource-aware et la reprise ; elle ne prétend pas être
-une distribution de latence estimator-only.
+```text
+Match Results        38,420
+Applicable GVRs      37,805
+Verified GVRs        10,952
+Rejected GVRs        26,853
+```
 
-## Limites
+with deterministic restart and no duplicate mappings.
 
-Les pools multi-workers restent hors périmètre. La capacité CPU portable est
-désormais bornée par le compute-pool de l'hôte et la limite intrinsèque du kind,
-jamais par un plafond global 12.
-SIFT/RootSIFT et Feature Extraction Vulkan restent hors de ce contrat.
-Swap, zram et disque externe ne sont jamais ajoutés au budget RAM. Aucun chemin
-scratch/spill Task n'appartient à Gate G core. La commande SSD optionnelle est
-une intégration opérationnelle additive, pas une admission scientifique.
+## Track Builder
 
-La validation B3 du modèle Sparse SfM v16 a utilisé des processus frais, un
-fixture synthétique de 100 000 landmarks et 500 000 observations, cinq passes
-de paging sur 50 000 landmarks, et n'a observé ni OOM, ni swap storm, ni dérive
-RSS applicative. Cette preuve concerne la persistance bornée, pas le solveur.
+Track Builder consumes an immutable GVR scope.
+
+Its compact current memory model supersedes the historical rejected S21 envelope that attempted to
+reserve approximately 18.204 GiB.
+
+The retained real S21 proof completed:
+
+```text
+Tracks              912,447
+Track observations  2,495,768
+```
+
+The retained real A6000 proof completed:
+
+```text
+Tracks              130,714
+Track observations  318,944
+```
+
+Both proofs preserve deterministic restart semantics and no authoritative scratch consumption.
+
+Track Builder resource details remain owned by [`track_builder.md`](track_builder.md).
+
+## GPU policy
+
+GPU use is capability- and evidence-driven.
+
+Canonical rule:
+
+```text
+validated AND useful backend -> preferred when eligible and Governor-safe
+unvalidated backend          -> never promoted for utilization appearance
+measured non-useful backend  -> may remain CPU
+```
+
+Current examples:
+
+```text
+ORB Matcher Vulkan        validated and preferred
+SIFT / RootSIFT Matcher   CPU
+Candidate                 CPU
+Feature                   CPU
+Visual Index              CPU
+Geometric Verification    CPU
+```
+
+This inventory may evolve only through measured, validated backend work.
+
+## External SSD and scratch
+
+The optional external SSD controller is a physical-lifecycle boundary using the reviewed
+UDisks2/GDBus contract.
+
+Its state is registered with the Resource Governor. The Governor is the sole production orchestrator
+for scratch leases.
+
+At the current checkpoint:
+
+```text
+16 production Task kinds
+0 authoritative scratch-consuming Task kinds
+```
+
+Scratch availability is therefore a capability, not fabricated usage.
+
+A future Task may use scratch only after an explicit Task-specific contract defines eligibility,
+lease lifetime, path ownership, cleanup, cancellation, failure handling, capacity accounting and
+restart behavior.
+
+Scratch and swap never become RAM.
+
+## Reference-host measurements
+
+The following measurements are evidence, not portable constants.
+
+### CPU reserve
+
+On the Ryzen 7 8845HS reference host:
+
+```text
+16 logical CPUs total
+~4 logical CPUs reserved for interactive use
+~12 logical CPUs available to Lardon3D compute
+```
+
+Historical isolated Matcher measurements observed only a small additional gain from 12 to 16 logical
+threads. That observation supports the reference-host reserve; it does not create a global 12-thread
+product ceiling.
+
+### Geometric Verifier historical resource-aware run
+
+A retained resource-aware GV run traversed approximately 2001 reused parents in about 5.870 seconds
+through Task, Project DB, checkpoints and Governor.
+
+The test process peaked around 25,964 KiB RSS, `MemAvailable` remained above approximately 10.69 GiB
+and swap deltas remained zero.
+
+This measurement validates the bounded path and restart behavior. It is not a universal latency
+model.
+
+### A6000 current proof
+
+The later A6000 proof recorded 2,714 Governor admissions while continuing Match Result -> GV -> Tracks.
+
+Its final GV admitted window was 16, with the reference-host compute pool at 12 logical CPUs and four
+reserved for host use. Swap-in/out deltas remained zero.
+
+The checkpoint is:
+
+```text
+real-a6000-pre-sfm-2026-09-02
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
+
+Sparse SfM and Dense/MVS were not executed by this proof.
+
+## Recovery and deterministic publication
+
+Parallel preparation never weakens publication ordering.
+
+For every path where durable order matters:
+
+```text
+prepare independent work
+-> join
+-> validate exact immutable result
+-> owner-only deterministic publication
+-> durable typed cursor
+-> generic Task checkpoint
+```
+
+A checkpoint may lag an already published immutable scientific result. Restart must reuse or validate
+that result through its exact scientific identity; it must not fabricate a replacement identity.
+
+Cancellation is cooperative at the Task's documented boundaries. All admitted participants are
+bounded and joined before sequence completion or owner cleanup.
+
+## Limits and deferred work
+
+The following remain outside this document's current production contract:
+
+- cross-Task worker pools;
+- multiple simultaneous active Queue callbacks;
+- general DAG scheduling;
+- multi-GPU scheduling;
+- cgroup/systemd constrained-runtime capacity accounting;
+- generic resource residency/cache management;
+- authoritative Task scratch consumers;
+- unvalidated GPU ports;
+- dense/MVS resource orchestration.
+
+Deferring cross-Task parallelism is not permission to serialize independent units inside one active
+Task.
+
+The Queue/Governor plus bounded internal participants are the current production architecture.
+
+## Current summary
+
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
+CURRENT_PRODUCTION_TASK_KINDS=16
+
+raw.develop.batch/1          CURRENT
+features.extract.batch/1     CURRENT
+
+PER_ITEM_ATOMICITY_REQUIRES_CROSS_ITEM_SERIALISM=NO
+OWNER_ONLY_PUBLICATION_REQUIRES_SERIAL_PREPARATION=NO
+
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+
+VALIDATED_GPU_BACKENDS_PREFERRED_WHEN_USEFUL=YES
+UMA_ACCOUNTED_ONCE_AGAINST_HOST_RAM=YES
+SWAP_ZRAM_SCRATCH_AS_RAM=FORBIDDEN
+
+REAL_S21_TRACKS=PASS/FROZEN
+REAL_A6000_PRE_SFM=PASS/FROZEN
+SPARSE_SFM_EXECUTED_IN_A6000_PROOF=NO
+DENSE_MVS_EXECUTED_IN_A6000_PROOF=NO
+```
