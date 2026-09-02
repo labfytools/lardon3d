@@ -1,80 +1,86 @@
-# Persistance et base de données Lardon3D
+# Lardon3D Persistence and Project Database
 
-## Vision
+## Current authority
 
-Lardon3D stocke les métadonnées de reconstruction dans Project DB SQLite,
-tandis que les données numériques massives restent dans des fichiers/binaires
-adaptés. Le schéma courant est v23 ; les sections v7 ci-dessous documentent la
-fondation historique sans prétendre être la tête de migration.
+The current Project DB schema is **v25**.
 
-## Principes fondamentaux
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
 
-### Séparation logique/binaire
-- État logique, relations, index → base persistante légère
-- Données numériques massives → fichiers/artefacts binaires adaptés
-
-### Cycle de publication
-```
-lot calculé
-→ artefact temporaire
-→ validation
-→ publication atomique
-→ transaction de métadonnées
-→ état READY
+v22  selected scientific execution foundation        PASS/FROZEN
+v23  generic optical-context overlay                  IMPLEMENTED/VALIDATED/REVIEWED
+v24  raw.develop.batch/1 persistence                  IMPLEMENTED/VALIDATED
+v25  features.extract.batch/1 persistence             IMPLEMENTED/VALIDATED
 ```
 
-### Règle de reprise
-Une reprise ne considère jamais un artefact partiellement publié comme valide.
+Project DB evolves additively. Older schema versions remain valid historical contracts when a
+section explicitly documents the state published by that version. They must not be rewritten as if
+they had always contained later overlays.
 
-## Concepts de domaine
+The detailed schema, migration ledger and identity contracts are owned by
+[Project Database](project_database.md). This document owns the persistence model and publication,
+checkpoint, recovery and artifact-boundary rules.
 
-Les éléments suivants sont des concepts de domaine, PAS des tables SQL imposées :
+## Persistence model
 
-- project
-- scan_set
-- image
-- feature_set
-- visual_signature
-- candidate_pair
-- verified_pair
-- track
-- observation
-- camera
-- camera_body_profile
-- lens_profile
-- optical_configuration
-- optical_calibration_profile
-- pose
-- point3d
-- reconstruction_layer
-- measurement
-- document_source
-- geometric_constraint
-- artifact
-- checkpoint
+Lardon3D keeps queryable logical state in SQLite Project DB while large numerical payloads remain in
+bounded external files or artifacts designed for their format.
 
-## Invariants
+The split is intentional:
 
-- Chaque publication est atomique
-- Les artefacts partiels ne sont jamais considérés comme valides
-- La reprise commence à la dernière frontière connue
+- identity, lifecycle state, relations, durable Task payloads and publication metadata -> SQLite;
+- large descriptors, match payloads, checkpoints and other numerical artifacts -> bounded files;
+- a file path is a storage locator after identity resolution, never scientific identity by itself.
 
-## Checkpoint durable de tâche v1
+Project DB does not serialize runtime-only objects such as mutexes, condition variables, callbacks,
+userdata pointers, worker threads, Governor reservations or live execution contracts.
 
-### État durable
+## Core invariants
 
-Le modèle durable versionné contient uniquement l'identifiant stable, le nom,
-l'estimation immuable, l'état observé, l'état de reprise, la progression, le
-message, les horodatages et le compteur de séquences. Il ne contient aucun gros
-artefact numérique. Une future version pourra référencer des identifiants
-d'artefacts publiés et validés sans incorporer leur contenu.
+- durable publication is explicit and ordered;
+- partial artifacts are never accepted as complete scientific outputs;
+- recovery begins from the last durable boundary the owning contract can prove;
+- SQLite state and external files are not falsely described as one distributed transaction;
+- immutable scientific identity is not inferred from path, basename, timestamp or operational IDs;
+- large collections are read and written through bounded interfaces;
+- retry behavior must converge only from identities already established by the owning contract;
+- Project DB schema migration never silently creates new scientific meaning for historical rows.
 
-Les mutex, conditions, callbacks, userdata, workers, gouverneur, réservations et
-contrats d'exécution sont transitoires et ne sont jamais sérialisés.
+## Logical and binary publication
 
-### Normalisation après arrêt de processus
+The generic publication shape is:
 
-| État observé | État restauré |
+```text
+bounded computation
+-> operation-owned temporary output
+-> format/content validation
+-> atomic file publication where required
+-> Project DB transaction
+-> READY / published durable state
+```
+
+The exact ordering is owned by the subsystem. Some contracts publish an immutable file before the
+SQLite transaction and therefore explicitly admit an orphan-file window. Others publish metadata and
+files through a more specialized ordered protocol. No document may strengthen a subsystem guarantee
+beyond the actual implementation.
+
+Failure cleanup may remove only resources owned by the current operation. Shared immutable assets are
+not deleted merely because a later metadata transaction fails.
+
+## Durable Task checkpoint v1
+
+### Durable state
+
+The versioned Task checkpoint contains bounded logical Task state only. It includes the stable Task
+identity, name, immutable estimate, observed state, recovery state, progress, message, timestamps and
+sequence count. It does not embed large scientific artifacts.
+
+Task kind and typed business payload are separate concerns. The generic checkpoint format v1 does not
+become a miniature Project DB and does not replace typed Project DB persistence.
+
+### Process-stop normalization
+
+| Observed state | Restored state |
 |---|---|
 | `TASK_PENDING` | `TASK_PENDING` |
 | `TASK_RUNNING` | `TASK_PENDING` |
@@ -83,162 +89,355 @@ contrats d'exécution sont transitoires et ne sont jamais sérialisés.
 | `TASK_FAILED` | `TASK_FAILED` |
 | `TASK_CANCELLED` | `TASK_CANCELLED` |
 
-Une rupture de séquence n'est pas un état : elle est observée comme
-`TASK_RUNNING`. Son `sequence_count` est durable, mais la reprise revient à
-`TASK_PENDING` et exige une nouvelle admission.
+A sequence break is not a persistent Task state. If execution stopped while a sequence was active,
+recovery returns the Task to `TASK_PENDING`; its durable sequence count remains retained and a new
+Governor admission is required before execution resumes.
 
-### Stockage minimal
+### Standalone checkpoint file
 
-Le codec v1 est indépendant de la future Project Database. Le fichier est de
-taille fixe et bornée, encodé champ par champ, avec magie, version, taille et
-checksum de payload.
-La publication écrit un fichier temporaire unique dans le même répertoire,
-effectue `fsync`, renomme atomiquement puis synchronise le répertoire parent.
-La lecture distingue absence, corruption, version inconnue et erreur d'I/O.
+The v1 codec is bounded and field-encoded with explicit magic/version/size/checksum semantics. It does
+not serialize native structs or native padding.
 
-La sauvegarde distingue trois frontières :
+Standalone publication uses a unique temporary file in the same directory, synchronizes the file,
+renames atomically and then synchronizes the parent directory.
 
-- avant `rename`, toute erreur retourne `IO_ERROR`, supprime le temporaire et
-  laisse l'ancien checkpoint publié inchangé ;
-- après un `rename` réussi, le nouveau checkpoint est publié et visible et
-  n'est jamais présenté comme rollbackable ;
-- si le `fsync` du répertoire échoue après ce `rename`, le résultat est
-  `PUBLISHED_NOT_DURABLE` : le fichier visible est valide, mais sa présence sous
-  ce nom après un crash ou une coupure n'est pas garantie. `OK` garantit que le
-  contenu et l'entrée de répertoire ont tous deux été synchronisés avec succès,
-  sous réserve des garanties fournies par le système de fichiers et le stockage.
+The result distinguishes three important boundaries:
 
-Les tailles persistantes sont refusées avant conversion lorsqu'elles dépassent
-`SIZE_MAX`. Les secondes sont des entiers non signés v1 : les timestamps
-négatifs ne sont pas sérialisables et une valeur lue doit être représentable
-par le `time_t` local avant conversion. Le format reste donc lisible entre
-plateformes uniquement pour les valeurs communes à leurs domaines `size_t` et
-`time_t`.
+- before successful rename: failure leaves the previously published checkpoint unchanged;
+- after successful rename: the new visible checkpoint is published and is not presented as rolled back;
+- parent-directory sync failure after rename: result is `PUBLISHED_NOT_DURABLE`; the visible file is
+  valid, but name persistence across crash/power loss is not guaranteed by Lardon3D.
 
-## Project Database v7 — fondation historique
+`OK` means both content and directory-entry synchronization completed, subject to the guarantees of the
+filesystem and storage stack.
 
-SQLite contient l'état logique interrogable et les références aux fichiers ;
-les checkpoints et artefacts volumineux restent externes. L'enregistrement du
-résumé de tâche et de sa référence checkpoint est une transaction unique. Un
-artefact est d'abord publié et vérifié comme fichier régulier, puis seulement
-marqué `READY` en DB. Le chemin inverse est interdit.
+Persistent sizes are rejected before conversion if they exceed the local representable domain. The v1
+timestamp representation likewise requires values representable by the local `time_t` before runtime
+conversion.
 
-### Protocole checkpoint projet
+## Project-owned checkpoint protocol
 
-Le protocole réel n'est pas une transaction distribuée :
+The project checkpoint protocol coordinates a Task file and SQLite metadata without claiming a true
+filesystem+SQLite transaction.
 
-1. capture locale du snapshot sous le mutex de tâche puis déverrouillage ;
-2. publication atomique du fichier sous
-   `.lardon3d/checkpoints/<task_id>.chk` ;
-3. transaction SQLite sur `tasks` et `checkpoints` avec chemin relatif.
+The current project-level ordering is:
 
-Une erreur avant publication ne modifie pas la DB. `PUBLISHED_NOT_DURABLE` est
-conservé comme tel en DB. Si la publication réussit puis que SQLite retourne
-`BUSY` ou une erreur, le fichier valide reste sur disque, la DB conserve son
-ancienne vérité et le nouveau fichier est un orphelin à réconcilier plus tard.
-Il n'est pas supprimé et aucune atomicité FS+SQLite n'est revendiquée.
+```text
+capture bounded Task snapshot
+-> publish .chk.next
+-> record Task/checkpoint summary in SQLite
+-> promote .chk.next to canonical .chk under .chk.lock
+```
 
-L'inventaire distingue checkpoint récupérable durable, récupérable mais publié
-non durable, absent, invalide, version inconnue et erreur d'I/O. Aucune réparation
-ou suppression silencieuse n'est effectuée.
+The canonical location is:
 
-Le format checkpoint reste en version 1 et ne contient pas de `task_kind`. Le
-schéma SQLite v4 conserve `task_kind` et `task_kind_version` dans le résumé
-logique interrogable. La migration v1→v2 laisse ces deux colonnes à `NULL` : une
-tâche legacy reste inspectable mais ne peut pas être reconstruite ou resoumise.
-Un kind inconnu ou une version non supportée est diagnostiqué sans exécuter de
-code.
+```text
+.lardon3d/checkpoints/<task_id>.chk
+```
 
-## Statut
+The advisory `.chk.lock` exists only as process synchronization; it is not recovery data.
 
-**IMPLEMENTED** — modèle durable, codec v1, lecture validée, publication
-atomique et restauration sûre d'une tâche isolée.
+Recovery obtains the lock, reloads the relevant Project DB record because it may have changed while
+waiting, and then selects a codec/version-valid checkpoint whose stored summary matches the Project DB
+summary exactly for the fields Project DB owns.
 
-**IMPLEMENTED** — Project Database v7 pour identité, tâches typées, ScanSets,
-images logiques, Feature Sets/assets SHA-256, Visual Index segmenté,
-checkpoints et artefacts génériques.
+A valid canonical `.chk` has priority. A valid matching `.chk.next` may be promoted when the canonical
+file does not match. Stale or corrupt `.next` files never override a valid canonical checkpoint.
 
-**IMPLEMENTED** — registry statique bornée et reconstruction explicite avec
-ownership du userdata.
+A missing, corrupt, future-version or summary-mismatched checkpoint makes that Task non-recoverable; it
+does not make unrelated project state invalid.
 
-**IMPLEMENTED** — API projet de sauvegarde fichier+DB et inventaire validé au
-redémarrage.
+## Project DB foundation
 
-**IMPLEMENTED** — `import.images` persiste son chemin source absolu et son
-`scanset_id`, puis publie un checkpoint après chaque lot validé. Le catalogue
-SQLite rend le rejeu idempotent à la granularité du contenu dans un ScanSet.
+Project DB is SQLite with explicit schema versioning and sequential transactional migrations.
 
-Le chemin source absolu est l'intention durable v1 : il doit rester accessible
-après redémarrage et un projet déplacé ne rend pas une source externe portable.
-Une source absente ou devenue non-répertoire fait échouer proprement la
-reconstruction. Après import terminé, l'image dépend de l'asset géré, plus de la
-source. Le SHA-256 est calculé pendant la copie avec un tampon fixe de 64 Kio.
-L'asset est publié sans écrasement sous
-`assets/images/<prefix>/<sha256>`, puis seulement enregistré `READY` dans une
-transaction SQLite. Un asset concurrent déjà présent n'est adopté qu'après
-rehash complet et vérification de taille. Si SQLite échoue après publication,
-le fichier reste orphelin pour une future réconciliation ; aucune transaction
-FS+SQLite n'est revendiquée.
+The retained configuration uses:
 
-Les identités publiées `scanset_id`, `image_id` et `asset_id` utilisent les
-séquences SQLite `AUTOINCREMENT` : une valeur issue d'une transaction validée
-n'est jamais réattribuée à un autre objet, même après suppression de la ligne.
-Une valeur réservée par une transaction annulée n'est pas une identité publiée.
+```text
+foreign_keys=ON
+journal_mode=DELETE
+synchronous=FULL
+busy_timeout=5000
+```
 
-`manifest.tsv` reste supporté par l'ancien chemin d'import/catalogue. Le chemin
-persistant entretient une projection best-effort par hardlinks pour la TUI,
-mais SQLite est le commit logique canonique : la correction de la reprise ne
-dépend plus de l'ordre de `readdir()` ni du nom de fichier.
+`DELETE` journal mode matches the current single-owner Project DB model and avoids persistent WAL/SHM
+files. The timeout bounds waiting on an external lock.
 
-La migration v3 vers v4 ne transforme pas les lignes du manifeste historique
-en images cataloguées : elles ne contiennent pas toutes les preuves exigées par
-le modèle v4. Le marqueur durable `legacy_image_catalog_pending` rend cette
-situation visible. Une tâche récupérable peut repeupler le catalogue par rejeu
-si sa source existe encore ; sinon les fichiers et le manifeste restent une
-projection legacy, explicitement non cataloguée. Une tâche v3 déjà terminée
-n'est pas rejouée automatiquement.
+The project identity is duplicated intentionally across `project.ini` and the `project` table and must
+match. A divergence is an error, not an opportunity to invent a new identity.
 
-**IMPLEMENTED** — reprise automatique sélective à l'ouverture : pagination
-bornée, validation checkpoint/kind, reconstruction production et enqueue sans
-claim persistant supplémentaire.
+Published catalog and scientific IDs use SQLite integer identities according to their owning schema.
+Where `AUTOINCREMENT` is part of the contract, a committed published identity is not later reused for a
+different object. An ID allocated only inside a rolled-back transaction is not a published identity.
 
-Les records sont parcourus par task ID croissant. Un checkpoint
-`PUBLISHED_NOT_DURABLE` présent, valide et cohérent peut être repris ; le résumé
-conserve cet avertissement jusqu'au prochain checkpoint durable. Une tâche
-terminale n'appartient pas à la requête de reprise.
+## Historical Project DB v7 foundation
 
-**NOT_YET_WIRED** — réconciliation des fichiers orphelins et retry piloté par
-l'utilisateur pour les sources indisponibles. Les checkpoints existants sont
-kind-owned aux frontières métier ; aucun timer générique ne peut les remplacer.
+Project DB v7 is the historical persistent project/runtime foundation. It covers the durable project
+identity, Tasks, checkpoint references, generic artifacts, ScanSets, logical images, image assets,
+Feature Store metadata and the segmented Visual Index foundation.
 
-**NOT_YET_WIRED** — migration de la vue TUI en mémoire vers la pagination
-SQLite, scrub des assets et réconciliation globale des orphelins.
+Important v7-era persistence rules remain current unless a later contract explicitly supersedes them:
 
-**IMPLEMENTED** — Feature Store externe versionné, immutable, borné et relié
-transactionnellement à ses métadonnées SQLite après publication.
+- Task summary plus checkpoint reference is a single SQLite transaction;
+- large checkpoint and scientific files remain external;
+- an artifact file is published and validated before Project DB marks it `READY`;
+- Project DB stores bounded metadata and references, not large descriptor/posting payloads;
+- `AUTOINCREMENT` is used where published catalog/scientific IDs must not be recycled after committed
+  deletion;
+- the persistent import source path records durable execution intent, while imported scientific data
+  ultimately depends on the managed immutable asset rather than the original external source path.
 
-**IMPLEMENTED** — Visual Index externe segmenté, memberships transactionnels
-et tâche `visual_index.update` récupérable.
+### Generic artifact orphan window
 
-**IMPLEMENTED** — migrations additives et séquentielles jusqu'à Project DB
-v23. Les versions v16 à v22 restent l'histoire scientifique et de persistance
-gelée ; v23 ajoute uniquement l'overlay optique générique.
+For generic file-first publication, a successful file publication followed by SQLite `BUSY` or another
+SQLite failure leaves a valid orphan file on disk while Project DB retains its previous truth.
 
-Les neuf relations v23 séparent profils de boîtier et alias, profils d'objectif
-et alias, configurations optiques, affectations de configuration aux groupes
-de campagne et aux Captures, profils de calibration et sélection explicite par
-Capture. Une configuration référence exactement un boîtier et un objectif ; un
-objectif manuel sans EXIF est normal. La compatibilité d'une
-calibration est exacte sur la configuration optique et ses dimensions/champs
-scientifiques. Aucun profil S21, A6000 ou Meike n'est inséré ou déduit par la
-migration : les tables nouvelles restent vides tant qu'un caller ne fournit
-pas explicitement les données.
+That file is not silently deleted. Global orphan reconciliation is a separate maintenance capability.
+The absence of such reconciliation does not justify pretending the file and SQLite update were atomic.
 
-La migration v22→v23 est une transaction additive. Elle ne réinterprète ni les
-Captures, ni les Images, ni les résultats scientifiques historiques. Une copie
-S21 et une copie A6000 ont atteint v23 avec intégrité et clés étrangères
-valides, comptes scientifiques inchangés et tables optiques vides. Les détails
-normatifs sont dans [Project Database](project_database.md).
+## Import and managed source assets
 
-**NOT_YET_WIRED** — reprise ordonnée par dépendances/DAG et réconciliation
-globale des artefacts orphelins.
+`import.images` persists its source path and ScanSet identity and checkpoints after validated bounded
+work. Managed image assets are content-addressed by SHA-256 after a complete bounded copy/hash pass.
+
+A concurrently existing asset is adopted only after the implementation verifies the expected content
+and size according to the owning contract. SQLite publication follows file publication.
+
+`manifest.tsv` remains a historical/legacy projection. SQLite is the canonical logical commit for the
+persistent catalog. The `legacy_image_catalog_pending` marker means legacy data may remain outside the
+current catalog model; it does not claim that historical manifest rows were silently converted into
+fully proven catalog identities.
+
+## Selective Task recovery
+
+Project open performs bounded selective recovery using Project DB pages and the Task Kind Registry.
+
+A recoverable Task must have:
+
+- a valid Project DB Task record;
+- a supported Task kind and version;
+- a valid coherent checkpoint boundary required by that kind;
+- reconstructable typed business persistence where the kind requires it.
+
+The recovery scan copies records outside the SQLite mutex before business reconstruction and enqueue.
+A full Queue window stops the scan without mutating the unvisited records.
+
+Project-level schema, migration and project-identity errors are fatal to opening the project. Per-Task
+legacy, unknown-kind, unsupported-version, missing-checkpoint, invalid-checkpoint, unavailable-source or
+reconstruction errors are isolated to the affected Task where the owning contract permits.
+
+## External scientific artifacts
+
+### Feature Store
+
+Feature files are immutable external artifacts with versioned bounded readers. Project DB stores their
+identity and publication metadata only after the external file is valid according to the Feature Store
+contract.
+
+Feature descriptors are not duplicated into SQLite.
+
+### Visual Index
+
+Visual Index postings remain in bounded immutable external segments. Project DB stores index identity,
+segment metadata and memberships. Durable update Tasks retain the bounded cursor required to resume
+publication without rebuilding already accepted segments.
+
+### Match and later scientific payloads
+
+Match payloads and other large scientific representations follow the same architectural principle:
+SQLite owns durable identity, relations and bounded metadata; specialized external formats own large
+numerical payloads where the subsystem contract requires them.
+
+## Project DB v16-v22 retained scientific foundation
+
+The scientific and persistence contracts introduced through v16-v22 remain historical PASS/FROZEN
+foundations. Later schema versions are additive overlays and do not reinterpret those rows.
+
+In particular:
+
+- v16 publishes the immutable Sparse SfM persistence model;
+- v17 adds the durable typed Sparse SfM Task payload for Gate F;
+- v18 adds Phase H v1 incremental-reconstruction identity/persistence;
+- v19 adds Capture / Asset Provenance v1;
+- v20 adds durable acquisition-campaign Task persistence;
+- v21 adds Photo Quality Triage persistence;
+- v22 adds selected scientific execution, explicit Capture SOURCE-asset mapping and durable selected
+  RAW development persistence.
+
+Detailed tables, identities and migration invariants are defined in
+[Project Database](project_database.md).
+
+## Project DB v23 - generic optical-context overlay
+
+Project DB v23 is an additive optical-context overlay above the v22 scientific foundation.
+
+It separates four identities:
+
+- camera body profile;
+- lens profile;
+- optical configuration;
+- optical calibration profile.
+
+The migration creates the optical relations empty. It does not inspect EXIF, path, basename, SHA-256,
+dimensions, device name or historical calibration to backfill identity.
+
+Electronic metadata aliases, when present, use exact stored identity semantics. A manual lens without
+EXIF is a normal explicit profile and does not require a fabricated metadata alias.
+
+Calibration selection is explicit and requires exact compatible optical configuration. No silent
+interpolation, substitution or inferred calibration identity is introduced by persistence.
+
+Historical S21/A6000 copies migrated through the optical overlay without changing their existing
+scientific rows; empty optical tables remain an honest state until explicit data is supplied.
+
+## Project DB v24 - RAW batch persistence
+
+Project DB v24 adds only the typed durable relation required by `raw.develop.batch/1`:
+
+```text
+raw_development_batch_tasks(task_id, selected_execution_id)
+```
+
+The migration is additive and DDL-only. It does not create Capture, Asset, Image or selected-execution
+identity and does not rewrite historical `raw.develop/1` Tasks.
+
+The selected execution remains the durable scientific ordering authority. The batch Task may prepare
+independent RAW items concurrently under Governor admission, but after all participants join, the owner
+publishes selected representations in deterministic selected-item order.
+
+The durable ordering remains:
+
+```text
+prepare bounded independent RAW items
+-> join participants
+-> owner publishes exact selected item
+-> selected item/cursor commit
+-> generic Task progress/checkpoint
+```
+
+A crash may therefore leave generic Task progress behind already durable selected scientific state; it
+must never move generic progress ahead of unpublished selected state. Recovery resumes from durable
+selected-execution identity/cursor and exact already-published representations rather than guessing
+from paths or files.
+
+The retained real A6000 run completed this RAW-batch path for all 689 selected RAW representations.
+
+## Project DB v25 - Feature batch persistence
+
+Project DB v25 is the current schema head. It adds only the typed durable relation required by
+`features.extract.batch/1` through `feature_extract_batch_tasks`.
+
+The v25 row binds one durable Feature-batch Task to:
+
+- one immutable selected execution;
+- the monotone selected-item prefix/cursor;
+- the exact ORB extractor kind/version/parameters/fingerprint domain required by the Task contract.
+
+The migration is additive and DDL-only. It creates no Feature Set, converts no historical
+`features.extract/1` Task and infers no Image or Feature Set identity.
+
+Selected images may be prepared concurrently without SQLite access. After participants join, the owner
+publishes Feature Sets in selected order and advances the durable Feature cursor only when the exact
+READY Feature Set is already durable.
+
+A crash may leave generic Task checkpoint/progress or the Feature cursor behind an immutable Feature
+Set that was already published. Recovery must revalidate and reuse that exact result; it must not infer
+a replacement identity.
+
+The retained real A6000 proof completed the v25 path with 689 Feature Sets and then continued through
+Visual Index, 38,420 Candidate Pairs, 38,420 Match Results, Geometric Verification and Tracks without
+replaying acquisition, RAW or Feature work.
+
+This persistence result does **not** imply that real Sparse SfM or Dense/MVS was executed. Those counts
+remain zero in `REAL_A6000_PRE_SFM=PASS/FROZEN`.
+
+## Capture / Asset / Image identity boundary
+
+Persistence must preserve these distinctions:
+
+```text
+Capture != file
+Capture != Asset
+Capture != image_id
+Capture != SHA-256
+Capture != path
+Capture != basename
+Capture != Task ID
+Capture != campaign group ID
+```
+
+`asset_id` identifies a managed immutable asset record. SHA-256 identifies immutable bytes according to
+the asset contract. `image_id` identifies a scientific image representation. `capture_id` identifies a
+physical acquisition representation in Project DB. Task and campaign-group IDs remain operational
+identities.
+
+Retry and recovery may use an explicit persisted mapping between these domains only where a canonical
+contract defines it. They may not reconstruct missing identity from coincidental equality or metadata.
+
+## Acquisition-campaign crash/restart ordering
+
+For durable campaign execution, the important persistence boundary is conceptually:
+
+```text
+S3-E returns capture_id
+-> persist group_id -> capture_id mapping and campaign cursor
+-> advance generic Task progress/checkpoint
+-> next group may execute
+```
+
+The retained pre-return S3-E crash window remains intentional. If a Capture is created internally but
+the process dies before the caller receives and durably retains its `capture_id`, campaign persistence
+does not guess that identity from path, digest, basename, timestamp, metadata or `image_id`.
+
+## Concurrency and ownership
+
+A Project DB connection is serialized by its internal mutex. Each public compound operation owns its
+entire transaction; a public transaction is not left open across calls.
+
+External artifact I/O is not performed while holding the Project DB mutex where the owning contract
+separates those operations. SQLite-owned strings and records are copied into caller-owned bounded
+storage before returning.
+
+Closing Project DB concurrently with an active Project DB call is forbidden by owner lifetime rules.
+Application project/session teardown must first destroy and join the Queue so Task callbacks and leases
+are finished, then close Project DB.
+
+## Schema migration discipline
+
+Project DB migrations are sequential, transactional and additive unless an explicit future human ticket
+authorizes a different migration.
+
+Current known sequence:
+
+```text
+v1 -> ... -> v22
+v22 -> v23  generic optical-context overlay
+v23 -> v24  RAW batch Task persistence
+v24 -> v25  Feature batch Task persistence
+```
+
+A migration failure rolls back both its new schema objects and its schema-version publication marker.
+A retry therefore starts from the previous complete known schema.
+
+Future schema versions beyond v25 are rejected by the current implementation and require explicit human
+authorization before code or documentation may treat them as current.
+
+## Current status
+
+```text
+PERSISTENCE_DOCUMENT=CURRENT
+CURRENT_PROJECT_DB_SCHEMA=v25
+
+TASK_CHECKPOINT_V1                         IMPLEMENTED
+PROJECT_CHECKPOINT_PROTOCOL                IMPLEMENTED/VALIDATED
+PROJECT_DB_V7_FOUNDATION                   IMPLEMENTED
+PROJECT_DB_V16_TO_V22_FOUNDATION           PASS/FROZEN
+PROJECT_DB_V23_OPTICAL_OVERLAY              IMPLEMENTED/VALIDATED/REVIEWED
+PROJECT_DB_V24_RAW_BATCH                    IMPLEMENTED/VALIDATED
+PROJECT_DB_V25_FEATURE_BATCH                IMPLEMENTED/VALIDATED
+REAL_A6000_PRE_SFM                          PASS/FROZEN
+```
+
+Current intentionally unfinished persistence-adjacent work includes global orphan-file reconciliation,
+asset scrub/reconciliation and a general dependency/DAG recovery model. Those are separate future
+capabilities; they do not change the current v25 schema authority.
