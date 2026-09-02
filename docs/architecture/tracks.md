@@ -1,526 +1,450 @@
 # Track Model v1
 
-## Scope
+## Status
 
-Track Model v1 est le contrat persistant qui transforme les correspondances
-géométriquement vérifiées en structures multi-view cohérentes. Il stocke des
-ensembles d'observations 2D liées à un même point physique supposé. Il ne
-calcule rien, ne triangule pas, ne contient aucune coordonnée 3D et ne résout
-aucun conflit. Le Track Builder, la triangulation, le Sparse SfM et le Bundle
-Adjustment sont des étapes séparées ; Gate E a gelé le Builder v1 sans
-implémenter ces étapes 3D.
+```text
+TRACK_MODEL_V1=FROZEN
+TRACK_BUILDER_V1=PASS/FROZEN
+
+CURRENT_PRODUCTION_VERIFIER=FUNDAMENTAL_V3
+SPARSE_SFM_CAPABILITY=IMPLEMENTED_THROUGH_GATE_G
+REAL_S21_SPARSE_SFM=NOT_EXECUTED
+REAL_A6000_SPARSE_SFM=NOT_EXECUTED
+
+REAL_S21_TRACKS=PASS/FROZEN
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
+
+Track Model v1 is the persistent scientific contract for coherent multi-view 2D observation sets.
+
+A Track is **not** a 3D point.
+
+It contains no camera pose, triangulated coordinate, reprojection error or Bundle Adjustment state.
+
+Track Builder v1 constructs Tracks from verified Geometric Verification Results. Sparse SfM consumes an
+immutable Track Set later.
+
+## Pipeline position
+
+Current pipeline:
+
+```text
+Feature Set
+-> Candidate Pair
+-> Match Result
+-> Geometric Verifier v3
+-> Geometric Verification Result
+-> Track Builder v1
+-> Track Model v1
+-> Sparse SfM capability
+```
+
+Sparse SfM Gates C through G are implemented and frozen.
+
+The retained S21 and A6000 historical campaigns stop before real Sparse SfM because known calibration
+data is unavailable for those campaigns.
+
+Older Track Model text that called Sparse SfM "future" describes historical lifecycle, not current
+implementation status.
 
 ## Track definition
 
-Un **Track** est un ensemble d'observations 2D cohérentes d'un même point
-physique supposé, observé à travers plusieurs images. Chaque observation est
-identifiée par `(feature_set_id, feature_index)`.
+A Track is a coherent set of 2D observations believed to correspond to the same physical scene point
+across multiple images.
 
-Un Track n'est **pas** un point 3D. Il ne contient aucune coordonnée 3D,
-aucune erreur de reprojection, aucun statut de triangulation. La
-triangulation appartient à une étape ultérieure.
-
-La chaîne scientifique correcte est :
+Observation identity is exactly:
 
 ```text
-Matcher → Match Result → Geometric Verification → Track Builder v1
-→ Track Model → Sparse SfM (futur)
-```
-
-Le Matcher ne produit pas les Tracks. Le Track Builder v1 les assemble à partir
-des Geometric Verification Results.
-
-## Observation identity
-
-Une observation est identifiée par :
-
-```
 (feature_set_id, feature_index)
 ```
 
-- `feature_set_id` : identifiant SQLite AUTOINCREMENT du Feature Set. Le
-  Feature Set porte directement `image_id` comme colonne NOT NULL FK. L'image
-  est dérivable par `SELECT image_id FROM feature_sets WHERE feature_set_id=?`.
-- `feature_index` : ordinal zero-based dans le tableau de keypoints du Feature
-  File, stable tant que le Feature Set existe. Un Feature Set publié est
-  immutable : aucune API de production ne modifie ses colonnes après INSERT.
+`feature_set_id` identifies one immutable Feature Set.
 
-L'identité `(feature_set_id, feature_index)` est suffisante. Il est inutile
-de porter `image_id` dans la table d'observations car il est dérivable via
-`feature_sets.image_id`.
+`feature_index` is the zero-based keypoint ordinal inside that immutable Feature File.
 
-Note : `feature_sets` ne possède pas de colonne d'état. L'existence d'une
-ligne publiée dans la table constitue le contrat réel de disponibilité du
-Feature Set.
+The Feature Set directly owns `image_id`; image identity is therefore derivable and is not duplicated
+in Track observation identity.
 
-## Scientific inputs
+## Scientific input
 
-Les Tracks sont construits exclusivement à partir de :
+Track Builder consumes only completed verified geometric results selected by one exact verifier
+identity.
 
-```
-Geometric Verification Result
-  status == GEOMETRIC_VERIFIED (2)
-```
-
-correspondant exactement au VERIFICATION_SELECTOR du Track Set.
-
-Pour chaque résultat vérifié, les entrées du Match File dont le bit
-correspondant dans le masque d'inliers vaut 1 fournissent les correspondances
-valides. La chaîne de dérivation est :
+Current production lineage:
 
 ```text
-GVR → match_result_id
-  → candidate_pair + feature_set_id_a + feature_set_id_b
-  → Match File entry[i] = (feature_index_a, feature_index_b, distance)
-  → bit i du masque d'inliers = 1
-  → observation A: (feature_set_id_a, feature_index_a)
-  → observation B: (feature_set_id_b, feature_index_b)
+verifier_kind = FUNDAMENTAL
+verifier_version = 3
+verifier_fingerprint =
+6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c
 ```
 
-Un `GEOMETRIC_REJECTED` ne produit aucun track. Un Match Result non vérifié
-géométriquement ne suffit pas.
+Historical Track Sets created from Fundamental verifier v1 or v2 remain valid historical scientific
+objects.
 
-## VERIFICATION_SELECTOR
+They must not be relabelled as v3.
 
-Le VERIFICATION_SELECTOR définit la configuration de Geometric Verification
-éligible pour un Track Set. Il est stocké sur le Track Set et fait partie de
-son identité de reuse.
+For each selected `GEOMETRIC_VERIFIED` result, only Match File entries whose corresponding inlier-mask
+bit is one contribute observation edges.
 
-```
-(
-    verifier_kind      INTEGER,  -- ex: 1 = FUNDAMENTAL
-    verifier_version   INTEGER,
-    parameter_fingerprint BLOB(32)
-)
-```
+A rejected GVR contributes no Track edge.
 
-Le Track Builder ne consomme que les GVR avec `status == GEOMETRIC_VERIFIED`
-correspondant exactement à ce tuple. Aucune sélection par timestamp, "latest"
-ou ordre d'insertion n'est permise.
+## Verification selector
 
-Valeur production : `(1, 1, SHA-256 de l'encodage canonique 84 octets)`.
+A Track Set stores the exact verifier selector:
 
-## INPUT_SCOPE
-
-L'INPUT_SCOPE représente l'ensemble scientifique réel des entrées consommées
-par une Track Generation donnée. Il est distinct du VERIFICATION_SELECTOR :
-le selector dit quels GVR sont admissibles, le scope dit quels GVR ont
-effectivement été consommés.
-
-```
-input_scope_hash  BLOB(32)  -- SHA-256 canonique
-gvr_count         INTEGER   -- nombre de GVR consommés
+```text
+verifier_kind
+verifier_version
+verifier_fingerprint
 ```
 
-### INPUT_SCOPE_HASH
+The builder never selects verification evidence using:
 
-| Propriété | Valeur |
-|-----------|--------|
-| Domain/version | `L3DTSIS1` (8 octets ASCII) |
-| Items | `geometric_verification_result_id` des GVR consommés |
-| Canonical ordering | IDs triés par ordre croissant |
-| Serialization | Chaque ID : 8 octets little-endian |
-| Digest | SHA-256 |
-| DB-local IDs | OUI — le reuse est scoped à une DB projet |
-| Duplicate handling | Inutile — les IDs sont uniques par construction |
-| Empty scope | Interdit — un Track Set sans GVR n'a pas de sens |
+- timestamp;
+- "latest";
+- insertion order;
+- approximate fingerprint match.
 
-Le digest est calculé sur `L3DTSIS1` (8 octets) suivi des IDs sérialisés :
-`SHA-256(L3DTSIS1 || id_0 || id_1 || ... || id_N)` où chaque `id_i` est
-8 octets little-endian et les IDs sont triés par ordre croissant.
+The current default producer is v3, but the Track Model remains version-independent and can store valid
+sets from explicitly supported historical selectors.
 
-Le `gvr_count` est stocké comme métadonnée de validation. Il permet de
-détecter un scope incomplet sans re-hasher. Il ne fait pas partie du hash
-lui-même.
+## Input scope
 
-Le scope_hash est DB-local : il utilise les `geometric_verification_result_id`
-SQLite. Deux DB distinctes avec les mêmes données produiront des IDs
-différents. Le reuse est donc scoped à une seule DB projet.
+A Track Set also records the exact consumed GVR scope.
+
+Canonical scope identity uses:
+
+```text
+domain: L3DTSIS1
+items: geometric_verification_result_id
+order: strictly increasing
+encoding: uint64 little-endian
+digest: SHA-256
+```
+
+Conceptually:
+
+```text
+SHA-256(L3DTSIS1 || id_0 || id_1 || ... || id_N)
+```
+
+The scope is Project-DB-local because SQLite GVR IDs participate directly.
+
+`gvr_count` is retained as validation metadata.
+
+An empty scope is invalid.
 
 ## Track membership invariants
 
-1. **Minimum structurel** : un Track contient au moins 2 observations.
-   Une seule observation ne constitue aucune relation multi-view. Le futur
-   Track Builder v1, la triangulation ou le Sparse SfM pourront appliquer des
-   critères plus stricts. Le Model ne fixe pas de plafond de reconstruction.
+### Minimum size
 
-2. **One observation per image** : un Track ne contient pas deux observations
-   issues de la même image. Cette contrainte est validée par l'API lors de la
-   création. Le schéma v1 ne dénormalise pas `image_id` dans
-   `track_observations` ; l'API vérifie déterministement la relation via
-   `feature_sets.image_id` avant publication sous `BEGIN IMMEDIATE`.
+A Track has at least two observations.
 
-   **SQL** : non protégé (pas de colonne `image_id` dans `track_observations`).
-   **API** : validation par jointure `feature_sets.image_id` avant INSERT.
+### At most one observation per image
 
-3. **Observation unique across tracks** : dans un même Track Set, une
-   observation `(feature_set_id, feature_index)` n'appartient qu'à un seul
-   Track.
+One Track cannot contain two observations derived from the same image.
 
-   **SQL** : `PRIMARY KEY(track_set_id, feature_set_id, feature_index)` sur
-   `track_observations`. Le `track_set_id` est dénormalisé depuis `tracks`.
-   **API** : validation que `track_set_id` correspond au `track_set_id` du
-   `track_id` parent.
+This is validated through `feature_sets.image_id`.
 
-4. **Feature Set existence** : chaque `feature_set_id` référencé existe dans
-   la table `feature_sets`. La FK SQLite garantit la référence.
+### Observation uniqueness inside one Track Set
 
-   **SQL** : `REFERENCES feature_sets(feature_set_id)`.
+Within one Track Set:
 
-5. **Feature index bounds** : `feature_index < feature_sets.feature_count`
-   pour l'observation correspondante.
+```text
+(feature_set_id, feature_index)
+```
 
-   **SQL** : `CHECK(feature_index >= 0)`.
-   **API** : validation de la borne supérieure via `feature_sets.feature_count`
-   (SQLite CHECK ne peut pas référencer une autre table).
+belongs to at most one Track.
+
+The persistence schema enforces this using the Track Set-scoped primary key.
+
+### Feature Set existence
+
+Every referenced Feature Set must exist.
+
+### Feature index bound
+
+For every observation:
+
+```text
+0 <= feature_index < feature_count
+```
+
+The upper bound is validated against the referenced Feature Set.
+
+### Parent consistency
+
+The denormalized Track Set ID carried by an observation must equal the Track Set of its parent Track.
 
 ## Track identity
 
-Un Track persistant possède un identifiant opaque :
+Persistent Track identity is the opaque SQLite:
 
-```
-track_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(track_id > 0)
-```
-
-Il n'a pas d'identité scientifique dérivée de son contenu en v1. Les raisons :
-
-- un hash de membership rendrait les INSERTs dépendants de l'ordre ;
-- le contenu d'un track peut être reconstruit depuis les GVR sources ;
-- un `track_id` opaque suffit pour la persistance, le référencement et la
-  pagination ;
-- la corruption est détectée par cohérence interne (doublons, images
-  manquantes, index hors bornes) plutôt que par re-hash.
-
-La reproductibilité est assurée au niveau du Track Set (parent), pas du Track
-individuel.
-
-## Track Set / Generation
-
-Un **Track Set** est le parent obligatoire de tout Track persistant. Il
-représente une génération complète de Track Building.
-
-Champs :
-
-```
-track_set_id              INTEGER PK AUTOINCREMENT
-builder_kind              TEXT(1..64)
-builder_version           INTEGER > 0
-parameter_fingerprint     BLOB(32)
-verifier_kind             INTEGER   -- VERIFICATION_SELECTOR
-verifier_version          INTEGER
-verifier_fingerprint      BLOB(32)
-input_scope_hash          BLOB(32)
-gvr_count                 INTEGER >= 1
-track_count               INTEGER >= 0
-created_at                INTEGER >= 0
+```text
+track_id
 ```
 
-### Identité de reuse
+Track Model v1 does not define a content-derived Track hash.
 
+Reproducibility and reuse are owned by the Track Set identity, builder configuration and exact input
+scope.
+
+## Track Set identity
+
+A Track Set is one complete immutable generation.
+
+Its reuse identity contains:
+
+```text
+builder_kind
+builder_version
+builder_parameter_fingerprint
+verifier_kind
+verifier_version
+verifier_fingerprint
+input_scope_hash
 ```
-(
-    builder_kind,
-    builder_version,
-    parameter_fingerprint,
-    verifier_kind,
-    verifier_version,
-    verifier_fingerprint,
-    input_scope_hash
-)
-```
 
-`gvr_count` est stocké comme métadonnée de validation mais ne fait pas
-partie de l'identité de reuse. Le même `input_scope_hash` avec un `gvr_count`
-différent indiquerait une corruption (hash cohérent mais nombre de sources
-incohérent).
+`gvr_count` validates the scope metadata but is not an independent reuse discriminator.
 
-Un set existant avec cette identité exacte est réutilisé. `INSERT OR REPLACE`
-est interdit.
+`INSERT OR REPLACE` is forbidden.
 
-### Immutabilité
+An exact existing immutable set is reused.
 
-Un Track Set publié est **immutable**. Aucune opération d'append, remove ou
-merge n'est permise sur un track ou un set existant.
+A scientifically different scope/configuration creates a new Track Set.
 
-L'invalidation scientifique (nouvelle entrée, nouveau scope, nouvelle
-configuration) produit un nouveau Track Set. Le set précédent reste intact.
+## Immutability
 
-La suppression référentielle utilise `ON DELETE CASCADE` : supprimer un
-Track Set supprime ses tracks et observations.
+A published Track Set is immutable.
 
-### Justification
+No production operation:
 
-- chaque rebuild crée un nouveau set, les anciens restent intacts ;
-- plusieurs configurations peuvent coexister (expérimentation) ;
-- l'invalidation est simple : supprimer un set supprime ses tracks via
-  CASCADE ;
-- la reproductibilité est portée par le fingerprint et le scope_hash ;
-- pas d'UPDATE/INSERT/MERGE sur des tracks existants ;
-- cohérent avec tous les résultats publiés existants (Feature Sets, Match
-  Results, GVRs) qui sont immutables après publication.
+- appends to it;
+- removes observations;
+- merges existing Tracks;
+- rewrites memberships;
+- updates it to a newer verifier version.
 
-Le Track Builder v1 construit en mémoire, puis publie un set complet
-dans une transaction. Aucun track n'est visible avant que le set entier soit
-validé.
+New evidence creates a new generation.
 
-## Immutability / incrementality
-
-Un Track publié dans un set est **immutable**.
-
-L'incrémentalité est gérée par création de nouveaux sets :
-
-1. nouvelles images → nouveaux Match Results → nouveaux GVR → nouveau
-   Track Set ;
-2. le set précédent reste valide et consultable ;
-3. le futur Sparse SfM choisira quel set consommer.
-
-Cette approche est cohérente avec la philosophie Lardon3D :
-
-- résultats atomiques ;
-- pas de destruction silencieuse ;
-- reprise à frontière connue ;
-- conservation de l'historique.
+Historical generations remain queryable until explicitly deleted.
 
 ## Persistence
 
-### Conceptual schema
+Track storage was introduced by Project DB v14.
 
-```sql
-CREATE TABLE track_sets(
-    track_set_id INTEGER PRIMARY KEY AUTOINCREMENT
-        CHECK(track_set_id > 0),
-    builder_kind TEXT NOT NULL
-        CHECK(length(builder_kind) > 0 AND length(builder_kind) <= 64),
-    builder_version INTEGER NOT NULL CHECK(builder_version > 0),
-    parameter_fingerprint BLOB NOT NULL
-        CHECK(length(parameter_fingerprint) = 32),
-    verifier_kind INTEGER NOT NULL CHECK(verifier_kind > 0),
-    verifier_version INTEGER NOT NULL CHECK(verifier_version > 0),
-    verifier_fingerprint BLOB NOT NULL
-        CHECK(length(verifier_fingerprint) = 32),
-    input_scope_hash BLOB NOT NULL
-        CHECK(length(input_scope_hash) = 32),
-    gvr_count INTEGER NOT NULL CHECK(gvr_count >= 1),
-    track_count INTEGER NOT NULL CHECK(track_count >= 0),
-    created_at INTEGER NOT NULL CHECK(created_at >= 0),
-    UNIQUE(builder_kind, builder_version, parameter_fingerprint,
-           verifier_kind, verifier_version, verifier_fingerprint,
-           input_scope_hash)
-);
+Durable Track Builder Task payload persistence was added in Project DB v15.
 
-CREATE TABLE tracks(
-    track_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(track_id > 0),
-    track_set_id INTEGER NOT NULL
-        REFERENCES track_sets(track_set_id) ON DELETE CASCADE,
-    observation_count INTEGER NOT NULL CHECK(observation_count >= 2)
-);
+Later schema migrations through v25 do not reinterpret Track Model v1.
 
-CREATE INDEX tracks_set_idx
-    ON tracks(track_set_id, track_id);
+Conceptual tables:
 
-CREATE TABLE track_observations(
-    track_set_id INTEGER NOT NULL,
-    track_id INTEGER NOT NULL
-        REFERENCES tracks(track_id) ON DELETE CASCADE,
-    feature_set_id INTEGER NOT NULL
-        REFERENCES feature_sets(feature_set_id),
-    feature_index INTEGER NOT NULL CHECK(feature_index >= 0),
-    position_in_track INTEGER NOT NULL CHECK(position_in_track >= 0),
-    PRIMARY KEY(track_set_id, feature_set_id, feature_index),
-    UNIQUE(track_id, position_in_track)
-);
-
-CREATE INDEX track_observations_lookup_idx
-    ON track_observations(feature_set_id, feature_index, track_set_id);
+```text
+track_sets
+tracks
+track_observations
 ```
 
-### Schema invariants
+Publication is atomic for the complete Track Set under one transaction.
 
-**SQL-enforced :**
+No Track from that set becomes visible before the complete generation validates and commits.
 
-- `track_observations.PRIMARY KEY(track_set_id, feature_set_id, feature_index)`
-  : dans un Track Set donné, une observation n'apparaît qu'une fois. Cela
-  garantit qu'une observation scientifique appartient à au plus un Track dans
-  ce set.
-- `REFERENCES tracks(track_id) ON DELETE CASCADE` : l'observation appartient
-  à un track existant ; supprimer le track supprime l'observation.
-- `REFERENCES feature_sets(feature_set_id)` : le Feature Set existe.
-- `CHECK(observation_count >= 2)` : minimum structurel.
-- `UNIQUE(builder_kind, builder_version, parameter_fingerprint,
-  verifier_kind, verifier_version, verifier_fingerprint,
-  input_scope_hash)` sur `track_sets` : identité de reuse, empêche les
-  doublons de set pour une même configuration et un même scope.
-- `ON DELETE CASCADE` depuis `track_sets` : supprimer un set supprime tout.
-- `CHECK(feature_index >= 0)` : borne inférieure de l'index.
-- `UNIQUE(track_id, position_in_track)` : chaque position dans un track est
-  unique. L'ordre est déterminé par le Track Builder lors de la publication.
+Rollback leaves no partial Track Set.
 
-**API-enforced :**
+## Ordering
 
-- `track_set_id` dans `track_observations` correspond au `track_set_id` du
-  `track_id` parent. Le schéma ne comporte pas de FK composite (aucun
-  précédent dans le codebase). L'API valide cette cohérence avant INSERT sous
-  `BEGIN IMMEDIATE`.
-- Une seule observation par image par track. L'API valide via jointure à
-  `feature_sets.image_id`.
-- `feature_index < feature_sets.feature_count`. L'API valide la borne
-  supérieure.
-- `observation_count` cohérent avec le nombre réel d'observations insérées.
-- `track_count` cohérent avec le nombre réel de tracks insérés.
-- `position_in_track` contigu à partir de 0 pour chaque track.
+Track Builder publishes deterministic canonical order.
 
-### Note sur la dénormalisation
+`position_in_track` is contiguous from zero.
 
-`track_set_id` dans `track_observations` dénormalise une clé grandparent,
-après le même pattern utilisé par `visual_index_memberships.visual_index_id`.
-Le pattern parent-key-in-UNIQUE est déjà répandu dans le codebase. La cohérence
-repose sur le chemin d'écriture unique du Track Builder et la validation API
-sous transaction.
+The exact builder contract owns edge ordering and conflict resolution; Track Model only persists the
+validated result.
 
-`track_observations.track_set_id` n'a pas de FK directe vers `track_sets`
-pour éviter un second chemin CASCADE depuis `track_sets` vers
-`track_observations` (le premier chemin passe par `tracks`). La cohérence
-est garantie par l'API sous `BEGIN IMMEDIATE`.
+No hash-table iteration order may define persistent scientific ordering.
 
-## Provenance
+## Deletion
 
-### Track Set provenance
+Deleting a Track Set cascades to its Tracks and observations.
 
-Chaque Track Set conserve :
+A Feature Set referenced by a Track observation cannot be silently removed while the reference remains
+valid.
 
-- `builder_kind`, `builder_version`, `parameter_fingerprint` : configuration
-  du Track Builder ;
-- `verifier_kind`, `verifier_version`, `verifier_fingerprint` : configuration
-  du Geometric Verifier consommé ;
-- `input_scope_hash`, `gvr_count` : ensemble réel des GVR consommés.
+Deletion semantics do not mutate other immutable Track Sets.
 
-Ces champs suffisent pour identifier la configuration scientifique complète
-ayant produit le set.
+## Pagination and resource bounds
 
-### Edge provenance (deferred)
+Track Model storage APIs are paged.
 
-En v1, la provenance détaillée (quels GVR spécifiques ont contribué à quel
-track individuel) n'est pas persistée. Les raisons :
+The model does not impose an arbitrary scientific maximum Track length below the number of images that
+could legitimately observe the same point.
 
-- elle peut être reconstruite en comparant les memberships du set aux GVR
-  disponibles ;
-- une table `track_set_sources` volumineuse complexifie la DB sans bénéfice
-  immédiat ;
-- une future version du Track Builder pourra l'ajouter dans une migration
-  ultérieure.
+It does not materialize a dense image-by-image covisibility matrix.
 
-## Invalidation
+Loading one Track loads that Track's observations; project-wide traversal remains paged.
 
-### Invalidation scientifique
-
-Un nouveau scope, une nouvelle configuration de verifier ou un nouveau
-builder produit un **nouveau** Track Set avec une identité différente. Le set
- précédent reste intact et consultable. Aucune mutation silencieuse n'est
-permise.
-
-### Suppression référentielle
-
-`ON DELETE CASCADE` s'applique :
-
-- `track_sets` → `tracks` → `track_observations` : supprimer un set supprime
-  tous ses tracks et observations ;
-- `feature_sets` → (pas de CASCADE vers `track_observations`) : la FK utilise
-  le comportement par défaut (NO ACTION). Supprimer un Feature Set référencé
-  par une observation est interdit tant que l'observation existe.
-
-## Atomic publication
-
-L'unité persistante est le Track Set complet. La publication est une seule
-transaction `BEGIN IMMEDIATE` contenant l'INSERT du set, de tous ses tracks
-et de toutes ses observations.
-
-- aucun track n'est visible avant le COMMIT du set entier ;
-- un rollback ne laisse aucune ligne partielle ;
-- le `created_at` du set est le timestamp de la transaction ;
-- le `track_count` et `gvr_count` sont validés contre les INSERTs réels.
-
-Le Track Builder v1 utilise le Task Runtime pour le checkpoint/reprise et le
-Resource Governor pour l'admission. Le Model ne contient aucune
-logique d'exécution.
-
-## Resource bounds
-
-- **Pas de plafond de longueur arbitraire** : le Model ne fixe pas de
-  maximum sur le nombre d'observations par Track. Un projet avec N images
-  peut produire des tracks de longueur jusqu'à N.
-- **Lecture paginée** : `list_tracks` et `list_track_sets` utilisent une
-  page de 64 entrées avec curseur.
-- **Chargement borné** : load track by id charge les observations du track ;
-  la taille est bornée naturellement par le nombre d'images dans le scope.
-- **Pas de chargement complet du graphe** : aucune API ne charge tous les
-  tracks et toutes les observations d'un projet en une seule fois.
-- **Pas de matrice dense** : aucune matrice de co-visibilité N×N n'est
-  matérialisée par le Model.
+Execution-memory strategy belongs to Track Builder, not Track Model.
 
 ## Corruption handling
 
-Le loader doit détecter :
+A loader returns corruption rather than partial best-effort data when it detects conditions such as:
 
-- track absent (`track_id` référencé mais inexistant) ;
-- observation invalide (`feature_set_id` inexistant) ;
-- duplicate observation dans un même track set ;
-- deux observations de la même image dans un même track ;
-- `feature_index` hors bornes du Feature Set ;
-- `observation_count` incohérent avec le nombre réel d'observations ;
-- `track_set_id` dans `track_observations` ne correspondant pas au
-  `track_set_id` du `track_id` parent ;
-- `track_set` parent absent.
+- missing parent Track or Track Set;
+- missing Feature Set;
+- duplicate observation in one Track Set;
+- repeated image inside one Track;
+- out-of-range feature index;
+- inconsistent observation count;
+- inconsistent Track count;
+- inconsistent denormalized Track Set ID;
+- invalid/non-contiguous position ordering.
 
-Toute corruption retourne `CORRUPT` sans résultat partiel.
+No loader repairs scientific identity in place.
 
-## API
+## Provenance
 
-L'API publique implémente :
+Track Set provenance includes:
 
-- `lardon3d_project_db_create_track_set()` — INSERT set + ses tracks +
-  observations dans une seule transaction `BEGIN IMMEDIATE`.
-- `lardon3d_project_db_load_track_set()` — SELECT par ID.
-- `lardon3d_project_db_find_track_set()` — SELECT par identité exacte.
-- `lardon3d_project_db_list_track_sets()` — SELECT paginé ORDER BY id,
-  page 64.
-- `lardon3d_project_db_load_track()` — SELECT par ID avec observations.
-- `lardon3d_project_db_list_tracks()` — SELECT par set, paginé ORDER BY
-  id, page 64.
-- `lardon3d_project_db_find_track_by_observation()` — recherche par
-  `(feature_set_id, feature_index)` dans un set donné.
+```text
+builder identity
+verifier selector
+input scope hash
+gvr count
+```
 
-La création valide en C : existence des Feature Sets, bornes des
-`feature_index`, unicité des observations, unicité image par track,
-`observation_count` cohérent, `track_set_id` cohérent. L'INSERT est
-transactionnel.
+Detailed per-edge provenance is not persisted by Track Model v1.
 
-## Explicitly out of scope
+Adding such provenance later requires an explicit version/schema decision if persistent representation
+changes.
 
-- Track Builder algorithmique (union-find, connected components) ;
-- triangulation ;
-- coordonnées 3D ;
-- Essential matrix ;
-- camera pose ;
-- bundle adjustment ;
-- sparse reconstruction / Sparse SfM ;
-- reprojection error ;
-- dense reconstruction ;
-- Track optimization ou merge ;
-- mutation de tracks existants ;
-- co-visibilité (matrice ou calcul) ;
-- sélection par timestamp ou "latest".
+## Current production verifier lineage
 
-## Track rejected state
+Fundamental verifier v1 and v2 are historical scientific identities.
 
-Le Model v1 ne persiste pas d'état Track rejected. Le Model représente des
-Tracks structurellement valides (≥ 2 observations, cohérents). Le Track Builder
-v1 décide quels candidats publier. Les candidats non publiés n'existent pas dans
-le Model ; cette séparation reste la frontière scientifique figée.
+Current new production verification uses Fundamental v3.
 
-## Versioning
+V3 adds bounded preflight rejection before the unchanged scientific estimator path and has its own
+fingerprint.
 
-Project DB v14 introduced the Track storage and v15 adds only durable Track
-Builder task payload persistence. `builder_version` et `verifier_version`
-décrivent indépendamment les contrats scientifiques.
-Changer un algorithme n'impose une migration DB que si la représentation
-persistante change.
+Track Builder consumes only exact matching GVR identities.
+
+Therefore:
+
+```text
+HISTORICAL_TRACK_SET_VERIFIER_V1=VALID
+HISTORICAL_TRACK_SET_VERIFIER_V2=VALID
+CURRENT_TRACK_SET_VERIFIER_V3=PRODUCTION
+```
+
+No historical Track Set is upgraded in place.
+
+## Real S21 evidence
+
+The retained S21 Track proof is:
+
+```text
+REAL_S21_TRACKS=PASS/FROZEN
+
+Track Set observations = 2,495,768
+Tracks                 = 912,447
+minimum Track length    = 2
+maximum Track length    = 42
+mean Track length       = 2.7352470883240341
+```
+
+Retained digest:
+
+```text
+c30eba192627bf73eaf21ff30d81038d8cc6bbf36a69226f88cdc8c37f7d74a1
+```
+
+The compact memory model supersedes the older historical 18.204 GiB envelope.
+
+That checkpoint did not execute real Sparse SfM.
+
+## Real A6000 evidence
+
+The current retained A6000 checkpoint is:
+
+```text
+real-a6000-pre-sfm-2026-09-02
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
+
+Track output:
+
+```text
+Track Set          1
+Tracks             130,714
+Track observations 318,944
+duplicate obs      0
+repeated-image     0
+orphan obs         0
+```
+
+The upstream v3 GV scope contained:
+
+```text
+Applicable GVRs 37,805
+Verified GVRs   10,952
+Rejected GVRs   26,853
+```
+
+Restart traversed the retained scope and reused the same Track Set without creating a duplicate
+scientific generation.
+
+No Sparse SfM Task or Sparse Reconstruction was created.
+
+## Sparse SfM relationship
+
+Track Model does not perform Sparse SfM.
+
+Sparse SfM capability is nevertheless implemented through Gate G.
+
+Correct current statement:
+
+```text
+TRACK_MODEL_OUTPUT=AVAILABLE
+SPARSE_SFM_IMPLEMENTATION=AVAILABLE
+REAL_HISTORICAL_CAMPAIGN_SPARSE_SFM=BLOCKED_BY_KNOWN_CALIBRATION_DATA
+```
+
+These are separate lifecycle facts.
+
+## Out of scope
+
+Track Model v1 does not own:
+
+- Track Builder union/find algorithm;
+- Fundamental estimation;
+- Essential estimation;
+- camera pose;
+- triangulation;
+- 3D coordinates;
+- reprojection error;
+- Bundle Adjustment;
+- dense reconstruction;
+- metric scale;
+- Track mutation/merge;
+- selection by "latest".
+
+## Summary
+
+```text
+TRACK_MODEL_V1=FROZEN
+TRACK_BUILDER_V1=PASS/FROZEN
+
+CURRENT_PRODUCTION_VERIFIER=FUNDAMENTAL_V3
+CURRENT_VERIFIER_FINGERPRINT=6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c
+
+PROJECT_DB_TRACK_MODEL=v14
+PROJECT_DB_TRACK_TASK=v15
+CURRENT_PROJECT_DB_SCHEMA=v25
+
+REAL_S21_TRACKS=PASS/FROZEN
+REAL_A6000_PRE_SFM=PASS/FROZEN
+
+SPARSE_SFM_CAPABILITY=IMPLEMENTED_THROUGH_GATE_G
+REAL_S21_SPARSE_SFM=NOT_EXECUTED
+REAL_A6000_SPARSE_SFM=NOT_EXECUTED
+```

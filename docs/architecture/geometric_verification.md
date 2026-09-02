@@ -1,180 +1,408 @@
-# Geometric Verification
+# Geometric Verification Model
 
-## Scope
-
-Geometric Verification Model est le contrat persistant placé après le Matcher.
-Sa représentation stocke les identités scientifiques Geometric Verifier v1/v2
-historiques et v3 courantes, sans changement de schéma : `verifier_version` et
-`parameter_fingerprint` appartiennent déjà à l'identité exacte. Il stocke un
-résultat terminé, compact et immutable. Il n'est ni un moteur de calcul ni une
-tâche.
-Aucun RANSAC, USAC, MAGSAC, calcul d'inliers ou backend géométrique n'appartient à ce ticket.
-
-## Position in reconstruction pipeline
-
-La chaîne d'ownership est :
+## Status
 
 ```text
-Feature Set → Candidate Pair → Match Result → Geometric Verification Result
+GEOMETRIC_VERIFICATION_MODEL=IMPLEMENTED
+PROJECT_DB_GEOMETRIC_VERIFICATION=v12
+
+HISTORICAL_VERIFIER_V1=VALID
+HISTORICAL_VERIFIER_V2=VALID
+CURRENT_PRODUCTION_VERIFIER_V3=FROZEN
+
+CURRENT_PROJECT_DB_SCHEMA=v25
+REAL_S21_GV_V3=PASS/FROZEN
+REAL_A6000_PRE_SFM=PASS/FROZEN
 ```
 
-Le masque indexe exclusivement l'ordre des entrées du Match File canonique du Match Result. Il
-n'indexe directement ni les features, ni la Candidate Pair, ni un ordre temporaire de backend.
+This document owns the **persistent Geometric Verification Result model**.
 
-## Scientific ownership
+It does not own the numerical estimator implementation. The current executable scientific verifier is
+documented in `geometric_verifier.md`.
 
-Le parent scientifique est `match_result_id`. L'API accepte uniquement un Match Result existant,
-`MATCHED`, avec `match_count` strictement positif. `NO_MATCH` et les erreurs runtime ne peuvent pas
-produire de résultat géométrique.
+The persistence model was deliberately version-ready from Project DB v12: `verifier_version` and
+`parameter_fingerprint` already belong to exact result identity. Therefore historical verifier v1/v2
+and current v3 results coexist without a schema reinterpretation.
 
-## Parent Match Result
+## Pipeline position
 
-Le Match Store reste propriétaire de la validation du Match File. La création consulte le parent
-et son `match_count` en DB ; elle ne relit pas l'asset. Un load valide aussi l'existence et l'état du
-parent afin qu'une ligne corrompue ne soit jamais rendue comme résultat valide.
+```text
+Feature Set
+-> Candidate Pair
+-> Match Result
+-> Geometric Verification Result
+-> Track Builder
+-> Track Model
+```
+
+The inlier mask indexes the canonical Match File entry order.
+
+It does not directly index:
+
+- Feature Store physical order;
+- Candidate Pair order;
+- temporary backend order.
+
+## Scientific parent
+
+The exact parent is:
+
+```text
+match_result_id
+```
+
+A Geometric Verification Result may be created only for a valid `MATCHED` parent with positive
+`match_count`.
+
+`NO_MATCH` and runtime failures do not produce a scientific geometric result.
 
 ## Persistent identity
 
-L'identité demandée et unique est :
+Exact identity:
 
 ```text
-(match_result_id, verifier_kind, verifier_version, parameter_fingerprint)
+(
+  match_result_id,
+  verifier_kind,
+  verifier_version,
+  parameter_fingerprint
+)
 ```
 
-Le fingerprint est le SHA-256 opaque de 32 octets déjà standard dans le projet. Il représentera
-un encodage de paramètres versionné, stable, à ordre de champs explicite et, pour les nombres
-binaires, little-endian. Aucun timestamp, résultat, PID, durée ou identifiant matériel n'y entre.
+No selection by timestamp or "latest" is permitted.
+
+The fingerprint is an opaque canonical SHA-256 scientific parameter identity.
+
+It excludes:
+
+- Task ID;
+- PID;
+- elapsed time;
+- CPU count;
+- batch size;
+- GPU identity;
+- hardware identity.
 
 ## Verifier kind
 
-Le modèle supporte uniquement `FUNDAMENTAL`, valeur persistante stable 1. Aucun comportement fictif
-`ESSENTIAL` ou `HOMOGRAPHY` n'est réservé dans l'API publique.
+The persistent supported model kind is:
 
-## Persistent states
+```text
+FUNDAMENTAL = 1
+```
 
-- `GEOMETRIC_REJECTED=1` : calcul scientifique terminé, critère non satisfait ;
-- `GEOMETRIC_VERIFIED=2` : calcul scientifique terminé, critère satisfait.
+Do not reserve fictitious `ESSENTIAL` or `HOMOGRAPHY` values in prose without an explicit versioned
+implementation decision.
 
-`FAILED`, `RUNNING`, `PAUSED` et `CANCELLED` appartiennent au Task Runtime. REJECTED peut conserver
-un nombre d'inliers non nul.
+## Scientific states
 
-## Model representation
+Completed scientific states are:
 
-FUNDAMENTAL utilise neuf colonnes SQLite `REAL`, en ordre ligne-major `m00` à `m22`. SQLite
-convertit les valeurs numériques en binary64 sans exposer une ABI C. VERIFIED exige les neuf
-valeurs présentes et finies. REJECTED exige les neuf valeurs NULL. Le modèle n'impose ni rang 2,
-ni déterminant, ni normalisation ou échelle canonique ; ces règles relèvent du futur verifier.
+```text
+GEOMETRIC_REJECTED = 1
+GEOMETRIC_VERIFIED = 2
+```
 
-## Inlier representation
+Runtime states such as RUNNING, FAILED, PAUSED or CANCELLED belong to Task Runtime, not this model.
 
-Le masque est un BLOB SQLite obligatoire de taille exacte `ceil(match_count / 8)`. Pour l'entrée
-`i`, `byte_index=i/8`, `bit_index=i%8` et le masque vaut `1u << bit_index`. Le bit 0 est donc le bit
-de poids faible de l'octet 0. Cette convention est indépendante de l'endianness CPU et de l'ABI.
-Les bits de padding du dernier octet valent zéro et le popcount est exactement `inlier_count`.
+A rejected result may still contain non-zero inlier support.
 
-Le masque existe pour REJECTED comme pour VERIFIED. Avec 8192 matches, il mesure au maximum
-1024 octets. Un BLOB SQLite évite les milliers de lignes secondaires et la publication, le hash,
-le nettoyage et la récupération d'un asset externe d'environ 1 Kio. Une liste `uint32_t` serait
-jusqu'à 32 fois plus grande au cas dense et aurait un encodage supplémentaire à versionner.
+## Fundamental matrix representation
 
-## Invariants
+A verified Fundamental result contains nine SQLite `REAL` values:
 
-- `0 <= inlier_count <= parent.match_count <= 8192` ;
-- longueur, padding et popcount du masque sont canoniques ;
-- REJECTED possède un masque cohérent et aucun modèle ;
-- VERIFIED possède un masque cohérent et exactement neuf valeurs finies ;
-- kind, version et fingerprint ont une sérialisation stable ;
-- une ligne publiée est complète et immutable.
+```text
+m00 ... m22
+```
 
-Exemple : pour 100 matches, une identité FUNDAMENTAL v1, v2 ou v3/fingerprint
-X peut publier REJECTED avec 23 inliers, un masque de 13 octets et aucun modèle.
-Une autre identité peut publier VERIFIED avec 67 inliers, le même format de
-masque et une matrice 3×3 finie.
+in row-major order.
 
-## Persistence semantics
+The persistent representation is binary64 through SQLite numeric semantics, not a C ABI struct dump.
 
-Une création valide puis insère identité, état, masque et modèle dans une transaction courte. Le
-calcul futur se fera entièrement avant cette transaction. SQLite fournit l'atomicité ; aucun asset
-ou journal secondaire n'est créé.
+A verified row requires nine finite values.
+
+A rejected row contains no model.
+
+Rank/canonicalization/scientific-estimator rules belong to the versioned verifier contract.
+
+## Inlier mask
+
+The mask is a required SQLite BLOB of exact size:
+
+```text
+ceil(match_count / 8)
+```
+
+Bit convention for Match File entry `i`:
+
+```text
+byte = i / 8
+bit  = i % 8
+mask[byte] & (1u << bit)
+```
+
+The mask is LSB-first inside each byte.
+
+Padding bits in the final byte are zero.
+
+The mask popcount must equal `inlier_count`.
+
+The mask exists for both verified and rejected scientific results.
+
+With the current Match File bound of 8192 matches, the mask is at most 1024 bytes.
+
+## Persistent invariants
+
+For every row:
+
+```text
+0 <= inlier_count <= parent.match_count <= 8192
+mask size is canonical
+padding bits are zero
+mask popcount == inlier_count
+```
+
+Additionally:
+
+```text
+REJECTED -> no Fundamental matrix
+VERIFIED -> exactly nine finite matrix coefficients
+```
+
+A published row is immutable.
+
+## Publication
+
+Numerical estimation completes before the short Project DB publication transaction.
+
+Publication inserts:
+
+- exact parent;
+- exact verifier identity;
+- completed state;
+- canonical mask;
+- optional verified Fundamental model.
+
+No external asset is required because the bounded mask/model fit naturally in SQLite.
+
+Rollback leaves no partial scientific result.
 
 ## Reuse
 
-Le reuse cherche uniquement l'identité exacte, jamais le résultat le plus récent. Une identité
-existante retourne une erreur de contrainte à `create`; le runtime fera `find`, validera puis
-réutilisera. `INSERT OR REPLACE` est interdit, même si le nouveau contenu semble identique.
+Exact reuse uses only the full persistent identity.
 
-## Invalidations
+Existing exact result:
 
-Un nouveau Match Result possède un nouvel ID et ne réutilise donc aucun ancien résultat
-géométrique. La FK emploie `ON DELETE CASCADE` : supprimer explicitement le parent supprime ses
-enfants et ne crée pas d'orphelin. Aucun moteur d'invalidation parallèle n'est nécessaire.
+```text
+find
+-> validate
+-> reuse
+```
 
-## Project DB schema
+Never:
 
-Project DB v12 ajoute `geometric_verification_results`, une contrainte UNIQUE sur l'identité et un
-index de pagination `(match_result_id, geometric_verification_result_id)`. Les CHECK SQL portent
-les bornes scalaires, tailles locales et nullabilité modèle/état. La cohérence avec le parent, le
-padding, le popcount et la finitude restent validés en C.
+```text
+INSERT OR REPLACE
+latest result
+closest fingerprint
+same parent with different version
+```
 
-## API
+A new scientific verifier version creates another result identity.
 
-L'API publique implémente :
+## Parent deletion
 
-- `lardon3d_project_db_create_geometric_verification_result()` ;
-- `lardon3d_project_db_load_geometric_verification_result()` ;
-- `lardon3d_project_db_find_geometric_verification_result()` ;
-- `lardon3d_project_db_list_geometric_verification_results()`.
+The parent FK uses delete-cascade semantics.
 
-La liste est bornée à 256 entrées, filtrée par parent puis ordonnée par ID croissant avec curseur.
-Le résultat en mémoire contient son `created_at` et son masque dans une capacité fixe de 1024
-octets : aucun ownership dynamique ni fonction de destruction. Les fonctions copient fingerprint,
-masque et neuf coefficients ; l'appelant conserve ses entrées.
+Explicit deletion of a Match Result deletes its dependent geometric results.
 
-Parent absent retourne `NOT_FOUND`; parent NO_MATCH ou parent incohérent retourne `CONSTRAINT` à
-la création. Masque, modèle ou arguments locaux invalides retournent `INVALID_ARGUMENT`; duplicate
-identity retourne `CONSTRAINT`. Un loader qui rencontre une ligne ou un parent incohérent retourne
-`CORRUPT`, sans résultat partiel.
+No parallel invalidation engine is required.
 
-## Resource bounds
+## Schema
 
-Un résultat contient au plus 1024 octets de masque et 72 octets de valeurs numériques, plus de
-petites métadonnées. Une page est bornée. Le loader vérifie les entiers et tailles SQLite avant
-tout cast ou copie. Il n'existe ni cache global, ni lecture non bornée, ni Content Store associé.
-Le Match File parent mesure au plus 98 336 octets ; le futur job peut donc rester une petite unité.
+Project DB v12 introduced `geometric_verification_results`.
 
-## Error ownership
+The current schema head is v25.
 
-Seuls les résultats scientifiques terminés sont persistés. OOM, exception, annulation, timeout,
-device lost, I/O transitoire ou panne de thread appartiennent à l'exécution de tâche. État du modèle
-et état d'exécution sont deux contrats distincts.
+Later schema additions do not redefine the v12 row format or identity.
 
-## Recovery semantics
+## Public API
 
-Après commit, le résultat est complet et réutilisable après réouverture. Avant commit, le rollback
-ne laisse aucune ligne partielle. Un loader rejette toute ligne incohérente comme corruption au
-lieu de réparer ou d'interpréter au mieux.
+The model provides bounded create/load/find/list APIs for Geometric Verification Results.
 
-## Verifier execution contract
+The list API is paged and ordered by increasing ID.
 
-L'exécution prend un Match Result et son Match File borné. L'accès nécessaire existe via
-`lardon3d_feature_reader_keypoints()`, borné à 256 keypoints par appel ; l'intégration devra relier
-les deux Feature Sets et les indices du Match File sans modifier le Feature Store. Le verifier
-estimera hors transaction, dérivera état/masque/modèle, publiera en une courte transaction,
-checkpoint puis libérera les buffers. Une paire est l'unité atomique. Task Runtime et Resource
-Governor décideront admission, threads et lots ; zram/swap ne sont jamais un budget.
+In-memory result storage remains bounded: the inlier mask has fixed maximum capacity and no result-owned
+heap destructor is required for the core row object.
 
-Un backend reste hors identité seulement s'il est scientifiquement transparent. Sinon son
-algorithme ou contrat doit apparaître dans kind/version/fingerprint avant publication. Toute seed
-influençant le résultat doit avoir une politique déterministe versionnée ou être couverte par le
-fingerprint. Aucun nombre de threads ou hardware ID n'est un paramètre scientifique par défaut.
+Exact function declarations in the public headers remain authoritative.
 
-## Explicitly out of scope
+## Error semantics
 
-GPU, Vulkan, OpenCL, shader et nouvelle orchestration restent hors périmètre de ce contrat de
-persistance.
+Creation distinguishes invalid local arguments from parent/identity constraints.
 
-## Versioning
+Loaders return corruption rather than a partially interpreted result if:
 
-Project DB schema version 12 décrit le stockage. `verifier_version` décrit indépendamment le
-contrat scientifique. Changer un algorithme n'impose une migration DB que si la représentation
-persistante change.
+- parent is missing or invalid;
+- stored mask length is wrong;
+- padding is non-canonical;
+- popcount disagrees;
+- model/state nullability is inconsistent;
+- a verified matrix contains non-finite values.
+
+Scientific rejection is not a database/runtime failure.
+
+Runtime OOM, exception, cancellation, estimator failure or device failure are not persisted as
+`GEOMETRIC_REJECTED`.
+
+## Current verifier lineage
+
+The model stores all supported versions through the same identity fields.
+
+### v1
+
+Historical Fundamental verifier v1 remains immutable and valid.
+
+### v2
+
+Historical Fundamental verifier v2 remains immutable and valid.
+
+V2 added the distinct-canonical-observation preflight in the scientific execution contract.
+
+### v3
+
+Current production verifier is Fundamental v3.
+
+Production fingerprint:
+
+```text
+6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c
+```
+
+V3 preserves the persistent model and adds its versioned scientific preflight before the unchanged
+eligible estimator path.
+
+No Project DB migration was needed for v3 because v12 already stores verifier version and fingerprint.
+
+## Task relationship
+
+The production Task Kind is:
+
+```text
+geometric_verifier.run/1
+```
+
+Project DB v13 adds only its typed durable Task payload.
+
+The Task:
+
+```text
+pages Match Results
+-> validates eligibility
+-> computes or reuses exact GVR identity
+-> owner publishes in canonical parent order
+-> advances typed cursor
+-> checkpoints
+-> sequence_break
+```
+
+Task/runtime state remains separate from GVR scientific state.
+
+## Current resource boundary
+
+One Match Result is the scientific atomic item.
+
+Current validated outer-parallel Task execution may prepare independent parents concurrently.
+
+The owner publishes the contiguous canonical prefix.
+
+Current validated bounds include:
+
+```text
+useful CPU participants <= 8
+safe parent/window size <= 16
+per-item reservation approximately 8 MiB
+GPU = 0
+```
+
+The internal USAC/MAGSAC scientific solver remains `isParallel=false`.
+
+These operational values do not enter GVR identity.
+
+## Real S21 v3 evidence
+
+Retained S21 proof:
+
+```text
+REAL_S21_GV_V3=PASS/FROZEN
+
+Match Results         172,741
+Applicable MATCHED    172,275
+Verified GVRs          24,065
+Rejected GVRs         148,210
+non-applicable             466
+duplicate mappings            0
+```
+
+The source Matcher project was retained unchanged and GV ran only from the Match Result boundary.
+
+Restart/idempotence evidence preserved the complete GVR result set.
+
+No Track/Sparse work belonged to the original GV-only boundary.
+
+## Real A6000 v3 evidence
+
+Retained current A6000 pre-SfM continuation:
+
+```text
+Match Results       38,420
+Applicable GVRs     37,805
+Verified GVRs       10,952
+Rejected GVRs       26,853
+duplicate mappings       0
+```
+
+Fingerprint:
+
+```text
+6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c
+```
+
+The continuation then built Tracks and stopped before real Sparse SfM.
+
+Checkpoint:
+
+```text
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
+
+## Out of scope
+
+This persistence model does not define:
+
+- RANSAC/USAC/MAGSAC implementation;
+- GPU kernels;
+- Task scheduling;
+- Track construction;
+- Essential pose;
+- triangulation;
+- Sparse SfM;
+- Homography competition.
+
+Those belong to their versioned scientific/runtime contracts.
+
+## Summary
+
+```text
+GEOMETRIC_VERIFICATION_MODEL=IMPLEMENTED
+PROJECT_DB_GEOMETRIC_VERIFICATION=v12
+PROJECT_DB_GEOMETRIC_VERIFIER_TASK=v13
+
+CURRENT_PRODUCTION_VERIFIER=FUNDAMENTAL_V3
+CURRENT_VERIFIER_FINGERPRINT=6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c
+
+REAL_S21_GV_V3=PASS/FROZEN
+REAL_A6000_PRE_SFM=PASS/FROZEN
+
+CURRENT_PROJECT_DB_SCHEMA=v25
+```

@@ -1,207 +1,430 @@
 # Visual Index v1
 
-## Problème et frontière
+## Status
 
-Le Visual Index transforme une collection homogène de `FeatureSet` READY en
-candidats de recherche. Il consomme exclusivement `feature_set_id` et les
-descripteurs ORB lus par le Feature Reader. Il ne fait ni matching final, ni
-ratio test, ni vérification géométrique.
+```text
+VISUAL_INDEX_V1=IMPLEMENTED
+VISUAL_INDEX_KIND=orb-lsh
+VISUAL_INDEX_VERSION=1
 
-## Choix algorithmique
+CANDIDATE_PAIR=IMPLEMENTED
+MATCHER=IMPLEMENTED
 
-La v1 utilise un LSH binaire déterministe à six tables. Chaque table extrait
-24 positions distinctes des 256 bits ORB. La position v1 est
-`(41*table + 11*bit) mod 256`; 11 étant premier avec 256, les 24 positions
-d'une table sont distinctes. Une clé est `(table_id, key24)`. Des descripteurs proches en
-Hamming ont une probabilité élevée de collision dans au moins une table, sans
-conversion flottante.
+VISUAL_INDEX_GPU=REJECTED_WITH_MEASURED_REASON
+CURRENT_PROJECT_DB_SCHEMA=v25
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
 
-Alternatives évaluées :
+Visual Index turns a homogeneous collection of immutable Feature Sets into bounded image-retrieval
+candidates.
 
-- le hash exact est très compact et déterministe, mais son rappel s'effondre
-  dès qu'un descriptor varie d'un bit ;
-- le multi-index hashing avec sous-chaînes et multiprobes offre des garanties
-  Hamming intéressantes, mais le nombre de postings/probes nécessaire au
-  rappel utile d'ORB est trop élevé pour une v1 bornée ;
-- FLANN-LSH masque son format, ses allocations et sa stabilité de
-  sérialisation, ce qui nuit à la reprise et à l'audit ;
-- BoW/IVF donne un bon retrieval image, mais impose vocabulaire, entraînement,
-  identité et politique de mise à jour avant de pouvoir être incrémental ;
-- HNSW et FAISS ajoutent une dépendance et un état mutable complexes sans
-  avantage décisif à quelques milliers d'images.
+It is a retrieval stage, not a Matcher and not a geometric verifier.
 
-Ce LSH n'est pas un matcher. Il privilégie une base déterministe, segmentable
-et contrôlable. Une évolution de la sélection de bits exige une nouvelle
-`visual_index_version`.
+Current downstream consumers are implemented:
 
-## Identité et configuration
+```text
+Feature Store
+-> Visual Index
+-> Candidate Pair Generator
+-> Matcher
+-> Geometric Verification
+-> Tracks
+```
 
-Le kind est `orb-lsh`, version 1. Un index contient exclusivement des Feature
-Sets de même `descriptor_type`, dimension, `extractor_kind`, version et
-`parameter_fingerprint`. Sa configuration v1 contient :
+Older text describing Candidate Pair or Matcher as future consumers is historical design context and is
+not current status.
 
-- `table_count=6` ;
-- `key_bits=24` ;
-- `max_features_per_set` entre 1 et 1024, défaut 512 ;
-- `max_bucket_postings` entre 1 et 4096, défaut 256 ;
-- `max_segments=256` ;
-- `max_feature_sets_per_segment=16`.
+## Algorithm
 
-Le fingerprint de paramètres est SHA-256 des 32 octets canoniques
-`L3DVICF1`, version et cinq entiers little-endian. Aucun padding, JSON, locale
-ou endianness hôte n'intervient. `visual_index_id` est une identité SQLite
-`AUTOINCREMENT`, jamais réutilisée après publication.
+Visual Index v1 uses deterministic binary LSH over ORB descriptors.
 
-## Échantillonnage
+It uses six tables.
 
-Au plus `max_features_per_set` features sont indexées. La sélection v1 retient
-le préfixe de `feature_index` croissant. Les postings conservent l'indice
-original. Un Feature Set vide est membre valide sans posting. Le build Task
-peut lire en parallèle jusqu'à douze Feature Files, avec un reader et une
-tranche de 256 descripteurs privés par participant effectivement admis. Chaque
-Feature Set écrit dans une tranche privée de la capacité de postings déjà
-réservée pour le segment ; le propriétaire compacte ensuite les tranches dans
-l'ordre de sélection et applique seul l'ordre total persistant.
+Each table selects 24 distinct positions from the 256 ORB bits.
 
-## Segments introduits en Project Database v6, conservés en v7
+The frozen v1 position rule is:
 
-Un index logique possède des segments immuables READY. Chaque update publie un
-segment de un à seize nouveaux Feature Sets, puis ajoute atomiquement segments
-et memberships. `UNIQUE(visual_index_id,feature_set_id)` assure l'idempotence.
-Une recherche copie au début la liste bornée des segments READY, relâche le
-mutex DB, puis lit ce snapshot. Un segment commité au milieu sera visible à la
-requête suivante.
+```text
+position = (41 * table + 11 * bit) mod 256
+```
 
-SQLite conserve les tables `visual_indexes`, `visual_index_segments`,
-`visual_index_memberships` et `visual_index_update_tasks`. Les gros postings
-restent hors DB. La configuration et chaque membership sont immuables. La
-compaction est `NOT_YET_WIRED`; au-delà de 256 segments une update est refusée avec
-`LARDON3D_VISUAL_INDEX_LIMIT`. Avec seize membres par segment, la capacité v1 est donc
-exactement 4096 Feature Sets par index. Le refus ne publie ni segment ni membership et
-l'index existant reste requêtable.
+A posting key is:
 
-Le DDL v6 exact est `schema_visual_v6` dans `src/project_db.c`. Il impose
-`AUTOINCREMENT` aux index/segments, les uniques
-`(visual_index_id,generation)`, `(visual_index_id,sha256)` et
-`(visual_index_id,feature_set_id)`, ainsi que les FKs vers index, Feature Set,
-segment et tâche. Les CHECKS bornent tables 1..32, bits 8..32, sampling
-1..1024, bucket 1..4096, membres segment 1..16 et durabilité 0..1. La migration
-entière reste sous `BEGIN IMMEDIATE` et possède une injection de rollback v6.
+```text
+(table_id, key24)
+```
+
+Changing this bit-selection policy requires a new Visual Index scientific version.
+
+## Identity and configuration
+
+Current kind/version:
+
+```text
+orb-lsh / 1
+```
+
+One index contains Feature Sets with homogeneous:
+
+- descriptor type;
+- descriptor dimension;
+- extractor kind;
+- extractor version;
+- extractor parameter fingerprint.
+
+Frozen v1 configuration contains:
+
+```text
+table_count = 6
+key_bits = 24
+max_features_per_set = 1..1024, default 512
+max_bucket_postings = 1..4096, default 256
+max_segments = 256
+max_feature_sets_per_segment = 16
+```
+
+The canonical parameter fingerprint uses domain:
+
+```text
+L3DVICF1
+```
+
+with explicit little-endian fields.
+
+No C struct padding, locale or host endianness enters the fingerprint.
+
+## Sampling
+
+At most `max_features_per_set` Feature entries are indexed.
+
+V1 selects the increasing `feature_index` prefix.
+
+Postings retain the original Feature index.
+
+An empty Feature Set is a valid member and contributes no posting.
+
+## Segment persistence
+
+Project DB v6 introduced Visual Index persistence. v7 retained the model.
+
+Later schema versions through v25 do not reinterpret Visual Index v1.
+
+A logical index owns immutable READY segments.
+
+One update publishes one segment containing between one and sixteen new Feature Sets.
+
+Membership uniqueness is enforced on:
+
+```text
+(visual_index_id, feature_set_id)
+```
+
+A query snapshots the bounded READY segment list before asset reads.
+
+A segment committed after that snapshot is visible to the next query, not retroactively injected into
+the running query.
+
+## Capacity
+
+V1 currently allows:
+
+```text
+max_segments = 256
+max_feature_sets_per_segment = 16
+```
+
+Therefore one v1 index can contain exactly up to:
+
+```text
+4096 Feature Sets
+```
+
+before another update returns the Visual Index limit.
+
+This is an index-v1 capacity bound, not a project-wide image-count limit.
+
+Compaction/base-delta redesign remains deferred.
 
 ## Segment File v1
 
-Le fichier est little-endian et ne sérialise aucune structure C. Layout :
+Segment File v1 is explicitly little-endian and does not serialize C structs.
 
-| Offset | Taille | Champ |
-|---:|---:|---|
-| 0 | 8 | magic `L3DVIDX\0` |
-| 8 | 4 | format version 1 |
-| 12 | 4 | header size 128 |
-| 16 | 4 | table count |
-| 20 | 4 | key bits |
-| 24 | 8 | posting count |
-| 32 | 8 | member count |
-| 40 | 8 | postings offset, 128 |
-| 48 | 8 | total size |
-| 56 | 32 | index parameter fingerprint |
-| 88 | 32 | feature parameter fingerprint |
-| 120 | 8 | réservés, zéro |
+Magic:
 
-Chaque posting fait 24 octets : `table_id:u32`, `key24:u32`,
-`feature_set_id:u64`, `feature_index:u32`, réservé zéro `u32`. L'ordre est
-`table_id`, clé, Feature Set, feature index. Le fichier exact est SHA-256 et
-vit sous `assets/visual-index/<2 hex>/<sha256 lowercase>`.
+```text
+L3DVIDX\0
+```
 
-Publication : temporaire local, écriture, `fsync`, hash, `link` sans
-écrasement, validation d'une adoption concurrente, `fsync` du répertoire, puis
-transaction DB. Un échec après publication peut laisser un orphelin mais jamais
-un segment READY partiel. La durabilité distingue `DURABLE` et
-`PUBLISHED_NOT_DURABLE`.
+A posting contains:
 
-Le reader vérifie le SHA avant le parsing. Un fichier au SHA et aux métadonnées cohérents
-mais portant une version future produit `UNSUPPORTED_VERSION`; les comptes et produits
-d'offset invalides produisent `CORRUPT` avant allocation, conversion ou lecture de posting.
+```text
+table_id:u32
+key24:u32
+feature_set_id:u64
+feature_index:u32
+reserved_zero:u32
+```
 
-## Recherche, score et bornes
+Canonical persistent ordering is:
 
-L'API est centrée sur `(visual_index_id, query_feature_set_id)`. Elle accepte
-`ANY_SCANSET`, `SAME_SCANSET` ou `OTHER_SCANSETS`, l'exclusion du même asset,
-un minimum de preuves et `top_k` entre 1 et 256. Elle ne retourne jamais le
-Feature Set ni l'image de requête.
+```text
+table_id
+key24
+feature_set_id
+feature_index
+```
 
-Une preuve est un `feature_index` de requête distinct ayant au moins une
-collision avec le candidat. Plusieurs tables, postings ou descriptors du
-candidat ne multiplient pas cette preuve. Le score final vaut
-`evidence_count / sampled_query_feature_count` dans `[0,1]`. Le volume du
-candidat ne peut donc pas augmenter le score sans preuve distincte. L'ordre est
-score décroissant, preuves décroissantes, `image_id`, puis `feature_set_id`.
+The complete Segment File is content-addressed by SHA-256 under the Visual Index asset tree.
 
-La burstiness est bornée par une contribution maximum par feature de requête
-et candidat. Une première passe additionne la fréquence d'un bucket sur tous
-les segments du snapshot. Au-delà de `max_bucket_postings`, il est ignoré : un motif
-très commun ne peut ni allouer une liste géante ni dominer le score. Le reader
-lit au plus 256 postings par appel. L'accumulateur contient au plus 4096
-candidats ; les nouveaux candidats sont ignorés après saturation, de manière
-déterministe par l'ordre des postings. Aucun cache global n'existe et un seul
-segment est ouvert à la fois.
+## Publication
 
-Deux updates concurrentes peuvent sélectionner le même lot et construire le même asset.
-La transaction SQLite et les contraintes uniques ne laissent publier qu'un segment et
-un membership par Feature Set; l'autre update échoue/rejoue en no-op. Une query prend son
-snapshot de métadonnées avant les lectures et ouvre/ferme un seul segment à la fois, y
-compris avec 250 à 256 segments : le nombre de descripteurs de fichier reste borné.
+Publication follows the normal immutable-asset pattern:
 
-## Tâche, reprise et ressources
+```text
+local temp
+-> write
+-> fsync
+-> hash
+-> no-overwrite publication/adoption validation
+-> fsync directory
+-> short Project DB transaction
+```
 
-`visual_index.update`, version 1, persiste `visual_index_id` et un curseur
-`after_feature_set_id`. Une séquence traite au plus seize Feature Sets non
-indexés, publie et commit un segment, puis checkpoint. Pause et annulation sont
-coopératives entre lectures et avant publication ; un segment déjà READY reste
-valide. La reprise recommence au dernier curseur commité et l'unicité des
-memberships rend le rejeu idempotent.
+A physical file may remain orphaned if DB publication fails after the file is published.
 
-**IMPLEMENTED — parallélisme interne borné.** La Queue exécute toujours un seul
-callback. L'estimation demande jusqu'à seize threads CPU, un slot I/O, GPU zéro,
-8 Mio fixes et 2 Mio par Feature Set, lot 1..16. Le callback compte comme un
-participant et crée au plus `cpu_threads - 1` enfants. Chaque enfant lit
-exclusivement des Feature Files immuables et écrit une tranche privée ; il ne
-touche ni au handle Project DB partagé, ni au fichier de segment, ni au curseur.
-Tous les enfants sont joints avant tri, sérialisation, publication asset et
-transaction SQLite.
+No partially committed READY segment is invented.
 
-La réduction emploie l'ordre total v1
-`table_id,key24,feature_set_id,feature_index`. Le fichier, son SHA-256, le
-chemin, les memberships, la génération, le fingerprint et les résultats de
-requête sont donc exactement identiques à un build avec un participant. Une
-erreur de lecture dans une tranche interdit toute publication ; une création
-de thread refusée est remplacée par le calcul de cette tranche sur le callback,
-sans changer la réduction. Le curseur n'avance qu'après la publication
-transactionnelle du segment, puis le checkpoint existant reste le seul point
-de reprise Task. `record_batch` reçoit le nombre de Feature Sets réellement
-commités, la durée réelle et `peak_memory_bytes=0` (inconnue).
+Durability distinguishes:
 
-## Complexité et limites
+```text
+DURABLE
+PUBLISHED_NOT_DURABLE
+```
 
-Pour `D` descriptors échantillonnés, construction et disque sont `O(6D)`.
-Une requête effectue `O(6Q log P + H)` par segment (`Q<=1024`, `H` hits bornés),
-pas `O(images²)`. La mémoire build est bornée par les métadonnées, les tranches
-de 256 descripteurs privées des participants et les postings d'un segment ; les
-tranches privées partitionnent le buffer de postings existant et ne le
-dupliquent pas. Chaque participant garde au plus un reader/FD de Feature File.
-La mémoire query est bornée par 4096 candidats, 256 postings et 256 résultats.
-À 3700 images et 512 features, environ 11,4
-millions de postings sont produits. Un test structurel persiste 50 000 Feature Sets puis
-confirme la pagination par 16 et le refus propre après 4096 memberships. Un index unique
-ne couvre donc pas encore 50 000 images : le risque principal est le nombre de segments
-et les seeks. Une compaction/base+delta ou une évolution v2 sera nécessaire, sans changer
-les identités durables; elle est `NOT_YET_WIRED`.
+## Reader validation
 
-Les fixtures de validation incluent un Feature Set vide, un crop réel, une rotation de
-8 degrés, deux campagnes, un asset source partagé et une attaque de motif répétitif. Ces
-tests valident le classement de candidats LSH, jamais une compatibilité géométrique.
+The reader validates the asset SHA before trusting the format.
 
-## Frontière future
+It rejects:
 
-Le Candidate Pair Generator pourra filtrer sur score et `evidence_count`, puis
-transmettre `feature_set_id + feature_index` au futur matcher. Le score Visual
-Index ne constitue jamais une preuve géométrique.
+- invalid counts;
+- invalid offsets;
+- overflow;
+- malformed reserved fields;
+- inconsistent DB metadata;
+- unsupported future version.
+
+A coherent future format version is `UNSUPPORTED_VERSION`, not generic corruption.
+
+## Query
+
+Query identity is centered on:
+
+```text
+(visual_index_id, query_feature_set_id)
+```
+
+Options include:
+
+- ScanSet filter;
+- same/other ScanSet policy;
+- source-asset exclusion;
+- minimum evidence count;
+- `top_k` in `1..256`.
+
+The source Feature Set/image is never returned as its own candidate.
+
+## Evidence and score
+
+One evidence unit is one distinct query `feature_index` that collides with the candidate.
+
+Multiple tables or candidate postings do not multiply the same query-feature evidence.
+
+Score:
+
+```text
+evidence_count / sampled_query_feature_count
+```
+
+Range:
+
+```text
+0..1
+```
+
+Canonical result order:
+
+```text
+score descending
+evidence_count descending
+image_id ascending
+feature_set_id ascending
+```
+
+Visual Index score is retrieval evidence only.
+
+It is not descriptor-match evidence and not geometric evidence.
+
+## Burstiness bound
+
+Bucket frequency is bounded across the retained query snapshot.
+
+A bucket above `max_bucket_postings` is ignored.
+
+This prevents common patterns from dominating score or creating unbounded posting accumulation.
+
+The query accumulator is bounded to 4096 candidates and 256 returned results.
+
+No global query cache is required.
+
+## Durable Task
+
+Task Kind:
+
+```text
+visual_index.update/1
+```
+
+Durable cursor:
+
+```text
+after_feature_set_id
+```
+
+One sequence handles a bounded admitted set of new Feature Sets, publishes a complete segment, commits
+memberships, advances the cursor/checkpoint and returns through `sequence_break()` if more work remains.
+
+Restart resumes from the durable cursor and membership uniqueness makes replay idempotent.
+
+## Internal parallelism
+
+The Queue owns one active heavy callback.
+
+Visual Index may use bounded internal CPU participants inside that callback.
+
+Current validated shape:
+
+```text
+CPU up to 16
+batch/window 1..16
+GPU 0
+fixed RAM approximately 8 MiB
+per-item RAM approximately 2 MiB
+```
+
+Each participant reads immutable Feature data into private work.
+
+Participants do not publish the segment.
+
+After join, the owner performs canonical total ordering, serialization, asset publication and Project DB
+commit.
+
+Thread-creation failure may fall back to owner computation of that slice without changing output.
+
+## Determinism
+
+The following must match the serial scientific result:
+
+- posting set;
+- posting order;
+- Segment File bytes;
+- SHA-256;
+- membership set;
+- generation ordering;
+- query results.
+
+Operational CPU width does not enter scientific identity.
+
+## GPU policy
+
+Current GPU classification:
+
+```text
+VISUAL_INDEX_GPU=REJECTED_WITH_MEASURED_REASON
+```
+
+The stage is dominated by posting construction, total ordering, hashing and deterministic publication,
+and there is no validated production GPU seam that preserves the full contract with useful measured
+benefit.
+
+This does not authorize avoidable CPU serialism.
+
+```text
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+```
+
+## Current downstream relationship
+
+Candidate Pair Generator is implemented and consumes Visual Index queries.
+
+Matcher is implemented and consumes persisted Candidate Pairs.
+
+Therefore current relationship is:
+
+```text
+Visual Index
+-> Candidate Pair Generator
+-> Candidate Pair persistence
+-> Matcher
+```
+
+Visual Index does not pass raw `feature_set_id + feature_index` pairs directly into a hypothetical
+future Matcher.
+
+The persisted Candidate Pair boundary remains explicit.
+
+## Real A6000 evidence
+
+The retained A6000 proof contains:
+
+```text
+Feature Sets     689
+Candidate Pairs  38,420
+Match Results    38,420
+```
+
+Final continuation replayed no new Visual Index work.
+
+Checkpoint:
+
+```text
+real-a6000-pre-sfm-2026-09-02
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
+
+This confirms the current Visual Index path was already durably reusable before downstream GV/Tracks
+continuation.
+
+## Limits
+
+Current v1 limits/non-goals include:
+
+- no segment compaction;
+- one index limited to 4096 Feature Sets;
+- no GPU backend;
+- no geometric meaning assigned to retrieval score;
+- no dense project-wide pair matrix.
+
+A future index version may change capacity or data structure only through an explicit versioned
+scientific/persistence decision.
+
+## Summary
+
+```text
+VISUAL_INDEX_V1=IMPLEMENTED
+VISUAL_INDEX_KIND=orb-lsh
+VISUAL_INDEX_VERSION=1
+VISUAL_INDEX_CAPACITY=4096_FEATURE_SETS
+VISUAL_INDEX_SEGMENT_MEMBERS=16
+VISUAL_INDEX_TOP_K_MAX=256
+
+VISUAL_INDEX_TASK=visual_index.update/1
+VISUAL_INDEX_GPU=REJECTED_WITH_MEASURED_REASON
+
+CANDIDATE_PAIR=IMPLEMENTED
+MATCHER=IMPLEMENTED
+
+CURRENT_PROJECT_DB_SCHEMA=v25
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
