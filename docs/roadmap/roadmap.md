@@ -1,651 +1,302 @@
-# Roadmap canonique Lardon3D
+# Lardon3D — Canonical Roadmap
 
-Cette feuille de route décrit l'ordre de dépendance actuel. Les contrats détaillés
-restent dans `docs/architecture/`; ce document indique ce qui est fermé, ce qui
-vient immédiatement ensuite et ce qui demeure volontairement différé.
+This roadmap defines the current dependency order and lifecycle of Lardon3D.
 
-## Situation actuelle
+Detailed scientific, persistence and runtime contracts remain owned by the canonical documents under
+`docs/architecture/`. This file records what is acquired, what is current, what is next, and what is
+deliberately deferred.
 
-Lardon3D possède une chaîne scientifique persistante allant des acquisitions
-explicites aux frontières Sparse SfM et MVS validées. Les travaux volumineux
-doivent rester incrémentaux, bornés, reprenables, durables et admis par l'unique
-Resource Governor : aucune étape ne peut supposer qu'une campagne entière tient
-en RAM ou termine dans une seule vie de processus.
+It must not be used to reinterpret FROZEN scientific evidence.
 
-## POLITIQUE CANONIQUE D'UTILISATION DES RESSOURCES — HUMAN AUTHORITY
-
-La politique d'exploitation est désormais explicite : **Lardon3D doit viser le
-MAXIMUM SAFE USEFUL THROUGHPUT** sur chaque Task de production.
-
-Le Resource Governor réserve d'abord uniquement les ressources nécessaires pour
-que le poste reste normalement utilisable pendant les calculs :
-
-- Arch Linux / Sway et les services normaux du bureau ;
-- Firefox ;
-- lecture audio/musique normale ;
-- usage interactif léger.
-
-Tout CPU, RAM, capacité I/O et accélérateur validé restant appartient au travail
-Lardon3D lorsqu'un travail utile existe. La stabilité du poste est protégée par
-cette réserve interactive et par les signaux de pression ; elle ne justifie plus
-de laisser des ressources sûres et utiles inactives par conservatisme historique.
-
-Sur l'hôte de référence actuel, le résultat normal de cette politique est
-approximativement :
+## Current repository state
 
 ```text
-16 CPU logiques au total
-4 CPU logiques réservés à l'hôte interactif
-12 CPU logiques disponibles au compute-pool
-~3 GiB de MemAvailable conservés comme réserve RAM dure
-Radeon 780M UMA disponible pour les backends GPU validés et utiles
+Project DB current schema             v25
+Production Task kinds                 16
+GLOBAL_MAINTENANCE_AUDIT              PASS/FROZEN
+REAL_S21_TRACKS                       PASS/FROZEN
+REAL_A6000_PRE_SFM                    PASS/FROZEN
+Sparse SfM capability Gates A-G       PASS/FROZEN
+Real A6000 Sparse SfM                 NOT EXECUTED
+Real A6000 Dense/MVS                  NOT EXECUTED
+DOCUMENTATION_REMEDIATION             IN_PROGRESS
+SOURCE_COMMENT_AUDIT                  NOT_STARTED
+PRODUCT_DEFINITION                    NOT_STARTED
+PROMPT_TREE                           NOT_STARTED
 ```
 
-Ces nombres sont des **résultats de l'hôte courant**, jamais des constantes
-produit. Un futur hôte 32 threads ne doit pas hériter d'un plafond 12 ; le
-Governor doit dériver sa réserve et donner le reste au calcul selon topologie,
-affinité, pression et enveloppe réelle de la Task.
-
-La règle canonique est :
+The current Project DB head is additive:
 
 ```text
+v22  selected scientific execution foundation
+v23  generic optical-context overlay
+v24  raw.develop.batch/1 persistence
+v25  features.extract.batch/1 persistence
+```
+
+Historical references to earlier versions remain valid when they describe the state of their own
+checkpoint. They are stale only when they claim to describe the current head.
+
+## Canonical resource policy — HUMAN AUTHORITY
+
+Production execution follows:
+
+```text
+MAXIMUM SAFE USEFUL THROUGHPUT
 SERIALISM_REQUIRES_PROOF
 ```
 
-Une opération atomique par item n'impose pas de sérialiser les items
-indépendants. Une publication owner-only ou ordonnée n'impose pas de sérialiser
-la préparation. Lorsqu'il existe plusieurs unités indépendantes et que la
-science, la persistance et la reprise restent exactes, la Task doit exposer au
-Governor un parallélisme borné.
+Lardon3D preserves the interactive host reserve first, then uses the maximum remaining resources that
+are both safe and useful for the admitted workload.
 
-Un chemin long `CPU1` ou `batch1` avec travail indépendant disponible et
-ressources sûres libres est désormais considéré comme un **défaut opérationnel**
-tant qu'une preuve concrète ne démontre pas l'une des limites suivantes :
+The interactive reserve exists to preserve normal use of:
 
-- dépendance scientifique ou algorithmique réellement sérielle ;
-- genou de scaling mesuré ;
-- limite mémoire ;
-- saturation I/O ;
-- backend GPU validé rendant des CPU supplémentaires inutiles ;
-- contrainte de publication qui ne peut pas être séparée de la préparation sans
-  casser le déterminisme ;
-- autre limitation matérielle mesurée et documentée.
+- Arch Linux / Sway and normal desktop services;
+- Firefox;
+- normal audio playback;
+- lightweight interactive workstation use.
 
-Le Governor reste l'unique autorité de ressources. L'utilisateur normal ne
-choisit ni CPU, ni workers, ni lot, ni inflight, ni GPU, ni scratch, ni budget
-RAM. Une Task décrit ses minimum/useful/safe, ses coûts fixes/transitoires/par
-participant et ses capacités GPU/I/O ; le Governor choisit le maximum
-sûr **et utile** disponible à l'instant.
-
-La politique GPU est symétrique : un backend de production **VALIDATED AND
-USEFUL** doit être préféré lorsqu'il est disponible et sûr ; aucun backend GPU
-non validé ne doit être inventé pour afficher de l'activité GPU. Candidate,
-Visual Index ou GV peuvent donc rester CPU lorsque leur décision mesurée le
-justifie, tandis qu'ORB Matcher Vulkan reste GPU-first lorsqu'il est éligible.
-
-La RAM doit être utilisée agressivement jusqu'à la réserve interactive ;
-`swap`, zram et scratch ne sont jamais de la RAM admise, et l'UMA est comptée
-exactement une fois contre la RAM hôte. Les signaux PSI et les deltas actifs de
-swap peuvent réduire l'admission ; après disparition de la pression, le
-Governor doit réadmettre les ressources utiles au lieu de rester durablement
-bridé.
-
-Cette politique s'applique aussi au travail d'ingénierie Codex : builds, tests,
-benchmarks et preuves réelles indépendantes doivent utiliser le parallélisme
-sûr disponible plutôt qu'un `-j8`/`--num-processes 1` historique. Un run CPU1
-reste légitime comme cohorte de mesure ou lorsqu'une dépendance concrète
-l'impose, mais jamais comme défaut universel. Les rebuilds, tests lourds,
-revues ou agents coûteux déjà acquis et non affectés par le delta ne doivent pas
-être relancés sans raison. La règle reste : **WORK FIRST, RETURN LAST**, avec
-revue delta-based depuis le checkpoint de maintenance.
-
-Statut de cette décision :
+On the current validation host, the normal observed outcome is approximately:
 
 ```text
-RESOURCE_UTILIZATION_POLICY=HUMAN_AUTHORITY
-SERIALISM_REQUIRES_PROOF=CANONICAL
-IMPLEMENTATION_AUDIT=REQUIRED_BEFORE_NEXT_LONG_REAL_RUN
+16 logical CPUs total
+4 logical CPUs reserved for interactive host use
+12 logical CPUs available to the compute pool
+~3 GiB MemAvailable preserved as the hard RAM reserve
+Radeon 780M UMA available to validated and useful GPU backends
 ```
 
-Cette autorité rouvre uniquement les **contrats opérationnels de ressources**
-quand ils empêchent cette politique. Elle ne rouvre aucune science FROZEN.
+These values are reference-host evidence, not portable product constants.
 
-### Fondations PASS / FROZEN
+A future host with more compute capacity must not inherit the current 12-thread result as a ceiling.
+The Resource Governor derives admission from the actual affinity, topology, memory state, pressure,
+backend capability and Task envelope.
 
-- Gates A–G Sparse SfM, dont F0, orchestration Task/Project DB et politique
-  Governor : [Sparse SfM](../architecture/sparse_sfm.md) et
-  [frontière ressource](../architecture/resource_boundary.md).
-- Track Model / Track Builder v1 : [Track Model](../architecture/tracks.md) et
-  [Track Builder](../architecture/track_builder.md).
-- Phase H v1 d'enrichissement incrémental multi-snapshot :
-  [Project DB](../architecture/project_database.md).
-- MVS-M1, frontière OpenMVS v2.4.0, identité dense et export COLMAP/PLY borné :
-  [pipeline de reconstruction](../architecture/reconstruction_pipeline.md).
-- Task Runtime, checkpoints atomiques, Queue et Resource Governor :
-  [Task](../architecture/task_system.md), [Queue](../architecture/task_queue.md)
-  et [Governor](../architecture/resource_governor.md).
-- Project DB v22 gelé, overlay optique additif v23 gelé et couche opérationnelle
-  additive v24 actuellement en validation pour `raw.develop.batch/1`, ainsi que
-  S1–S3 Capture / Acquisition Ingestion : provenance Capture/Asset, import
-  capture-safe, publication dérivée, développement RAW, siblings multi-source,
-  évidence S3-D, orchestration S3-E et campagne bornée :
-  [Project DB et ingestion](../architecture/project_database.md).
+Per-item atomicity does not imply cross-item serialization.
 
-### S3 Capture / Acquisition Ingestion — PASS / FROZEN
+Owner-only or ordered durable publication does not imply serial preparation.
+
+A long-running `CPU1` or `batch1` path with independent work and safe idle capacity is an operational
+defect unless concrete evidence establishes a real limit such as:
+
+- scientific or dependency serialism;
+- a measured useful-scaling knee;
+- memory pressure or a truthful memory bound;
+- I/O saturation;
+- a validated GPU path that makes additional CPU work useless;
+- a deterministic publication constraint that cannot safely be separated from preparation;
+- another explicit measured resource limitation.
+
+The Resource Governor remains the sole production resource authority.
+
+Normal users do not select CPU count, worker count, batch size, inflight depth, GPU backend, scratch
+mode or RAM budget for authoritative execution.
+
+Validated and useful GPU backends are preferred automatically when eligible. A GPU backend must not
+be invented or promoted merely to create GPU activity.
+
+Swap, zram and scratch are pressure/safety or storage mechanisms. They are never admitted RAM. UMA
+GPU memory is charged exactly once against host RAM.
+
+Pressure may reduce admission. When pressure clears, safe and useful resources must be admitted again
+rather than remaining permanently throttled.
+
+The same philosophy applies to engineering work: independent builds, tests, benchmarks and real-data
+proofs should use safe host-aware parallelism. Historical fixed values such as `-j8` or
+`--num-processes 1` are not universal policy.
+
+## Acquired FROZEN foundations
+
+The following major boundaries are acquired at the scope defined by their canonical documents:
+
+- Sparse SfM Gates A-G — PASS/FROZEN;
+- F0 — PASS/FROZEN;
+- Track Model — PASS/FROZEN;
+- Track Builder scientific contract — PASS/FROZEN;
+- Phase H v1 incremental multi-snapshot enrichment — PASS/FROZEN;
+- MVS-M1 external OpenMVS v2.4.0 boundary — PASS/FROZEN;
+- Capture / Asset Provenance — PASS/FROZEN;
+- Capture-safe Standard Ingestion — PASS/FROZEN;
+- Capture / Acquisition Ingestion — PASS/FROZEN;
+- Durable Acquisition-Campaign Execution — PASS/FROZEN;
+- Selected Scientific Execution — PASS/FROZEN;
+- Photo Quality Triage / Acquisition Selection — PASS/FROZEN;
+- Calibration Bootstrap v1 — PASS/FROZEN;
+- Calibration Science v1 — PASS/FROZEN;
+- Calibration Tooling v1 — PASS/FROZEN;
+- Internal Parallelism + Compute Resources v1 — PASS/FROZEN;
+- Compute Governor v2 — PASS/FROZEN;
+- ORB Vulkan asynchronous execution — PASS/FROZEN;
+- Global Maintenance Audit — PASS/FROZEN;
+- Real S21 Tracks — PASS/FROZEN;
+- Real A6000 pre-SfM — PASS/FROZEN.
+
+A FROZEN boundary is not reopened merely because a later operational document, benchmark or roadmap
+section is updated.
+
+## Capture and acquisition foundation
+
+The acquisition model preserves distinct identities:
 
 ```text
-S3-A  Derived Image Publication             PASS / FROZEN
-S3-B1 Deterministic RAW Development          PASS / FROZEN
-S3-C  Multi-Source Capture Association       PASS / FROZEN
-S3-D  Acquisition Pairing Evidence v1        PASS / FROZEN
-S3-E  Multi-Source Ingestion v1              PASS / FROZEN
-       Bounded Campaign Ingestion            PASS / FROZEN
-Project DB                                   v19
+Capture != file
+Capture != asset
+Capture != image_id
+Capture != SHA-256
+Capture != basename
+Capture != Task ID
+Capture != campaign group ID
 ```
 
+`capture_id` identifies the physical acquisition representation recorded in Project DB.
+
+`image_id` identifies a scientific image representation.
+
+SHA-256 identifies immutable asset bytes.
+
+Task and campaign-group IDs are operational identities and never redefine the scientific Capture.
+
+The acquisition pipeline remains conceptually:
+
 ```text
-entrées d'acquisition explicites
-→ publication SOURCE immuable
-→ provenance Capture/Asset
-→ métadonnées RAW/JPEG et évidence d'acquisition
-→ propositions de campagne déterministes
-→ regroupement fort ou explicitement confirmé
-→ un Capture par observation physique résolue et siblings SOURCE
-→ développement RAW déterministe si demandé
-→ image_id scientifique immuable
-→ pipeline aval existant
+explicit acquisition sources
+-> bounded discovery / metadata
+-> acquisition candidates and explicit confirmations
+-> Photo Quality Triage
+-> explicit acquisition selection / human override
+-> durable campaign execution
+-> Capture / Asset provenance
+-> selected scientific representation
+-> downstream scientific pipeline
 ```
 
-Les identités restent distinctes : `Capture != fichier`, `Capture != asset`,
-`Capture != image_id`, `Capture != SHA-256` et `Capture != basename`.
+A6000 RAW+JPEG pairs confirmed by the caller are `CALLER_EXPLICIT`, never silently upgraded to
+scientifically `STRONG` evidence.
 
-### Validation réelle Sony A6000
+Historical S3 and Project DB v19/v20 evidence remains valid for the lifecycle it recorded. Its
+historical crash-window limitations must not be rewritten as if later durable execution semantics
+already existed at that checkpoint.
 
-Campagne `Photogrammetrie/2026-08-26_Baie_Moteur_A6000` :
+## Photo Quality Triage / Acquisition Selection — PASS/FROZEN
 
-- 953 ARW et 953 JPEG, soit 1906 sources ;
-- métadonnées : ARW 953/953 OK, JPEG 953/953 OK ;
-- JPEG Sony reconnus comme conteneurs MPF valides : APP2 `MPF\0`, images JPEG
-  secondaires validées, remplissage inter-image/final nul, maximum privé huit ;
-- `STRONG_GROUPS=0`, `CANDIDATE_PAIRS=953`, ambiguïtés 0, contradictions 0 ;
-- plan identique après inversion de l'ordre des racines.
+Photo Quality Triage operates on existing acquisition groups before normal campaign materialization
+and before scientific representation, Feature extraction, matching, SfM or MVS.
 
-Le stem commun ne prouve jamais une acquisition. Les 953 propositions doivent
-être confirmées et deviennent `CALLER_EXPLICIT`, jamais `STRONG`.
-
-### Limite de reprise DB v19 (historique)
-
-S3-E reprend une matérialisation connue par `resume_capture_id`. Une campagne
-peut reconstruire son plan et conserver côté appelant le `capture_id` de chaque
-groupe. Si le processus meurt après création du Capture mais avant rétention
-durable de cet ID, DB v19 ne peut le redécouvrir sans inventer une identité
-interdite. Il n'existe donc pas de garantie whole-campaign exactly-once. Une
-future identité durable de requête/campagne pourra fermer cette fenêtre ; elle
-ne sera jamais déduite d'un chemin, SHA, basename, timestamp, métadonnée ou
-`image_id`.
-
-## Exécution durable de campagne d'acquisition — PASS / FROZEN
-
-Project DB v20 apporte une migration additive v19→v20. Une tâche de campagne
-enregistre atomiquement son snapshot générique, sa référence de checkpoint et
-sa requête typée immuable. Le Task ID est l'identité opérationnelle de la
-campagne ; la requête ne déduit aucune identité depuis les sources. Son codec
-v1 est borné, à champs de largeur fixe et little-endian ; il conserve les
-sources, les confirmations explicites et les options d'ingestion.
-
-La requête persiste les confirmations comme `CALLER_EXPLICIT`, jamais comme
-inférence `STRONG`. Le plan conserve des IDs de groupe un-based et Project DB
-persiste la correspondance `(task_id, group_id) → capture_id`, ainsi que le
-curseur. Chaque séquence admet et matérialise exactement un groupe via S3-E.
-Après le retour de S3-E, une transaction conserve le Capture et avance le
-curseur avant la progression générique et le checkpoint. Pause et annulation
-sont coopératives aux frontières de groupe ; entre deux groupes,
-`sequence_break` rend la réservation et impose une nouvelle admission.
-
-À la réouverture, la registry existante reconstruit la tâche à partir de son
-Task ID et de sa requête, puis la Queue et le Governor existants la réadmettent.
-Aucun runtime, queue, governor ou mécanisme de persistance parallèle n'est
-introduit. La fenêtre résiduelle acceptée demeure l'arrêt après le retour de
-S3-E et avant la transaction de rétention : elle ne déclenche aucune inférence
-de Capture et ne fournit pas de garantie exactly-once pour ce groupe.
-
-## ENGINE BAY MULTI-CAMPAIGN INTEGRATION — PASS / FROZEN
-
-L'intégration réelle a validé les deux campagnes dans un même projet temporaire
-Project DB v20 : A6000 (953 ARW + 953 JPEG, 953 confirmations
-`CALLER_EXPLICIT`, plan déterministe) et Samsung S21 FE SM-G990B (3544 JPEG,
-groupes singleton déterministes). Un échantillon borné a exercé deux Captures
-A6000 (JPEG SOURCE puis RAW dérivé) et trois Captures S21, avec ScanSets isolés,
-Queue/Governor, persistance tâche/groupe→Capture et reprise sans duplication.
-La capacité bornée des propositions de revue conserve un préfixe déterministe ;
-elle ne limite jamais l'évaluation complète ni le groupement scientifique.
-
-### État de calibration des campagnes réelles
-
-L'infrastructure Project DB v22, exécution sélectionnée, `raw.develop` et
-Calibration Bootstrap v1 est **PASS / FROZEN** : la suite normale 53/53, les
-contrôles syntaxiques C17, `git diff --check`, la validation ciblée ASan/UBSan
-et l'audit final ont passé. La suite ASan/UBSan complète reste qualifiée par le
-comportement LSan du pilote tiers RADV ; elle n'est pas déclarée PASS complet du
-dépôt. Ce gel concerne l'infrastructure de persistance et d'import borné, pas
-la calibration des campagnes réelles ni leur Sparse SfM.
-
-Les campagnes réelles S21 et A6000 Engine Bay actuellement évaluées sont
-`CALIBRATION_UNAVAILABLE` par non-identifiabilité scientifique des données
-disponibles pour le contrat Sparse SfM à calibration connue. Ce statut ne
-signifie ni échec logiciel, ni défaut des sources, ni rejet de qualité. Sans
-pseudo-calibration, interpolation de métadonnées ou import inféré, le Sparse
-SfM réel est `BLOCKED_BY_KNOWN_CALIBRATION_DATA`; l'intégration synthétique à
-calibration connue a passé. Une acquisition physique dédiée de calibration est
-une étape future, décrite dans [Calibration Bootstrap v1](../architecture/calibration_bootstrap.md),
-et non une fonctionnalité déjà réalisée.
-
-`CALIBRATION_SCIENCE_V1=PASS/FROZEN` fixe désormais le protocole physique,
-les seuils, le regroupement optique, la preuve de coordonnées et le bundle de
-provenance requis pour les **futures** campagnes connues-calibrées. Il ne
-réhabilite aucune campagne historique : S21 Engine Bay reste définitivement
-non rétro-calibrable. Voir [Calibration Science v1](../architecture/calibration_science_v1.md).
-
-`CALIBRATION_TOOLING_V1=PASS/FROZEN` ajoute le pont opérationnel borné entre
-un bundle d'évidence Science v1 déjà acquis et l'importeur immuable `L3DCALB1`
-v1. Il valide les HARD REJECTS, produit l'artefact déterministe et s'arrête à
-la transition `CALIBRATION → READY`; il ne résout aucune calibration, ne lance
-pas Sparse SfM et ne rétro-calibre pas S21.
-
-`CALIBRATION_SOLVER_PREFLIGHT_V1=PASS` retient un exécutable externe épinglé
-sur OpenCV 5.0.x, dont le seul rôle futur est de produire le bundle d'évidence
-consommé par Calibration Tooling. Il ne devient pas une dépendance runtime et
-ne lance aucun stage de reconstruction. Voir [Calibration Solver Preflight
-v1](../architecture/calibration_solver_preflight_v1.md).
-
-## PHOTO QUALITY TRIAGE / ACQUISITION SELECTION — PASS / FROZEN
-
-L'étape qualité canonique implémentée se place après la découverte bornée, les
-métadonnées et l'association minimale des sources, mais avant la matérialisation
-normale d'une campagne et avant toute représentation scientifique, feature,
-matching, SfM ou MVS :
+It produces explainable recommendations:
 
 ```text
-série source explicite
-→ découverte bornée / métadonnées
-→ candidats d'acquisition et confirmations existantes
-→ Photo Quality Triage
-→ recommandation GOOD / SUSPECT / REJECT par acquisition physique
-→ sélection ou override humain explicite
-→ création/exécution durable de campagne pour les groupes retenus
-→ représentations scientifiques
-→ features → candidats → matching → vérification → tracks → Sparse SfM
+GOOD
+SUSPECT
+REJECT
 ```
 
-Le triage consomme les groupes d'acquisition existants et ne redéfinit jamais
-Capture, Asset, `image_id`, SHA-256, chemin ou basename. Une paire A6000
-RAW+JPEG confirmée est donc une seule unité de triage ; le JPEG caméra valide
-est le proxy rapide préféré et l'analyse ne développe pas les RAW à grande
-échelle. Un JPEG S21 singleton est la représentation d'analyse naturelle. Le
-résultat est non destructif et explicable : `GOOD` est sélectionné par défaut,
-`SUSPECT` attend une acceptation explicite et `REJECT` est exclu par défaut mais
-peut être forcé par l'humain. Ces états sont une recommandation et une sélection
-opérationnelle, jamais une identité ni une suppression de source.
+These are operational recommendations, not identities and not source deletion.
 
-L'implémentation reste déterministe, générique aux appareils, bornée en mémoire
-et I/O, et exécutée par les Task, Queue et Resource Governor existants. Le décodage
-JPEG applique une limite opérationnelle de 8192 pixels sur le plus grand axe, une
-réduction à 1024 pixels et une réservation incluant le contexte retenu plus 20 MiB
-de buffers d'analyse par groupe ; ces bornes ne sont pas des limites scientifiques
-de campagne ou de dataset.
-Elle doit conserver une voie honnête pour les RAW sans proxy plutôt que de
-présumer que chaque RAW a un JPEG sibling. La revue interactive détaillée des
-recommandations Photo Quality, la guidance de capture et les keyframes vidéo
-restent des intégrations ultérieures qui réutiliseront ce même chemin de
-qualité, sans second pipeline. Cette limite ne concerne pas l'observatoire
-runtime TUI courant.
+A6000 RAW+JPEG acquisition pairs are one triage unit. A valid camera JPEG is the preferred fast
+quality proxy, while the FROZEN A6000 geometry representation for the retained selected execution
+remains the deterministic RAW-derived PNG.
 
-## SELECTED SCIENTIFIC EXECUTION ON ENGINE BAY INPUTS — PASS / FROZEN
+A S21 singleton JPEG is naturally usable as its quality-analysis representation.
 
-L'intégration réelle opt-in porte uniquement sur les acquisitions sélectionnées
-des campagnes Engine Bay et s'arrête à la frontière pré-SfM validable. Pour
-chaque campagne, l'exécutable d'évidence a créé un projet temporaire Project DB v22
-distinct : Visual Index v1 est borné à 4096 images, tandis que l'ensemble
-A6000+S21 en compte 4497. Cette séparation est opérationnelle ; elle ne redéfinit
-ni Capture, ni Asset, ni `image_id`, ni l'identité scientifique des acquisitions.
+Quality selection never permits silent scientific calibration inference or silent replacement of the
+selected geometry representation.
 
-Le runner compose les API durables existantes, dans cet ordre :
+## Selected scientific execution — PASS/FROZEN
+
+Selected scientific execution freezes the exact ordered set of selected acquisition items and their
+scientific representation policy.
+
+For the retained A6000 Engine Bay execution:
 
 ```text
-qualité
-→ campagne d'acquisition
-→ snapshot immuable de la sélection
-→ représentation (A6000 `raw.develop`, S21 JPEG SOURCE)
-→ features ORB
-→ Visual Index
-→ candidats du même ScanSet
-→ matching ORB
-→ GV gelée
-→ arrêt durable avant Tracks
+quality selection
+-> durable selected execution
+-> deterministic RAW development
+-> Feature extraction
+-> Visual Index
+-> Candidate Pair generation
+-> Matcher
+-> Geometric Verification
+-> Tracks
+-> STOP before real Sparse SfM
 ```
 
-Il rouvre ensuite le Project DB afin de rapporter l'évidence durable produite.
-Il n'introduit ni coordinateur réutilisable, ni DAG, ni sidecar, ni scheduler
-distinct : Task, Queue et Resource Governor existants conservent leurs
-responsabilités. L'overlay optique Project DB v23, ajouté ultérieurement, ne
-réinterprète pas cette preuve v22 ; les copies des deux projets migrent avec les
-comptes scientifiques inchangés et les nouvelles tables optiques vides.
+The paired camera JPEG remains a valid SOURCE asset and fast quality proxy.
 
-Pour A6000, le JPEG caméra pairé reste un SOURCE valide et le proxy rapide de
-Photo Quality, mais la représentation géométrique FROZEN de cette exécution
-sélectionnée reste le PNG déterministe dérivé du RAW (`L3DRAWD1`). Passer cette
-preuve au JPEG caméra nécessiterait une tranche scientifique/calibration séparée
-prouvant l'équivalence exacte ; ce changement n'est pas une optimisation
-opérationnelle ordinaire.
+The geometry representation remains the deterministic RAW-derived PNG identified by the established
+RAW policy and `L3DRAWD1`.
 
-Le Sparse SfM réel final reste `BLOCKED_BY_KNOWN_CALIBRATION_DATA` pour ces
-campagnes ; aucune pseudo-calibration, interpolation de métadonnées ou inférence
-d'identité ne le contourne. Dense, mesh et publication aval ne font pas partie de
-ce jalon pré-SfM. Ce milestone est une intégration réelle, pas une nouvelle
-série de micro-gates S3. Son statut acquis ne rend pas disponibles les données
-de calibration physique manquantes et n'autorise pas à devancer les dépendances
-scientifiques.
+Replacing that geometry representation with camera JPEG requires a separately authorized scientific
+and calibration equivalence proof.
 
-## INTERNAL PARALLELISM + COMPUTE RESOURCES v1 — PASS / FROZEN
+## Project DB evolution
 
-La fondation scientifique pré-SfM courante comprend le parallélisme interne
-borné des étapes Candidate, Matcher et Visual Index, l'audit du threading des
-features, et l'admission/libération des ressources par le Resource Governor
-existant. Elle ne crée ni parallélisme inter-Tasks, ni pool global, ni second
-Scheduler, ni second Governor, ni persistance parallèle. Le contrat gelé est
-celui du [parallélisme interne borné](../architecture/internal_parallelism.md).
+### v22 — selected scientific execution foundation
 
-L'audit GPU vérifie les coutures réellement disponibles, les coûts UMA, les
-réservations et la préservation des sorties canoniques. Il ne présume pas qu'un
-GPU soit approprié ni qu'une sortie GPU partage automatiquement l'identité
-scientifique CPU. Le gel ne revendique pas de comparaison de débit durable
-CPU-versus-GPU sur corpus : la pression hôte a contaminé cette mesure.
+Project DB v22 owns the selected scientific execution foundation and associated persistence semantics.
 
-Cette limite de preuve v1 n'annule pas l'évidence directe fournie à la tranche
-suivante. Pour le hot path ORB Matcher, Vulkan est désormais validé,
-déterministe et mesurément supérieur ; il devient donc le workload primaire de
-la politique v2 GPU-first, sous admission GPU/UMA, avec fallback CPU. Candidate,
-Feature et Visual Index restent explicitement rejetés pour le GPU, et
-SIFT/RootSIFT Matcher restent BFMatcher L2 CPU.
+It remains PASS/FROZEN.
 
-**COMPUTE_GOVERNOR_V2 — PASS / FROZEN.**
-**ORB_VULKAN_ASYNC_EXECUTION — PASS / FROZEN.** Cette tranche
-autorisée fait évoluer l'unique Governor, sans créer de scheduler, Queue,
-daemon ou persistance parallèle : télémétrie bornée, admission adaptative par
-séquence et `AUTO` GPU-first pour les backends exacts et mesurément supérieurs.
-La couture ORB Matcher normale est gelée avec CPU complet en fallback ; les
-choix CPU/Vulkan explicites restent des overrides de debug, benchmark et
-reproductibilité. Les dimensions retenues et toutes les validations v2 sont
-closes.
+### v23 — generic optical-context overlay
 
-Le pool CPU12 est validé comme preuve de cet hôte, pas comme plafond produit.
-Le Governor dérive désormais le pool lourd depuis le masque permis et les
-groupes package/core/SMT. Sur l'hôte unrestricted courant, il obtient
-`0-5,8-13` et réserve `6,7,14,15`; un caller déjà précontraint ne subit pas une
-seconde réserve. Le worker Queue seul applique/vérifie son propre masque ; aucun
-TID auxiliaire énuméré n'est muté. Creator/main/TUI reste unrestricted. Les CPU
-déjà exclus de l'affinité du processus comptent dans la réserve hôte ; le
-fallback count-only ne fabrique aucun masque. La cible RAM conserve une réserve
-dure de 3 GiB de `MemAvailable`; la zone 3–4 GiB est une prudence qui ne
-soustrait pas 4 GiB à toute capacité. Les petits hôtes dégradent le budget en
-conservant au moins une unité de calcul. Les PSI CPU/mémoire/I/O et les deltas
-swap-in/swap-out sont des signaux actifs ; l'occupation totale du swap reste
-historique. Admission CPU et lot sont indépendantes. Sur la 780M, Hardware
-Profile classe conservativement comme UMA le petit aperture VRAM amdgpu de
-512 Mio accompagné d'environ 7,99 Go de GTT système ; la capacité rapportée
-reste observable mais ne devient pas un budget séparé. Les coûts GPU sont
-débités exactement une fois de la RAM hôte.
+Project DB v23 adds generic optical context without rewriting historical scientific rows.
 
-La nouvelle autorité humaine `SERIALISM_REQUIRES_PROOF` **supersède toute
-interprétation** de l'inventaire de maintenance qui ferait d'un ancien
-`CPU1`/`batch1` un plafond permanent. Les preuves scientifiques et résultats de
-la maintenance restent FROZEN ; seules les enveloppes opérationnelles peuvent
-être rouvertes lorsqu'un travail indépendant est inutilement sérialisé. Une
-Task fixe demeure fixe seulement si sa sérialité ou son genou de scaling est
-prouvé. Cette règle doit être appliquée à toutes les Tasks de production avant
-d'engager de nouvelles preuves réelles longues.
+It supports explicit camera-body profiles, lens profiles, optical configurations, campaign/Capture
+assignments and exactly compatible calibration selection.
 
-L'audit Phase 1 couvre les kinds de production de l'époque et sépare leurs
-dimensions fixes des dimensions réellement adaptables. Il confirme que tous
-passent par l'unique Governor, même les formes fixes, et que le contrat reste
-immutable pendant une séquence. Cette tranche ferme l'enveloppe privée, la
-sélection AUTO, les diagnostics bornés, l'enforcement OpenCV borné au
-compute-pool, la politique d'affinité privée et la réconciliation du contexte
-retenu des campagnes nouvelles ou restaurées. La création/reprise AUTO ne
-touche plus Vulkan sur le main ; le premier begin appartient au worker
-contraint. Inflight ORB normal est fixé à 1, helpers reste 0 ; depth 2 reste une
-capacité privée de sûreté/benchmark. Ces choix ne créent aucune limite de
-dataset, identité scientifique ou version Project DB.
+Manual lenses without EXIF are normal supported equipment.
 
-La signature durable des nouvelles Tasks ORB normales est la classe `MIXED`,
-sémantiquement réelle pour une politique susceptible d'exécuter CPU ou Vulkan.
-Elle reconstruit AUTO ; toutes les signatures CPU anciennes/courantes restent
-CPU fixes et Vulkan reste fixe, sans migration DB/codec. La couture asynchrone
-est privée, request-bound et nettoie son slot sur toute sortie. Une preuve
-événementielle bornée établit la soumission du successeur avant la publication
-du prédécesseur pour deux paires 769×769. La rampe ne croît plus sur la seule
-santé : l'adaptation générique exige deux observations par fenêtre, tandis que
-le lot ORB Vulkan en exige huit, avec retour au palier accepté sans gain et
-reset immédiat sous pression. Ces éléments sont **PASS / FROZEN** dans les
-limites validées.
+No silent lens identity inference, calibration substitution, interpolation or backfill is allowed.
 
-Les diagnostics de séquence distinguent backend sélectionné et backend réel ;
-les participants CPU Matcher restent `cpu_threads` et `helpers=0`. Une paire
-Vulkan inéligible ou en panne est recalculée entièrement sur CPU sans preuve
-partielle. Les extractions ORB/SIFT/RootSIFT testées à 1/2/4/8/12 consomment
-leur contrat OpenCV immutable avec sorties égales. Le rolling distingue un
-handle soumis d'une inéligibilité locale et n'appelle jamais `finish` sans
-requête. La panne backend invalide immédiatement l'admission partagée sur toute
-sortie précoce ; seules les reprises AUTO peuvent établir cette disponibilité,
-indépendamment de l'ordre des reprises fixes ou historiques. Le statut est
-**PASS / FROZEN**.
+### v24 — RAW batch persistence
 
-La boucle privée mesure l'utilisation `/proc/stat` du compute-pool,
-`MemAvailable`, PSI mémoire/I/O `some/full`, deltas swap actifs, RSS/HWM observé
-et GPU busy DRM, avec `unknown` sur absence ou parse non strict. Le backend
-Vulkan fournit des compteurs cumulés bornés de submit/complétion/fence/readback/
-GPU/starvation/panne/discard ; Matcher agrège en plus CPU et publication par
-séquence. Le diagnostic est tirable par numéro de série, sans log ncurses ni
-histoire persistée. Les CPU réductibles progressent vers la capacité exacte du
-kind/compute-pool selon les observations de scaling ; sous pression, l'admission
-se réduit puis doit pouvoir remonter. Candidate mesure chaque séquence. Un
-fallback réel annule l'essai Vulkan au lieu d'empoisonner sa baseline. Cette
-implémentation est **PASS / FROZEN** sans ajouter de helper GPU.
-
-L'évidence retenue avant cette implémentation compare le contrôle synchrone à
-49,989 paires/s et rolling depth 1 à 55,124 paires/s (+10,27 %), avec le même
-digest `7a9dbc38a23a600379167d55e24836b7acbb22eea25573e7440bdc9e4602b3b3`.
-La starvation depth 1 (53,847 s sur 74,613 s, GPU busy max 25 %) motive deux
-slots bornés mais ne constitue pas une mesure depth 2. Le backend partage
-device/pipeline/layout/cache et duplique seulement 640 Kio de payload,
-command/fence/descriptors/query par slot. Le payload mappé suit exactement la
-capacité de séquence admise : zéro avant initialisation, 640 Kio à depth 1 et
-1,25 Mio uniquement pendant un contrôle privé depth 2, avec retour à 640 Kio
-avant la prochaine admission depth 1. L'enveloppe normale n'essaie plus
-inflight 2. Les générations de requête ne bouclent pas ; un slot épuisé est
-retiré définitivement.
-
-Le harness réel a exécuté le corpus 4113 paires pour le contrôle synchrone,
-rolling depth 1 et l'A/B forcé depth 1/depth 2. L'ABBA forcé donne
-54,661652238 et 55,797311953 paires/s (+2,077617 %, sous le deadband 5 %).
-Chaque run porte 4113 paires durables ; le débit combiné est
-`(2 * 4113 * 1e9) / somme(wall_ns)`, pas la moyenne des débits par run. Les
-walls bruts 75326831673/75162582080 et 73662096698/73764360098 ns donnent les
-moyennes 75,244706877/73,713228398 s. Fence vaut 6,0684/3,6776 s, starvation
-54,4534/50,1465 s, publication 29,2582/30,0548 s, submit CPU 0,2655/0,3818 s,
-readback 0,0460/0,0873 s et GPU busy max 23/24 %. Les quatre exécutions
-conservent le digest `7a9dbc38a23a600379167d55e24836b7acbb22eea25573e7440bdc9e4602b3b3`,
-quatre séquences de fallback local par exécution et zéro panne/discard. Depth 2
-est donc **REJECTED_WITH_MEASURED_REASON** pour la politique normale :
-`DEPTH_MAX_VALIDATED_SAFETY=2`, `DEPTH_MAX_USEFUL=1`.
-
-Les huit runs item-valides `forced-batch{2,4,8,12}-items{,-b}.stdout.jsonl`
-publient chacun 4113 paires, six items locaux, zéro panne/autre et le même
-digest. Leurs débits combinés sont 54,180767704, 66,094373197, 74,784998723 et
-76,755814095 paires/s. Batch 4 puis 8 gagnent +21,988624373 % et
-+13,148812987 % ; batch 12 ne gagne que +2,635308425 %, sous le deadband 5 %.
-AUTO normal suit donc `BATCH_MAX_USEFUL=8`; batch 12 reste une capacité privée
-sûre `REJECTED_WITH_MEASURED_REASON`. Le contrôle de production sans override
-`short-auto-batch8-governor-v2.stdout.jsonl` atteint réellement `1 → 2 → 4 → 8`,
-puis publie 4113/4113 résultats à 76,072 paires/s avec le même digest, six
-fallbacks locaux, zéro panne/discard, inflight 1 et helpers 0.
-
-La preuve de fermeture S21 `final-s21-auto.stdout.jsonl` exécute le chemin
-production normal sur 172 741 Candidate Pairs : 172 741 Match Results, zéro
-doublon, curseur complet, digest
-`e5128a2e599ff593c4f79850e067254b1f249d19e8480a44973306b1af250f70` et
-73,649 résultats durables/s. AUTO choisit Vulkan sur toutes les admissions,
-termine batch 8/inflight 1/helpers 0 et ne compte aucune panne/discard/pending.
-Une admission YELLOW réduit batch 8 à 1, puis les séquences GREEN rétablissent
-1 → 2 → 4 → 8 ; le gate possède donc une preuve réelle de recovery.
-
-La poursuite S21 ferme le Geometric Verifier v3 sans rejouer le Matcher. La Task
-2832 consomme les 172 741 Match Results et publie 172 275 GVR v3, dont 24 065
-acceptés et 148 210 rejetés, avec zéro doublon et curseur complet. La seconde
-reprise crée zéro ligne ; une Task interrompue sur une copie dédiée reprend le
-même ID et converge vers les mêmes lignes exactes. Feature, Candidate et
-Matcher ne sont pas rejoués. `REAL_S21_GV_V3=PASS/FROZEN`.
-
-Les gates de fermeture acquises incluent :
+Project DB v24 adds typed persistence for:
 
 ```text
-GOVERNOR_CONTROLS_ALL_TASKS=PASS
-HOST_CPU_RESERVE=PASS
-HOST_RAM_RESERVE=PASS
-REAL_TIME_TELEMETRY=PASS
-SLOW_START=PASS
-HYSTERESIS=PASS
-PRESSURE_THROTTLE=PASS
-PRESSURE_RECOVERY=PASS
-GPU_FIRST_AUTO=PASS
-ORB_VULKAN_TRUE_ASYNC=PASS
-TRUE_GPU_CPU_OVERLAP=PASS
-VULKAN_RESOURCE_BOUNDS=PASS
-UMA_ACCOUNTING=PASS
-SCIENTIFIC_EQUIVALENCE=PASS
-RESTART_IDEMPOTENCE=PASS
-FINAL_FULL_S21_AUTO_RUN=PASS
-FULL_NORMAL_SUITE=PASS
-C17=PASS
-ASAN_UBSAN=PASS
-GIT_DIFF_CHECK=PASS
-FINAL_XHIGH_REVIEW=PASS
-DOC_CONSISTENCY=PASS
-MATCHER_GPU=EXISTING_BACKEND_VALIDATED_AND_PREFERRED
-COMPUTE_GOVERNOR_V2=PASS/FROZEN
-ORB_VULKAN_ASYNC_EXECUTION=PASS/FROZEN
-REAL_S21_GV_V3=PASS/FROZEN
-FEATURE_REPLAY=0
-CANDIDATE_REPLAY=0
-MATCHER_REPLAY=0
-SPARSE_SFM_EXECUTED=0
+raw.develop.batch/1
+raw_development_batch_tasks
 ```
 
-L'expérience normale est donc : l'utilisateur lance une Task ; l'unique
-Governor choisit et explique le contrat borné de sa prochaine séquence. Aucun
-réglage CPU/GPU/lot/inflight/helper n'est requis en production ordinaire. Avec
-la nouvelle autorité humaine, ce choix doit désormais rechercher explicitement
-le **maximum sûr et utile**, et non conserver une sous-utilisation historique.
-
-## GLOBAL MAINTENANCE AUDIT — PASS / FROZEN
-
-Le checkpoint canonique de revue est le tag
-`global-maintenance-2026-09-01`, au commit
-`b84f860d868c66d9ee84b85ceb1bc6480b95aca5`. Les revues futures sont
-strictement delta-based depuis ce point : `git diff
-global-maintenance-2026-09-01...HEAD`, puis examen des fichiers modifiés, des
-contrats, tests et documents directement affectés, et des frontières de
-dépendances traversées. Les systèmes PASS/FROZEN inchangés héritent de la preuve
-du [registre de maintenance](../architecture/global_maintenance_audit.md) et ne
-sont rouverts que sur preuve concrète ; ne pas répéter un audit global A-à-Z.
-
-Les résultats acquis restent notamment :
-
-- Project DB v23 ajoute neuf relations optiques sans backfill ni inférence ;
-- le Governor réserve l'hôte sans plafond CPU global 12, avec réserve RAM dure
-  3 GiB, PSI/swap actif et UMA comptée une fois ;
-- Candidate, Visual Index, Feature, Matcher et GV possèdent leurs capacités et
-  décisions GPU mesurées ;
-- le contrôleur SSD UDisks2 optionnel est une frontière physique revue, avec
-  identité Drive+labels+UUID, leases et drain sûr ;
-- la TUI est un observatoire/centre de contrôle validé opérationnellement ;
-- la frontière de session détruit/joint la Queue avant Project DB, puis recrée
-  une seule Queue.
-
-Le nouvel impératif `SERIALISM_REQUIRES_PROOF` ne nie aucune de ces preuves. Il
-supersède uniquement l'idée qu'un ancien profil opérationnel conservateur serait
-un plafond permanent lorsque de nouvelles preuves réelles montrent du travail
-indépendant et des ressources sûres inutilisées.
-
-Les validations finales exécutables de la maintenance sont acquises : build
-Clang portable 931/931 + suite 64/64, build Clang Vulkan 939/939 + suite 65/65
-sur Radeon réelle, ASan/UBSan 64/64 avec la limitation LSan OpenCL externe
-qualifiée, LSan loader-free 20/20, TSan, headers publics 76/76 et contrôles
-ABI/diff/`scan3d`. La gate de maintenance reste fermée ; les nouvelles
-corrections de ressources sont revues en delta et ne réouvrent pas l'audit A→Z.
-
-## REAL S21 TRACKS — PASS / FROZEN
-
-`REAL_S21_TRACKS=PASS/FROZEN`. La preuve part du projet GV v3 immuable
-`/home/fy59/Documents/Lardon/.real-pre-sfm-2026-08-31/s21-gv-v3`, dont le
-SHA-256 de Project DB est, avant et après les exécutions,
-`56aa5ec37624b322e9f77a90b138cc7390ef817a9cec3bef7e4c87609fd2eeed`.
-Les reflinks de preuve conservent exactement 2 826 Feature Sets, 172 741
-Candidate Pairs/Match Results, 172 275 parents GVR (24 065
-`GEOMETRIC_VERIFIED`, 148 210 `GEOMETRIC_REJECTED`). Aucun Feature, Candidate
-Pair, Matcher ou GVR n'a été rejoué ni créé ; le source reste intègre. Sparse
-SfM et Dense restent à zéro.
-
-Le rejet initial de la Task `track_builder.run` 2835 à 0 % est conservé comme
-constat historique : son enveloppe alors utilisée valait 19 546 898 688 octets
-(18,204 Gio), au-delà des 12 750 811 136 octets (11,875 Gio) admis après
-réserve. Ce n'est pas le modèle opérationnel validé. Le modèle compact actuel,
-qui réserve les capacités vivantes du scope et le pic du Match File parent,
-est admis par le Governor ; aucun scratch ni lease scratch n'a été utilisé.
-
-La Task fraîche primaire 2837 termine `COMPLETE` à 100 % et publie le seul
-Track Set 1 : 912 447 Tracks, 2 495 768 observations, longueurs min/max/moyenne
-2/42/2,7352470883240341, zéro doublon et zéro Track à images conflictuelles.
-Son digest canonique persistant est
-`c30eba192627bf73eaf21ff30d81038d8cc6bbf36a69226f88cdc8c37f7d74a1`.
-La reprise exacte suivante réutilise Track Set 1 (`task_track_id=0`) sans
-modifier ces Tracks. Le run complet propre de la Task 2837 dure 3 316 s
-(1788262322 → 1788265638).
-
-La preuve de récupération est distincte : la Task 2835 est créée pendante sur
-un reflink, interrompue par `SIGTERM` sans publication, puis reprise par le
-runner corrigé. Elle termine `COMPLETE` à 100 % et retrouve le même Track Set
-1, les mêmes comptes et le même digest ; le scénario interrompu avait publié
-zéro Track Set. Cette preuve valide la reprise opérationnelle sans rouvrir le
-contrat scientifique Tracks gelé.
-
-## PROJECT DB v24 / RAW BATCH A6000 — IMPLEMENTED / VALIDATION IN PROGRESS
-
-L'autorisation humaine additive v24 est limitée au parallélisme opérationnel du
-développement RAW. Project DB v24 conserve v22/v23 et ajoute uniquement la
-persistance typée `raw_development_batch_tasks` nécessaire au nouveau kind
-`raw.develop.batch/1`. Cette version ne change aucune identité scientifique,
-aucune calibration ni `L3DRAWD1`.
-
-Le pattern de production est :
+The production pattern is:
 
 ```text
-une Task owner admise par le Governor
-    → participants RAW indépendants et bornés
-    → join de tous les participants
-    → publication owner-only dans l'ordre des selected_item_index
-    → avance durable du curseur selected_execution
+one Governor-admitted owner Task
+    -> bounded independent RAW participants
+    -> join all participants
+    -> deterministic owner-only publication
+    -> ordered selected-execution cursor advancement
 ```
 
-L'atomicité par Capture est conservée ; la sérialisation entre Captures
-indépendantes ne l'est plus. La transition historique `raw.develop/1` →
-`raw.develop.batch/1` reste légitime et ne réécrit aucune ancienne Task.
+Per-Capture atomicity remains preserved while independent Captures may be prepared concurrently.
 
-État durable A6000 au dernier arrêt sûr avant l'audit global d'utilisation des
-ressources :
+The retained real A6000 proof completed the RAW-batch path. Project DB v24 is therefore no longer in validation.
+
+### v25 — Feature batch persistence
+
+Project DB v25 is the current schema head.
+
+It adds typed persistence for:
 
 ```text
-Projet:
+features.extract.batch/1
+feature_extract_batch_tasks
+```
+
+The historical `features.extract/1` path remains valid.
+
+The batch path preserves per-image scientific atomicity while allowing bounded cross-image
+preparation. Durable publication, cursor advancement and checkpoint ordering remain owner-controlled
+and deterministic.
+
+The retained real A6000 proof completed the Feature-batch path. v25 is therefore no longer
+"validation in progress".
+
+## Historical A6000 v24 cursor checkpoint — SUPERSEDED CURRENT STATE
+
+The following state is retained only as historical progress evidence:
+
+```text
+Project
 /home/fy59/Documents/Lardon/.real-pre-sfm-2026-09-01/a6000-pre-sfm-v23-final
 
 Schema                         v24
@@ -668,507 +319,545 @@ Sparse SfM                     0
 Dense/MVS                      0
 ```
 
-Le digest d'inventaire source pré/post est
-`fa725d8a82b529521134dd600b5cf42ed58ad523108636741a1431441e17b029`.
-Les JPEG caméra et RAW sont tous deux des SOURCE assets explicites par Capture,
-mais cette exécution A6000 FROZEN utilise les PNG déterministes dérivés RAW pour
-la géométrie. Les JPEG restent les proxies de triage ; ils ne remplacent pas
-cette représentation scientifique sans nouvelle tranche d'équivalence
-scientifique/calibration.
+This snapshot must never be presented as CURRENT NEXT.
 
-La v24 et la Task batch ont déjà passé build normal, matrice ciblée, contrôles
-C17, `git diff --check`, ASan/UBSan ciblé et TSan sur la couture concurrente.
-La preuve réelle complète, l'équivalence finale, l'audit d'utilisation de toutes
-les Tasks affectées et la fermeture documentaire restent à terminer avant de
-marquer cette tranche `PASS/FROZEN`.
+The remaining 430 RAW representations were later completed, followed by Feature extraction, Visual
+Index, Candidate Pair generation and Matcher. The project subsequently advanced to the final
+`REAL_A6000_PRE_SFM=PASS/FROZEN` checkpoint below.
 
-## PROJECT DB v25 / FEATURE BATCH — IMPLEMENTED / VALIDATION IN PROGRESS
-
-L'overlay additif v25 ajoute uniquement la persistance typée de
-`features.extract.batch/1`. Il ancre un propriétaire durable à l'ordre immutable
-de l'exécution sélectionnée, au domaine ORB exact et à un curseur monotone. Les
-Tasks `features.extract/1` historiques restent inchangées et sont reprises avant
-le suffixe batch. La préparation inter-images est bornée par le Governor,
-OpenCV reste CPU1 dans chaque participant, et publication/cursor/checkpoint
-restent owner-only et ordonnés. Le build et les tests ciblés sont acquis ; le
-benchmark réel du palier utile et la preuve A6000 restent à exécuter avant toute
-revendication PASS/FROZEN.
-
-## REAL A6000 PRE-SFM — PASS / FROZEN
-
-`REAL_A6000_PRE_SFM=PASS/FROZEN`. La continuation du 2 septembre 2026 utilise
-le projet durable
-`/home/fy59/Documents/Lardon/.real-pre-sfm-2026-09-01/a6000-pre-sfm-v23-final`
-directement à la frontière Match Result acquise. Les 689 Feature Sets, le Visual
-Index complet, les 38 420 Candidate Pairs et les 38 420 Match Results de la
-Task Matcher 170 `COMPLETE/100` sont conservés :
-`FEATURE_REPLAY=0`, `CANDIDATE_REPLAY=0` et `MATCHER_REPLAY=0`. Ni l'acquisition,
-ni RAW, ni les assets/identités amont ne sont réécrits.
-
-La Task GV v3 171 termine `COMPLETE/100`, consomme le curseur Match Result
-jusqu'à 38 420 et publie exactement 37 805 GVR applicables : 10 952
-`GEOMETRIC_VERIFIED` et 26 853 `GEOMETRIC_REJECTED`. Son fingerprint reste
-`6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c`;
-zéro mapping GVR dupliqué est observé. Les diagnostics Governor coalescés
-retiennent 2 714 admissions, le compute-pool de 12 CPU avec 4 CPU réservés,
-une fenêtre finale de 16, RSS/HWM maximal 41 877 504/42 319 872 octets,
-`MemAvailable` minimal 10 555 641 856 octets et des deltas swap-in/out nuls.
-La préparation GV reste dans la forme validée Governor-admise et bornée ; aucune
-nouvelle policy CPU/GPU n'est introduite par ce run.
-
-La Task Track Builder 172 termine `COMPLETE/100` et publie atomiquement le seul
-Track Set 1, de scope 10 952 GVR, avec 130 714 Tracks et 318 944 observations.
-L'audit SQL confirme zéro observation de Track dupliquée, zéro Track contenant
-deux observations de la même image et zéro observation orpheline. La seconde
-continuation crée seulement la Task GV 173, qui traverse le même curseur,
-publie zéro GVR et réutilise Track Set 1 sans créer de Task Track Builder ni
-modifier les 130 714 Tracks. `RESTART_IDEMPOTENCE`, `DETERMINISM`,
-`TRACK_CONFLICT_INVARIANTS` et `RESOURCE_POLICY_ENFORCED` sont donc PASS pour
-cette frontière réelle.
-
-Sparse SfM, reconstruction sparse, Dense/MVS et fusion inter-campagnes restent
-à zéro. Ce gel atteste uniquement le pré-SfM A6000 à travers GV puis Tracks ; il
-ne contourne pas le blocage de calibration réel et ne promeut aucune étape aval.
-
-## RESOURCE UTILIZATION ENFORCEMENT — CURRENT NEXT
-
-Avant de reprendre les 430 RAW restants ou toute autre preuve réelle longue,
-la prochaine tranche opérationnelle doit appliquer la politique canonique à
-l'ensemble des Tasks de production, en revue delta uniquement.
-
-Objectifs :
+The historical source-inventory digest remains:
 
 ```text
-RESOURCE_UTILIZATION_POLICY=IMPLEMENTED
-SERIALISM_REQUIRES_PROOF=ENFORCED
-ACCIDENTAL_CPU1_PATHS=0_OR_MEASURED_JUSTIFICATION
-VALIDATED_GPU_BACKENDS=PREFERRED_WHEN_ELIGIBLE
-BUILD_TEST_PARALLELISM=HOST_RESERVE_AWARE
+fa725d8a82b529521134dd600b5cf42ed58ad523108636741a1431441e17b029
 ```
 
-Pour chaque Task, auditer uniquement les dimensions opérationnelles :
-minimum/useful/safe CPU et batch, indépendance des items, séparation
-préparation/publication, coûts RAM par participant, saturation I/O et backend
-GPU validé. Une valeur CPU1/batch1 peut rester seulement avec preuve concrète.
-Il ne faut pas inventer de second scheduler, pool global ou parallélisme
-inter-Tasks pour satisfaire cette politique : le parallélisme interne borné et
-l'unique Queue/Governor restent la voie normale.
+## Global Maintenance Audit — PASS/FROZEN
 
-Les tests Codex doivent suivre la même règle : build et tests indépendants
-parallèles jusqu'à la réserve interactive ; serialisation uniquement pour
-fixtures partagées, déterminisme scientifique, mémoire/I/O/GPU exclusif,
-sanitizer ou pression mesurée. Les validations acquises et non affectées ne
-sont pas répétées. Les modèles/agents coûteux sont réservés aux vraies
-frontières scientifiques, concurrence/persistance délicate et revue finale
-nécessaire.
-
-## NEAR TERM
-
-Ordre court terme désormais canonique :
+Canonical maintenance checkpoint:
 
 ```text
-GLOBAL MAINTENANCE AUDIT                    PASS / FROZEN
-→ REAL S21 TRACKS                           PASS / FROZEN
-→ RESOURCE UTILIZATION ENFORCEMENT          CURRENT NEXT
-  (SERIALISM_REQUIRES_PROOF, max safe/useful throughput,
-   politique tests/builds Codex comprise)
-→ reprise A6000 v24 au curseur 259
-  → 430 représentations RAW restantes
-  → Features
-  → Visual Index
-  → Candidate
-  → Matcher AUTO / ORB Vulkan si éligible
-  → GV
-  → Tracks
-  → STOP avant Sparse SfM
-→ acquisition physique dédiée de calibration
-→ calibration connue validée
-→ Sparse SfM réel par campagne
-→ fusion / Phase H selon dépendances
-→ Dense / MVS
+tag     global-maintenance-2026-09-01
+commit  b84f860d868c66d9ee84b85ceb1bc6480b95aca5
 ```
 
-### Scratch SSD externe et swap optionnel
+Detailed evidence is retained in
+[Global Maintenance Audit](../architecture/global_maintenance_audit.md).
 
-Le contrôleur physique actuel découvre par UDisks2 une paire exacte de labels
-`LARDON_SWAP`/`LARDON_SCRATCH`, exige des UUID stables et la même identité
-Drive, et ignore les renommages de nœud `/dev`. Modèle, série et vitesse USB
-restent de la télémétrie optionnelle, jamais une identité produit. Les états
-bornés sont `ABSENT`, `DETECTED`, `ENABLING`, `ENABLED`, `IN_USE`, `DRAINING`,
-`SAFE_TO_UNPLUG` et `ERROR`.
+Future reviews are delta-based from this checkpoint for unchanged FROZEN systems:
 
-Les usages futurs possibles sont workspace/scratch et intermédiaires
-dense/mesh/texturing. Leur consommation devra être explicitement possédée par
-les Tasks et passer par les wrappers de lease du Resource Governor ; le
-contrôleur physique et le registre actuel n'inventent aucune éligibilité Task.
-Le swap de sécurité reste une fonction du drain physique explicite et jamais un
-budget de travail.
+```sh
+git diff global-maintenance-2026-09-01...HEAD
+```
 
-- les leases scratch ont une ownership explicite ; `DRAINING` refuse les
-  nouveaux leases et attend leur libération exacte ;
-- le swap n'est arrêté que si son usage est absorbable tout en conservant la
-  réserve hôte de 3 GiB, sans PSI élevé ni swap-in/out actif ;
-- SSD/swap ne sont jamais de la RAM ni une extension du budget scientifique ;
-- latence et débit USB restent distincts de la mémoire ;
-- l'utilisation reste optionnelle ; le Governor demeure l'unique orchestrateur
-  de ressources et seul owner des leases scratch de production ;
-- une action UDisks potentiellement appliquée mais non vérifiable verrouille le
-  tuple physique original ; un remplacement n'obtient aucune autorité ;
-- aucun formatage, partitionnement, fsck, réparation, arrêt forcé ou suppression
-  n'est permis.
+A later checkpoint may add evidence without erasing this maintenance authority.
 
-Le contrôleur, son registre Governor, le worker joinable unique et sa
-présentation/actions F10 sont **CURRENT / VALIDATED OPERATIONAL**. Ce statut ne
-crée aucun consommateur scratch par lui-même.
+The maintenance audit must not be repeated A-to-Z without concrete evidence that an unchanged
+boundary needs to be reopened.
 
-### Publication durable dense / mesh
-
-MVS-M1 reste la frontière scientifique gelée. Les prochaines étapes portent sur
-exécution, reprise, budgets mémoire/stockage et publication atomique :
+## Real S21 Tracks — PASS/FROZEN
 
 ```text
-dense → mesh → refinement → texturing → consolidation → export
+REAL_S21_TRACKS=PASS/FROZEN
 ```
 
-Le scratch devient particulièrement pertinent à cette frontière.
-
-### Workflow TUI-first courant
-
-La TUI expose actuellement état projet, Tasks et contrôles disponibles,
-progression durable/ETA, Governor/ressources, profils optiques et SSD F10.
-ncurses reste au thread principal ; les opérations SSD bornées utilisent un
-seul thread joinable sans devenir un scheduler. La découverte/édition optique
-ne devine aucune identité : objectif manuel sans EXIF, profils/configurations
-immuables, affectations campagne/Capture et sélection de calibration exacte
-restent explicites. Le viewer général, la capture guidance, la consommation
-dense du scratch et les workflows scientifiques aval restent futurs.
-
-### Sources mixtes et multi-ScanSet
-
-Sony A6000, Samsung S21 et futures sources peuvent varier en device, objectif,
-résolution et format. Elles réutilisent le même modèle Capture/Asset/Image, sans
-fork par caméra. Plusieurs ScanSets et représentations sélectionnées alimentent
-l'enrichissement Phase H existant vers un modèle consolidé ; Phase H n'est pas
-redéfini ici.
-
-## LATER
-
-### Ingestion vidéo et keyframes — PLANNED
-
-Une vidéo sera une source d'acquisition portant sa propre provenance, pas un
-pipeline scientifique parallèle :
+Retained source project:
 
 ```text
-asset vidéo SOURCE
-→ timeline et métadonnées déterministes
-→ extraction bornée et déterministe de keyframes
-→ filtres blur/netteté/redondance
-→ diversité de mouvement et de point de vue
-→ représentations frame sélectionnées / candidats Capture
-→ pipeline scientifique Lardon3D existant
+/home/fy59/Documents/Lardon/.real-pre-sfm-2026-08-31/s21-gv-v3
 ```
 
-Le futur contrat devra lier chaque frame à l'asset vidéo source, définir une
-identité d'extraction reproductible et retenir le timestamp exact de chaque
-frame. Les sujets de conception incluent espacement temporel, netteté, rejet
-des frames redondantes, diversité de mouvement/point de vue, traitement borné,
-reprise et admission par le Resource Governor. L'analyse de couverture pourra
-ultérieurement contribuer à la sélection :
+The retained real proof contains:
 
 ```text
-besoin de couverture actuel + trajectoire caméra / frames vidéo
-→ retenir les frames apportant une information géométrique utile
+Feature Sets             2,826
+Candidate Pairs          172,741
+Match Results            172,741
+GVR v3                   172,275
+GEOMETRIC_VERIFIED        24,065
+GEOMETRIC_REJECTED       148,210
+Track Sets                     1
+Tracks                    912,447
+Track observations      2,495,768
+Track length min/max         2/42
 ```
 
-Cette relation reste un sujet de recherche et d'ingénierie ; aucune politique
-de sélection n'est gelée. Il n'existera **aucun second pipeline SfM propre à la
-vidéo** : les keyframes validées rejoindront les mêmes Capture, provenance,
-images, features, matching, tracks, Sparse SfM et étapes aval que les photos.
-
-### Capture Guidance / Live Coverage — PLANNED, LONG TERME
-
-Le but à long terme n'est pas seulement de reconstruire ce qui a été
-photographié, mais de guider activement l'opérateur vers les photographies qui
-manquent encore pour obtenir une reconstruction fiable. Cette capacité est
-postérieure à une reconstruction suffisamment mature ; elle ne fait pas partie
-de S3.
+Canonical persistent Track digest:
 
 ```text
-photographies existantes
-→ reconstruction Lardon3D
-→ analyse de qualité de couverture
-→ régions faibles ou manquantes
-→ localisation de la caméra courante
-→ projection dans la Live View
-→ photographies supplémentaires par l'opérateur
-→ ingestion / mise à jour de reconstruction
-→ mise à jour de couverture ↺
+c30eba192627bf73eaf21ff30d81038d8cc6bbf36a69226f88cdc8c37f7d74a1
 ```
 
-#### Dépendances et niveaux de maturité
+The historical 18.204 GiB Track Builder envelope is retained only as rejected historical evidence.
+The validated compact memory model supersedes it operationally.
 
-L'ordre conceptuel est :
+The proof used no scratch lease.
+
+Sparse SfM and Dense remained unexecuted in this retained real S21 Tracks checkpoint.
+
+## Real A6000 pre-SfM — PASS/FROZEN
+
+Canonical later checkpoint:
 
 ```text
-Sparse SfM
-→ calibration et poses caméra
-→ géométrie dense / mesh lorsque nécessaire
-→ métriques de couverture
-→ viewer et localisation live
-→ Capture Guidance / Live Coverage
+tag  real-a6000-pre-sfm-2026-09-02
+REAL_A6000_PRE_SFM=PASS/FROZEN
 ```
 
-Une première analyse peut s'appuyer sur la géométrie sparse et les tracks ; un
-mesh dense n'est donc pas une condition universelle. Les niveaux suivants sont
-des paliers de roadmap, **pas de nouveaux Gates** :
-
-1. **Offline Coverage Analysis** — calculer les régions faibles ou manquantes
-   depuis une reconstruction existante.
-2. **Coverage Viewer** — afficher géométrie, caméras, qualité de couverture et
-   zones faibles.
-3. **Suggested Supplementary Viewpoints** — associer une région faible à une
-   direction ou un cône de points de vue suggéré.
-4. **Live Camera Localization** — estimer la pose de la caméra courante par
-   rapport à la reconstruction.
-5. **Live Coverage Overlay** — reprojeter la couverture dans le flux vidéo.
-6. **Closed Acquisition Loop** — guider, capturer, transférer, ingérer,
-   reconstruire, réévaluer puis guider à nouveau.
-
-#### Coverage Analysis — PLANNED
-
-L'analyse estimera à quel point une région de surface ou de géométrie
-reconstruite est soutenue par des observations photographiques. Ses entrées
-potentielles comprennent :
-
-- nombre de Captures observant la région, angle et diversité angulaire ;
-- parallaxe disponible et diversité des points de vue ;
-- résolution effective projetée sur la surface ;
-- netteté, exposition et qualité d'image ;
-- support features/tracks et qualité de reprojection/triangulation ;
-- confiance de reconstruction, visibilité et occlusions ;
-- provenance et historique des ScanSets.
-
-Une expression telle que la suivante n'est qu'une intuition
-**NON CONTRACTUELLE** :
+Authoritative durable project:
 
 ```text
-coverage_score = f(
-    observation_count,
-    angle_quality,
-    parallax_quality,
-    effective_resolution,
-    sharpness,
-    viewpoint_diversity,
-    reconstruction_confidence
-)
+/home/fy59/Documents/Lardon/.real-pre-sfm-2026-09-01/a6000-pre-sfm-v23-final
 ```
 
-Les métriques exactes, poids, seuils et normalisations nécessitent une
-validation expérimentale ultérieure. Aucun score scientifique n'est défini ou
-gelé par cette roadmap.
+The directory name is historical. The current Project DB inside the retained final project is v25.
 
-#### Coverage Viewer — PLANNED
-
-Le Coverage Viewer ne sera pas un simple viewer de mesh : il servira à examiner
-la qualité d'acquisition et de reconstruction. Les overlays futurs pourront
-montrer positions, directions et frustums des caméras, surfaces bien ou mal
-couvertes, zones jamais vues, trous de reconstruction, faible nombre
-d'observations, diversité angulaire ou parallaxe insuffisante, support
-features/tracks faible, reconstruction peu fiable et contribution par ScanSet.
-
-Une heatmap pourrait par exemple utiliser rouge pour une photographie
-supplémentaire requise, orange pour un angle médiocre, violet pour une parallaxe
-insuffisante, jaune pour un problème de qualité d'image et l'affichage normal
-pour une couverture satisfaisante. Ces couleurs, catégories et significations
-sont **des exemples seulement** : elles ne sont ni choisies ni gelées.
-
-Lardon3D reste TUI-first. La TUI conserve le contrôle du projet, du workflow et
-du runtime. Une frontière visuelle/acquisition séparée pourra posséder
-l'affichage vidéo, le rendu points/mesh, les frustums, overlays et indications
-live. Son architecture finale n'est pas définie ici ; elle devra préserver
-l'isolation du viewer, consommateur de snapshots validés sans accès aux buffers
-workers mutables.
-
-#### Suggested Supplementary Viewpoints — PLANNED
-
-Le résultat recherché dépasse la coloration d'une surface défaillante :
+The continuation reused the already acquired upstream results:
 
 ```text
-région de surface faible + direction caméra / cône de points de vue suggéré
+ACQUISITION_REPLAY=0
+RAW_REPLAY=0
+FEATURE_REPLAY=0
+VISUAL_INDEX_REPLAY=0
+CANDIDATE_REPLAY=0
+MATCHER_REPLAY=0
 ```
 
-Il pourra exprimer « cette région demande des photographies supplémentaires »,
-« photographier depuis une direction plus oblique », « le nombre d'images est
-suffisant mais la diversité des points de vue ne l'est pas », « cette cavité
-est vue par trop peu de Captures » ou « la géométrie d'acquisition fournit une
-parallaxe insuffisante ». La recommandation devra dériver d'évidence géométrique
-et de reconstruction, jamais du nombre de fichiers, de basenames similaires ou
-d'heuristiques arbitraires déconnectées de la géométrie. L'algorithme
-d'optimisation du point de vue n'est pas encore défini.
-
-#### Live Camera Localization — PLANNED
-
-Live Coverage dépendra de la localisation d'une vue nouvelle/live par rapport
-à une reconstruction existante. Les prérequis probables incluent calibration
-caméra, reconstruction sparse et points 3D existants, extraction de features
-sur la frame live, correspondances 2D↔3D, estimation de pose calibrée, confiance
-de pose et perte/réacquisition gracieuse du tracking. Cette capacité pourra
-réutiliser la géométrie Sparse SfM, mais elle n'est ni conçue ni implémentée à
-ce jour.
-
-#### Live Coverage et boucle d'acquisition — PLANNED
-
-La couche temps réel est distincte de l'analyse offline. Le déroulé cible est :
-
-1. construire une reconstruction initiale et calculer l'évidence de couverture ;
-2. recevoir sur le PC la Live View via une capture HDMI ;
-3. estimer la pose de la caméra courante dans la reconstruction ;
-4. projeter les régions 3D faibles/manquantes dans la frame vidéo ;
-5. indiquer les acquisitions supplémentaires nécessaires pendant que
-   l'opérateur déplace la caméra ;
-6. déclencher une photographie et transférer RAW/JPEG par le chemin
-   d'acquisition ;
-7. faire entrer les nouveaux assets/Captures dans la provenance Lardon3D
-   existante ;
-8. mettre à jour reconstruction et couverture, puis retirer progressivement de
-   l'overlay les régions corrigées.
-
-L'expérience visée est conceptuellement : « les observations
-photogrammétriques sont insuffisantes ici ; prendre une photographie
-supplémentaire approximativement depuis cette direction ».
-
-#### Frontière caméra HDMI / USB
-
-Le Sony A6000 fournit un exemple concret de matériel cible, sans définir une
-architecture scientifique propre à Sony :
+Final retained counts:
 
 ```text
-Sony A6000 ── HDMI → capture device → Live View ───────────┐
-           └─ USB  → contrôle / shutter / RAW+JPEG ───────┤
-                                                          ↓
-                                                     Lardon3D sur PC
-                    live camera pose + reconstruction/geometry/coverage
-                                                          ↓
-                                            reprojection et Live View overlay
+Selected images         689
+Feature Sets            689
+Candidate Pairs         38,420
+Match Results           38,420
+Applicable GVR          37,805
+GEOMETRIC_VERIFIED      10,952
+GEOMETRIC_REJECTED      26,853
+Track Sets                   1
+Tracks                  130,714
+Track observations      318,944
 ```
 
-Le calcul lourd, la reconstruction et le mesh restent sur le PC. La caméra est
-principalement le capteur d'image, la source Live View et un dispositif
-d'acquisition potentiellement contrôlable ; elle ne transporte ni n'exécute la
-reconstruction. HDMI vise une Live View à faible latence. USB pourra selon les
-capacités réelles de l'appareil fournir contrôle, déclenchement, métadonnées et
-transfert RAW/JPEG. Tous les appareils ne partagent pas le même protocole : les
-transports et contrôles spécifiques resteront à la frontière des adaptateurs
-d'acquisition, hors de l'identité Capture gelée et du cœur scientifique.
-
-Sony A6000, Samsung S21/mobile et futures caméras consommeront le modèle commun :
+Geometric Verification v3 fingerprint:
 
 ```text
-Capture physique ↔ assets SOURCE ↔ représentations scientifiques sélectionnées
+6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c
 ```
 
-Capture Guidance consommera le modèle projet/reconstruction commun, sans fork
-scientifique par device.
+The GV continuation completed its durable Match Result cursor and produced zero duplicate GVR
+mappings.
 
-#### Boucle multi-ScanSet / Phase H
+Track Builder published one atomic Track Set. SQL audit established:
 
 ```text
-ScanSet 1
-→ reconstruction
-→ analyse de couverture
-→ zones faibles/manquantes
-→ acquisition supplémentaire
-→ ScanSet 2
-→ ingestion / reconstruction
-→ alignement et enrichissement Phase H
-→ couverture mise à jour
-→ répétition si nécessaire
+duplicate Track observations       0
+repeated-image Tracks              0
+orphan Track observations          0
 ```
 
-Cette boucle est particulièrement importante quand un objet ne peut être
-capturé en une seule passe. Elle réutilise Phase H v1 sans le redéfinir.
+The restart continuation traversed the already completed GVR cursor, produced zero new GVRs and
+reused Track Set 1 without creating duplicate Tracks.
 
-Pour une baie moteur, l'opérateur pourra à terme viser avec l'A6000 une bride,
-une cavité ou une face mal observée mise en évidence dans la Live View, se
-déplacer selon l'indication et ajouter une image avant ingestion et mise à jour
-de la couverture. La valeur pratique est forte lorsque l'accès disparaîtra,
-qu'un moteur ou composant doit être retiré, ou que le démontage modifiera la
-scène : découvrir les photographies manquantes après coup pourrait être coûteux
-ou impossible. Ce scénario motive la direction produit ; ce n'est pas un
-contrat scientifique.
-
-#### État futur et ordre de dépendance
-
-Cette roadmap ne prétend implémenter aujourd'hui ni capture HDMI, contrôle USB,
-pose live, projection de mesh, score ou heatmap de couverture, recommandation
-automatique, ingestion vidéo, sélection de keyframes, ni reconstruction live
-incrémentale. Ces capacités restent planifiées, ultérieures ou exploratoires.
-
-L'ordre demeure sans ambiguïté :
+The retained Governor evidence includes:
 
 ```text
-CURRENT NEXT
-  GLOBAL MAINTENANCE AUDIT                    PASS / FROZEN
-  → REAL S21 TRACKS                           PASS / FROZEN
-  → RESOURCE UTILIZATION ENFORCEMENT          CURRENT NEXT
-  → A6000 PRE-SFM v24 resume from cursor 259
-    → RAW batch
-    → Features
-    → Visual Index
-    → Candidate
-    → Matcher AUTO / validated Vulkan when eligible
-    → GV
-    → Tracks
-    → STOP before Sparse SfM
-  → dedicated physical calibration acquisition
-  → known calibration → real Sparse SfM
-  → multi-campaign registration/fusion
-  → dense / MVS → publication
-→ LATER
-  Coverage Analysis → Coverage Viewer → suggested viewpoints
-  → live localization → HDMI/USB integration → Capture Guidance / Live Coverage
+admissions                     2,714
+compute-pool CPUs                  12
+interactive CPU reserve             4
+final GV window                    16
+swap-in delta                       0
+swap-out delta                      0
 ```
 
-Vidéo/keyframes pourra progresser en parallèle lors d'une phase ultérieure,
-mais réutilisera toujours la même provenance Capture et le même pipeline
-scientifique.
+The reference-host CPU counts are evidence, not portable constants.
 
-- **Maintenance projet** : vérification de provenance, assets orphelins,
-  scrub/réconciliation et réclamation sûre du scratch. Aucun asset immuable
-  partagé n'est supprimé silencieusement.
-- **Exports/publication live** : snapshots validés et consommation sans accès
-  aux buffers workers mutables.
+This checkpoint explicitly stopped with:
 
-## DEFERRED / OPTIONAL
+```text
+sparse_sfm_tasks             0
+sparse_reconstructions       0
+Dense/MVS                    0
+multi-campaign fusion        0
+```
 
-- pools multiples CPU/GPU/IO, parallélisme inter-Tasks et multi-GPU ;
-- DAG général de dépendances et priorités complexes ;
-- infrastructure backend générique et distribution de calcul ;
-- ALIKED tant que provenance modèle, export ONNX et oracle upstream ne sont pas
-  reproductibles.
+Therefore this checkpoint proves the A6000 pre-SfM boundary only.
 
-Le report du parallélisme **inter-Tasks** ne constitue jamais une permission de
-sérialiser accidentellement les unités indépendantes **à l'intérieur d'une Task
-active**. L'unique Queue/Governor et le fanout interne borné suffisent pour
-appliquer `SERIALISM_REQUIRES_PROOF` sans créer un second runtime.
+It does not authorize inferred calibration or imply that real Sparse SfM has run.
 
-Ces idées ne doivent pas devancer l'intégration réelle multi-campagne ni créer
-un second runtime, Governor ou système de persistance.
+## Calibration status
 
-## Principes de séquencement
+Historical S21 and A6000 Engine Bay campaigns remain `CALIBRATION_UNAVAILABLE` for the known-
+calibration Sparse SfM contract.
 
-1. intégrité scientifique et réserve interactive hôte sont inviolables ; à
-   l'intérieur de ces limites, le maximum de débit sûr et utile est obligatoire ;
-2. `SERIALISM_REQUIRES_PROOF` : l'atomicité d'un item ne sérialise pas les items
-   indépendants et toute sous-utilisation durable doit avoir une raison mesurée ;
-3. résultats atomiques et durables avant publication concurrente ; préparation
-   parallèle bornée autorisée lorsque l'égalité exacte est préservée ;
-4. lots bornés, reprise et mémoire honnêtement comptée avant taille de campagne ;
-5. un Task Runtime/Queue et un Resource Governor, sans second scheduler ;
-6. backend GPU validé et utile préféré automatiquement, sans GPU artificiel ;
-7. scratch optionnel sans élargissement implicite des budgets RAM ;
-8. builds/tests/preuves Codex parallèles jusqu'à la réserve hôte lorsqu'ils sont
-   indépendants ; aucune sérialisation ou revalidation lourde par habitude ;
-9. TUI de contrôle avant visualisation riche ;
-10. documentation canonique alignée sur le code validé et revue delta-based
-    depuis `global-maintenance-2026-09-01`.
+This status does not mean source failure, image-quality rejection or software failure.
+
+It forbids bypassing the scientific requirement through:
+
+- pseudo-calibration;
+- EXIF-as-calibration;
+- silent metadata interpolation;
+- silent lens identity inference;
+- silent calibration substitution.
+
+The resulting historical-campaign state remains:
+
+```text
+BLOCKED_BY_KNOWN_CALIBRATION_DATA
+```
+
+S21 Engine Bay is permanently non-retro-calibrable under Calibration Science v1.
+
+Calibration Science v1 defines the physical protocol for future calibration acquisitions.
+
+Calibration Tooling v1 consumes an already acquired Science v1 evidence bundle, validates the bounded
+contract and produces deterministic `L3DCALB1` v1.
+
+Calibration Bootstrap v1 imports the explicit artifact.
+
+Calibration Solver Preflight v1 selects the future external OpenCV 5.0.x solver path. That solver is
+not a runtime dependency and does not itself execute reconstruction.
+
+No calibration component silently turns metadata into scientific calibration.
+
+## Current engineering work
+
+The current repository-maintenance sequence is:
+
+```text
+Documentation Inventory Audit     PASS_WITH_FINDINGS
+-> Documentation Remediation      IN_PROGRESS
+-> Source Comment Audit
+-> Product Definition
+-> prompt.md / prompt/ contract tree
+-> implementation only after explicit human authorization
+```
+
+This work is documentation and contract preparation.
+
+It does not authorize:
+
+- scientific threshold changes;
+- new Project DB schema versions;
+- new Task kinds;
+- Sparse SfM execution;
+- Dense/MVS execution;
+- Viewer implementation;
+- live-capture implementation;
+- Capture Guidance implementation.
+
+## Scientific next dependency
+
+After documentation/product-definition work, the next real scientific dependency for a new
+known-calibration campaign is a dedicated physical calibration acquisition that satisfies
+Calibration Science v1.
+
+The dependency order is:
+
+```text
+dedicated physical calibration acquisition
+-> external solver evidence
+-> Calibration Tooling v1
+-> L3DCALB1 v1
+-> Calibration Bootstrap v1
+-> explicit compatible optical assignment
+-> READY
+-> real Sparse SfM
+-> reconstruction validation
+-> multi-campaign registration / Phase H where applicable
+-> Dense / MVS
+-> mesh / refinement / texturing
+-> consolidation / export
+```
+
+Historical S21/A6000 Engine Bay datasets must not be silently promoted through this sequence if they
+cannot satisfy the frozen calibration contract.
+
+## Optional external SSD / scratch
+
+The existing external SSD controller is a validated physical boundary.
+
+It uses the exact UDisks2 Drive/label/UUID model and the established
+`LARDON_SWAP` / `LARDON_SCRATCH` pairing contract.
+
+The controller and Governor integration are:
+
+```text
+CURRENT / VALIDATED OPERATIONAL
+```
+
+SSD availability does not create Task scratch consumption by itself.
+
+Future scratch consumers must have explicit Task ownership and acquire/release scratch only through
+the validated Governor-owned lease contract.
+
+Scratch is especially relevant to future dense, mesh, refinement and texturing workloads.
+
+Swap remains a safety mechanism and never expands admitted RAM.
+
+No automatic formatting, repartitioning, fsck, force-drain or destructive storage action is implied
+by the roadmap.
+
+## TUI
+
+The TUI is the current operational control center.
+
+It owns project workflow, Task observation, durable progress, Resource Governor observation, optical
+configuration and optional SSD controls.
+
+The canonical repository and UI language is English.
+
+The remaining non-English executable UI strings are remediation work and must be changed only in an
+explicitly scoped UI-language pass.
+
+The TUI remains ncurses/main-thread owned according to its canonical contract.
+
+Rich geometry visualization is a separate future boundary.
+
+## Mixed devices and multiple ScanSets
+
+Sony A6000, Samsung S21 and future cameras reuse the same Capture / Asset / scientific-image model.
+
+No camera-specific fork of scientific identity is allowed.
+
+New cameras and lenses are product onboarding concerns, not reasons to modify scientific source code.
+
+Multiple ScanSets and selected representations may feed the existing Phase H enrichment model when
+their scientific prerequisites are satisfied.
+
+Raw S21 and A6000 projects must not be casually merged. Each campaign is reconstructed under its own
+valid optical/calibration context, then registered or fused at the scientifically correct stage.
+
+## Future product areas
+
+The following areas remain future work until their contracts are explicitly defined and authorized.
+
+### Dense / MVS / mesh / texture / export
+
+MVS-M1 freezes the current external OpenMVS boundary.
+
+Future work includes:
+
+```text
+durable dense execution
+-> restart / resource / scratch ownership
+-> atomic dense publication
+-> mesh
+-> refinement
+-> texturing
+-> consolidation
+-> export
+```
+
+The exact publication, identity and recovery contracts must be defined before implementation.
+
+### Viewer
+
+The future Viewer is a passive consumer of validated project/reconstruction snapshots.
+
+Potential visualization includes:
+
+- sparse points;
+- dense geometry;
+- mesh;
+- cameras and frustums;
+- Track support;
+- reprojection quality;
+- coverage evidence;
+- weak or unseen regions;
+- holes;
+- per-ScanSet contribution.
+
+The final Viewer architecture and UI contract are not yet frozen.
+
+### Offline Coverage Analysis
+
+Coverage Analysis will estimate where additional photographic evidence is useful.
+
+Potential evidence includes:
+
+- observation count;
+- angular diversity;
+- parallax;
+- projected resolution;
+- image quality;
+- Feature/Track support;
+- reprojection / triangulation quality;
+- reconstruction confidence;
+- visibility and occlusion;
+- ScanSet provenance.
+
+No coverage score, weighting or threshold is currently a scientific contract.
+
+### Suggested supplementary viewpoints
+
+A future guidance layer may convert weak coverage into recommendations such as:
+
+```text
+weak region
++ current reconstruction evidence
+-> suggested direction / angle / distance / baseline
+```
+
+Recommendations must derive from geometric evidence, not filename counts, basename similarity or
+unrelated heuristics.
+
+The optimization algorithm is not yet defined.
+
+### Live camera localization
+
+A live image may eventually be localized against an existing reconstruction through a bounded
+camera-localization path.
+
+Likely prerequisites include:
+
+- valid camera calibration;
+- an existing sparse reconstruction;
+- live-frame Features;
+- 2D-to-3D correspondences;
+- calibrated pose estimation;
+- pose confidence;
+- graceful tracking loss and reacquisition.
+
+No live-localization contract is currently frozen.
+
+### Live Coverage / Capture Guidance
+
+The target loop is:
+
+```text
+existing reconstruction
+-> coverage analysis
+-> weak or missing regions
+-> current camera localization
+-> projection into Live View
+-> operator acquires supplementary images
+-> normal Lardon3D ingestion
+-> reconstruction update
+-> coverage update
+```
+
+The operator should ultimately receive actionable guidance about viewpoint, direction, angle,
+distance or baseline rather than only a colored weak region.
+
+This remains future product intent, not implemented behavior.
+
+### Sony A6000 acquisition boundary
+
+The Sony A6000 must remain unmodified.
+
+Its native outputs are the intended integration boundary:
+
+```text
+A6000 -- HDMI --> capture device --> Live View
+     \-- USB  --> control / shutter / metadata / RAW+JPEG transfer where supported
+```
+
+Heavy reconstruction and analysis remain on the PC.
+
+The device-specific adapter may handle transport and control differences, but camera-specific
+transport must not redefine Capture identity or scientific contracts.
+
+No firmware hack or hardware modification is part of the product direction.
+
+### Samsung S21 acquisition boundary
+
+Samsung S21/mobile acquisition will use a device-specific adapter at the acquisition boundary while
+reusing the same Capture, provenance, quality, optics and scientific pipeline.
+
+Its exact live transport/control contract remains to be defined.
+
+### Video and deterministic keyframes
+
+Video is a future acquisition source, not a separate SfM pipeline.
+
+The intended shape is:
+
+```text
+SOURCE video asset
+-> deterministic timeline / metadata
+-> bounded deterministic keyframe extraction
+-> quality / blur / redundancy filtering
+-> selected frame representations / Capture candidates
+-> existing Lardon3D scientific pipeline
+```
+
+Every retained frame must remain traceable to the source video and exact extraction identity.
+
+No keyframe selection science is currently frozen.
+
+### Optics onboarding
+
+The final product must support new camera/lens equipment without source-code changes.
+
+Established product intent includes:
+
+```text
+NEW_CAMERA_REQUIRES_CODE_CHANGE=NO
+NEW_LENS_REQUIRES_CODE_CHANGE=NO
+ELECTRONIC_LENS_WITH_METADATA=SUPPORTED
+MANUAL_LENS_WITHOUT_EXIF=SUPPORTED
+MULTIPLE_LENSES_PER_CAMERA=SUPPORTED
+ZOOM_MULTIPLE_FOCALS=SUPPORTED
+MULTIPLE_OPTICAL_CONFIGURATIONS_PER_PROJECT=SUPPORTED
+SILENT_CALIBRATION_SUBSTITUTION=FORBIDDEN
+SILENT_LENS_IDENTITY_INFERENCE=FORBIDDEN
+OPTICS_TUI_WORKFLOW=REQUIRED
+PROFILE_IMPORT_EXPORT=REQUIRED
+```
+
+The final onboarding UX, aliases, profile import/export and calibration assistant remain part of the
+upcoming PRODUCT_DEFINITION phase.
+
+## Deferred / optional architecture
+
+The following remain deliberately deferred unless later evidence and product definition justify
+them:
+
+- multiple CPU/GPU/I/O pools;
+- general inter-Task parallelism;
+- multi-GPU;
+- a general dependency DAG and complex priorities;
+- a generic backend framework;
+- distributed compute;
+- ALIKED until model provenance, ONNX export and an authoritative reproducible oracle are available.
+
+Deferring inter-Task parallelism does not permit accidental serialism inside an active Task.
+
+The established Queue/Governor plus bounded internal fan-out are sufficient to enforce
+`SERIALISM_REQUIRES_PROOF` without introducing a second runtime.
+
+## Sequencing principles
+
+1. Scientific integrity and the interactive host reserve are inviolable.
+2. Within those boundaries, maximum safe useful throughput is mandatory.
+3. `SERIALISM_REQUIRES_PROOF`.
+4. Per-item atomicity does not imply cross-item serialization.
+5. Deterministic owner-only publication may coexist with bounded parallel preparation.
+6. Durable atomic results and truthful recovery precede concurrency convenience.
+7. Memory, files, threads, processes, temporary storage and scratch ownership remain bounded.
+8. Operational hardware bounds must not silently become scientific dataset-size limits.
+9. One Task Runtime / Queue ownership model and one Resource Governor remain authoritative.
+10. Validated and useful GPU backends are preferred automatically.
+11. Scratch is optional storage, never RAM.
+12. Real-data proofs stop at explicit scientific boundaries.
+13. Historical checkpoint evidence is preserved rather than silently modernized.
+14. Current-state documentation must not present superseded progress snapshots as current work.
+15. Repository documentation, agent contracts, source comments and UI target English.
+16. Future product capabilities must remain clearly marked as future until implemented and validated.
+17. Reviews remain delta-based from the relevant acquired checkpoint unless concrete evidence requires
+    reopening an unchanged FROZEN boundary.
+
+## Current next
+
+The immediate repository work is:
+
+```text
+DOCUMENTATION_REMEDIATION
+-> SOURCE_COMMENT_AUDIT
+-> PRODUCT_DEFINITION
+-> PROMPT_TREE
+```
+
+No new Lardon3D implementation is authorized by this roadmap update.
+
+After those preparation phases, implementation order will be frozen in `prompt.md` and the numbered
+`prompt/` execution contract under explicit human authority.
