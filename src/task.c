@@ -112,6 +112,7 @@ kind_has_validated_cpu_range(const char *task_kind, uint32_t task_kind_version)
         return false;
     }
     return strcmp(task_kind, "features.extract") == 0
+        || strcmp(task_kind, "features.extract.batch") == 0
         || strcmp(task_kind, "features.extract.sift") == 0
         || strcmp(task_kind, "features.extract.rootsift") == 0
         || strcmp(task_kind, "visual_index.update") == 0
@@ -127,7 +128,20 @@ kind_has_validated_batch_range(const char *task_kind, uint32_t version)
      * one-item batch cannot exercise a second participant; Gate G may still
      * reduce that bounded window for capacity or pressure. */
     return task_kind && version == 1
-        && strcmp(task_kind, "candidate_pair.generate") == 0;
+        && (strcmp(task_kind, "candidate_pair.generate") == 0
+            || strcmp(task_kind, "features.extract.batch") == 0);
+}
+
+static bool
+kind_has_coupled_cpu_batch_range(const char *task_kind, uint32_t version)
+{
+    /* Feature batch and Candidate obtain CPU parallelism only across
+     * independent items. A CPU2/batch1 trial is structurally incapable of
+     * measuring either path, so Governor feedback must trial the complete
+     * participant rung without changing scientific ordering or publication. */
+    return task_kind && version == 1
+        && (strcmp(task_kind, "features.extract.batch") == 0
+            || strcmp(task_kind, "candidate_pair.generate") == 0);
 }
 
 static void
@@ -244,6 +258,9 @@ lardon3d_task_create_typed(
                 && kind_has_validated_cpu_range(task_kind, task_kind_version),
             .batch_adaptive = typed
                 && kind_has_validated_batch_range(task_kind, task_kind_version),
+            .cpu_batch_coupled = typed
+                && kind_has_coupled_cpu_batch_range(
+                    task_kind, task_kind_version),
         }},
     };
     copy_text(task->message, sizeof(task->message), "En attente.");
@@ -276,6 +293,9 @@ lardon3d_task_internal_set_capability_envelope(
                 && (!capability->batch_adaptive
                     || capability->backend
                         != LARDON3D_RESOURCE_BACKEND_ORB_VULKAN))
+            || (capability->cpu_batch_coupled
+                && (!capability->cpu_reducible
+                    || !capability->batch_adaptive))
             || (capability->inflight_adaptive
                 && (capability->minimum_inflight_limit == 0
                     || capability->gpu_memory_bytes_per_inflight == 0))
@@ -316,6 +336,9 @@ lardon3d_task_internal_enable_known_capabilities(Lardon3DTask *task)
                 task->task_kind, task->task_kind_version);
         task->capability_envelope.capabilities[0].batch_adaptive =
             kind_has_validated_batch_range(
+                task->task_kind, task->task_kind_version);
+        task->capability_envelope.capabilities[0].cpu_batch_coupled =
+            kind_has_coupled_cpu_batch_range(
                 task->task_kind, task->task_kind_version);
     }
     (void)pthread_mutex_unlock(&task->mutex);

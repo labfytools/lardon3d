@@ -18,6 +18,20 @@ static bool sql(const char *path, const char *text) {
   return sqlite3_close(connection) == SQLITE_OK && code == SQLITE_OK;
 }
 
+static void feature_asset_path(
+    const unsigned char hash[LARDON3D_PROJECT_DB_SHA256_SIZE],
+    char path[LARDON3D_PROJECT_DB_PATH_CAPACITY]) {
+  static const char digits[] = "0123456789abcdef";
+  char hex[LARDON3D_PROJECT_DB_SHA256_SIZE * 2 + 1];
+  for (size_t index = 0; index < LARDON3D_PROJECT_DB_SHA256_SIZE; ++index) {
+    hex[index * 2] = digits[hash[index] >> 4];
+    hex[index * 2 + 1] = digits[hash[index] & 15U];
+  }
+  hex[sizeof(hex) - 1] = '\0';
+  (void)snprintf(path, LARDON3D_PROJECT_DB_PATH_CAPACITY,
+                 "assets/features/%c%c/%s", hex[0], hex[1], hex);
+}
+
 static bool seed_v21(const char *path) {
   Lardon3DProjectDb *database = NULL;
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
@@ -50,6 +64,8 @@ static bool seed_v21(const char *path) {
       "INSERT INTO sparse_calibration_scope_images VALUES(1,1,1);"
       /* This fixture is a true v21 database; future additive objects must not
          remain merely because it was generated from a temporary current DB. */
+      "DROP TABLE feature_extract_batch_tasks;"
+      "DROP TABLE raw_development_batch_tasks;"
       "DROP TABLE capture_calibration_selections;"
       "DROP TABLE optical_calibration_profiles;"
       "DROP TABLE capture_optical_configurations;"
@@ -88,6 +104,29 @@ static bool run(void) {
   migration_result = lardon3d_project_db_open(path, &database, error);
   if (migration_result != LARDON3D_PROJECT_DB_OK)
     fprintf(stderr, "retry migration result=%d error=%s\n", (int)migration_result, error);
+  CHECK(migration_result == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_schema_version(database) ==
+        LARDON3D_PROJECT_DB_SCHEMA_VERSION);
+  CHECK(sql(path, "SELECT 1 FROM raw_development_batch_tasks WHERE 0;"));
+  lardon3d_project_db_close(database);
+  database = NULL;
+  CHECK(sql(path, "DROP TABLE feature_extract_batch_tasks;"
+                  "DROP TABLE raw_development_batch_tasks;"
+                  "UPDATE metadata SET value=23 WHERE key='schema_version';"));
+  CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V24", "1", 1) == 0);
+  CHECK(lardon3d_project_db_open(path, &database, error) != LARDON3D_PROJECT_DB_OK);
+  CHECK(database == NULL);
+  CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V24") == 0);
+  CHECK(sqlite3_open(path, &raw) == SQLITE_OK);
+  CHECK(sqlite3_prepare_v2(raw,
+                           "SELECT value FROM metadata WHERE key='schema_version'", -1,
+                           &query, NULL) == SQLITE_OK);
+  CHECK(sqlite3_step(query) == SQLITE_ROW && sqlite3_column_int(query, 0) == 23);
+  sqlite3_finalize(query);
+  CHECK(sqlite3_close(raw) == SQLITE_OK);
+  migration_result = lardon3d_project_db_open(path, &database, error);
+  if (migration_result != LARDON3D_PROJECT_DB_OK)
+    fprintf(stderr, "v24 retry result=%d error=%s\n", (int)migration_result, error);
   CHECK(migration_result == LARDON3D_PROJECT_DB_OK);
   CHECK(lardon3d_project_db_schema_version(database) ==
         LARDON3D_PROJECT_DB_SCHEMA_VERSION);
@@ -148,6 +187,85 @@ static bool run(void) {
                                                        &execution) == LARDON3D_PROJECT_DB_OK &&
         execution.execution_id == execution_id &&
         execution.stage == LARDON3D_SELECTED_EXECUTION_READY);
+
+  Lardon3DTaskDurableSnapshot batch_snapshot = {
+      .id = 3,
+      .estimate = {.memory_fixed_bytes = 64U * 1024U * 1024U,
+                   .memory_bytes_per_item = 512U * 1024U * 1024U,
+                   .minimum_batch_size = 1,
+                   .maximum_batch_size = 12,
+                   .desired_cpu_threads = 12,
+                   .desired_io_slots = 1,
+                   .task_class = LARDON3D_RESOURCE_TASK_CPU},
+      .saved_state = TASK_PENDING,
+      .recovery_state = TASK_PENDING,
+  };
+  (void)snprintf(batch_snapshot.name, sizeof(batch_snapshot.name), "Feature batch");
+  Lardon3DProjectDbFeatureExtractBatchTask batch = {
+      .task_id = 3,
+      .selected_execution_id = execution_id,
+      .next_item_index = 2,
+      .extractor_version = 1,
+      .max_features = 512,
+      .pyramid_levels = 4,
+      .fast_threshold = 10,
+      .parameter_fingerprint = {7},
+  };
+  (void)snprintf(batch.extractor_kind, sizeof(batch.extractor_kind), "orb");
+  /* An invalid new cursor must roll back both generic and typed state; v25
+     cannot publish a Task whose durable prefix exceeds its immutable domain. */
+  CHECK(lardon3d_project_db_record_feature_extract_batch_task(
+            database, &batch_snapshot, "features.extract.batch", 1, NULL,
+            &batch, 20) == LARDON3D_PROJECT_DB_CONSTRAINT);
+  Lardon3DProjectDbTask absent_batch_task;
+  CHECK(lardon3d_project_db_load_task(database, 3, &absent_batch_task) ==
+        LARDON3D_PROJECT_DB_NOT_FOUND);
+
+  batch.next_item_index = 0;
+  CHECK(lardon3d_project_db_record_feature_extract_batch_task(
+            database, &batch_snapshot, "features.extract.batch", 1, NULL,
+            &batch, 21) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DProjectDbFeatureExtractBatchTask loaded_batch;
+  CHECK(lardon3d_project_db_load_feature_extract_batch_task(database, 3,
+                                                            &loaded_batch) ==
+            LARDON3D_PROJECT_DB_OK &&
+        loaded_batch.selected_execution_id == execution_id &&
+        loaded_batch.next_item_index == 0 &&
+        memcmp(loaded_batch.parameter_fingerprint,
+               batch.parameter_fingerprint, 32) == 0);
+  CHECK(lardon3d_project_db_advance_feature_extract_batch_task(database, 3, 0,
+                                                               1) ==
+        LARDON3D_PROJECT_DB_CONSTRAINT);
+
+  unsigned char source_hash[32] = {0};
+  unsigned char feature_hash[32] = {9};
+  char feature_path[LARDON3D_PROJECT_DB_PATH_CAPACITY];
+  feature_asset_path(feature_hash, feature_path);
+  Lardon3DProjectDbFeatureSet feature_set;
+  CHECK(lardon3d_project_db_register_feature_set(
+            database, 1, "orb", 1, batch.parameter_fingerprint, source_hash,
+            1, 1, 32, feature_hash, feature_path, 32,
+            LARDON3D_DB_FEATURE_ASSET_DURABLE, 3, 22, &feature_set) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_advance_feature_extract_batch_task(database, 3, 0,
+                                                               1) ==
+            LARDON3D_PROJECT_DB_OK &&
+        lardon3d_project_db_advance_feature_extract_batch_task(database, 3, 0,
+                                                               1) ==
+            LARDON3D_PROJECT_DB_OK);
+  /* A lagging generic checkpoint may repeat cursor zero, but the typed prefix
+     remains at one. Changing any immutable ORB field is a durable conflict. */
+  CHECK(lardon3d_project_db_record_feature_extract_batch_task(
+            database, &batch_snapshot, "features.extract.batch", 1, NULL,
+            &batch, 23) == LARDON3D_PROJECT_DB_OK &&
+        lardon3d_project_db_load_feature_extract_batch_task(database, 3,
+                                                            &loaded_batch) ==
+            LARDON3D_PROJECT_DB_OK &&
+        loaded_batch.next_item_index == 1);
+  batch.max_features++;
+  CHECK(lardon3d_project_db_record_feature_extract_batch_task(
+            database, &batch_snapshot, "features.extract.batch", 1, NULL,
+            &batch, 24) == LARDON3D_PROJECT_DB_CONSTRAINT);
   lardon3d_project_db_close(database);
   database = NULL;
 

@@ -38,6 +38,13 @@ enum {
     VISUAL_INDEX_PER_ITEM_BYTES = 2 * 1024 * 1024,
 };
 
+#define RAW_BATCH_LEGACY_PER_ITEM_BYTES \
+    ((UINT64_C(2) * 1024u * 1024u * 1024u) + (UINT64_C(1) * 1024u * 1024u))
+#define RAW_BATCH_CURRENT_PER_ITEM_BYTES (UINT64_C(896) * 1024u * 1024u)
+/* The first v24 implementation persisted sizeof(BatchContext) as fixed
+ * memory. Its public checkpoint ABI made that 4120-byte exact shape durable. */
+#define RAW_BATCH_LEGACY_FIXED_BYTES UINT64_C(4120)
+
 static bool
 estimate_equals(const Lardon3DResourceEstimate *left,
                 const Lardon3DResourceEstimate *right)
@@ -182,6 +189,23 @@ normalize_known_legacy_estimate(const char *kind,
         /* CPU/batch/memory admission is operational, not GVR identity. Accept
          * only the complete frozen serial envelope, normalize it in memory,
          * and never publish an estimate-only checkpoint during recovery. */
+    } else if (strcmp(kind, "raw.develop.batch") == 0) {
+        current = (Lardon3DResourceEstimate) {
+            .memory_bytes_per_item = RAW_BATCH_CURRENT_PER_ITEM_BYTES,
+            .minimum_batch_size = 1,
+            .maximum_batch_size = 8,
+            .desired_cpu_threads = 8,
+            .desired_io_slots = 1,
+            .task_class = LARDON3D_RESOURCE_TASK_MIXED,
+        };
+        historical = current;
+        historical.memory_fixed_bytes = RAW_BATCH_LEGACY_FIXED_BYTES;
+        historical.memory_bytes_per_item = RAW_BATCH_LEGACY_PER_ITEM_BYTES;
+        /* v24 originally persisted this exact 4120-byte owner plus 2 GiB and
+         * 1 MiB stack participant allowance. It is Governor accounting, not
+         * RAW identity or the selected-execution payload. Accept only this
+         * complete legacy shape and normalize it in memory, so recovery can
+         * reach the corrected safe window without rewriting a checkpoint. */
     } else {
         *effective = *durable;
         return true;

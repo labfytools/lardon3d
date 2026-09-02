@@ -73,9 +73,21 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_photo_quality_ta
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_raw_development_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbRawDevelopmentTask *parameters);
+/* Persist generic parent Task state atomically with its immutable selected
+ * execution association. Call only after the selected execution cursor commit
+ * so generic progress can lag but never lead scientific publication. */
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_raw_development_batch_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbRawDevelopmentBatchTask *parameters);
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbFeatureExtractTask *parameters);
+/* Persist the generic checkpoint and typed batch domain/cursor in one SQLite
+ * transaction. Call only after owner-only Feature publication and cursor
+ * advancement, so generic progress may lag but never lead durable work. */
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_batch_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbFeatureExtractBatchTask *parameters);
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_sift_extract_task(
     Lardon3DAppState *state, const Lardon3DTask *task,
     const Lardon3DProjectDbSiftExtractTask *parameters);

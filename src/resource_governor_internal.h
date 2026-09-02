@@ -44,6 +44,11 @@ typedef struct {
     bool preferred;
     bool cpu_reducible;
     bool batch_adaptive;
+    /* Cross-item CPU callbacks cannot exercise a CPU trial unless the same
+     * immutable sequence admits at least that many independent items. The
+     * Governor therefore advances and accepts these two operational limits as
+     * one rung; this property is private and never changes durable science. */
+    bool cpu_batch_coupled;
     /* Current ORB Vulkan batch trials use a longer observation window than
      * generic CPU adaptation. This private operational property is
      * reconstructed with the capability and is never durable/scientific. */

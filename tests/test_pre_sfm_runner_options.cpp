@@ -365,7 +365,89 @@ int main() {
   recovery_entry.task_kind_version = 1;
   CHECK(!geometry_recovery_kind(recovery_entry, recovery_kind));
 
+  Lardon3DProjectDbSelectedExecution selected{};
+  selected.execution_id = 9;
+  selected.stage = LARDON3D_SELECTED_EXECUTION_REPRESENTATIONS;
+  selected.next_item_index = 72;
+  selected.item_count = 100;
+  /* A legacy serial owner is completed only at the exact durable cursor. The
+   * subsequent no-owner decision hands the untouched suffix to one batch. */
+  CHECK(choose_representation_action(
+            selected, RepresentationPendingKind::kLegacySerial) ==
+        RepresentationAction::kRecoverLegacySerial);
+  selected.next_item_index = 73;
+  CHECK(choose_representation_action(selected, RepresentationPendingKind::kNone) ==
+        RepresentationAction::kEnqueueBatch);
+  selected.next_item_index = 0;
+  CHECK(choose_representation_action(selected, RepresentationPendingKind::kNone) ==
+        RepresentationAction::kEnqueueBatch);
+  selected.next_item_index = selected.item_count;
+  selected.stage = LARDON3D_SELECTED_EXECUTION_CALIBRATION;
+  CHECK(choose_representation_action(selected, RepresentationPendingKind::kNone) ==
+        RepresentationAction::kCollect);
+  CHECK(choose_representation_action(selected, RepresentationPendingKind::kBatch) ==
+        RepresentationAction::kRecoverBatch);
+
+  Lardon3DProjectRecoveryEntry feature_pending{};
+  feature_pending.status = LARDON3D_PROJECT_RECOVERABLE;
+  feature_pending.snapshot.recovery_state = TASK_PENDING;
+  std::snprintf(feature_pending.task_kind, sizeof(feature_pending.task_kind),
+                "%s", LARDON3D_FEATURE_EXTRACT_TASK_KIND);
+  feature_pending.task_kind_version = LARDON3D_FEATURE_EXTRACT_TASK_KIND_VERSION;
+  FeaturePendingKind feature_kind{};
+  CHECK(feature_recovery_kind(feature_pending, feature_kind));
+  CHECK(feature_kind == FeaturePendingKind::kLegacySerial);
+  /* Completed representations defer exact Feature owners to extract_features,
+   * which performs the scientific-domain and selected-execution checks. */
+  CHECK(representation_defers_feature_task(selected, feature_pending));
+  selected.stage = LARDON3D_SELECTED_EXECUTION_REPRESENTATIONS;
+  CHECK(!representation_defers_feature_task(selected, feature_pending));
+  selected.stage = LARDON3D_SELECTED_EXECUTION_CALIBRATION;
+  --selected.next_item_index;
+  CHECK(!representation_defers_feature_task(selected, feature_pending));
+  selected.next_item_index = selected.item_count;
+  ++feature_pending.task_kind_version;
+  CHECK(!representation_defers_feature_task(selected, feature_pending));
+  std::snprintf(feature_pending.task_kind, sizeof(feature_pending.task_kind),
+                "%s", LARDON3D_FEATURE_EXTRACT_BATCH_TASK_KIND);
+  feature_pending.task_kind_version =
+      LARDON3D_FEATURE_EXTRACT_BATCH_TASK_KIND_VERSION;
+  CHECK(representation_defers_feature_task(selected, feature_pending));
+  CHECK(feature_recovery_kind(feature_pending, feature_kind));
+  CHECK(feature_kind == FeaturePendingKind::kBatch);
+  feature_pending.status = LARDON3D_PROJECT_RECOVERY_UNKNOWN_TASK_KIND;
+  CHECK(!feature_recovery_kind(feature_pending, feature_kind));
+  feature_pending.status = LARDON3D_PROJECT_RECOVERABLE;
+  std::snprintf(feature_pending.task_kind, sizeof(feature_pending.task_kind),
+                "%s", LARDON3D_TRACK_BUILDER_TASK_KIND);
+  feature_pending.task_kind_version = LARDON3D_TRACK_BUILDER_TASK_KIND_VERSION;
+  CHECK(!representation_defers_feature_task(selected, feature_pending));
+  CHECK(!feature_recovery_kind(feature_pending, feature_kind));
+
   Options options;
+  CHECK(parse_case({"runner", "--resume-representations-existing",
+                    "--project-dir", "/tmp/not-opened",
+                    "--selected-execution-id", "9",
+                    "--stop-after-representations"}, options));
+  CHECK(options.resume_representations_existing &&
+        options.selected_execution_id == 9 &&
+        options.has_selected_execution_id && options.stop_after_representations);
+  for (const char *invalid_id : {"0", "-1", "+1", "01", "1x"}) {
+    options = {};
+    CHECK(!parse_case({"runner", "--resume-representations-existing",
+                       "--project-dir", "/tmp/not-opened",
+                       "--selected-execution-id", invalid_id}, options));
+  }
+  options = {};
+  CHECK(!parse_case({"runner", "--resume-representations-existing",
+                     "--project-dir", "/tmp/not-opened"}, options));
+  options = {};
+  CHECK(!parse_case({"runner", "--resume-representations-existing",
+                     "--project-dir", "/tmp/not-opened",
+                     "--selected-execution-id", "9", "--cpu-budget", "2"},
+                    options));
+
+  options = {};
   CHECK(parse_case({"runner", "--resume-pre-gv-existing", "--project-dir",
                     "/tmp/not-opened"}, options));
   CHECK(options.matcher_mode == MatcherMode::kAuto &&

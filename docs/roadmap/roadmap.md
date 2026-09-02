@@ -12,6 +12,104 @@ doivent rester incrémentaux, bornés, reprenables, durables et admis par l'uniq
 Resource Governor : aucune étape ne peut supposer qu'une campagne entière tient
 en RAM ou termine dans une seule vie de processus.
 
+## POLITIQUE CANONIQUE D'UTILISATION DES RESSOURCES — HUMAN AUTHORITY
+
+La politique d'exploitation est désormais explicite : **Lardon3D doit viser le
+MAXIMUM SAFE USEFUL THROUGHPUT** sur chaque Task de production.
+
+Le Resource Governor réserve d'abord uniquement les ressources nécessaires pour
+que le poste reste normalement utilisable pendant les calculs :
+
+- Arch Linux / Sway et les services normaux du bureau ;
+- Firefox ;
+- lecture audio/musique normale ;
+- usage interactif léger.
+
+Tout CPU, RAM, capacité I/O et accélérateur validé restant appartient au travail
+Lardon3D lorsqu'un travail utile existe. La stabilité du poste est protégée par
+cette réserve interactive et par les signaux de pression ; elle ne justifie plus
+de laisser des ressources sûres et utiles inactives par conservatisme historique.
+
+Sur l'hôte de référence actuel, le résultat normal de cette politique est
+approximativement :
+
+```text
+16 CPU logiques au total
+4 CPU logiques réservés à l'hôte interactif
+12 CPU logiques disponibles au compute-pool
+~3 GiB de MemAvailable conservés comme réserve RAM dure
+Radeon 780M UMA disponible pour les backends GPU validés et utiles
+```
+
+Ces nombres sont des **résultats de l'hôte courant**, jamais des constantes
+produit. Un futur hôte 32 threads ne doit pas hériter d'un plafond 12 ; le
+Governor doit dériver sa réserve et donner le reste au calcul selon topologie,
+affinité, pression et enveloppe réelle de la Task.
+
+La règle canonique est :
+
+```text
+SERIALISM_REQUIRES_PROOF
+```
+
+Une opération atomique par item n'impose pas de sérialiser les items
+indépendants. Une publication owner-only ou ordonnée n'impose pas de sérialiser
+la préparation. Lorsqu'il existe plusieurs unités indépendantes et que la
+science, la persistance et la reprise restent exactes, la Task doit exposer au
+Governor un parallélisme borné.
+
+Un chemin long `CPU1` ou `batch1` avec travail indépendant disponible et
+ressources sûres libres est désormais considéré comme un **défaut opérationnel**
+tant qu'une preuve concrète ne démontre pas l'une des limites suivantes :
+
+- dépendance scientifique ou algorithmique réellement sérielle ;
+- genou de scaling mesuré ;
+- limite mémoire ;
+- saturation I/O ;
+- backend GPU validé rendant des CPU supplémentaires inutiles ;
+- contrainte de publication qui ne peut pas être séparée de la préparation sans
+  casser le déterminisme ;
+- autre limitation matérielle mesurée et documentée.
+
+Le Governor reste l'unique autorité de ressources. L'utilisateur normal ne
+choisit ni CPU, ni workers, ni lot, ni inflight, ni GPU, ni scratch, ni budget
+RAM. Une Task décrit ses minimum/useful/safe, ses coûts fixes/transitoires/par
+participant et ses capacités GPU/I/O ; le Governor choisit le maximum
+sûr **et utile** disponible à l'instant.
+
+La politique GPU est symétrique : un backend de production **VALIDATED AND
+USEFUL** doit être préféré lorsqu'il est disponible et sûr ; aucun backend GPU
+non validé ne doit être inventé pour afficher de l'activité GPU. Candidate,
+Visual Index ou GV peuvent donc rester CPU lorsque leur décision mesurée le
+justifie, tandis qu'ORB Matcher Vulkan reste GPU-first lorsqu'il est éligible.
+
+La RAM doit être utilisée agressivement jusqu'à la réserve interactive ;
+`swap`, zram et scratch ne sont jamais de la RAM admise, et l'UMA est comptée
+exactement une fois contre la RAM hôte. Les signaux PSI et les deltas actifs de
+swap peuvent réduire l'admission ; après disparition de la pression, le
+Governor doit réadmettre les ressources utiles au lieu de rester durablement
+bridé.
+
+Cette politique s'applique aussi au travail d'ingénierie Codex : builds, tests,
+benchmarks et preuves réelles indépendantes doivent utiliser le parallélisme
+sûr disponible plutôt qu'un `-j8`/`--num-processes 1` historique. Un run CPU1
+reste légitime comme cohorte de mesure ou lorsqu'une dépendance concrète
+l'impose, mais jamais comme défaut universel. Les rebuilds, tests lourds,
+revues ou agents coûteux déjà acquis et non affectés par le delta ne doivent pas
+être relancés sans raison. La règle reste : **WORK FIRST, RETURN LAST**, avec
+revue delta-based depuis le checkpoint de maintenance.
+
+Statut de cette décision :
+
+```text
+RESOURCE_UTILIZATION_POLICY=HUMAN_AUTHORITY
+SERIALISM_REQUIRES_PROOF=CANONICAL
+IMPLEMENTATION_AUDIT=REQUIRED_BEFORE_NEXT_LONG_REAL_RUN
+```
+
+Cette autorité rouvre uniquement les **contrats opérationnels de ressources**
+quand ils empêchent cette politique. Elle ne rouvre aucune science FROZEN.
+
 ### Fondations PASS / FROZEN
 
 - Gates A–G Sparse SfM, dont F0, orchestration Task/Project DB et politique
@@ -26,9 +124,11 @@ en RAM ou termine dans une seule vie de processus.
 - Task Runtime, checkpoints atomiques, Queue et Resource Governor :
   [Task](../architecture/task_system.md), [Queue](../architecture/task_queue.md)
   et [Governor](../architecture/resource_governor.md).
-- Project DB v22 gelé, overlay optique additif v23 courant, et S1–S3 Capture / Acquisition Ingestion : provenance
-  Capture/Asset, import capture-safe, publication dérivée, développement RAW,
-  siblings multi-source, évidence S3-D, orchestration S3-E et campagne bornée :
+- Project DB v22 gelé, overlay optique additif v23 gelé et couche opérationnelle
+  additive v24 actuellement en validation pour `raw.develop.batch/1`, ainsi que
+  S1–S3 Capture / Acquisition Ingestion : provenance Capture/Asset, import
+  capture-safe, publication dérivée, développement RAW, siblings multi-source,
+  évidence S3-D, orchestration S3-E et campagne bornée :
   [Project DB et ingestion](../architecture/project_database.md).
 
 ### S3 Capture / Acquisition Ingestion — PASS / FROZEN
@@ -71,8 +171,7 @@ Campagne `Photogrammetrie/2026-08-26_Baie_Moteur_A6000` :
 - plan identique après inversion de l'ordre des racines.
 
 Le stem commun ne prouve jamais une acquisition. Les 953 propositions doivent
-être confirmées et deviennent `CALLER_EXPLICIT`, jamais `STRONG`. La campagne
-complète n'a pas encore été matérialisée.
+être confirmées et deviennent `CALLER_EXPLICIT`, jamais `STRONG`.
 
 ### Limite de reprise DB v19 (historique)
 
@@ -118,7 +217,7 @@ Project DB v20 : A6000 (953 ARW + 953 JPEG, 953 confirmations
 groupes singleton déterministes). Un échantillon borné a exercé deux Captures
 A6000 (JPEG SOURCE puis RAW dérivé) et trois Captures S21, avec ScanSets isolés,
 Queue/Governor, persistance tâche/groupe→Capture et reprise sans duplication.
-La capacité bornée des propositions de revue conserve un préfixe déterministe;
+La capacité bornée des propositions de revue conserve un préfixe déterministe ;
 elle ne limite jamais l'évaluation complète ni le groupement scientifique.
 
 ### État de calibration des campagnes réelles
@@ -232,13 +331,20 @@ responsabilités. L'overlay optique Project DB v23, ajouté ultérieurement, ne
 réinterprète pas cette preuve v22 ; les copies des deux projets migrent avec les
 comptes scientifiques inchangés et les nouvelles tables optiques vides.
 
+Pour A6000, le JPEG caméra pairé reste un SOURCE valide et le proxy rapide de
+Photo Quality, mais la représentation géométrique FROZEN de cette exécution
+sélectionnée reste le PNG déterministe dérivé du RAW (`L3DRAWD1`). Passer cette
+preuve au JPEG caméra nécessiterait une tranche scientifique/calibration séparée
+prouvant l'équivalence exacte ; ce changement n'est pas une optimisation
+opérationnelle ordinaire.
+
 Le Sparse SfM réel final reste `BLOCKED_BY_KNOWN_CALIBRATION_DATA` pour ces
 campagnes ; aucune pseudo-calibration, interpolation de métadonnées ou inférence
 d'identité ne le contourne. Dense, mesh et publication aval ne font pas partie de
 ce jalon pré-SfM. Ce milestone est une intégration réelle, pas une nouvelle
 série de micro-gates S3. Son statut acquis ne rend pas disponibles les données
-de calibration physique manquantes et n'autorise pas à devancer la maintenance
-globale.
+de calibration physique manquantes et n'autorise pas à devancer les dépendances
+scientifiques.
 
 ## INTERNAL PARALLELISM + COMPUTE RESOURCES v1 — PASS / FROZEN
 
@@ -273,83 +379,76 @@ reproductibilité. Les dimensions retenues et toutes les validations v2 sont
 closes.
 
 Le pool CPU12 est validé comme preuve de cet hôte, pas comme plafond produit.
-Le Governor dérive désormais le pool lourd depuis le masque
-permis et les groupes package/core/SMT. Sur l'hôte unrestricted courant, il
-obtient `0-5,8-13` et réserve `6,7,14,15`; un caller déjà précontraint ne subit
-pas une seconde réserve. Le worker Queue seul applique/vérifie son propre
-masque ; aucun TID auxiliaire énuméré n'est muté, car un pidfd ne stabilise pas
-le numéro consommé par `sched_setaffinity(tid)`. Avant tout pthread applicatif
-ou driver, le démarrage établit `MESA_SHADER_CACHE_DISABLE=true`; une valeur
-absente prend ce défaut, `true`/`1` explicites sont conservées et toute autre
-valeur explicite est préservée mais refusée. Cette politique non scientifique
-supprime les helpers de cache Mesa observés qui élargissaient leur masque. Les
-threads runtime restants héritent le compute-pool ; il n'existe plus de sweep,
-latch ou retry auxiliaire et le diagnostic expose la politique réelle.
-Creator/main/TUI reste unrestricted. Les CPU déjà exclus de l'affinité du
-processus comptent dans la réserve hôte ; le fallback count-only ne fabrique
-aucun masque. Le fallback au budget portable ne crée aucune exclusion
-inventée. Cette couture est **PASS / FROZEN** sur le profil validé; ces IDs ne
-sont pas une politique portable. La cible RAM conserve une réserve dure de
-3 GiB de `MemAvailable`; la zone 3–4 GiB est une prudence qui ne soustrait pas
-4 GiB à toute capacité. Les petits hôtes dégradent le budget en conservant au
-moins une unité de calcul. Les PSI CPU/mémoire/I/O et les deltas
-swap-in/swap-out sont des signaux
-actifs ; l'occupation totale du swap reste historique. Admission CPU et lot
-sont indépendantes. Sur la 780M, Hardware Profile classe conservativement comme
-UMA le petit aperture VRAM amdgpu de 512 Mio accompagné d'environ 7,99 Go de
-GTT système ; la capacité rapportée reste observable mais ne devient pas un
-budget séparé. Les coûts GPU sont débités exactement une fois de la RAM hôte.
+Le Governor dérive désormais le pool lourd depuis le masque permis et les
+groupes package/core/SMT. Sur l'hôte unrestricted courant, il obtient
+`0-5,8-13` et réserve `6,7,14,15`; un caller déjà précontraint ne subit pas une
+seconde réserve. Le worker Queue seul applique/vérifie son propre masque ; aucun
+TID auxiliaire énuméré n'est muté. Creator/main/TUI reste unrestricted. Les CPU
+déjà exclus de l'affinité du processus comptent dans la réserve hôte ; le
+fallback count-only ne fabrique aucun masque. La cible RAM conserve une réserve
+dure de 3 GiB de `MemAvailable`; la zone 3–4 GiB est une prudence qui ne
+soustrait pas 4 GiB à toute capacité. Les petits hôtes dégradent le budget en
+conservant au moins une unité de calcul. Les PSI CPU/mémoire/I/O et les deltas
+swap-in/swap-out sont des signaux actifs ; l'occupation totale du swap reste
+historique. Admission CPU et lot sont indépendantes. Sur la 780M, Hardware
+Profile classe conservativement comme UMA le petit aperture VRAM amdgpu de
+512 Mio accompagné d'environ 7,99 Go de GTT système ; la capacité rapportée
+reste observable mais ne devient pas un budget séparé. Les coûts GPU sont
+débités exactement une fois de la RAM hôte.
 
-L'audit Phase 1 couvre les 14 kinds de production et sépare leurs dimensions
-fixes des dimensions réellement adaptables. Il confirme que tous passent par
-l'unique Governor, même les formes fixes, et que le contrat reste immutable
-pendant une séquence. Cette tranche ferme l'enveloppe privée, la sélection AUTO,
-les diagnostics bornés, l'enforcement OpenCV borné au compute-pool, la politique
-d'affinité privée et la réconciliation du contexte retenu des campagnes
-nouvelles ou restaurées. La création/reprise AUTO ne touche plus Vulkan sur le
-main ; le premier begin appartient au worker contraint. Inflight ORB normal est
-maintenant fixé à 1, helpers reste 0; depth 2 reste une capacité privée de
-sûreté/benchmark. La clôture v2 est acquise. Ces choix ne créent aucune limite
-de dataset, identité scientifique ou version Project DB.
+La nouvelle autorité humaine `SERIALISM_REQUIRES_PROOF` **supersède toute
+interprétation** de l'inventaire de maintenance qui ferait d'un ancien
+`CPU1`/`batch1` un plafond permanent. Les preuves scientifiques et résultats de
+la maintenance restent FROZEN ; seules les enveloppes opérationnelles peuvent
+être rouvertes lorsqu'un travail indépendant est inutilement sérialisé. Une
+Task fixe demeure fixe seulement si sa sérialité ou son genou de scaling est
+prouvé. Cette règle doit être appliquée à toutes les Tasks de production avant
+d'engager de nouvelles preuves réelles longues.
 
-La signature durable des nouvelles Tasks ORB normales est maintenant la classe
-`MIXED`, sémantiquement réelle pour une politique susceptible d'exécuter CPU ou
-Vulkan. Elle reconstruit AUTO ; toutes les signatures CPU anciennes/courantes
-restent CPU fixes et Vulkan reste fixe, sans migration DB/codec. La couture
-asynchrone est privée, request-bound et nettoie son slot sur toute sortie. Une
-preuve événementielle bornée établit la soumission du successeur avant la
-publication du prédécesseur pour deux paires 769×769. La rampe ne croît plus sur
-la seule santé : l'adaptation générique exige deux observations par fenêtre,
-tandis que le lot ORB Vulkan en exige huit, avec retour au palier accepté sans
-gain et reset immédiat sous pression. Ces
-éléments sont **PASS / FROZEN** dans les limites validées.
+L'audit Phase 1 couvre les kinds de production de l'époque et sépare leurs
+dimensions fixes des dimensions réellement adaptables. Il confirme que tous
+passent par l'unique Governor, même les formes fixes, et que le contrat reste
+immutable pendant une séquence. Cette tranche ferme l'enveloppe privée, la
+sélection AUTO, les diagnostics bornés, l'enforcement OpenCV borné au
+compute-pool, la politique d'affinité privée et la réconciliation du contexte
+retenu des campagnes nouvelles ou restaurées. La création/reprise AUTO ne
+touche plus Vulkan sur le main ; le premier begin appartient au worker
+contraint. Inflight ORB normal est fixé à 1, helpers reste 0 ; depth 2 reste une
+capacité privée de sûreté/benchmark. Ces choix ne créent aucune limite de
+dataset, identité scientifique ou version Project DB.
 
-Les diagnostics de séquence distinguent maintenant backend sélectionné et
-backend réel ; les participants CPU Matcher restent `cpu_threads` et
-`helpers=0`. Une paire Vulkan inéligible ou en panne est recalculée entièrement
-sur CPU sans preuve partielle. Les extractions ORB/SIFT/RootSIFT testées à
-1/2/4/8/12 consomment leur contrat OpenCV immutable avec sorties égales.
-Le rolling distingue désormais un handle soumis d'une inéligibilité locale et
-n'appelle jamais `finish` sans requête. La panne backend invalide immédiatement
-l'admission partagée sur toute sortie précoce ; seules les reprises AUTO peuvent
-établir cette disponibilité, indépendamment de l'ordre des reprises fixes ou
-historiques. Le statut est **PASS / FROZEN**.
+La signature durable des nouvelles Tasks ORB normales est la classe `MIXED`,
+sémantiquement réelle pour une politique susceptible d'exécuter CPU ou Vulkan.
+Elle reconstruit AUTO ; toutes les signatures CPU anciennes/courantes restent
+CPU fixes et Vulkan reste fixe, sans migration DB/codec. La couture asynchrone
+est privée, request-bound et nettoie son slot sur toute sortie. Une preuve
+événementielle bornée établit la soumission du successeur avant la publication
+du prédécesseur pour deux paires 769×769. La rampe ne croît plus sur la seule
+santé : l'adaptation générique exige deux observations par fenêtre, tandis que
+le lot ORB Vulkan en exige huit, avec retour au palier accepté sans gain et
+reset immédiat sous pression. Ces éléments sont **PASS / FROZEN** dans les
+limites validées.
 
-La boucle privée mesure désormais l'utilisation `/proc/stat` du compute-pool,
+Les diagnostics de séquence distinguent backend sélectionné et backend réel ;
+les participants CPU Matcher restent `cpu_threads` et `helpers=0`. Une paire
+Vulkan inéligible ou en panne est recalculée entièrement sur CPU sans preuve
+partielle. Les extractions ORB/SIFT/RootSIFT testées à 1/2/4/8/12 consomment
+leur contrat OpenCV immutable avec sorties égales. Le rolling distingue un
+handle soumis d'une inéligibilité locale et n'appelle jamais `finish` sans
+requête. La panne backend invalide immédiatement l'admission partagée sur toute
+sortie précoce ; seules les reprises AUTO peuvent établir cette disponibilité,
+indépendamment de l'ordre des reprises fixes ou historiques. Le statut est
+**PASS / FROZEN**.
+
+La boucle privée mesure l'utilisation `/proc/stat` du compute-pool,
 `MemAvailable`, PSI mémoire/I/O `some/full`, deltas swap actifs, RSS/HWM observé
 et GPU busy DRM, avec `unknown` sur absence ou parse non strict. Le backend
-Vulkan fournit des compteurs cumulatifs bornés de submit/complétion/fence/
-readback/GPU/starvation/panne/discard ; Matcher agrège en plus CPU et publication
-par séquence. Le diagnostic est tirable par numéro de série, sans log ncurses ni
-histoire persistée. Les CPU réductibles progressent par puissances de deux vers
-la capacité exacte du kind/compute-pool après deux observations de baseline et
-deux gains d'au moins 5 % ; CPU et lot ne changent
-jamais dans le même essai. Sous pression, une admission adaptative encore
-permise réserve immédiatement CPU1 et lot minimum. Feature/SIFT/RootSIFT ne
-comptent un item qu'après extraction et publication durable propre ; READY,
-`ALREADY_PRESENT` et publication incertaine comptent zéro, comme un segment
-Visual Index non durable.
-Candidate mesure chaque séquence. Un
+Vulkan fournit des compteurs cumulés bornés de submit/complétion/fence/readback/
+GPU/starvation/panne/discard ; Matcher agrège en plus CPU et publication par
+séquence. Le diagnostic est tirable par numéro de série, sans log ncurses ni
+histoire persistée. Les CPU réductibles progressent vers la capacité exacte du
+kind/compute-pool selon les observations de scaling ; sous pression, l'admission
+se réduit puis doit pouvoir remonter. Candidate mesure chaque séquence. Un
 fallback réel annule l'essai Vulkan au lieu d'empoisonner sa baseline. Cette
 implémentation est **PASS / FROZEN** sans ajouter de helper GPU.
 
@@ -359,105 +458,55 @@ digest `7a9dbc38a23a600379167d55e24836b7acbb22eea25573e7440bdc9e4602b3b3`.
 La starvation depth 1 (53,847 s sur 74,613 s, GPU busy max 25 %) motive deux
 slots bornés mais ne constitue pas une mesure depth 2. Le backend partage
 device/pipeline/layout/cache et duplique seulement 640 Kio de payload,
-command/fence/descriptors/query par slot. Le payload mappé suit désormais
-exactement la capacité de séquence admise : zéro avant initialisation, 640 Kio
-à depth 1 et 1,25 Mio uniquement pendant un contrôle privé depth 2, avec retour
-à 640 Kio avant la prochaine admission depth 1. L'enveloppe normale n'essaie
-plus inflight 2. Les générations de requête ne bouclent pas; un slot épuisé est
+command/fence/descriptors/query par slot. Le payload mappé suit exactement la
+capacité de séquence admise : zéro avant initialisation, 640 Kio à depth 1 et
+1,25 Mio uniquement pendant un contrôle privé depth 2, avec retour à 640 Kio
+avant la prochaine admission depth 1. L'enveloppe normale n'essaie plus
+inflight 2. Les générations de requête ne bouclent pas ; un slot épuisé est
 retiré définitivement.
 
 Le harness réel a exécuté le corpus 4113 paires pour le contrôle synchrone,
 rolling depth 1 et l'A/B forcé depth 1/depth 2. L'ABBA forcé donne
 54,661652238 et 55,797311953 paires/s (+2,077617 %, sous le deadband 5 %).
-Chaque run porte 4113 paires durables; le débit combiné est
+Chaque run porte 4113 paires durables ; le débit combiné est
 `(2 * 4113 * 1e9) / somme(wall_ns)`, pas la moyenne des débits par run. Les
 walls bruts 75326831673/75162582080 et 73662096698/73764360098 ns donnent les
-moyennes 75,244706877/73,713228398 s. Fence vaut 6,0684/3,6776 s, starvation 54,4534/50,1465 s,
-publication 29,2582/30,0548 s, submit CPU 0,2655/0,3818 s, readback
-0,0460/0,0873 s et GPU busy max 23/24 %. Les quatre exécutions conservent le
-digest `7a9dbc38a23a600379167d55e24836b7acbb22eea25573e7440bdc9e4602b3b3`, quatre
-séquences de fallback local par exécution et zéro panne/discard. Depth 2 est donc
-**REJECTED_WITH_MEASURED_REASON** pour la politique normale :
-`DEPTH_MAX_VALIDATED_SAFETY=2`, `DEPTH_MAX_USEFUL=1`. Une comparaison
-whole-corpus adaptative antérieure (+1,12 %) ne séparait pas les changements de
-contrat; l'ABBA ci-dessus la remplace comme décision de profondeur. Le
-répertoire retenu est
-`/home/fy59/Documents/Lardon/.real-pre-sfm-2026-08-30/governor-v2-evidence/`,
-avec `forced-depth1-a.stdout.jsonl`, `forced-depth1-b.stdout.jsonl`,
-`forced-depth2-a.stdout.jsonl` et `forced-depth2-b.stdout.jsonl`. Le
-mode Matcher par défaut est AUTO/rolling ; CPU et Vulkan explicites restent des
-overrides. Un contrôle synchrone fence par fence est compilé seulement dans le
-runner/test, absent de `lardon3d`, non persisté et non applicable à une reprise
-Matcher pendante. Les fixtures et ces deux exécutions établissent l'égalité
-exacte des sorties; les chiffres depth 1 sont rapportés ci-dessus. Le runner émet
-des diagnostics JSON échantillonnés sans prétendre voir chaque séquence, plus
-un agrégat Governor fixe exact pour les compteurs enregistrés. Il valide la
-bijection Candidate Pair/Match Result, les assets et le curseur, puis produit le
-digest canonique de comparaison `L3DMRD1`, qui exclut IDs Task, timestamps et
-choix opérationnels. Ces preuves ferment **PASS / FROZEN** sans promouvoir
-depth 2 dans AUTO normal.
+moyennes 75,244706877/73,713228398 s. Fence vaut 6,0684/3,6776 s, starvation
+54,4534/50,1465 s, publication 29,2582/30,0548 s, submit CPU 0,2655/0,3818 s,
+readback 0,0460/0,0873 s et GPU busy max 23/24 %. Les quatre exécutions
+conservent le digest `7a9dbc38a23a600379167d55e24836b7acbb22eea25573e7440bdc9e4602b3b3`,
+quatre séquences de fallback local par exécution et zéro panne/discard. Depth 2
+est donc **REJECTED_WITH_MEASURED_REASON** pour la politique normale :
+`DEPTH_MAX_VALIDATED_SAFETY=2`, `DEPTH_MAX_USEFUL=1`.
 
-Le runner possède maintenant, dans ce seul target, `--matcher-inflight 1|2` :
-AUTO rolling fixe batch 2 et min=max inflight pour permettre la mesure du même
-binaire à profondeur 1 puis 2, en n'exposant que la capacité Vulkan forcée.
-`--matcher-batch 2|4|8|12`, valable seulement avec inflight et AUTO rolling,
-fixe aussi min=max batch pour la prochaine matrice contrôlée.
-Synchronous reste depth 1. Le Governor conserve son admission et sa charge UMA;
-GPU budget zéro ou capacité GPU/backend/mémoire indisponible échoue au lieu de
-sélectionner CPU. La valeur n'est ni persistée ni scientifique,
-est refusée sur une Task pendante, restaurée dans l'environnement à toute sortie
-et émise comme `1`, `2` ou `null` dans les résumés/agrégats. Le runner valide le
-contrat exact et zéro panne/discard/pending; seule l'inéligibilité locale peut
-produire un fallback CPU complet. La production compte désormais chaque item
-exactement une fois après publication durable dans local-ineligible,
-backend-failure ou other; une admission CPU normale reste à zéro. Le compteur
-est incrémenté immédiatement et reste visible si une paire suivante échoue ou est
-annulée, sans valider ni entraîner la séquence incomplète; son high-water mark
-de déduplication reste privé et non persisté. L'égalité
-inter-cohortes porte sur les items locaux, pas sur les séquences dont le nombre
-dépend du batch. Une panne/raison autre, ou une panne tardive, invalide la
-cohorte; la Task de benchmark échoue après checkpoint de toute preuve CPU déjà
-durable. Les fixtures
-établissent l'égalité exacte rolling1/rolling2/synchrone1 et des batches
-2/4/8/12 sur fixture, avec le même compte de 29 items locaux malgré des comptes
-de séquences différents. Les logs corpus préliminaires
-`forced-batch2-current.stdout.jsonl` et `forced-batch4.stdout.jsonl` couvrent
-les mêmes 4113 IDs/digest mais portent quatre contre trois séquences locales :
-ils sont conservés comme preuve que l'ancien comparateur était invalide et ne
-participent pas à la décision. Les huit runs item-valides
-`forced-batch{2,4,8,12}-items{,-b}.stdout.jsonl` publient chacun 4113 paires,
-six items locaux, zéro panne/autre et le même digest. Leurs débits combinés
-sont 54,180767704, 66,094373197, 74,784998723 et 76,755814095 paires/s. Batch
-4 puis 8 gagnent +21,988624373 % et +13,148812987 %; batch 12 ne gagne que
-+2,635308425 %, sous le deadband 5 %. AUTO normal suit donc
-`BATCH_MAX_USEFUL=8`; batch 12 reste une capacité privée sûre
-`REJECTED_WITH_MEASURED_REASON`.
-Le contrôle de production sans override
-`short-auto-batch8-governor-v2.stdout.jsonl` atteint réellement
-`1 → 2 → 4 → 8`, puis publie 4113/4113 résultats à 76,072 paires/s avec le
-même digest, six fallbacks locaux, zéro panne/discard, inflight 1 et helpers 0.
-La preuve de fermeture S21
-`final-s21-auto.stdout.jsonl` exécute ensuite le chemin production normal sur
-172 741 Candidate Pairs : 172 741 Match Results, zéro doublon, curseur complet,
-digest `e5128a2e599ff593c4f79850e067254b1f249d19e8480a44973306b1af250f70`
-et 73,649 résultats durables/s. AUTO choisit Vulkan sur toutes les admissions,
+Les huit runs item-valides `forced-batch{2,4,8,12}-items{,-b}.stdout.jsonl`
+publient chacun 4113 paires, six items locaux, zéro panne/autre et le même
+digest. Leurs débits combinés sont 54,180767704, 66,094373197, 74,784998723 et
+76,755814095 paires/s. Batch 4 puis 8 gagnent +21,988624373 % et
++13,148812987 % ; batch 12 ne gagne que +2,635308425 %, sous le deadband 5 %.
+AUTO normal suit donc `BATCH_MAX_USEFUL=8`; batch 12 reste une capacité privée
+sûre `REJECTED_WITH_MEASURED_REASON`. Le contrôle de production sans override
+`short-auto-batch8-governor-v2.stdout.jsonl` atteint réellement `1 → 2 → 4 → 8`,
+puis publie 4113/4113 résultats à 76,072 paires/s avec le même digest, six
+fallbacks locaux, zéro panne/discard, inflight 1 et helpers 0.
+
+La preuve de fermeture S21 `final-s21-auto.stdout.jsonl` exécute le chemin
+production normal sur 172 741 Candidate Pairs : 172 741 Match Results, zéro
+doublon, curseur complet, digest
+`e5128a2e599ff593c4f79850e067254b1f249d19e8480a44973306b1af250f70` et
+73,649 résultats durables/s. AUTO choisit Vulkan sur toutes les admissions,
 termine batch 8/inflight 1/helpers 0 et ne compte aucune panne/discard/pending.
 Une admission YELLOW réduit batch 8 à 1, puis les séquences GREEN rétablissent
-1 → 2 → 4 → 8; le gate possède donc aussi une preuve réelle de recovery.
+1 → 2 → 4 → 8 ; le gate possède donc une preuve réelle de recovery.
 
-La poursuite S21 ferme ensuite le point Geometric Verifier v3 sans rejouer le
-Matcher. La Task 2832 consomme les 172 741 Match Results et publie 172 275 GVR
-v3, dont 24 065 acceptés et 148 210 rejetés, avec zéro doublon et curseur
-complet. Le digest Matcher reste
-`e5128a2e599ff593c4f79850e067254b1f249d19e8480a44973306b1af250f70`.
-La seconde reprise crée zéro ligne ; une Task interrompue sur une copie dédiée
-reprend le même ID et converge vers les mêmes lignes exactes. Feature,
-Candidate et Matcher ne sont pas rejoués. Track Builder et Sparse SfM ne sont
-pas exécutés. `REAL_S21_GV_V3=PASS/FROZEN` ; la prochaine tranche scientifique
-S21 commencera donc à Tracks maintenant que la gate de maintenance globale
-ci-dessous est fermée. Tracks n'est pas acquis.
+La poursuite S21 ferme le Geometric Verifier v3 sans rejouer le Matcher. La Task
+2832 consomme les 172 741 Match Results et publie 172 275 GVR v3, dont 24 065
+acceptés et 148 210 rejetés, avec zéro doublon et curseur complet. La seconde
+reprise crée zéro ligne ; une Task interrompue sur une copie dédiée reprend le
+même ID et converge vers les mêmes lignes exactes. Feature, Candidate et
+Matcher ne sont pas rejoués. `REAL_S21_GV_V3=PASS/FROZEN`.
 
-Les gates de fermeture sont acquis :
+Les gates de fermeture acquises incluent :
 
 ```text
 GOVERNOR_CONTROLS_ALL_TASKS=PASS
@@ -489,38 +538,16 @@ REAL_S21_GV_V3=PASS/FROZEN
 FEATURE_REPLAY=0
 CANDIDATE_REPLAY=0
 MATCHER_REPLAY=0
-TRACKS_EXECUTED=0
 SPARSE_SFM_EXECUTED=0
 ```
 
-L'expérience normale est donc : l'utilisateur lance une Task; l'unique
+L'expérience normale est donc : l'utilisateur lance une Task ; l'unique
 Governor choisit et explique le contrat borné de sa prochaine séquence. Aucun
-réglage CPU/GPU/lot/inflight/helper n'est requis en production ordinaire.
-
-L'ordre de travail autorisé à court terme est :
-
-```text
-fondation scientifique pré-SfM courante
-→ INTERNAL PARALLELISM + COMPUTE RESOURCES v1
-  (Candidate, Matcher, Visual Index, audit feature threading,
-   correction progression/Resource Governor, audit GPU)
-→ COMPUTE GOVERNOR v2 / ORB VULKAN ASYNC EXECUTION (PASS / FROZEN)
-→ REAL S21 GV v3 (PASS / FROZEN; arrêt avant Tracks)
-→ GLOBAL MAINTENANCE AUDIT
-  (PASS / FROZEN; validation et revue finale indépendante acquises)
-→ poursuite pré-SfM réelle de S21 à partir de Tracks
-→ acquisition dédiée de calibration
-→ Sparse SfM réel
-→ Dense / MVS
-```
+réglage CPU/GPU/lot/inflight/helper n'est requis en production ordinaire. Avec
+la nouvelle autorité humaine, ce choix doit désormais rechercher explicitement
+le **maximum sûr et utile**, et non conserver une sous-utilisation historique.
 
 ## GLOBAL MAINTENANCE AUDIT — PASS / FROZEN
-
-Le jalon scientifique acquis reste arrêté après GV. Avant Tracks, Sparse SfM
-ou Dense/MVS, la gate de maintenance globale a réconcilié l'architecture, les
-ressources, la persistance et l'observation TUI. Son état et ses preuves
-consolidées sont consignés dans le
-[registre canonique de maintenance](../architecture/global_maintenance_audit.md).
 
 Le checkpoint canonique de revue est le tag
 `global-maintenance-2026-09-01`, au commit
@@ -532,44 +559,30 @@ dépendances traversées. Les systèmes PASS/FROZEN inchangés héritent de la p
 du [registre de maintenance](../architecture/global_maintenance_audit.md) et ne
 sont rouverts que sur preuve concrète ; ne pas répéter un audit global A-à-Z.
 
-Les résultats déjà réglés sont :
+Les résultats acquis restent notamment :
 
 - Project DB v23 ajoute neuf relations optiques sans backfill ni inférence ;
-  les boîtiers, objectifs manuels/électroniques, configurations et calibrations
-  restent distincts, et la sélection de calibration exige une compatibilité
-  exacte et explicite ;
-- le Governor réserve d'abord l'hôte, sans plafond CPU global 12 : réserve de
-  quatre CPU logiques sur hôte capable, groupes cœur/SMT complets lorsque la
-  topologie est fiable, au moins une unité de calcul sur petit hôte, réserve
-  RAM dure 3 GiB et prudence 3–4 GiB, PSI/swap actif et UMA comptée une fois ;
-- Candidate porte une capacité sûre 64, Visual Index 16, ORB/SIFT/RootSIFT sont
-  bornés par le compute-pool, Matcher conserve sa borne intrinsèque sûre 12 et
-  utile 8, et GV conserve son USAC interne sériel mais admet 16 participants
-  sûrs/8 utiles et 16 parents par lot ;
+- le Governor réserve l'hôte sans plafond CPU global 12, avec réserve RAM dure
+  3 GiB, PSI/swap actif et UMA comptée une fois ;
+- Candidate, Visual Index, Feature, Matcher et GV possèdent leurs capacités et
+  décisions GPU mesurées ;
 - le contrôleur SSD UDisks2 optionnel est une frontière physique revue, avec
-  identité Drive+labels+UUID, leases, drain sûr et latch de danger pour action
-  indéterminée. Son état est enregistré auprès du Governor, seul orchestrateur
-  des leases de production ; il n'est ni scheduler ni second Governor ;
-- la TUI est un observatoire/centre de contrôle validé opérationnellement :
-  ncurses main-thread, modèle pur, observation coalescée et bornée, progression
-  durable/ETA, pipeline et ressources honnêtes, profils optiques, layouts
-  100×30/72×20/60×15, repli texte/couleur et F10 SSD asynchrone toujours
-  visible ;
+  identité Drive+labels+UUID, leases et drain sûr ;
+- la TUI est un observatoire/centre de contrôle validé opérationnellement ;
 - la frontière de session détruit/joint la Queue avant Project DB, puis recrée
-  une seule Queue ; l'arrêt global libère les leases Task avant unregister SSD,
-  contrôleur et Governor.
+  une seule Queue.
 
-Les validations finales exécutables sont acquises : build Clang portable
-931/931 + suite 64/64, build Clang Vulkan 939/939 + suite 65/65 sur Radeon
-réelle, ASan/UBSan 64/64 avec la limitation LSan OpenCL externe explicitement
-qualifiée, LSan loader-free 20/20, TSan 14/14 + 220 répétitions, headers publics
-76/76 sur 19 headers modifiés/nouveaux et contrôles ABI/diff/`scan3d`.
-L'unique revue finale indépendante GPT-5.6 SOL/ULTRA a conclu PASS sans finding
-bloquant après avoir indépendamment rejoué le build portable, la suite 64/64,
-15/15 tests focalisés, les 76/76 probes de headers, l'ABI, les négatifs de seams
-production, le SHA du manifest GV retenu et le diff-check. La gate de
-maintenance est donc fermée ; la poursuite réelle depuis Tracks devient la
-prochaine tranche séparée, sans avoir été exécutée par cette synchronisation.
+Le nouvel impératif `SERIALISM_REQUIRES_PROOF` ne nie aucune de ces preuves. Il
+supersède uniquement l'idée qu'un ancien profil opérationnel conservateur serait
+un plafond permanent lorsque de nouvelles preuves réelles montrent du travail
+indépendant et des ressources sûres inutilisées.
+
+Les validations finales exécutables de la maintenance sont acquises : build
+Clang portable 931/931 + suite 64/64, build Clang Vulkan 939/939 + suite 65/65
+sur Radeon réelle, ASan/UBSan 64/64 avec la limitation LSan OpenCL externe
+qualifiée, LSan loader-free 20/20, TSan, headers publics 76/76 et contrôles
+ABI/diff/`scan3d`. La gate de maintenance reste fermée ; les nouvelles
+corrections de ressources sont revues en delta et ne réouvrent pas l'audit A→Z.
 
 ## REAL S21 TRACKS — PASS / FROZEN
 
@@ -606,7 +619,174 @@ runner corrigé. Elle termine `COMPLETE` à 100 % et retrouve le même Track Set
 zéro Track Set. Cette preuve valide la reprise opérationnelle sans rouvrir le
 contrat scientifique Tracks gelé.
 
+## PROJECT DB v24 / RAW BATCH A6000 — IMPLEMENTED / VALIDATION IN PROGRESS
+
+L'autorisation humaine additive v24 est limitée au parallélisme opérationnel du
+développement RAW. Project DB v24 conserve v22/v23 et ajoute uniquement la
+persistance typée `raw_development_batch_tasks` nécessaire au nouveau kind
+`raw.develop.batch/1`. Cette version ne change aucune identité scientifique,
+aucune calibration ni `L3DRAWD1`.
+
+Le pattern de production est :
+
+```text
+une Task owner admise par le Governor
+    → participants RAW indépendants et bornés
+    → join de tous les participants
+    → publication owner-only dans l'ordre des selected_item_index
+    → avance durable du curseur selected_execution
+```
+
+L'atomicité par Capture est conservée ; la sérialisation entre Captures
+indépendantes ne l'est plus. La transition historique `raw.develop/1` →
+`raw.develop.batch/1` reste légitime et ne réécrit aucune ancienne Task.
+
+État durable A6000 au dernier arrêt sûr avant l'audit global d'utilisation des
+ressources :
+
+```text
+Projet:
+/home/fy59/Documents/Lardon/.real-pre-sfm-2026-09-01/a6000-pre-sfm-v23-final
+
+Schema                         v24
+Captures                       953
+GOOD                           689
+SUSPECT                        206
+REJECT                         58
+selected_execution             1
+selected items                 689 RAW_ASSET
+published representations      259
+next_item_index                259
+remaining RAW representations  430
+Features                       0
+Visual Index                   0
+Candidate                      0
+Matcher                        0
+GV                             0
+Tracks                         0
+Sparse SfM                     0
+Dense/MVS                      0
+```
+
+Le digest d'inventaire source pré/post est
+`fa725d8a82b529521134dd600b5cf42ed58ad523108636741a1431441e17b029`.
+Les JPEG caméra et RAW sont tous deux des SOURCE assets explicites par Capture,
+mais cette exécution A6000 FROZEN utilise les PNG déterministes dérivés RAW pour
+la géométrie. Les JPEG restent les proxies de triage ; ils ne remplacent pas
+cette représentation scientifique sans nouvelle tranche d'équivalence
+scientifique/calibration.
+
+La v24 et la Task batch ont déjà passé build normal, matrice ciblée, contrôles
+C17, `git diff --check`, ASan/UBSan ciblé et TSan sur la couture concurrente.
+La preuve réelle complète, l'équivalence finale, l'audit d'utilisation de toutes
+les Tasks affectées et la fermeture documentaire restent à terminer avant de
+marquer cette tranche `PASS/FROZEN`.
+
+## PROJECT DB v25 / FEATURE BATCH — IMPLEMENTED / VALIDATION IN PROGRESS
+
+L'overlay additif v25 ajoute uniquement la persistance typée de
+`features.extract.batch/1`. Il ancre un propriétaire durable à l'ordre immutable
+de l'exécution sélectionnée, au domaine ORB exact et à un curseur monotone. Les
+Tasks `features.extract/1` historiques restent inchangées et sont reprises avant
+le suffixe batch. La préparation inter-images est bornée par le Governor,
+OpenCV reste CPU1 dans chaque participant, et publication/cursor/checkpoint
+restent owner-only et ordonnés. Le build et les tests ciblés sont acquis ; le
+benchmark réel du palier utile et la preuve A6000 restent à exécuter avant toute
+revendication PASS/FROZEN.
+
+## REAL A6000 PRE-SFM — PASS / FROZEN
+
+`REAL_A6000_PRE_SFM=PASS/FROZEN`. La continuation du 2 septembre 2026 utilise
+le projet durable
+`/home/fy59/Documents/Lardon/.real-pre-sfm-2026-09-01/a6000-pre-sfm-v23-final`
+directement à la frontière Match Result acquise. Les 689 Feature Sets, le Visual
+Index complet, les 38 420 Candidate Pairs et les 38 420 Match Results de la
+Task Matcher 170 `COMPLETE/100` sont conservés :
+`FEATURE_REPLAY=0`, `CANDIDATE_REPLAY=0` et `MATCHER_REPLAY=0`. Ni l'acquisition,
+ni RAW, ni les assets/identités amont ne sont réécrits.
+
+La Task GV v3 171 termine `COMPLETE/100`, consomme le curseur Match Result
+jusqu'à 38 420 et publie exactement 37 805 GVR applicables : 10 952
+`GEOMETRIC_VERIFIED` et 26 853 `GEOMETRIC_REJECTED`. Son fingerprint reste
+`6944a471d611d8ffc59dac7cf15a5b79b97e2371d4c51785c477d68c1577f74c`;
+zéro mapping GVR dupliqué est observé. Les diagnostics Governor coalescés
+retiennent 2 714 admissions, le compute-pool de 12 CPU avec 4 CPU réservés,
+une fenêtre finale de 16, RSS/HWM maximal 41 877 504/42 319 872 octets,
+`MemAvailable` minimal 10 555 641 856 octets et des deltas swap-in/out nuls.
+La préparation GV reste dans la forme validée Governor-admise et bornée ; aucune
+nouvelle policy CPU/GPU n'est introduite par ce run.
+
+La Task Track Builder 172 termine `COMPLETE/100` et publie atomiquement le seul
+Track Set 1, de scope 10 952 GVR, avec 130 714 Tracks et 318 944 observations.
+L'audit SQL confirme zéro observation de Track dupliquée, zéro Track contenant
+deux observations de la même image et zéro observation orpheline. La seconde
+continuation crée seulement la Task GV 173, qui traverse le même curseur,
+publie zéro GVR et réutilise Track Set 1 sans créer de Task Track Builder ni
+modifier les 130 714 Tracks. `RESTART_IDEMPOTENCE`, `DETERMINISM`,
+`TRACK_CONFLICT_INVARIANTS` et `RESOURCE_POLICY_ENFORCED` sont donc PASS pour
+cette frontière réelle.
+
+Sparse SfM, reconstruction sparse, Dense/MVS et fusion inter-campagnes restent
+à zéro. Ce gel atteste uniquement le pré-SfM A6000 à travers GV puis Tracks ; il
+ne contourne pas le blocage de calibration réel et ne promeut aucune étape aval.
+
+## RESOURCE UTILIZATION ENFORCEMENT — CURRENT NEXT
+
+Avant de reprendre les 430 RAW restants ou toute autre preuve réelle longue,
+la prochaine tranche opérationnelle doit appliquer la politique canonique à
+l'ensemble des Tasks de production, en revue delta uniquement.
+
+Objectifs :
+
+```text
+RESOURCE_UTILIZATION_POLICY=IMPLEMENTED
+SERIALISM_REQUIRES_PROOF=ENFORCED
+ACCIDENTAL_CPU1_PATHS=0_OR_MEASURED_JUSTIFICATION
+VALIDATED_GPU_BACKENDS=PREFERRED_WHEN_ELIGIBLE
+BUILD_TEST_PARALLELISM=HOST_RESERVE_AWARE
+```
+
+Pour chaque Task, auditer uniquement les dimensions opérationnelles :
+minimum/useful/safe CPU et batch, indépendance des items, séparation
+préparation/publication, coûts RAM par participant, saturation I/O et backend
+GPU validé. Une valeur CPU1/batch1 peut rester seulement avec preuve concrète.
+Il ne faut pas inventer de second scheduler, pool global ou parallélisme
+inter-Tasks pour satisfaire cette politique : le parallélisme interne borné et
+l'unique Queue/Governor restent la voie normale.
+
+Les tests Codex doivent suivre la même règle : build et tests indépendants
+parallèles jusqu'à la réserve interactive ; serialisation uniquement pour
+fixtures partagées, déterminisme scientifique, mémoire/I/O/GPU exclusif,
+sanitizer ou pression mesurée. Les validations acquises et non affectées ne
+sont pas répétées. Les modèles/agents coûteux sont réservés aux vraies
+frontières scientifiques, concurrence/persistance délicate et revue finale
+nécessaire.
+
 ## NEAR TERM
+
+Ordre court terme désormais canonique :
+
+```text
+GLOBAL MAINTENANCE AUDIT                    PASS / FROZEN
+→ REAL S21 TRACKS                           PASS / FROZEN
+→ RESOURCE UTILIZATION ENFORCEMENT          CURRENT NEXT
+  (SERIALISM_REQUIRES_PROOF, max safe/useful throughput,
+   politique tests/builds Codex comprise)
+→ reprise A6000 v24 au curseur 259
+  → 430 représentations RAW restantes
+  → Features
+  → Visual Index
+  → Candidate
+  → Matcher AUTO / ORB Vulkan si éligible
+  → GV
+  → Tracks
+  → STOP avant Sparse SfM
+→ acquisition physique dédiée de calibration
+→ calibration connue validée
+→ Sparse SfM réel par campagne
+→ fusion / Phase H selon dépendances
+→ Dense / MVS
+```
 
 ### Scratch SSD externe et swap optionnel
 
@@ -621,9 +801,8 @@ Les usages futurs possibles sont workspace/scratch et intermédiaires
 dense/mesh/texturing. Leur consommation devra être explicitement possédée par
 les Tasks et passer par les wrappers de lease du Resource Governor ; le
 contrôleur physique et le registre actuel n'inventent aucune éligibilité Task.
-Les quatorze kinds courants ne consomment aucun scratch. Le swap de sécurité,
-lui, reste une fonction du drain physique explicite et jamais un budget de
-travail.
+Le swap de sécurité reste une fonction du drain physique explicite et jamais un
+budget de travail.
 
 - les leases scratch ont une ownership explicite ; `DRAINING` refuse les
   nouveaux leases et attend leur libération exacte ;
@@ -636,14 +815,11 @@ travail.
 - une action UDisks potentiellement appliquée mais non vérifiable verrouille le
   tuple physique original ; un remplacement n'obtient aucune autorité ;
 - aucun formatage, partitionnement, fsck, réparation, arrêt forcé ou suppression
-  n'est permis. La production n'appelle pas `statvfs`; espace total/libre reste
-  `UNKNOWN` quand UDisks ne le fournit pas.
+  n'est permis.
 
 Le contrôleur, son registre Governor, le worker joinable unique et sa
-présentation/actions F10 sont **CURRENT / VALIDATED OPERATIONAL**. Les tests
-emploient un provider factice et ne montent, n'arrêtent ni ne modifient un vrai
-disque. Ce statut ne crée aucun consommateur scratch ; c'est la validation
-consolidée et la revue indépendante ci-dessus qui ont fermé la gate globale.
+présentation/actions F10 sont **CURRENT / VALIDATED OPERATIONAL**. Ce statut ne
+crée aucun consommateur scratch par lui-même.
 
 ### Publication durable dense / mesh
 
@@ -715,8 +891,7 @@ Le but à long terme n'est pas seulement de reconstruire ce qui a été
 photographié, mais de guider activement l'opérateur vers les photographies qui
 manquent encore pour obtenir une reconstruction fiable. Cette capacité est
 postérieure à une reconstruction suffisamment mature ; elle ne fait pas partie
-de S3 et ne remplace pas le prochain milestone d'intégration multi-campagne
-A6000 + S21.
+de S3.
 
 ```text
 photographies existantes
@@ -933,20 +1108,25 @@ L'ordre demeure sans ambiguïté :
 
 ```text
 CURRENT NEXT
-  fondation scientifique pré-SfM courante
-  → INTERNAL PARALLELISM + COMPUTE RESOURCES v1
-  → COMPUTE GOVERNOR v2 / ORB VULKAN ASYNC EXECUTION
-    (PASS / FROZEN; AUTO GPU-first ORB et preuve S21 Matcher complète)
-  → REAL S21 GV v3 (PASS / FROZEN; Tracks/Sparse SfM non exécutés)
-  → GLOBAL MAINTENANCE AUDIT
-    (PASS / FROZEN; gate fermée avant la tranche Tracks séparée)
-  → poursuite pré-SfM réelle de S21 à partir de Tracks
-  → acquisition physique dédiée de calibration
-  → calibration connue validée → Sparse SfM réel multi-campagne
+  GLOBAL MAINTENANCE AUDIT                    PASS / FROZEN
+  → REAL S21 TRACKS                           PASS / FROZEN
+  → RESOURCE UTILIZATION ENFORCEMENT          CURRENT NEXT
+  → A6000 PRE-SFM v24 resume from cursor 259
+    → RAW batch
+    → Features
+    → Visual Index
+    → Candidate
+    → Matcher AUTO / validated Vulkan when eligible
+    → GV
+    → Tracks
+    → STOP before Sparse SfM
+  → dedicated physical calibration acquisition
+  → known calibration → real Sparse SfM
+  → multi-campaign registration/fusion
   → dense / MVS → publication
 → LATER
-  Coverage Analysis → Coverage Viewer → suggestions de points de vue
-  → localisation live → intégration HDMI/USB → Capture Guidance / Live Coverage
+  Coverage Analysis → Coverage Viewer → suggested viewpoints
+  → live localization → HDMI/USB integration → Capture Guidance / Live Coverage
 ```
 
 Vidéo/keyframes pourra progresser en parallèle lors d'une phase ultérieure,
@@ -961,21 +1141,34 @@ scientifique.
 
 ## DEFERRED / OPTIONAL
 
-- pools multiples CPU/GPU/IO, parallélisme inter-tâches et multi-GPU ;
+- pools multiples CPU/GPU/IO, parallélisme inter-Tasks et multi-GPU ;
 - DAG général de dépendances et priorités complexes ;
 - infrastructure backend générique et distribution de calcul ;
 - ALIKED tant que provenance modèle, export ONNX et oracle upstream ne sont pas
   reproductibles.
+
+Le report du parallélisme **inter-Tasks** ne constitue jamais une permission de
+sérialiser accidentellement les unités indépendantes **à l'intérieur d'une Task
+active**. L'unique Queue/Governor et le fanout interne borné suffisent pour
+appliquer `SERIALISM_REQUIRES_PROOF` sans créer un second runtime.
 
 Ces idées ne doivent pas devancer l'intégration réelle multi-campagne ni créer
 un second runtime, Governor ou système de persistance.
 
 ## Principes de séquencement
 
-1. stabilité et intégrité scientifique avant débit ;
-2. résultats atomiques et durables avant parallélisme ;
-3. lots bornés et reprise avant taille de campagne ;
-4. un Task Runtime/Queue et un Resource Governor, sans second scheduler ;
-5. scratch optionnel sans élargissement implicite des budgets RAM ;
-6. TUI de contrôle avant visualisation riche ;
-7. documentation canonique alignée sur le code validé.
+1. intégrité scientifique et réserve interactive hôte sont inviolables ; à
+   l'intérieur de ces limites, le maximum de débit sûr et utile est obligatoire ;
+2. `SERIALISM_REQUIRES_PROOF` : l'atomicité d'un item ne sérialise pas les items
+   indépendants et toute sous-utilisation durable doit avoir une raison mesurée ;
+3. résultats atomiques et durables avant publication concurrente ; préparation
+   parallèle bornée autorisée lorsque l'égalité exacte est préservée ;
+4. lots bornés, reprise et mémoire honnêtement comptée avant taille de campagne ;
+5. un Task Runtime/Queue et un Resource Governor, sans second scheduler ;
+6. backend GPU validé et utile préféré automatiquement, sans GPU artificiel ;
+7. scratch optionnel sans élargissement implicite des budgets RAM ;
+8. builds/tests/preuves Codex parallèles jusqu'à la réserve hôte lorsqu'ils sont
+   indépendants ; aucune sérialisation ou revalidation lourde par habitude ;
+9. TUI de contrôle avant visualisation riche ;
+10. documentation canonique alignée sur le code validé et revue delta-based
+    depuis `global-maintenance-2026-09-01`.

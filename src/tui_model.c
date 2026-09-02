@@ -167,11 +167,13 @@ kind_to_stage(
     if (strcmp(kind, "import.images") == 0
         || strcmp(kind, "acquisition_campaign.run") == 0) {
         *stage = LARDON3D_TUI_STAGE_ACQUISITION;
-    } else if (strcmp(kind, "raw.develop") == 0) {
+    } else if (strcmp(kind, "raw.develop") == 0 ||
+               strcmp(kind, "raw.develop.batch") == 0) {
         *stage = LARDON3D_TUI_STAGE_RAW;
     } else if (strcmp(kind, "photo_quality.triage") == 0) {
         *stage = LARDON3D_TUI_STAGE_QUALITY;
     } else if (strcmp(kind, "features.extract") == 0
+        || strcmp(kind, "features.extract.batch") == 0
         || strcmp(kind, "features.extract.sift") == 0
         || strcmp(kind, "features.extract.rootsift") == 0) {
         *stage = LARDON3D_TUI_STAGE_FEATURES;

@@ -717,7 +717,9 @@ checkpoint_task_internal(Lardon3DAppState *state, const Lardon3DTask *task,
                          const Lardon3DProjectDbGeometricVerifierTask *geometric_parameters,
                          const Lardon3DProjectDbAcquisitionCampaignTask *campaign_parameters,
                          const Lardon3DProjectDbPhotoQualityTask *quality_parameters,
-                         const Lardon3DProjectDbRawDevelopmentTask *raw_parameters) {
+                         const Lardon3DProjectDbRawDevelopmentTask *raw_parameters,
+                         const Lardon3DProjectDbRawDevelopmentBatchTask *raw_batch_parameters,
+                         const Lardon3DProjectDbFeatureExtractBatchTask *feature_batch_parameters) {
   if (!state || !state->project_loaded || !state->project_db) {
     return LARDON3D_PROJECT_TASK_CHECKPOINT_NO_PROJECT;
   }
@@ -813,6 +815,14 @@ checkpoint_task_internal(Lardon3DAppState *state, const Lardon3DTask *task,
           ? lardon3d_project_db_record_raw_development_task(
                 state->project_db, &snapshot, task_kind, task_kind_version, &checkpoint,
                 raw_parameters, now.tv_sec)
+      : raw_batch_parameters
+          ? lardon3d_project_db_record_raw_development_batch_task(
+                state->project_db, &snapshot, task_kind, task_kind_version, &checkpoint,
+                raw_batch_parameters, now.tv_sec)
+      : feature_batch_parameters
+          ? lardon3d_project_db_record_feature_extract_batch_task(
+                state->project_db, &snapshot, task_kind, task_kind_version, &checkpoint,
+                feature_batch_parameters, now.tv_sec)
           : lardon3d_project_db_record_task(state->project_db, &snapshot, task_kind,
                                             task_kind_version, &checkpoint, now.tv_sec);
   if (recorded == LARDON3D_PROJECT_DB_BUSY) {
@@ -841,7 +851,7 @@ checkpoint_task_internal(Lardon3DAppState *state, const Lardon3DTask *task,
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_task(Lardon3DAppState *state,
                                                                      const Lardon3DTask *task) {
   return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                                  NULL, NULL);
+                                  NULL, NULL, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult
@@ -851,7 +861,8 @@ lardon3d_project_checkpoint_image_import_task(Lardon3DAppState *state, const Lar
     return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   }
   return checkpoint_task_internal(
-      state, task, source_path, scanset_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+      state, task, source_path, scanset_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_acquisition_campaign_task(
@@ -859,7 +870,7 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_acquisition_camp
     const Lardon3DProjectDbAcquisitionCampaignTask *parameters) {
   if (!parameters) return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL,
-                                  parameters, NULL, NULL);
+                                  parameters, NULL, NULL, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_photo_quality_task(
@@ -867,7 +878,7 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_photo_quality_ta
     const Lardon3DProjectDbPhotoQualityTask *parameters) {
   if (!parameters) return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                                  parameters, NULL);
+                                  parameters, NULL, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_raw_development_task(
@@ -875,7 +886,7 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_raw_development_
     const Lardon3DProjectDbRawDevelopmentTask *parameters) {
   if (!parameters) return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                                  NULL, parameters);
+                                  NULL, parameters, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_task(
@@ -885,7 +896,7 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_
     return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   }
   return checkpoint_task_internal(state, task, NULL, 0, parameters, NULL, NULL, NULL, NULL, NULL,
-                                  NULL, NULL, NULL);
+                                  NULL, NULL, NULL, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_sift_extract_task(
@@ -893,7 +904,7 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_sift_extract_tas
     const Lardon3DProjectDbSiftExtractTask *parameters) {
   if (!parameters) return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   return checkpoint_task_internal(state, task, NULL, 0, NULL, parameters, NULL, NULL, NULL, NULL,
-                                  NULL, NULL, NULL);
+                                  NULL, NULL, NULL, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_visual_index_update_task(
@@ -903,7 +914,7 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_visual_index_upd
     return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   }
   return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, parameters, NULL, NULL, NULL,
-                                  NULL, NULL, NULL);
+                                  NULL, NULL, NULL, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_candidate_pair_generate_task(
@@ -913,7 +924,7 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_candidate_pair_g
     return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   }
   return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, parameters, NULL, NULL,
-                                  NULL, NULL, NULL);
+                                  NULL, NULL, NULL, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_matcher_task(
@@ -923,7 +934,7 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_matcher_task(
     return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   }
   return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, NULL, parameters, NULL,
-                                  NULL, NULL, NULL);
+                                  NULL, NULL, NULL, NULL, NULL);
 }
 
 Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_geometric_verifier_task(
@@ -933,7 +944,23 @@ Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_geometric_verifi
     return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
   }
   return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, NULL, NULL,
-                                  parameters, NULL, NULL, NULL);
+                                  parameters, NULL, NULL, NULL, NULL, NULL);
+}
+
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_raw_development_batch_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbRawDevelopmentBatchTask *parameters) {
+  if (!parameters) return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
+  return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                                  NULL, NULL, parameters, NULL);
+}
+
+Lardon3DProjectTaskCheckpointResult lardon3d_project_checkpoint_feature_extract_batch_task(
+    Lardon3DAppState *state, const Lardon3DTask *task,
+    const Lardon3DProjectDbFeatureExtractBatchTask *parameters) {
+  if (!parameters) return LARDON3D_PROJECT_TASK_CHECKPOINT_INVALID_TASK;
+  return checkpoint_task_internal(state, task, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                                  NULL, NULL, NULL, parameters);
 }
 
 static bool coherent_recovery(const Lardon3DProjectDbTask *database_task,

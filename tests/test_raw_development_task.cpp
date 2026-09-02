@@ -89,6 +89,13 @@ int main() {
   Lardon3DTask *task = lardon3d_project_create_raw_development_task(
       &state, capture.capture_id, raw_asset.asset_id, &task_id);
   CHECK(task != nullptr && task_id != 0);
+  Lardon3DResourceEstimate single_estimate{};
+  CHECK(lardon3d_task_resource_estimate(task, &single_estimate));
+  CHECK(single_estimate.memory_fixed_bytes >= (UINT64_C(2) << 30) &&
+        single_estimate.memory_bytes_per_item == 0 &&
+        single_estimate.minimum_batch_size == 1 &&
+        single_estimate.maximum_batch_size == 1 &&
+        single_estimate.desired_cpu_threads == 1);
   Lardon3DProjectDbTask generic{};
   Lardon3DProjectDbRawDevelopmentTask typed{};
   CHECK(lardon3d_project_db_load_task(database, task_id, &generic) == LARDON3D_PROJECT_DB_OK);
@@ -153,6 +160,64 @@ int main() {
   CHECK(lardon3d_project_db_record_raw_development_task(
             database, &snapshot, LARDON3D_RAW_DEVELOPMENT_TASK_KIND, 2, nullptr, &typed,
             7) == LARDON3D_PROJECT_DB_INVALID_ARGUMENT);
+
+  /* These minimal selected rows isolate the v24 parent association contract;
+   * item science remains covered by selected-execution tests and the frozen
+   * per-Capture developer tests. */
+  sqlite3 *batch_seed = nullptr;
+  CHECK(sqlite3_open(database_path.c_str(), &batch_seed) == SQLITE_OK);
+  CHECK(sqlite3_exec(batch_seed, "PRAGMA foreign_keys=OFF;"
+                    "INSERT INTO selected_executions(execution_id,quality_task_id,"
+                    "campaign_task_id,stage,next_item_index,item_count,created_at)"
+                    "VALUES(9001,7001,7002,1,0,1,7),(9002,7003,7004,1,0,1,7)",
+                    nullptr, nullptr, nullptr) == SQLITE_OK);
+  CHECK(sqlite3_close(batch_seed) == SQLITE_OK);
+  uint64_t batch_task_id = 0;
+  Lardon3DTask *batch_task = lardon3d_project_create_raw_development_batch_task(
+      &state, 9001, &batch_task_id);
+  CHECK(batch_task != nullptr && batch_task_id != 0);
+  Lardon3DResourceEstimate batch_estimate{};
+  CHECK(lardon3d_task_resource_estimate(batch_task, &batch_estimate));
+  /* The pixel-bounded participant allowance must permit the full safe window
+   * from a 7 GiB post-reserve budget; a fixed context charge would incorrectly
+   * reduce this exact boundary to seven participants. */
+  CHECK(batch_estimate.memory_fixed_bytes == 0 &&
+        batch_estimate.memory_bytes_per_item == (UINT64_C(896) << 20) &&
+        batch_estimate.minimum_batch_size == 1 &&
+        batch_estimate.maximum_batch_size == 8 &&
+        batch_estimate.desired_cpu_threads == 8 &&
+        batch_estimate.memory_bytes_per_item * batch_estimate.maximum_batch_size ==
+            (UINT64_C(7) << 30) &&
+        batch_estimate.desired_gpu_slots == 0 &&
+        batch_estimate.desired_io_slots == 1 &&
+        batch_estimate.task_class == LARDON3D_RESOURCE_TASK_MIXED);
+  Lardon3DProjectDbRawDevelopmentBatchTask batch_typed{};
+  CHECK(lardon3d_project_db_load_raw_development_batch_task(
+            database, batch_task_id, &batch_typed) == LARDON3D_PROJECT_DB_OK &&
+        batch_typed.selected_execution_id == 9001);
+  Lardon3DTaskDurableSnapshot batch_snapshot{};
+  CHECK(lardon3d_task_durable_snapshot(batch_task, &batch_snapshot));
+  Lardon3DTaskKindBinding batch_binding{};
+  CHECK(lardon3d_raw_development_batch_task_reconstruct(
+      &batch_snapshot, &reconstruction, &batch_binding));
+  CHECK(batch_binding.callback != nullptr && batch_binding.userdata != nullptr &&
+        batch_binding.userdata_destroy != nullptr);
+  batch_binding.userdata_destroy(batch_binding.userdata);
+  CHECK(lardon3d_project_db_record_raw_development_batch_task(
+            database, &batch_snapshot,
+            LARDON3D_RAW_DEVELOPMENT_BATCH_TASK_KIND,
+            LARDON3D_RAW_DEVELOPMENT_BATCH_TASK_KIND_VERSION, nullptr,
+            &batch_typed, 7) == LARDON3D_PROJECT_DB_OK);
+  batch_typed.selected_execution_id = 9002;
+  CHECK(lardon3d_project_db_record_raw_development_batch_task(
+            database, &batch_snapshot,
+            LARDON3D_RAW_DEVELOPMENT_BATCH_TASK_KIND,
+            LARDON3D_RAW_DEVELOPMENT_BATCH_TASK_KIND_VERSION, nullptr,
+            &batch_typed, 7) == LARDON3D_PROJECT_DB_CONSTRAINT);
+  CHECK(lardon3d_project_db_load_raw_development_batch_task(
+            database, batch_task_id, &batch_typed) == LARDON3D_PROJECT_DB_OK &&
+        batch_typed.selected_execution_id == 9001);
+  lardon3d_task_destroy(batch_task);
 
   sqlite3 *raw_database = nullptr;
   char update_mismatch_kind[128];

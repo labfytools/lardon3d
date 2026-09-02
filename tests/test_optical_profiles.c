@@ -252,7 +252,8 @@ static bool test_profiles_assignments_and_calibrations(void) {
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
   CHECK(lardon3d_project_db_open(path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
-  CHECK(lardon3d_project_db_schema_version(database) == 23);
+  CHECK(lardon3d_project_db_schema_version(database) ==
+        LARDON3D_PROJECT_DB_SCHEMA_VERSION);
 
   Lardon3DProjectDbScanSet scanset;
   CHECK(lardon3d_project_db_create_scanset(database, "mixed optical campaign",
@@ -1146,6 +1147,7 @@ static bool downgrade_to_v22_fixture(const char *path) {
   return raw_sql(
       path,
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE raw_development_batch_tasks;"
       "DROP TABLE capture_calibration_selections;"
       "DROP TABLE optical_calibration_profiles;"
       "DROP TABLE capture_optical_configurations;"
@@ -1195,7 +1197,8 @@ static bool test_migration_rollback_retry_and_equivalence(void) {
 
   CHECK(lardon3d_project_db_open(migrated_path, &database, error) ==
             LARDON3D_PROJECT_DB_OK &&
-        lardon3d_project_db_schema_version(database) == 23);
+        lardon3d_project_db_schema_version(database) ==
+            LARDON3D_PROJECT_DB_SCHEMA_VERSION);
   Lardon3DOpticalCaptureAssignment migrated_unresolved;
   CHECK(lardon3d_optical_capture_assignment_load(database, 1,
                                                  &migrated_unresolved) ==

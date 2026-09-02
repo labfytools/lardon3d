@@ -4,15 +4,15 @@
 
 - The root `README.md` is the index of project documentation.
 - Canonical documents under `docs/**` define scientific contracts, architecture,
-  FROZEN invariants, persistence semantics, lifecycle state, and roadmap
-  ordering.
+  FROZEN invariants, persistence semantics, lifecycle state, resource policy,
+  and roadmap ordering.
 - Before changing an architectural, scientific, persistence, runtime, or
   resource-sensitive area, identify and read the relevant canonical document
   and its applicable invariants.
 - FROZEN documentation and contracts must never be changed silently to fit an
   implementation.
 - A lower-level implementation convenience never overrides a higher-level
-  canonical contract.
+  canonical contract or an explicit human decision.
 - Lifecycle markers such as `PLANNED`, `IMPLEMENTED`,
   `VALIDATION PENDING`, and `PASS/FROZEN` describe repository state and must
   match actual implementation and validation evidence.
@@ -30,11 +30,12 @@ through an explicitly authorized, explicitly scoped human ticket:
 
 - Gates A–G — PASS/FROZEN
 - Track Model — PASS/FROZEN
-- Track Builder — PASS/FROZEN
+- Track Builder scientific contract — PASS/FROZEN
 - F0 — PASS/FROZEN
 - Phase H v1 — PASS/FROZEN
 - MVS-M1 — PASS/FROZEN
 - Project DB v22 scientific/persistence foundation — PASS/FROZEN
+- Project DB v23 generic optical-context overlay — PASS/FROZEN
 - Calibration Bootstrap v1 — PASS/FROZEN
 - Selected Scientific Execution — PASS/FROZEN
 - Photo Quality Triage / Acquisition Selection — PASS/FROZEN
@@ -43,25 +44,30 @@ through an explicitly authorized, explicitly scoped human ticket:
 - S3 Capture / Acquisition Ingestion — PASS/FROZEN
 - Durable Acquisition-Campaign Execution — PASS/FROZEN
 - Global Maintenance Audit — PASS/FROZEN
+- Real S21 Tracks scientific result — PASS/FROZEN
 
 Detailed subcontracts remain defined by their canonical documents. This file
-does not duplicate every S3 substage, scientific threshold, migration detail,
+must not duplicate every S3 substage, scientific threshold, migration detail,
 or persistence format.
 
-Project DB v23 is the current additive optical-context overlay. It preserves
-the v22 scientific/persistence foundation and must not infer or backfill optical
-identity from historical data. Historical references to older Project DB
-versions remain valid when they describe the actual historical contract or
-migration path. Do not rewrite legitimate v16–v22 history merely because v23
-is current.
+Project DB v25 is the current additive operational schema in the active Feature
+batch tranche. It preserves v24 RAW batch, the v23 optical overlay and the v22
+scientific/persistence foundation. Its authorized purpose is limited to typed
+durable persistence for `features.extract.batch/1` through
+`feature_extract_batch_tasks`; it adds no scientific identity and must not
+reinterpret historical rows. Until the v25/Feature-batch tranche has completed
+its real-data proof and final review, its lifecycle must remain truthful rather
+than being marked `PASS/FROZEN` prematurely. Historical references to older
+Project DB versions remain valid where they describe the actual historical
+contract or migration path.
 
 The global maintenance implementation, fresh portable/Vulkan/sanitizer/
 concurrency validation and independent final review are acquired. Its lifecycle
 is `GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN`. The review independently passed the
-portable build, 64/64 complete suite, 15/15 focused matrix, 76/76 strict header
-probes across 19 modified/new public headers, ABI and production-seam checks,
-retained-manifest verification and diff validation, with zero blocking findings.
-Do not reopen this boundary or infer a new scientific policy from the freeze.
+portable build, complete suites, focused matrices, strict public-header probes,
+ABI and production-seam checks, retained-manifest verification and diff
+validation with zero blocking findings. Do not reopen this boundary or infer a
+new scientific policy from the freeze.
 
 The canonical review checkpoint is tag `global-maintenance-2026-09-01` at
 commit `b84f860d868c66d9ee84b85ceb1bc6480b95aca5`; its detailed evidence is
@@ -88,11 +94,13 @@ When a ticket declares `NO_NEW_SUBSYSTEM`, do not introduce an unrelated:
 - daemon.
 
 This restriction is ticket-scoped. It does not mean that a subsystem already
-present in the canonical architecture can never be used by later authorized
-work.
+present in the canonical architecture can never be used or extended by later
+authorized work.
 
-Never reopen a FROZEN scientific or architectural decision merely to simplify
-an implementation.
+Never reopen a FROZEN scientific decision merely to simplify an
+implementation. Operational/resource contracts may be reopened only by explicit
+human authority and must preserve the scientific result exactly unless the
+human ticket explicitly says otherwise.
 
 ## 3. Scope and Git discipline
 
@@ -157,8 +165,8 @@ require a clean worktree unless the ticket explicitly requires one.
   allocation, solver execution or output mutation; do not alter the FROZEN
   defaults, encodings or fingerprints to accommodate an unsafe cast.
 
-Compiler success alone is not proof of API, ABI, persistence, or scientific
-contract correctness.
+Compiler success alone is not proof of API, ABI, persistence, resource, or
+scientific contract correctness.
 
 ## 5. Identity discipline
 
@@ -217,13 +225,132 @@ explicitly defines such an identity.
 - Extend validated abstractions rather than rewriting validated modules.
 - Reuse the existing Task / Queue / Scheduler / Resource Governor ownership
   model rather than creating parallel runtime infrastructure.
-- System stability and responsiveness take priority over throughput.
+
+### Canonical utilization objective — MAXIMUM SAFE USEFUL THROUGHPUT
+
+Lardon3D is a throughput-oriented workstation application. The Resource
+Governor MUST maximize safe and useful utilization for every production Task
+after preserving only the interactive host reserve needed for normal use of:
+
+- Arch Linux / Sway and normal desktop services;
+- Firefox;
+- normal audio/music playback;
+- lightweight interactive use of the workstation.
+
+All CPU, RAM, I/O capacity and validated accelerator capacity beyond that
+interactive reserve belongs to the active Lardon3D workload when useful work
+exists.
+
+On the current reference host, the normal observed policy outcome is
+approximately:
+
+```text
+16 logical CPUs total
+4 logical CPUs reserved for the interactive host
+12 logical CPUs available to the compute pool
+~3 GiB MemAvailable preserved as the hard RAM reserve
+Radeon 780M UMA available to validated/useful GPU backends
+```
+
+These values are reference-host outcomes, NOT portable constants. Topology,
+process affinity, smaller hosts, memory pressure, I/O pressure and future
+hardware must be handled dynamically. A future 32-thread host must not inherit a
+12-thread product ceiling merely because the reference host exposed 12 compute
+threads.
+
+The optimization target is:
+
+```text
+MAXIMUM SAFE USEFUL THROUGHPUT
+```
+
+It is NOT:
+
+```text
+minimum resource usage
+fixed CPU counts
+CPU/GPU utilization percentage for its own sake
+preserving historical CPU1/batch1 descriptors without evidence
+```
+
+The Governor remains the sole production resource authority. Normal users do
+not choose CPU count, worker count, batch, inflight depth, GPU backend, scratch
+mode, or RAM budget for authoritative execution.
+
+A production Task may deliberately use less than the currently available
+compute pool only when concrete evidence establishes at least one relevant
+constraint, such as:
+
+- true scientific or dependency serialism;
+- measured useful-scaling knee;
+- memory bound;
+- I/O saturation;
+- validated GPU execution making additional CPU work useless;
+- deterministic publication constraint that cannot be separated safely from
+  preparation;
+- another explicit and measured resource limitation.
+
+The reason must be represented by the Task/Governor contract or canonical
+resource documentation where non-obvious. A historical descriptor by itself is
+not evidence.
+
+### SERIALISM_REQUIRES_PROOF
+
+`SERIALISM_REQUIRES_PROOF` is canonical operational policy.
+
+Per-item atomicity does NOT imply cross-item serialization. Owner-only or
+ordered durable publication does NOT imply serial preparation. When multiple
+independent work units exist and exact science/persistence semantics are
+preserved, the Task must expose bounded concurrency to the Governor.
+
+A long-running `CPU1` or `batch1` path with independent executable work and
+available safe resources is an operational defect until one of the documented
+measured limitations above proves otherwise.
+
+Do not solve this by creating another scheduler, uncontrolled worker pool,
+unbounded `std::async`, detached threads, or resources outside Governor
+accounting. Prefer the established bounded pattern where appropriate:
+
+```text
+one admitted owner Task
+    -> bounded independent participants/preparation
+    -> join all participants
+    -> deterministic owner-only publication
+```
+
+Every participant must be accounted, bounded, cancellable and joined. Shared
+SQLite access must preserve the existing ownership/serialization contracts.
+
+### CPU, GPU, RAM and I/O policy
+
+- CPU: expose truthful minimum/useful/safe concurrency and allow Governor to use
+  the largest currently safe/useful value. Do not hardcode the reference-host
+  12-thread result.
+- GPU: a validated AND useful production GPU backend MUST be preferred when it
+  is available and Governor-safe. Do not invent or promote an unvalidated GPU
+  path merely to make the GPU busy.
+- RAM: use available memory aggressively for useful work while preserving the
+  hard interactive reserve, approximately 3 GiB `MemAvailable` on the reference
+  host. The 3–4 GiB band is a pressure/conservatism zone, not a permanent extra
+  1 GiB subtraction from every Task.
+- UMA: iGPU allocations count exactly once against host RAM.
+- swap/zram: pressure and safety mechanisms, never admitted working RAM.
+- scratch SSD: optional external storage, never RAM. A Task may consume it only
+  through an explicitly validated Governor-owned scratch contract.
+- I/O: if additional concurrency no longer improves useful throughput because
+  storage or another I/O boundary is saturated, the measured knee is the right
+  useful limit. Do not force CPU saturation for appearance.
+- Pressure: CPU/memory/I/O PSI and active swap-in/out deltas may reduce
+  admission. When pressure clears, useful resources must be re-admitted rather
+  than remaining permanently throttled.
+
+System responsiveness is therefore protected by the explicit host reserve and
+pressure feedback; it is not a justification for leaving additional safe/useful
+compute idle.
+
 - Bound memory, buffers, files, descriptors, processes, threads, captured
-  output, parser work, temporary storage, and staging reasonably for the
+  output, parser work, temporary storage, and staging honestly for the
   operation.
-- Memory shared with an iGPU counts against host RAM.
-- zram and swap are pressure/safety mechanisms, not normal working-memory
-  budgets.
 - An operational hardware/resource bound must not accidentally become a
   scientific dataset-size limit.
 - Do not invent a new global resource subsystem inside a ticket that defers it.
@@ -237,12 +364,16 @@ Resource-sensitive work must identify, where relevant:
 
 - resource owner;
 - admission point;
-- bound or budget;
+- minimum/useful/safe CPU and batch capability;
+- fixed/per-participant/transient memory budget;
 - reservation lifetime;
 - release point;
 - failure cleanup;
 - cancellation cleanup;
-- whether the bound is operational or scientific.
+- I/O/scratch ownership;
+- validated GPU capability;
+- whether a bound is operational or scientific;
+- measured reason for intentional under-utilization.
 
 The reviewed external USB SSD controller is the authorized physical-lifecycle
 boundary for the exact UDisks Drive/label/UUID contract. Its validated snapshot
@@ -251,11 +382,10 @@ production orchestrator for scratch-lease acquire/release. The controller does
 not replace the Governor or invent Task scratch eligibility, and swap/scratch
 never become RAM. The application lifetime order is strict: destroy/join the
 Queue so every Task lease is released, checked-join/unregister the SSD binding,
-destroy the controller, then destroy the Governor. The current fourteen Task
-kinds have no scratch consumer, so availability is capability, not fabricated
-usage. Do not add ad-hoc discovery, mounting, formatting, `swapon`, cleanup,
-force-drain, shell commands, or a second resource/scheduling subsystem outside
-the reviewed controller/Governor APIs.
+destroy the controller, then destroy the Governor. SSD availability is a
+capability, not fabricated Task usage. Do not add ad-hoc discovery, mounting,
+formatting, `swapon`, cleanup, force-drain, shell commands, or a second
+resource/scheduling subsystem outside the reviewed controller/Governor APIs.
 
 Snapshot conversion is fail-closed by physical state. Any pairing or authority
 requires current detection of the Drive and both UUID-bearing partitions,
@@ -426,7 +556,8 @@ comment.
 Where relevant, comments must preserve the established distinction between:
 
 - immutable SOURCE RAW;
-- deterministic DERIVED representation;
+- camera JPEG SOURCE;
+- deterministic DERIVED RAW representation;
 - RAW Policy v1;
 - L3DRAWD1 identity;
 - metadata-only acquisition processing;
@@ -437,6 +568,12 @@ Where relevant, comments must preserve the established distinction between:
 - primary MPF APP2 evidence;
 - bounded secondary JPEG validation;
 - zero-only permitted MPF gaps/trailer.
+
+For the current A6000 selected scientific execution, paired camera JPEGs are
+valid Capture source assets and preferred fast proxies for Photo Quality, but
+the FROZEN geometry representation remains deterministic RAW-derived PNG. Do
+not substitute camera-JPEG geometry without a separately authorized and proven
+scientific/calibration equivalence tranche.
 
 Do not imply that metadata validation performs pixel decoding when it does not.
 
@@ -454,6 +591,8 @@ In particular:
 - Resource Reservation belongs to the currently admitted bounded execution.
 - `sequence_break` is an execution boundary that releases/re-establishes
   admission according to runtime semantics.
+- Per-item atomicity does not imply cross-item serialization.
+- Serial publication may coexist with Governor-admitted parallel preparation.
 
 Do not imply that a long campaign reserves resources for its entire lifetime
 when execution is group-bounded.
@@ -466,16 +605,18 @@ resource ownership understandable from source.
 Where applicable document:
 
 - RAM ownership/bound;
-- CPU admission;
+- CPU minimum/useful/safe admission;
 - GPU admission;
 - I/O ownership;
 - process/thread count;
+- per-participant memory;
 - file-descriptor lifetime;
 - temporary/scratch storage ownership;
 - reservation lifetime;
 - release point;
 - failure cleanup;
-- cancellation cleanup.
+- cancellation cleanup;
+- measured scaling knee or reason for serial execution.
 
 An operational hardware/resource bound MUST NOT accidentally become a
 scientific dataset-size limit.
@@ -502,6 +643,12 @@ The residual pre-return S3-E crash window remains intentional and documented:
 if S3-E creates a Capture internally and the process dies before S3-E returns
 the `capture_id`, campaign execution must not guess that Capture identity.
 
+For `raw.develop.batch/1`, typed `task_id -> selected_execution_id` persistence
+must remain distinct from generic Task runtime state. Independent RAW
+participants may prepare concurrently, but owner publication and selected-item
+cursor advancement remain deterministic and ordered by the selected execution
+contract.
+
 ### C / C++ ABI boundaries
 
 Where C++ implements a public C interface or C Task callback, comments should
@@ -524,7 +671,8 @@ Comments should state WHAT CONTRACT the fixture proves, for example:
 - ambiguity;
 - scientific identity conflict;
 - cross-ScanSet rejection;
-- resource-pressure/admission condition.
+- resource-pressure/admission condition;
+- deliberate CPU1 baseline used only for a scaling comparison.
 
 Do not narrate ordinary test mechanics.
 
@@ -552,9 +700,9 @@ For every future implementation tranche:
 4. update canonical documentation when behavior/contracts changed;
 5. validate every modified public C17 header;
 6. validate relevant C++ syntax/build integration;
-7. validate resource ownership and bounds;
-8. run applicable build/tests/sanitizers;
-9. perform the required review;
+7. validate resource ownership, accounting, useful scaling and bounds;
+8. run applicable build/tests/sanitizers efficiently;
+9. perform the required bounded review;
 10. only then claim completion.
 
 The normalized future implementation standard is:
@@ -566,12 +714,14 @@ CODE
 + CANONICAL DOCUMENTATION
 + C17/C++ SYNTAX
 + RESOURCE OWNERSHIP
++ MAXIMUM SAFE USEFUL THROUGHPUT
 + VALIDATION
 + REVIEW
 ```
 
 A tranche is NOT complete merely because code compiles and tests pass when
-required contract/invariant comments or canonical documentation are missing.
+required contract/invariant comments, canonical documentation, or required
+resource behavior are missing.
 
 There should be no future project-wide comment-cleanup pass for newly written
 code: comment debt must be handled when the code is introduced.
@@ -613,9 +763,12 @@ Persistence changes require explicit attention to:
 
 For Project DB:
 
-- preserve the FROZEN v22 semantics and the current additive v23 optical
-  overlay unless a ticket explicitly authorizes a later schema change;
-- schema-version changes require explicit human authorization;
+- preserve the FROZEN v22 scientific/persistence semantics and v23 optical
+  overlay;
+- v24 is the explicitly authorized additive operational RAW-batch migration and
+  must not reinterpret scientific history;
+- future schema-version changes beyond the currently authorized v24 require
+  explicit human authorization;
 - migrations must be additive unless a different migration is explicitly
   authorized;
 - existing projects must remain recoverable;
@@ -635,40 +788,85 @@ make retries convenient.
 - For changes to API, architecture, ownership, concurrency, persistence,
   pipeline, resources, limits, or scientific semantics, check whether
   canonical documentation must be updated.
+- `MAXIMUM SAFE USEFUL THROUGHPUT` and `SERIALISM_REQUIRES_PROOF` are canonical
+  human resource-policy decisions. Any resource document that contradicts them
+  is stale unless it describes an explicitly historical measurement.
 - Documentation must describe proven implementation, not desired future
-  behavior.
+  behavior. Human policy may be marked as policy while implementation work is
+  still `VALIDATION PENDING`.
 - Roadmap documents may describe future behavior, but future capabilities must
   be clearly marked as planned/later/exploratory.
 - Never describe future viewer, Capture Guidance, video/keyframe, Task scratch
   consumption, or camera-control capabilities as implemented before they are
-  actually validated. The current TUI/F10 and controller-to-Governor registry
-  are validated operationally, but no current Task kind consumes scratch and
-  those interfaces do not make dense/scratch-consuming workflows complete.
+  actually validated.
 - Statuses such as `PLANNED`, `IMPLEMENTED`, `VALIDATION PENDING`, and
   `PASS/FROZEN` are authoritative lifecycle statements.
 - Update lifecycle state only when implementation, validation, and review
   evidence support the transition.
 - Never mark work `PASS/FROZEN` without the required validation and review.
-- Preserve legitimate historical DB/version references where they describe
-  frozen history.
+- Preserve legitimate historical DB/version/resource references where they
+  describe frozen history; label superseded operational envelopes as historical
+  rather than silently rewriting the evidence.
 
-## 12. Required validation
+## 12. Required validation and test resource policy
 
 For ordinary implementation tickets, before claiming completion, actually run
-the applicable commands.
+the applicable commands. Builds, tests, benchmarks and real-proof workloads
+MUST follow the same resource philosophy as production: preserve the
+interactive host reserve, then use the maximum safe/useful remaining resources.
+Artificially serial engineering work wastes both elapsed time and agent budget.
 
-Normal build:
+### Normal build
+
+Do not use a fixed historical `-j8` as a product rule. Derive a safe parallel
+job count from the current host/affinity. On the current 16-logical-CPU
+reference host, where four logical CPUs are reserved for interactive use, the
+normal build target is approximately:
 
 ```sh
 meson setup --reconfigure build
-meson compile -C build -j8
+meson compile -C build -j12
 ```
 
-Normal tests:
+On another host, choose the analogous available-compute value rather than
+hardcoding 12.
+
+### Normal tests
+
+Independent tests should run concurrently within the same host reserve and
+memory constraints. On the current reference host, a typical command is:
 
 ```sh
-meson test -C build --num-processes 1 --print-errorlogs
+meson test -C build --num-processes 12 --print-errorlogs
 ```
+
+This is not permission to race tests that share mutable fixtures, real projects,
+fixed ports, exclusive GPU state, or other process-global resources. Such tests
+must be grouped or serialized for the concrete dependency, and that reason must
+be understood rather than inherited from an old `--num-processes 1` default.
+
+A CPU1 run is valid when CPU1 is the actual test case or baseline measurement;
+it is not the authoritative production configuration after higher safe/useful
+concurrency has been proven.
+
+### Validation efficiency
+
+- Do not rebuild unchanged targets between proof iterations without a concrete
+  need.
+- Do not rerun already-acquired expensive validation when the relevant code and
+  dependency boundary did not change.
+- Run focused tests first; widen only when the changed dependency boundary
+  requires it.
+- Expensive/stress validation must be relevant to the current delta.
+- Heavy validation is parallel by default when independent and resource-safe;
+  serialize only when scientific determinism, mutable shared fixtures, memory,
+  I/O, GPU exclusivity, sanitizer behavior or measured host pressure requires
+  it.
+- A test timeout or sanitizer failure must be investigated; do not repeatedly
+  rerun until green.
+- Real-data proofs must use normal Governor admission. Do not manually force
+  CPU1 merely for reproducibility unless CPU1 itself is the intended comparison
+  cohort.
 
 Diff validation:
 
@@ -692,24 +890,48 @@ For relevant concurrency changes, run TSan when supported and meaningful.
 If a sanitizer is unavailable or invalid because of the environment/toolchain,
 report that explicitly rather than claiming PASS.
 
-Run expensive/stress validation only when relevant.
-
-Run heavy validation serially when required to preserve machine stability.
-
-Investigate a timeout or sanitizer failure. Do not repeatedly rerun a failing
-test until it happens to pass.
-
 Distinguish third-party sanitizer/environment noise from repository defects
 using concrete stack/failure evidence.
 
-Never claim a command, test, sanitizer, review, or real-data validation that
-was not actually performed.
+Never claim a command, test, sanitizer, review, benchmark, or real-data
+validation that was not actually performed.
 
 For documentation/comment-only changes, do not invent unnecessary sanitizer
 work, but still run enough build/syntax/diff validation to prove that the
 non-functional boundary was preserved.
 
-## 13. Review discipline
+## 13. Engineering execution and credit economy
+
+Engineering time and agent budget are finite project resources and must not be
+wasted.
+
+- Default to the configured economical parent/orchestrator and existing agent
+  roles. Do not invent a new agent hierarchy.
+- Use expensive/high-reasoning scientific or final-review roles only when the
+  current delta genuinely requires scientific equivalence, difficult
+  concurrency/persistence reasoning, or final sensitive review.
+- Do not spawn multiple agents to restate the same architecture or repeat the
+  same review.
+- Do not delegate ordinary implementation defects upward when a worker,
+  mechanic or resolver can fix them directly within authority.
+- Prefer one focused independent review after the implementation is stable to
+  repeated speculative reviews during ordinary coding.
+- Reuse acquired maintenance, sanitizer, benchmark and real-data evidence when
+  the affected boundary is unchanged.
+- Do not wait on an expensive agent when the next authorized executable action
+  can proceed independently.
+- Keep tool/log output bounded; inspect targeted portions instead of repeatedly
+  dumping whole logs.
+- Do not rerun a global A-to-Z audit after the maintenance checkpoint.
+- `WORK FIRST. RETURN LAST.` Ordinary in-scope findings are repaired and
+  validated before returning to the human.
+
+Low remaining agent/credit budget is a reason to eliminate redundant work, not
+a reason to weaken required correctness evidence. If a genuinely required
+validation cannot be afforded/executed, report it honestly rather than claiming
+PASS.
+
+## 14. Review discipline
 
 A normal review should verify the bounded current delta and direct regressions.
 
@@ -727,7 +949,7 @@ A reviewer request does not automatically define new policy.
 Compare findings against:
 
 1. canonical FROZEN documentation;
-2. explicit human decisions;
+2. explicit human decisions, including the resource-utilization policy;
 3. established tranche semantics;
 4. documented future-scope boundaries.
 
@@ -735,9 +957,13 @@ Do not invoke an expensive implementation agent merely to satisfy speculative
 hardening that is outside the current contract.
 
 Comments and documentation are reviewable implementation artifacts. A
-misleading contract comment is a defect even if compiled behavior is unchanged.
+misleading contract or resource-policy comment is a defect even if compiled
+behavior is unchanged.
 
-## 14. Delivery report / STOP conditions
+Resource review must specifically flag accidental serialism when independent
+work exists and safe/useful resources are idle without measured justification.
+
+## 15. Delivery report / STOP conditions
 
 Every completed ticket report must include:
 
@@ -750,15 +976,17 @@ Every completed ticket report must include:
 - known blockers;
 - non-blocking findings;
 - deliberately deferred/future-scope items;
-- resource impact where relevant;
+- resource impact where relevant, including admitted/useful concurrency for
+  modified resource-sensitive Tasks;
 - confirmation that unrelated and FROZEN areas were preserved;
 - Git state;
 - confirmation that `scan3d/` remained untouched when protected.
 
 STOP and request a human decision only when resolution requires:
 
-- changing a FROZEN contract;
-- changing Project DB schema/version without prior authorization;
+- changing a FROZEN scientific contract;
+- changing Project DB schema/version beyond already authorized v24 without
+  prior authorization;
 - introducing a genuinely new subsystem outside authorized scope;
 - files outside the authorized scope;
 - destructive Git action;
@@ -775,9 +1003,12 @@ Do NOT stop merely because:
 - a normal test fails;
 - an ordinary implementation bug exists;
 - a reviewer identifies a bounded repairable defect;
+- a resource descriptor is historically conservative and explicit human
+  authority already allows operational correction while preserving science;
 - a dependency needs factual investigation;
 - documentation status is stale;
 - an implementation detail can be resolved safely from existing code and
   contracts.
 
-Advance the project while preserving the contracts.
+Advance the project while preserving scientific contracts and maximizing safe,
+useful throughput.

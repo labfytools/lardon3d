@@ -878,6 +878,8 @@ static bool run_task_test(void) {
   CHECK(exec_sql(
       database_path,
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE IF EXISTS feature_extract_batch_tasks;"
+      "DROP TABLE IF EXISTS raw_development_batch_tasks;"
       "DROP TABLE IF EXISTS capture_calibration_selections;"
       "DROP TABLE IF EXISTS optical_calibration_profiles;"
       "DROP TABLE IF EXISTS capture_optical_configurations;"

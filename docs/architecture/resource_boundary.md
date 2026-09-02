@@ -5,12 +5,13 @@
 **ACCEPTED** — architecture decision for the post-Gate C documentation freeze.
 
 Current Sparse SfM gates A through G are **PASS / FROZEN**.
-Project Database: current schema **v23**; the v22 foundation and historical
+Project Database: current schema **v24**; the v22 foundation, v23 optical overlay, and historical
 v16 science remain frozen.
 
 This record is normative for the separation of responsibilities. Its original
 Gate C/G decision introduced no implementation or syntax. Later explicitly
-authorized additions, including the additive Project DB v23 optics overlay and
+authorized additions, including the additive Project DB v23 optics overlay,
+the v24 RAW batch Task association, and
 the bounded UDisks2 SSD controller, must remain on their own side of this
 boundary and do not create a generic Resource System.
 

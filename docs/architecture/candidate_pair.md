@@ -253,6 +253,9 @@ La tâche utilise le runtime générique via le pattern standard :
   La Queue conserve un callback ; jusqu'à soixante-quatre participants CPU
   admis peuvent calculer une fenêtre interne bornée sans modifier l'identité
   scientifique.
+- CPU et lot sont essayés ensemble (`1/1`, `2/2`, puis les paliers sûrs) :
+  un CPU supplémentaire avec un lot d'un seul membership ne peut exercer aucun
+  participant supplémentaire et ne constitue donc pas une mesure de scaling.
 - Réservation CPU + IO avant exécution
 - `lardon3d_task_sequence_break()` entre chaque lot pour réadmission Governor
 - Callback terminal checkpoint après `COMPLETED`/`FAILED`/`CANCELLED`
@@ -276,7 +279,7 @@ bool lardon3d_candidate_pair_generate_reconstruct(
 
 ### Garantie actuelle
 
-La Queue conserve un callback actif. À l'intérieur de la Task, jusqu'à douze
+La Queue conserve un callback actif. À l'intérieur de la Task, jusqu'à soixante-quatre
 threads CPU admis calculent en parallèle une fenêtre d'au plus deux sources par
 thread. Chaque participant possède un handle DB de lecture privé. Le thread
 propriétaire publie ensuite seul et dans l'ordre canonique des sources. Voir le

@@ -138,7 +138,7 @@ Frontière physique UDisks2 pour la paire de labels `LARDON_SWAP` et
 et drain sûr. Il ne formate, ne répare ni ne force jamais l'hôte et ne remplace
 pas le Resource Governor. La TUI exécute ses actions dans un seul thread
 joinable et le Governor enregistre l'état physique puis orchestre seul les
-leases scratch de production. Les quatorze Task kinds courants n'en consomment
+leases scratch de production. Les seize Task kinds courants n'en consomment
 aucun ; capacité visible ne signifie donc pas usage.
 
 **Statut :** CURRENT / VALIDATED OPERATIONAL

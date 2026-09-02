@@ -26,6 +26,13 @@ extern "C" bool lardon3d_feature_opencv_configure_threads(unsigned int threads) 
     const char *forced = std::getenv(
         "LARDON3D_TEST_OPENCV_CONFIGURE_FAILURE_THREADS");
     if (forced) {
+      if (std::strcmp(forced, "once") == 0) {
+        /* The Task's admitted count is deliberately host-derived. Consume the
+         * one-shot before failing so the rollback can restore the captured
+         * process-wide value without a test-side guess of that count. */
+        (void)unsetenv("LARDON3D_TEST_OPENCV_CONFIGURE_FAILURE_THREADS");
+        return false;
+      }
       char *end = nullptr;
       unsigned long parsed = std::strtoul(forced, &end, 10);
       if (end && *end == '\0' && parsed == threads) {

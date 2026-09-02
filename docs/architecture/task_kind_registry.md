@@ -44,18 +44,20 @@ métier, et toute forme voisine est rejetée.
 ## Inventaire production et entrées runtime
 
 `src/task_kinds.c::lardon3d_task_kind_registry_production()` enregistre les
-14 kinds v1 du profil de production courant. La colonne « reprise » nomme le
+16 kinds v1 du profil de production courant. La colonne « reprise » nomme le
 reconstructeur du binding ; « callback » nomme l'entrée runtime privée dans le
 même fichier. Le détail chiffré des capacités est centralisé dans l'[audit des
-14 kinds](resource_governor.md#audit-des-14-kinds-de-production).
+16 kinds](resource_governor.md#audit-des-15-kinds-de-production).
 
 | Kind v1 | Source, reprise et callback | Réconciliation pré-admission courante |
 | --- | --- | --- |
 | `raw.develop` | `raw_development_task.cpp`; `lardon3d_raw_development_task_reconstruct`; `run` | Aucune |
+| `raw.develop.batch` | `raw_development_task.cpp`; `lardon3d_raw_development_batch_task_reconstruct`; `run_batch` | Association v24 Task → exécution sélectionnée ; le curseur reste dans l'exécution |
 | `photo_quality.triage` | `photo_quality_task.cpp`; `lardon3d_photo_quality_task_reconstruct`; `run` | Aucune |
 | `acquisition_campaign.run` | `acquisition_campaign_task.cpp`; `lardon3d_acquisition_campaign_task_reconstruct`; `run` | Forme courante ou forme v22 exacte vérifiée contre la requête immuable → capacité courante en mémoire |
 | `import.images` | `import_task.c`; `lardon3d_image_import_reconstruct`; `run_image_import` | Aucune |
 | `features.extract` | `feature_task.c`; `lardon3d_feature_extract_reconstruct`; `run` | Formes CPU12/CPU1 historiques exactes → demande OpenCV portable ; runtime borné au compute-pool |
+| `features.extract.batch` | `feature_task.c`; `lardon3d_feature_extract_batch_reconstruct`; `run_batch` | Association v25 à l'exécution sélectionnée, domaine ORB exact et curseur typé ; CPU/lot bornés 1..12 |
 | `features.extract.sift` | `sift_task.c`; `lardon3d_sift_extract_reconstruct`; `run` | CPU12/CPU1 historiques exacts → demande OpenCV portable ; runtime borné au compute-pool |
 | `features.extract.rootsift` | `sift_task.c`; `lardon3d_sift_extract_reconstruct`; `run` | Même réconciliation SIFT ; aucune voie GPU validée |
 | `visual_index.update` | `visual_index_task.c`; `lardon3d_visual_index_update_reconstruct`; `run` | Formes CPU12/CPU1 historiques exactes → CPU/lot 1..16 |

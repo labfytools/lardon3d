@@ -1644,7 +1644,10 @@ open_next_capability_trial_locked(
         && feedback->accepted_cpu_limit < cpu_max) {
         feedback->adaptive_cpu_limit = next_trial_cpu(
             feedback->accepted_cpu_limit, cpu_max);
-        feedback->adaptive_batch_limit = feedback->accepted_batch_limit;
+        feedback->adaptive_batch_limit = capability->cpu_batch_coupled
+            ? minimum_size(feedback->adaptive_cpu_limit,
+                capability->estimate.maximum_batch_size)
+            : feedback->accepted_batch_limit;
         feedback->adaptive_inflight_limit =
             feedback->accepted_inflight_limit;
         feedback->trial_dimension = LARDON3D_CAPABILITY_TRIAL_CPU;
@@ -4291,7 +4294,10 @@ lardon3d_resource_governor_internal_record_sequence_execution_metrics(
             bool exercised = feedback->trial_dimension
                     == LARDON3D_CAPABILITY_TRIAL_CPU
                 ? selection->decision.cpu_threads
-                    == feedback->adaptive_cpu_limit
+                        == feedback->adaptive_cpu_limit
+                    && (!selection->capability.cpu_batch_coupled
+                        || selection->decision.batch_size
+                            == feedback->adaptive_batch_limit)
                 : feedback->trial_dimension
                         == LARDON3D_CAPABILITY_TRIAL_INFLIGHT
                     ? selection->inflight_limit
@@ -4350,6 +4356,13 @@ lardon3d_resource_governor_internal_record_sequence_execution_metrics(
                                 == LARDON3D_CAPABILITY_TRIAL_CPU) {
                             feedback->accepted_cpu_limit =
                                 feedback->adaptive_cpu_limit;
+                            if (selection->capability.cpu_batch_coupled) {
+                                /* The measured gain belongs to the complete
+                                 * cross-image rung, not to an unusable CPU
+                                 * count detached from its participant window. */
+                                feedback->accepted_batch_limit =
+                                    feedback->adaptive_batch_limit;
+                            }
                         } else if (completed_dimension
                                 == LARDON3D_CAPABILITY_TRIAL_INFLIGHT) {
                             feedback->accepted_inflight_limit =

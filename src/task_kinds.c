@@ -33,6 +33,11 @@ const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_production(void) {
           .kind_version = LARDON3D_RAW_DEVELOPMENT_TASK_KIND_VERSION,
           .reconstruct = lardon3d_raw_development_task_reconstruct,
       },
+      {
+          .kind = LARDON3D_RAW_DEVELOPMENT_BATCH_TASK_KIND,
+          .kind_version = LARDON3D_RAW_DEVELOPMENT_BATCH_TASK_KIND_VERSION,
+          .reconstruct = lardon3d_raw_development_batch_task_reconstruct,
+      },
 #endif
 #ifdef LARDON3D_PHOTO_QUALITY_TASK_AVAILABLE
       {
@@ -57,6 +62,11 @@ const Lardon3DTaskKindRegistry *lardon3d_task_kind_registry_production(void) {
           .kind = LARDON3D_FEATURE_EXTRACT_TASK_KIND,
           .kind_version = LARDON3D_FEATURE_EXTRACT_TASK_KIND_VERSION,
           .reconstruct = lardon3d_feature_extract_reconstruct,
+      },
+      {
+          .kind = LARDON3D_FEATURE_EXTRACT_BATCH_TASK_KIND,
+          .kind_version = LARDON3D_FEATURE_EXTRACT_BATCH_TASK_KIND_VERSION,
+          .reconstruct = lardon3d_feature_extract_batch_reconstruct,
       },
       {
           .kind = LARDON3D_SIFT_EXTRACT_TASK_KIND,

@@ -11,10 +11,10 @@
 #include <lardon3d/sparse_sfm_incremental.h>
 
 enum {
-  /* v23 is an additive optical-context layer. Historical v22 rows and sparse
-   * calibration identities remain untouched; migration never guesses profiles
-   * or assignments for existing Captures. */
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 23,
+  /* v25 adds only durable features.extract.batch/1 operational state. The
+   * selected execution remains the immutable ordered image domain; migration
+   * creates no batch association, cursor, Feature Set, or inferred identity. */
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 25,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,
@@ -144,6 +144,13 @@ typedef struct {
   bool has_image;
   uint64_t image_id;
 } Lardon3DProjectDbRawDevelopmentTask;
+
+typedef struct {
+  uint64_t task_id;
+  /* Selected execution owns the ordered scientific inputs and durable cursor.
+   * This typed Task row deliberately copies none of those identities. */
+  uint64_t selected_execution_id;
+} Lardon3DProjectDbRawDevelopmentBatchTask;
 
 typedef struct {
   uint64_t task_id;
@@ -405,6 +412,19 @@ typedef struct {
   uint32_t fast_threshold;
   unsigned char parameter_fingerprint[32];
 } Lardon3DProjectDbFeatureExtractTask;
+
+typedef struct {
+  uint64_t task_id;
+  uint64_t selected_execution_id;
+  /* Zero-based durable prefix in the immutable selected-execution order. */
+  uint32_t next_item_index;
+  char extractor_kind[LARDON3D_PROJECT_DB_KIND_CAPACITY];
+  uint32_t extractor_version;
+  uint32_t max_features;
+  uint32_t pyramid_levels;
+  uint32_t fast_threshold;
+  unsigned char parameter_fingerprint[LARDON3D_PROJECT_DB_SHA256_SIZE];
+} Lardon3DProjectDbFeatureExtractBatchTask;
 
 typedef struct {
   uint64_t task_id;
@@ -785,6 +805,21 @@ Lardon3DProjectDbResult lardon3d_project_db_record_raw_development_task(
 Lardon3DProjectDbResult lardon3d_project_db_load_raw_development_task(
     Lardon3DProjectDb *database, uint64_t task_id,
     Lardon3DProjectDbRawDevelopmentTask *parameters);
+/* Atomically record generic raw.develop.batch/1 state and its immutable link
+ * to one selected execution. Exact retry is idempotent; rebinding either a
+ * Task or selected execution conflicts. The selected execution cursor remains
+ * the sole durable item-progress authority. */
+Lardon3DProjectDbResult lardon3d_project_db_record_raw_development_batch_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbRawDevelopmentBatchTask *parameters, int64_t updated_at);
+/* Load the caller-owned immutable Task -> selected-execution association.
+ * Malformed integer storage or a generic kind/version mismatch is corruption;
+ * no item identity or cursor is inferred from other durable state. */
+Lardon3DProjectDbResult lardon3d_project_db_load_raw_development_batch_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbRawDevelopmentBatchTask *parameters);
 /* Result publication and next_group_id advance are atomic. result->group_id is
  * the canonical plan ID in 1..N and must equal the task's current one-based
  * cursor; next_group_id must equal result->group_id+1 (N+1 after the last
@@ -869,6 +904,26 @@ Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_task(
 Lardon3DProjectDbResult
 lardon3d_project_db_load_feature_extract_task(Lardon3DProjectDb *database, uint64_t task_id,
                                               Lardon3DProjectDbFeatureExtractTask *parameters);
+/* Atomically persist generic features.extract.batch/1 state and its typed
+ * immutable selected-execution/ORB domain plus monotone cursor. A stale
+ * generic checkpoint may repeat an older cursor but can never move it back. */
+Lardon3DProjectDbResult lardon3d_project_db_record_feature_extract_batch_task(
+    Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
+    const char *task_kind, uint32_t task_kind_version,
+    const Lardon3DProjectDbCheckpoint *checkpoint,
+    const Lardon3DProjectDbFeatureExtractBatchTask *parameters, int64_t updated_at);
+/* Load and validate the exact typed batch domain and generic dispatch. The
+ * selected execution must be representation-complete and the cursor bounded by
+ * its immutable item count; malformed durable state is CORRUPT. */
+Lardon3DProjectDbResult lardon3d_project_db_load_feature_extract_batch_task(
+    Lardon3DProjectDb *database, uint64_t task_id,
+    Lardon3DProjectDbFeatureExtractBatchTask *parameters);
+/* Advance exactly one ordered item only after its selected image has a READY
+ * Feature Set for the task's immutable ORB fingerprint. Exact retry after an
+ * already committed advance converges; no image identity is inferred. */
+Lardon3DProjectDbResult lardon3d_project_db_advance_feature_extract_batch_task(
+    Lardon3DProjectDb *database, uint64_t task_id, uint32_t item_index,
+    uint32_t next_item_index);
 Lardon3DProjectDbResult lardon3d_project_db_record_sift_extract_task(
     Lardon3DProjectDb *database, const Lardon3DTaskDurableSnapshot *snapshot,
     const char *task_kind, uint32_t task_kind_version,

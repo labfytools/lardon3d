@@ -276,7 +276,7 @@ calibration connues ; le Sparse SfM réel reste
 Le Resource Governor ne constitue pas un Resource System générique : il reste
 l'unique propriétaire des budgets et le seul orchestrateur des leases scratch
 de production. Le contrôleur SSD UDisks2 est une frontière physique séparée,
-jamais un second scheduler ou Governor. Les quatorze Task kinds actuels ne
+jamais un second scheduler ou Governor. Les seize Task kinds actuels ne
 consomment encore aucun scratch : l'espace disponible est une capacité
 observable, pas un usage fabriqué, et scratch/swap ne deviennent jamais de la
 RAM. La TUI/F10 et cette intégration sont validées opérationnellement. L'audit

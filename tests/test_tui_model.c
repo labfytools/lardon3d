@@ -87,8 +87,10 @@ test_stage_matrix(void)
     } cases[] = {
         {"acquisition_campaign.run", LARDON3D_TUI_STAGE_ACQUISITION},
         {"raw.develop", LARDON3D_TUI_STAGE_RAW},
+        {"raw.develop.batch", LARDON3D_TUI_STAGE_RAW},
         {"photo_quality.triage", LARDON3D_TUI_STAGE_QUALITY},
         {"features.extract", LARDON3D_TUI_STAGE_FEATURES},
+        {"features.extract.batch", LARDON3D_TUI_STAGE_FEATURES},
         {"features.extract.sift", LARDON3D_TUI_STAGE_FEATURES},
         {"features.extract.rootsift", LARDON3D_TUI_STAGE_FEATURES},
         {"visual_index.update", LARDON3D_TUI_STAGE_VISUAL_INDEX},

@@ -22,9 +22,11 @@
   } while (0)
 
 /* Historical migration fixtures are produced from a temporary current DB.
- * Remove every additive v23 object first so the fixture really is historical
+ * Remove every additive v23/v24/v25 object first so the fixture really is historical
  * rather than a lower version number with future tables left behind. */
 #define DROP_OPTICAL_V23_SQL                                                   \
+  "DROP TABLE IF EXISTS feature_extract_batch_tasks;"                       \
+  "DROP TABLE IF EXISTS raw_development_batch_tasks;"                        \
   "DROP TABLE IF EXISTS capture_calibration_selections;"                      \
   "DROP TABLE IF EXISTS optical_calibration_profiles;"                        \
   "DROP TABLE IF EXISTS capture_optical_configurations;"                      \
@@ -131,7 +133,7 @@ static bool create_future_database(const char *path) {
       sqlite3_exec(
           connection,
           "CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
-          "INSERT INTO metadata VALUES('schema_version',24);",
+          "INSERT INTO metadata VALUES('schema_version',26);",
           NULL, NULL, NULL) == SQLITE_OK;
   return sqlite3_close(connection) == SQLITE_OK && ok;
 }
@@ -907,6 +909,7 @@ static bool run_test(void) {
   char v13_path[512], true_v14_path[512], failed_v14_path[512],
       failed_v15_path[512], true_v15_path[512], v17_path[512],
       failed_v18_path[512], failed_v19_path[512], raw_missing_table_path[512];
+  char v24_path[512];
   CHECK(snprintf(database_path, sizeof(database_path), "%s/project.db",
                  directory) > 0);
   CHECK(snprintf(artifact_path, sizeof(artifact_path), "%s/artifact.bin",
@@ -956,9 +959,34 @@ static bool run_test(void) {
                  "%s/failed-v19.db", directory) > 0);
   CHECK(snprintf(raw_missing_table_path, sizeof(raw_missing_table_path),
                  "%s/raw-missing-table.db", directory) > 0);
+  CHECK(snprintf(v24_path, sizeof(v24_path), "%s/v24.db", directory) > 0);
 
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
   Lardon3DProjectDb *database = NULL;
+  /* v25 is DDL-only: an injected failure rolls back table and marker, and a
+   * retry creates no fabricated association or historical cursor. */
+  CHECK(lardon3d_project_db_open(v24_path, &database, error) == LARDON3D_PROJECT_DB_OK);
+  lardon3d_project_db_close(database);
+  database = NULL;
+  CHECK(execute_test_sql(v24_path,
+      "DROP TABLE feature_extract_batch_tasks;"
+      "UPDATE metadata SET value=24 WHERE key='schema_version';"));
+  CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V25", "1", 1) == 0);
+  CHECK(lardon3d_project_db_open(v24_path, &database, error) != LARDON3D_PROJECT_DB_OK);
+  CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V25") == 0);
+  CHECK(query_integer(v24_path, "SELECT value FROM metadata WHERE key='schema_version'", 24));
+  CHECK(query_integer(v24_path,
+      "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+      "name='feature_extract_batch_tasks'", 0));
+  database = NULL;
+  Lardon3DProjectDbResult v25_retry = lardon3d_project_db_open(v24_path, &database, error);
+  if (v25_retry != LARDON3D_PROJECT_DB_OK)
+    fprintf(stderr, "v25 retry: %d %s\n", v25_retry, error);
+  CHECK(v25_retry == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_schema_version(database) == LARDON3D_PROJECT_DB_SCHEMA_VERSION);
+  lardon3d_project_db_close(database);
+  database = NULL;
+  CHECK(query_integer(v24_path, "SELECT count(*) FROM feature_extract_batch_tasks", 0));
   CHECK(lardon3d_project_db_open(database_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
   CHECK(database && lardon3d_project_db_schema_version(database) ==
@@ -2676,6 +2704,7 @@ static bool run_test(void) {
   CHECK(unlink(failed_v18_path) == 0);
   CHECK(unlink(failed_v19_path) == 0);
   CHECK(unlink(raw_missing_table_path) == 0);
+  CHECK(unlink(v24_path) == 0);
   CHECK(rmdir(directory) == 0);
   return true;
 }

@@ -198,6 +198,50 @@ au plus `cpu_threads - 1` threads enfants. Tous les enfants sont joints avant
 la fin de la séquence, la libération de réservation ou
 `lardon3d_task_sequence_break()`.
 
+## Développement RAW d'une exécution sélectionnée
+
+`raw.develop.batch/1` conserve la politique RAW v1, les octets PNG,
+L3DRAWD1, le fingerprint, le content-addressing et toutes les identités du
+développeur par Capture. Une séquence prend au plus huit items contigus depuis
+le curseur durable de l'exécution sélectionnée et utilise au plus le nombre de
+CPUs admis. Chaque participant possède son LibRaw et ses buffers privés ; les
+896 Mio chargés par item admis couvrent le workspace LibRaw borné à 40 MP, les
+copies RGB/BGR, les buffers PNG/validation, la pile enfant bornée de 1 Mio et la
+marge allocateur/codec. Le petit contexte propriétaire est inclus dans cette
+charge : un budget hôte post-réserve de 7 Gio admet donc exactement les huit
+participants sûrs, sans débit fixe redondant. Cette estimation est une borne
+opérationnelle de mémoire par participant, pas une limite scientifique de
+dataset.
+OpenCV est fixé à un thread interne afin de ne pas multiplier le fan-out.
+
+Les enfants ne modifient ni curseur sélectionné ni progression Task. Après leur
+jointure complète, le callback Queue propriétaire publie seul les mappings
+`item_index -> image_id` dans l'ordre croissant. Chaque transaction de mapping
+avance le curseur contigu, puis seulement le checkpoint Task peut avancer. Une
+erreur, une annulation ou un échec de création d'enfant joint tout le travail
+lancé ; des assets immuables content-addressés peuvent déjà exister, mais le
+curseur ne les devine pas et la reprise converge par le développeur existant.
+Une `sequence_break` sépare toutes les fenêtres, donc la sélection entière ne
+retient jamais une réservation longue.
+
+## Extraction Feature d'une exécution sélectionnée
+
+`features.extract.batch/1` conserve exactement ORB v1, ses paramètres, son
+fingerprint, ses keypoints/descripteurs U8×32 et le Feature File existant. Une
+fenêtre contient au plus douze images indépendantes de l'ordre sélectionné. Le
+propriétaire configure OpenCV à un thread pour éviter tout fan-out imbriqué ;
+chaque participant possède son décodage et sa sortie bornés, sans accès SQLite,
+puis tous sont joints.
+
+Le propriétaire seul publie dans l'ordre et avance le curseur v25 après preuve
+du Feature Set READY exact. CPU et lot partent du minimum. Comme un CPU
+supplémentaire ne peut être exercé que par une image indépendante de la même
+fenêtre, le Governor essaie et accepte ces deux limites ensemble (`1/1`, `2/2`,
+`4/4`, puis le maximum sûr admis). Les observations de fenêtres durables
+permettent de retenir le dernier palier apportant au moins 5 %. Le plafond douze
+est une capacité opérationnelle de benchmark,
+jamais une limite scientifique, et aucune voie GPU n'est introduite.
+
 ## Calcul et publication Visual Index
 
 Une séquence sélectionne le même préfixe durable d'au plus seize Feature Sets

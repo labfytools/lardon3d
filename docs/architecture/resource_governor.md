@@ -268,7 +268,7 @@ et Visual Index restent CPU; SIFT/RootSIFT Matcher restent BFMatcher L2 CPU. Il
 n'est introduit ni second scheduler, ni Queue, ni daemon, ni sous-système de
 ressources.
 
-### Audit des 14 kinds de production
+### Audit des 16 kinds de production
 
 Tous les kinds passent par l'unique Queue et l'unique Governor, y compris ceux
 dont toutes les dimensions sont fixes. Dans le tableau, `CPU 1..N` décrit la
@@ -283,14 +283,16 @@ allocations driver opaques ne reçoivent pas un coût inventé.
 | Kind v1 | Estimation courante | Dimension consommée et raison |
 | --- | --- | --- |
 | `raw.develop` | MIXED; CPU 1; lot 1; hôte `2 Gio + contexte`, 0/item; I/O 1; GPU 0 | Un Capture atomique. Le garde applique/restaure CPU1 au pool OpenCV global. Les 2 Gio sont une allowance de travail opérationnelle, pas une limite de dataset. |
+| `raw.develop.batch` | MIXED; CPU 1..8; lot 1..8; hôte 0 fixe + 896 Mio/item (contexte propriétaire, workspace LibRaw 40 MP, copies RGB/BGR, PNG/validation, pile enfant 1 Mio et marge allocateur/codec); I/O 1; GPU 0 | Une fenêtre de Captures indépendants. `896 Mio × 8 = 7 Gio`, donc le budget post-réserve de l'hôte de référence peut admettre la fenêtre sûre complète. OpenCV reste à 1 thread interne, tous les enfants sont joints, puis le propriétaire publie le préfixe ordonné avant `sequence_break`. Le plafond est opérationnel, jamais une limite scientifique de sélection. |
 | `photo_quality.triage` | IMPORT; CPU 1; lot 1; hôte `contexte retenu + 20 Mio`, 0/item; I/O 1; GPU 0 | Un groupe par séquence ; garde OpenCV CPU1. Aucun scaling utile déterministe n'est acquis. |
 | `acquisition_campaign.run` | JPEG: IMPORT ; RAW: MIXED. CPU 1; lot 1; hôte `contexte retenu + requête transitoire exacte + 256 Kio` + 64 Kio/item ; DEVELOP_RAW ajoute 2 Gio; I/O 1; GPU 0 | Un groupe S3-E par séquence, sans Task imbriqué. La création et la reprise dérivent la même estimation ; la forme historique exacte est normalisée seulement en mémoire. |
 | `import.images` | IMPORT; CPU 1; lot 1..32; hôte 128 Kio + `NAME_MAX+64`/item; I/O 1; GPU 0 | Copie/hash I/O-bound. Le callback consomme le lot admis et réadmet entre lots. |
 | `features.extract` | CPU; CPU 1..compute-pool; lot 1; hôte 64 Mio + 512 Mio/item; I/O 1; GPU 0 | La demande durable emploie le maximum `int` positif de l'API OpenCV ; le Governor la borne à l'hôte. Le garde applique/restaure exactement le CPU admis. |
+| `features.extract.batch` | CPU; CPU 1..12; lot 1..12; hôte 64 Mio + 512 Mio/item; I/O 1; GPU 0 | Images sélectionnées indépendantes, OpenCV CPU1 par participant, enfants joints et publication owner-only ordonnée. Le plafond 12 est une capacité opérationnelle de mesure ; le feedback ≥5 % établit le palier utile sans devenir une limite scientifique. |
 | `features.extract.sift` | CPU; CPU 1..compute-pool; lot 1; hôte 64 Mio + 1 Gio/item; I/O 1; GPU 0 | Même contrat OpenCV. Les formes CPU12 et CPU1 historiques complètes sont acceptées et normalisées en mémoire. |
 | `features.extract.rootsift` | CPU; CPU 1..compute-pool; lot 1; hôte 64 Mio + 1 Gio/item; I/O 1; GPU 0 | Même contrat que SIFT ; aucune couture GPU scientifiquement compatible n'est validée. |
 | `visual_index.update` | CPU; CPU 1..16; lot 1..16; hôte 8 Mio + 2 Mio/item; I/O 1; GPU 0 | Le segment contient au plus 16 Feature Sets indépendants. Au plus `cpu_threads-1` enfants sont joints avant publication owner-only. |
-| `candidate_pair.generate` | CPU; CPU 1..64; lot 1..64; hôte 256 Kio + 8 Mio/item; I/O 1; GPU 0 | Le batch de 64 est la borne algorithmique et de ressources. Fenêtre `min(2*CPU, 64, reste_du_lot)`, un handle DB privé par participant, piles enfants de 4 Mio facturées. |
+| `candidate_pair.generate` | CPU; CPU 1..64; lot 1..64; hôte 256 Kio + 8 Mio/item; I/O 1; GPU 0 | Le batch de 64 est la borne algorithmique et de ressources. CPU/lot sont couplés pour que chaque palier de feedback exerce ses participants; fenêtre `min(2*CPU, 64, reste_du_lot)`, un handle DB privé par participant, piles enfants de 4 Mio facturées. |
 | `matcher.run` | CPU: CPU 1..12, lot sûr 1..12, hôte 0 + 10 Mio/item, I/O 1, GPU 0. ORB Vulkan AUTO: CPU 1, lot utile 1..8, même hôte/item, GPU 1 + 640 Kio, inflight 1. | Le batch/participant 12 est une borne intrinsèque mesurée du Matcher. Batch 12 et depth 2 (1,25 Mio) restent sûrs pour preuves privées, mais insuffisamment utiles en AUTO. CPU complet est le fallback. |
 | `geometric_verifier.run` | CPU; CPU utile 1..8, fenêtre sûre 16; lot 1..16; hôte 0 + 8 Mio/item; I/O 1; GPU 0 | Des parents indépendants sont préparés en parallèle, puis publiés/checkpointés en ordre par le propriétaire. L'USAC scientifique conserve `isParallel=false`. |
 | `track_builder.run` | CPU; CPU 1; lot 1; fixe `(4 Mio + arêtes * (48 + 2*160)) * facteur`, facteur 2 jusqu'à 400k arêtes puis 8; 0/item; I/O 1; GPU 0 | Rebuild DSU atomique et publication owner-only ; aucune partition scientifiquement validée n'est acquise. |
@@ -422,7 +424,7 @@ retirer l'autorité mais ne peut jamais recopier un ancien compte physique.
 Le teardown production suit strictement : Queue détruite/jointe et chaque
 lease Task rendu, worker SSD joint puis unregister vérifié, contrôleur détruit,
 Governor détruit. Un unregister est refusé tant qu'une opération wrapper ou un
-lease exact subsiste. Les quatorze Task kinds courants n'ont aucun consommateur
+lease exact subsiste. Les seize Task kinds courants n'ont aucun consommateur
 scratch : le compte normal est donc réellement zéro et la capacité disponible
 n'autorise aucun usage implicite. Une future Task consommatrice devra définir
 son propre contrat d'éligibilité et son ownership sans transformer scratch ou

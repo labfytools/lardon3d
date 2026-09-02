@@ -38,9 +38,45 @@ malformée retourne `CORRUPT` avant comparaison avec une demande alternative.
 
 La migration v22→v23 n'inspecte ni EXIF, chemin, basename, SHA-256, dimensions,
 nom d'appareil, ni calibration historique. Elle ne réinterprète donc aucune
-Capture, image ou calibration v16–v22. Le marqueur `schema_version=23` est le
+Capture, image ou calibration v16–v22. Le marqueur `schema_version=23` reste le
 point de publication durable ; un échec de création ou un update de marqueur
 qui ne cible pas exactement la v22 rollbacke toute la migration.
+
+### Overlay v24 — développement RAW sélectionné borné
+
+Le schéma courant v24 ajoute uniquement
+`raw_development_batch_tasks(task_id, selected_execution_id)`. `task_id`
+référence l'état générique Task et `selected_execution_id` est unique ; la
+ligne ne copie aucun Capture, asset, image, chemin, groupe ni curseur. La
+migration v23→v24 est transactionnelle et DDL-only : elle ne crée aucune
+association historique et son marqueur v24 est son point de publication.
+
+`raw.develop.batch/1` recharge le curseur de `selected_executions` à chaque
+fenêtre admise. Après jointure de tous les participants, seul le callback Task
+propriétaire appelle `record_selected_representation` en ordre croissant. Le
+commit item+curseur précède toujours la progression/checkpoint générique ; un
+crash peut donc laisser celle-ci en retard, jamais en avance. Une reprise repart
+du curseur sélectionné durable sans deviner l'identité d'une sortie RAW déjà
+publiée. Le schéma et le chemin historique `raw.develop/1` restent valides.
+
+### Overlay v25 — extraction Feature sélectionnée bornée
+
+**IMPLEMENTED / VALIDATION IN PROGRESS.** La migration transactionnelle
+v24→v25 ajoute uniquement `feature_extract_batch_tasks`. Sa ligne lie un Task
+`features.extract.batch/1` à une exécution sélectionnée immutable, retient le
+préfixe monotone `next_item_index` et copie le domaine ORB exact
+kind/version/paramètres/fingerprint. La migration est DDL-only : elle ne crée
+aucune ligne, ne convertit aucune Task `features.extract/1` historique et
+n'infère aucun image ID ou Feature Set.
+
+Les participants CPU préparent des images sélectionnées indépendantes sans
+accès SQLite. Après leur jointure, le propriétaire publie les Feature Sets dans
+l'ordre sélectionné, avance un item seulement si le Feature Set READY exact est
+durable, puis checkpoint la progression générique. Un crash peut donc laisser
+le checkpoint générique ou le curseur Feature en retard sur un Feature Set
+immutable déjà publié ; la reprise revalide ce résultat exact et converge sans
+deviner une identité. Les formats, keypoints, descripteurs ORB U8×32,
+fingerprint et Feature Store FROZEN restent inchangés.
 
 La validation a migré via l'API production des copies des projets réels S21 et
 A6000 : version 23, `integrity_check` et clés étrangères propres, comptes et

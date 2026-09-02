@@ -53,6 +53,10 @@ struct Options {
   bool resume_geometry_existing{};
   bool resume_pre_gv_existing{};
   bool resume_candidate_existing{};
+  bool resume_representations_existing{};
+  uint64_t selected_execution_id{};
+  bool has_selected_execution_id{};
+  bool stop_after_representations{};
   unsigned int cpu_budget{};
   unsigned int gpu_budget{};
   bool has_gpu_budget{};
@@ -158,11 +162,28 @@ void usage(const char *program) {
       "[--matcher-batch 2|4|8|12] "
       "[--stop-after-matcher]\n"
       "       %s --resume-candidate-existing --project-dir "
-      "ABSOLUTE_EXISTING_DIR [--cpu-budget 1..12] [--gpu-budget 0..1]\n",
+      "ABSOLUTE_EXISTING_DIR [--cpu-budget 1..12] [--gpu-budget 0..1]\n"
+      "       %s --resume-representations-existing --project-dir "
+      "ABSOLUTE_EXISTING_DIR --selected-execution-id ID "
+      "[--stop-after-representations]\n",
+      program,
       program,
       program,
       program,
       program);
+}
+
+bool parse_u64_id(const char *text, uint64_t &value) {
+  if (!text || !*text || *text == '0') return false;
+  for (const char *character = text; *character; ++character) {
+    if (*character < '0' || *character > '9') return false;
+  }
+  char *end = nullptr;
+  errno = 0;
+  const unsigned long long parsed = std::strtoull(text, &end, 10);
+  if (errno != 0 || end == text || *end != '\0' || parsed == 0) return false;
+  value = static_cast<uint64_t>(parsed);
+  return true;
 }
 
 bool parse_size(const char *text, size_t &value) {
@@ -228,11 +249,16 @@ bool parse_options(int argc, char **argv, Options &options) {
       options.resume_candidate_existing = true;
       continue;
     }
+    if (argument == "--resume-representations-existing") {
+      options.resume_representations_existing = true;
+      continue;
+    }
     if ((argument == "--mode" || argument == "--project-dir" || argument == "--root" ||
          argument == "--limit" || argument == "--restart-boundary" ||
          argument == "--cpu-budget" || argument == "--gpu-budget" ||
          argument == "--matcher-mode" || argument == "--matcher-pipeline" ||
-         argument == "--matcher-inflight" || argument == "--matcher-batch") &&
+         argument == "--matcher-inflight" || argument == "--matcher-batch" ||
+         argument == "--selected-execution-id") &&
         index + 1 >= argc)
       return false;
     if (argument == "--mode") {
@@ -280,40 +306,59 @@ bool parse_options(int argc, char **argv, Options &options) {
       if (!parse_matcher_batch(argv[++index], options.matcher_batch_override))
         return false;
       options.has_matcher_batch_override = true;
+    } else if (argument == "--selected-execution-id") {
+      if (!parse_u64_id(argv[++index], options.selected_execution_id)) return false;
+      options.has_selected_execution_id = true;
     } else if (argument == "--stop-after-matcher") {
       options.stop_after_matcher = true;
     } else if (argument == "--stop-after-gv") {
       options.stop_after_gv = true;
+    } else if (argument == "--stop-after-representations") {
+      options.stop_after_representations = true;
     } else {
       return false;
     }
   }
   const unsigned int resume_mode_count = options.resume_geometry_existing +
                                          options.resume_pre_gv_existing +
-                                         options.resume_candidate_existing;
+                                         options.resume_candidate_existing +
+                                         options.resume_representations_existing;
   if (resume_mode_count != 0) {
     if (options.has_mode || options.project_dir.empty() || !options.roots.empty() ||
         options.restart != RestartBoundary::kNone || resume_mode_count != 1)
       return false;
     if (options.resume_pre_gv_existing) {
-      return !options.stop_after_gv;
+      return !options.stop_after_gv && !options.has_selected_execution_id &&
+             !options.stop_after_representations;
     }
     if (options.resume_candidate_existing)
       return !options.has_matcher_mode && !options.has_matcher_pipeline &&
              !options.has_matcher_inflight_override &&
              !options.has_matcher_batch_override &&
-             !options.stop_after_matcher && !options.stop_after_gv;
+             !options.stop_after_matcher && !options.stop_after_gv &&
+             !options.has_selected_execution_id &&
+             !options.stop_after_representations;
+    if (options.resume_representations_existing)
+      return options.has_selected_execution_id && options.cpu_budget == 0 &&
+             !options.has_gpu_budget && !options.has_matcher_mode &&
+             !options.has_matcher_pipeline &&
+             !options.has_matcher_inflight_override &&
+             !options.has_matcher_batch_override && !options.stop_after_matcher &&
+             !options.stop_after_gv;
     return options.cpu_budget == 0 && !options.has_gpu_budget &&
            !options.has_matcher_mode && !options.has_matcher_pipeline &&
            !options.has_matcher_inflight_override &&
            !options.has_matcher_batch_override &&
-           !options.stop_after_matcher;
+           !options.stop_after_matcher && !options.has_selected_execution_id &&
+           !options.stop_after_representations;
   }
   if (options.cpu_budget != 0 || options.has_gpu_budget ||
       options.has_matcher_mode || options.has_matcher_pipeline ||
       options.has_matcher_inflight_override ||
       options.has_matcher_batch_override ||
-      options.stop_after_matcher || options.stop_after_gv) return false;
+      options.stop_after_matcher || options.stop_after_gv ||
+      options.has_selected_execution_id || options.stop_after_representations)
+    return false;
   return options.has_mode && !options.project_dir.empty() && !options.roots.empty() &&
          options.roots.size() <= LARDON3D_ACQUISITION_CAMPAIGN_MAX_ROOTS;
 }
@@ -1440,46 +1485,233 @@ bool create_selection(Runtime &runtime, Mode mode, uint64_t quality_task_id,
              items.size(), std::time(nullptr), &execution) == LARDON3D_PROJECT_DB_OK;
 }
 
+enum class RepresentationPendingKind { kNone, kLegacySerial, kBatch };
+enum class RepresentationAction {
+  kReject,
+  kCollect,
+  kRecoverLegacySerial,
+  kRecoverBatch,
+  kEnqueueBatch,
+};
+
+RepresentationAction choose_representation_action(
+    const Lardon3DProjectDbSelectedExecution &execution,
+    RepresentationPendingKind pending) {
+  if (execution.next_item_index > execution.item_count) return RepresentationAction::kReject;
+  if (execution.stage == LARDON3D_SELECTED_EXECUTION_REPRESENTATIONS &&
+      execution.next_item_index < execution.item_count) {
+    if (pending == RepresentationPendingKind::kLegacySerial)
+      return RepresentationAction::kRecoverLegacySerial;
+    if (pending == RepresentationPendingKind::kBatch)
+      return RepresentationAction::kRecoverBatch;
+    return RepresentationAction::kEnqueueBatch;
+  }
+  if (execution.stage == LARDON3D_SELECTED_EXECUTION_CALIBRATION &&
+      execution.next_item_index == execution.item_count) {
+    return pending == RepresentationPendingKind::kBatch
+               ? RepresentationAction::kRecoverBatch
+               : pending == RepresentationPendingKind::kNone
+                     ? RepresentationAction::kCollect
+                     : RepresentationAction::kReject;
+  }
+  return RepresentationAction::kReject;
+}
+
+bool representation_defers_feature_task(
+    const Lardon3DProjectDbSelectedExecution &execution,
+    const Lardon3DProjectRecoveryEntry &entry) {
+  if (execution.stage != LARDON3D_SELECTED_EXECUTION_CALIBRATION ||
+      execution.next_item_index != execution.item_count)
+    return false;
+  return (std::strcmp(entry.task_kind, LARDON3D_FEATURE_EXTRACT_TASK_KIND) == 0 &&
+          entry.task_kind_version == LARDON3D_FEATURE_EXTRACT_TASK_KIND_VERSION) ||
+         (std::strcmp(entry.task_kind,
+                      LARDON3D_FEATURE_EXTRACT_BATCH_TASK_KIND) == 0 &&
+          entry.task_kind_version ==
+              LARDON3D_FEATURE_EXTRACT_BATCH_TASK_KIND_VERSION);
+}
+
+bool find_pending_representation_task(
+    Runtime &runtime, const Lardon3DProjectDbSelectedExecution &execution,
+    RepresentationPendingKind &kind, uint64_t &task_id) {
+  kind = RepresentationPendingKind::kNone;
+  task_id = 0;
+  uint64_t cursor = 0;
+  for (;;) {
+    Lardon3DProjectRecoveryEntry entries[8]{};
+    size_t count = 0;
+    if (lardon3d_project_list_recoverable(
+            &runtime.state, lardon3d_task_kind_registry_production(), cursor,
+            entries, 8, &count) != LARDON3D_PROJECT_DB_OK)
+      return false;
+    for (size_t index = 0; index < count; ++index) {
+      const auto &entry = entries[index];
+      cursor = entry.task_id;
+      if ((entry.status != LARDON3D_PROJECT_RECOVERABLE &&
+           entry.status != LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE) ||
+          entry.snapshot.recovery_state != TASK_PENDING) {
+        std::fprintf(stderr,
+                     "representation recovery refuses unsafe pending task %llu of kind %s\n",
+                     static_cast<unsigned long long>(entry.task_id), entry.task_kind);
+        return false;
+      }
+      /* Feature recovery owns the phase after representation collection. A
+       * precise Feature kind/version may already be queued by project-open,
+       * but representation recovery must neither resume nor reject it once the
+       * selected representation prefix is durably complete. extract_features
+       * validates its ORB fingerprint and legacy/batch ownership before wait.
+       * Every other pending kind remains fail-closed here. */
+      if (representation_defers_feature_task(execution, entry)) continue;
+      if (task_id != 0) {
+        std::fprintf(stderr,
+                     "representation recovery refuses multiple pending owners"
+                     " including task %llu of kind %s\n",
+                     static_cast<unsigned long long>(entry.task_id),
+                     entry.task_kind);
+        return false;
+      }
+      if (std::strcmp(entry.task_kind, LARDON3D_RAW_DEVELOPMENT_TASK_KIND) == 0 &&
+          entry.task_kind_version == LARDON3D_RAW_DEVELOPMENT_TASK_KIND_VERSION &&
+          execution.stage == LARDON3D_SELECTED_EXECUTION_REPRESENTATIONS &&
+          execution.next_item_index < execution.item_count) {
+        Lardon3DProjectDbSelectedExecutionItem item{};
+        Lardon3DProjectDbRawDevelopmentTask raw{};
+        if (lardon3d_project_db_load_selected_execution_item(
+                runtime.state.project_db, execution.execution_id,
+                execution.next_item_index, &item) != LARDON3D_PROJECT_DB_OK ||
+            item.representation_source != LARDON3D_SELECTED_REPRESENTATION_RAW_ASSET ||
+            lardon3d_project_db_load_raw_development_task(
+                runtime.state.project_db, entry.task_id, &raw) != LARDON3D_PROJECT_DB_OK ||
+            raw.capture_id != item.capture_id ||
+            raw.source_asset_id != item.source_asset_id) {
+          std::fprintf(stderr,
+                       "legacy RAW task %llu does not own selected cursor %u\n",
+                       static_cast<unsigned long long>(entry.task_id),
+                       execution.next_item_index);
+          return false;
+        }
+        kind = RepresentationPendingKind::kLegacySerial;
+      } else if (std::strcmp(entry.task_kind,
+                             LARDON3D_RAW_DEVELOPMENT_BATCH_TASK_KIND) == 0 &&
+                 entry.task_kind_version ==
+                     LARDON3D_RAW_DEVELOPMENT_BATCH_TASK_KIND_VERSION) {
+        Lardon3DProjectDbRawDevelopmentBatchTask batch{};
+        if (lardon3d_project_db_load_raw_development_batch_task(
+                runtime.state.project_db, entry.task_id, &batch) !=
+                LARDON3D_PROJECT_DB_OK ||
+            batch.selected_execution_id != execution.execution_id) {
+          std::fprintf(stderr,
+                       "RAW batch task %llu does not own selected execution %llu\n",
+                       static_cast<unsigned long long>(entry.task_id),
+                       static_cast<unsigned long long>(execution.execution_id));
+          return false;
+        }
+        kind = RepresentationPendingKind::kBatch;
+      } else {
+        std::fprintf(stderr,
+                     "representation recovery refuses pending task %llu of kind %s v%u\n",
+                     static_cast<unsigned long long>(entry.task_id), entry.task_kind,
+                     entry.task_kind_version);
+        return false;
+      }
+      task_id = entry.task_id;
+    }
+    if (count < 8) return true;
+  }
+}
+
+bool recover_one_representation_task(Runtime &runtime, uint64_t task_id,
+                                     const char *phase) {
+  Lardon3DProjectRecoverySummary recovery{};
+  return lardon3d_project_resume_recoverable_tasks(
+             &runtime.state, lardon3d_task_kind_registry_production(),
+             &recovery) == LARDON3D_PROJECT_DB_OK &&
+         recovery.inspected == 1 && recovery.resumed == 1 &&
+         recovery.failed == 0 && !recovery.queue_full &&
+         wait_completed(runtime, task_id, phase);
+}
+
+enum class FeaturePendingKind { kLegacySerial, kBatch };
+
+bool feature_recovery_kind(const Lardon3DProjectRecoveryEntry &entry,
+                           FeaturePendingKind &kind) {
+  if ((entry.status != LARDON3D_PROJECT_RECOVERABLE &&
+       entry.status != LARDON3D_PROJECT_RECOVERABLE_PUBLISHED_NOT_DURABLE) ||
+      entry.snapshot.recovery_state != TASK_PENDING)
+    return false;
+  if (std::strcmp(entry.task_kind, LARDON3D_FEATURE_EXTRACT_TASK_KIND) == 0 &&
+      entry.task_kind_version == LARDON3D_FEATURE_EXTRACT_TASK_KIND_VERSION) {
+    kind = FeaturePendingKind::kLegacySerial;
+    return true;
+  }
+  if (std::strcmp(entry.task_kind, LARDON3D_FEATURE_EXTRACT_BATCH_TASK_KIND) == 0 &&
+      entry.task_kind_version == LARDON3D_FEATURE_EXTRACT_BATCH_TASK_KIND_VERSION) {
+    kind = FeaturePendingKind::kBatch;
+    return true;
+  }
+  return false;
+}
+
 bool publish_representations(Runtime &runtime, uint64_t execution_id,
                              std::vector<uint64_t> &image_ids) {
-  Lardon3DProjectDbSelectedExecution execution{};
-  if (lardon3d_project_db_load_selected_execution(runtime.state.project_db, execution_id,
-                                                   &execution) != LARDON3D_PROJECT_DB_OK)
-    return false;
-  for (uint32_t index = execution.next_item_index; index < execution.item_count; ++index) {
-    Lardon3DProjectDbSelectedExecutionItem item{};
-    if (lardon3d_project_db_load_selected_execution_item(runtime.state.project_db, execution_id,
-                                                          index, &item) != LARDON3D_PROJECT_DB_OK)
-      return false;
-    uint64_t image_id = 0;
-    if (item.representation_source == LARDON3D_SELECTED_REPRESENTATION_RAW_ASSET) {
-      uint64_t task_id = 0;
-      if (!lardon3d_project_enqueue_raw_development(&runtime.state, item.capture_id,
-                                                     item.source_asset_id, &task_id) ||
-          !wait_completed(runtime, task_id, "raw.develop"))
-        return false;
-      Lardon3DProjectDbRawDevelopmentTask raw{};
-      if (lardon3d_project_db_load_raw_development_task(runtime.state.project_db, task_id, &raw) !=
-              LARDON3D_PROJECT_DB_OK ||
-          raw.phase != LARDON3D_RAW_DEVELOPMENT_TASK_PUBLISHED || !raw.has_image ||
-          raw.capture_id != item.capture_id || raw.source_asset_id != item.source_asset_id)
-        return false;
-      image_id = raw.image_id;
-    } else {
-      if (lardon3d_project_db_get_selected_capture_image(runtime.state.project_db, item.capture_id,
-                                                          &image_id) != LARDON3D_PROJECT_DB_OK)
-        return false;
-    }
-    if (lardon3d_project_db_record_selected_representation(runtime.state.project_db, execution_id,
-                                                            index, image_id, index + 1u) !=
+  for (;;) {
+    Lardon3DProjectDbSelectedExecution execution{};
+    if (lardon3d_project_db_load_selected_execution(
+            runtime.state.project_db, execution_id, &execution) !=
         LARDON3D_PROJECT_DB_OK)
       return false;
+    RepresentationPendingKind pending{};
+    uint64_t pending_task_id = 0;
+    if (!find_pending_representation_task(runtime, execution, pending,
+                                          pending_task_id))
+      return false;
+    const RepresentationAction action = choose_representation_action(execution, pending);
+    if (action == RepresentationAction::kReject) return false;
+    if (action == RepresentationAction::kCollect) break;
+    if (action == RepresentationAction::kRecoverLegacySerial) {
+      const uint32_t item_index = execution.next_item_index;
+      Lardon3DProjectDbSelectedExecutionItem item{};
+      if (lardon3d_project_db_load_selected_execution_item(
+              runtime.state.project_db, execution_id, item_index, &item) !=
+              LARDON3D_PROJECT_DB_OK ||
+          !recover_one_representation_task(runtime, pending_task_id,
+                                           "raw.develop recovered existing"))
+        return false;
+      Lardon3DProjectDbRawDevelopmentTask raw{};
+      if (lardon3d_project_db_load_raw_development_task(
+              runtime.state.project_db, pending_task_id, &raw) !=
+              LARDON3D_PROJECT_DB_OK ||
+          raw.phase != LARDON3D_RAW_DEVELOPMENT_TASK_PUBLISHED || !raw.has_image ||
+          raw.capture_id != item.capture_id ||
+          raw.source_asset_id != item.source_asset_id ||
+          lardon3d_project_db_record_selected_representation(
+              runtime.state.project_db, execution_id, item_index, raw.image_id,
+              item_index + 1u) != LARDON3D_PROJECT_DB_OK)
+        return false;
+      /* The legacy Task predates the selected-execution batch owner. Its exact
+       * current item is committed once before the batch reads the advanced
+       * cursor; no completed selected prefix is replayed or re-identified. */
+      continue;
+    }
+    if (action == RepresentationAction::kRecoverBatch) {
+      if (!recover_one_representation_task(runtime, pending_task_id,
+                                           "raw.develop.batch recovered existing"))
+        return false;
+      continue;
+    }
+    uint64_t batch_task_id = 0;
+    if (!lardon3d_project_enqueue_raw_development_batch(
+            &runtime.state, execution_id, &batch_task_id) ||
+        !wait_completed(runtime, batch_task_id, "raw.develop.batch"))
+      return false;
   }
-  if (lardon3d_project_db_load_selected_execution(runtime.state.project_db, execution_id,
-                                                   &execution) != LARDON3D_PROJECT_DB_OK ||
+  image_ids.clear();
+  Lardon3DProjectDbSelectedExecution execution{};
+  if (lardon3d_project_db_load_selected_execution(runtime.state.project_db,
+                                                   execution_id, &execution) !=
+          LARDON3D_PROJECT_DB_OK ||
       execution.stage != LARDON3D_SELECTED_EXECUTION_CALIBRATION)
     return false;
-  image_ids.clear();
   for (uint32_t index = 0; index < execution.item_count; ++index) {
     Lardon3DProjectDbSelectedExecutionItem item{};
     if (lardon3d_project_db_load_selected_execution_item(runtime.state.project_db, execution_id,
@@ -1491,28 +1723,98 @@ bool publish_representations(Runtime &runtime, uint64_t execution_id,
   return true;
 }
 
-bool extract_features(Runtime &runtime, const std::vector<uint64_t> &image_ids,
+bool extract_features(Runtime &runtime, uint64_t selected_execution_id,
+                      const std::vector<uint64_t> &image_ids,
                       const Lardon3DFeatureExtractorParameters &parameters,
                       std::vector<Lardon3DProjectDbFeatureSet> &feature_sets) {
   unsigned char fingerprint[32]{};
   lardon3d_feature_extractor_parameter_fingerprint(&parameters, fingerprint);
   feature_sets.clear();
+  bool complete = true;
   for (const uint64_t image_id : image_ids) {
     Lardon3DProjectDbFeatureSet feature{};
     if (lardon3d_project_db_find_feature_set(runtime.state.project_db, image_id,
                                              LARDON3D_FEATURE_EXTRACTOR_KIND,
                                              LARDON3D_FEATURE_EXTRACTOR_VERSION, fingerprint,
                                              &feature) != LARDON3D_PROJECT_DB_OK) {
-      uint64_t task_id = 0;
-      if (!lardon3d_project_enqueue_feature_extract(&runtime.state, image_id, &parameters,
-                                                     &task_id) ||
-          !wait_completed(runtime, task_id, "features.extract") ||
-          lardon3d_project_db_find_feature_set(
-              runtime.state.project_db, image_id, LARDON3D_FEATURE_EXTRACTOR_KIND,
-              LARDON3D_FEATURE_EXTRACTOR_VERSION, fingerprint, &feature) !=
-              LARDON3D_PROJECT_DB_OK)
-        return false;
+      complete = false;
+      break;
     }
+    feature_sets.push_back(feature);
+  }
+  if (complete) return true;
+
+  /* A pre-v25 single-image Task is historical durable work, not a batch
+   * cursor. Reopening creates an empty Queue, so restore and finish that exact
+   * Task once before the new owner starts its selected suffix. Never rewrite or
+   * replace the legacy row (Task 166 in the inspected A6000 project). */
+  uint64_t pending_task_id = 0;
+  FeaturePendingKind pending_kind{};
+  uint64_t cursor = 0;
+  for (;;) {
+    Lardon3DProjectRecoveryEntry tasks[8]{};
+    size_t count = 0;
+    if (lardon3d_project_list_recoverable(
+            &runtime.state, lardon3d_task_kind_registry_production(), cursor,
+            tasks, 8, &count) !=
+        LARDON3D_PROJECT_DB_OK)
+      return false;
+    for (size_t index = 0; index < count; ++index) {
+      cursor = tasks[index].task_id;
+      FeaturePendingKind kind{};
+      if (pending_task_id != 0 || !feature_recovery_kind(tasks[index], kind)) {
+        /* Registry recovery resumes every pending Task. Refuse ambiguity or an
+         * unrelated pipeline owner before transferring anything to Queue. */
+        std::fprintf(stderr,
+                     "feature recovery refuses pending task %llu of kind %s v%u\n",
+                     static_cast<unsigned long long>(tasks[index].task_id),
+                     tasks[index].task_kind, tasks[index].task_kind_version);
+        return false;
+      }
+      if (kind == FeaturePendingKind::kLegacySerial) {
+        Lardon3DProjectDbFeatureExtractTask legacy{};
+        if (lardon3d_project_db_load_feature_extract_task(
+                runtime.state.project_db, tasks[index].task_id, &legacy) !=
+                LARDON3D_PROJECT_DB_OK ||
+            std::memcmp(legacy.parameter_fingerprint, fingerprint, 32) != 0)
+          return false;
+      } else {
+        Lardon3DProjectDbFeatureExtractBatchTask batch{};
+        if (lardon3d_project_db_load_feature_extract_batch_task(
+                runtime.state.project_db, tasks[index].task_id, &batch) !=
+                LARDON3D_PROJECT_DB_OK ||
+            batch.selected_execution_id != selected_execution_id ||
+            std::memcmp(batch.parameter_fingerprint, fingerprint, 32) != 0)
+          return false;
+      }
+      pending_task_id = tasks[index].task_id;
+      pending_kind = kind;
+    }
+    if (count < 8) break;
+  }
+  if (pending_task_id != 0) {
+    const char *phase = pending_kind == FeaturePendingKind::kLegacySerial
+                            ? "features.extract recovered legacy"
+                            : "features.extract.batch recovered";
+    if (!recover_one_representation_task(runtime, pending_task_id, phase))
+      return false;
+  }
+  uint64_t batch_task_id = 0;
+  if (pending_task_id == 0 || pending_kind == FeaturePendingKind::kLegacySerial) {
+    if (!lardon3d_project_enqueue_feature_extract_batch(
+                 &runtime.state, selected_execution_id, &parameters, &batch_task_id) ||
+             !wait_completed(runtime, batch_task_id, "features.extract.batch")) {
+      return false;
+    }
+  }
+  feature_sets.clear();
+  for (const uint64_t image_id : image_ids) {
+    Lardon3DProjectDbFeatureSet feature{};
+    if (lardon3d_project_db_find_feature_set(
+            runtime.state.project_db, image_id, LARDON3D_FEATURE_EXTRACTOR_KIND,
+            LARDON3D_FEATURE_EXTRACTOR_VERSION, fingerprint, &feature) !=
+        LARDON3D_PROJECT_DB_OK)
+      return false;
     feature_sets.push_back(feature);
   }
   return true;
@@ -2724,7 +3026,8 @@ int main(int argc, char **argv) {
   }
   Runtime runtime;
   if (options.resume_geometry_existing || options.resume_pre_gv_existing ||
-      options.resume_candidate_existing) {
+      options.resume_candidate_existing ||
+      options.resume_representations_existing) {
     if (!prepare_existing_project(options.project_dir, runtime)) {
       std::fprintf(stderr, "existing project must be absolute, normalized, and durable\n");
       return 2;
@@ -2741,43 +3044,80 @@ int main(int argc, char **argv) {
     runtime.stop_after_gv = options.stop_after_gv;
     if (options.resume_candidate_existing)
       return run_existing_candidate(runtime) ? 0 : 1;
-    return (options.resume_pre_gv_existing ? run_existing_pre_gv(runtime)
-                                           : run_existing_geometry(runtime)) ? 0 : 1;
+    if (options.resume_pre_gv_existing || options.resume_geometry_existing)
+      return (options.resume_pre_gv_existing ? run_existing_pre_gv(runtime)
+                                             : run_existing_geometry(runtime)) ? 0 : 1;
   }
-  if (!prepare_empty_project(options.project_dir, runtime.project_path)) {
-    std::fprintf(stderr, "project directory must be absolute, normalized and empty\n");
-    return 2;
-  }
-  runtime.database_path = (options.project_dir / "project.lardon3d").string();
-  runtime.matcher_needed = true;
-  Campaign campaign;
-  if (!discover_campaign(options, campaign) || !start_runtime(runtime)) {
-    std::fprintf(stderr, "campaign discovery or runtime setup failed\n");
-    return 1;
-  }
-
-  const char *mode_name = options.mode == Mode::kA6000 ? "a6000" : "s21";
-  Lardon3DProjectDbScanSet scanset{};
-  if (lardon3d_project_db_create_scanset(runtime.state.project_db, mode_name, &scanset) !=
-      LARDON3D_PROJECT_DB_OK) {
-    stop_runtime(runtime);
-    return 1;
-  }
-  uint64_t quality_task_id = 0;
-  uint64_t campaign_task_id = 0;
   Lardon3DProjectDbSelectedExecution execution{};
-  bool ok = run_task_pair(runtime, scanset.scanset_id, campaign,
-                          options.restart != RestartBoundary::kNone, quality_task_id,
-                          campaign_task_id) &&
-            create_selection(runtime, options.mode, quality_task_id, campaign_task_id,
-                             campaign.confirmations.size(), execution);
-  if (!ok || execution.execution_id == 0) {
-    stop_runtime(runtime);
-    return ok ? 0 : 1;
+  const char *mode_name = options.mode == Mode::kA6000 ? "a6000" : "s21";
+  bool ok = true;
+  if (options.resume_representations_existing) {
+    runtime.matcher_needed = !options.stop_after_representations;
+    if (!start_runtime(runtime) ||
+        lardon3d_project_db_load_selected_execution(
+            runtime.state.project_db, options.selected_execution_id,
+            &execution) != LARDON3D_PROJECT_DB_OK ||
+        (execution.stage != LARDON3D_SELECTED_EXECUTION_REPRESENTATIONS &&
+         execution.stage != LARDON3D_SELECTED_EXECUTION_CALIBRATION)) {
+      std::fprintf(stderr,
+                   "existing selected execution is unavailable or past representations\n");
+      stop_runtime(runtime);
+      return 1;
+    }
+    mode_name = "existing";
+  } else {
+    if (!prepare_empty_project(options.project_dir, runtime.project_path)) {
+      std::fprintf(stderr,
+                   "project directory must be absolute, normalized and empty\n");
+      return 2;
+    }
+    runtime.database_path = (options.project_dir / "project.lardon3d").string();
+    runtime.matcher_needed = true;
+    Campaign campaign;
+    if (!discover_campaign(options, campaign) || !start_runtime(runtime)) {
+      std::fprintf(stderr, "campaign discovery or runtime setup failed\n");
+      return 1;
+    }
+    Lardon3DProjectDbScanSet scanset{};
+    if (lardon3d_project_db_create_scanset(runtime.state.project_db, mode_name,
+                                            &scanset) != LARDON3D_PROJECT_DB_OK) {
+      stop_runtime(runtime);
+      return 1;
+    }
+    uint64_t quality_task_id = 0;
+    uint64_t campaign_task_id = 0;
+    ok = run_task_pair(runtime, scanset.scanset_id, campaign,
+                       options.restart != RestartBoundary::kNone,
+                       quality_task_id, campaign_task_id) &&
+         create_selection(runtime, options.mode, quality_task_id,
+                          campaign_task_id, campaign.confirmations.size(),
+                          execution);
+    if (!ok || execution.execution_id == 0) {
+      stop_runtime(runtime);
+      return ok ? 0 : 1;
+    }
   }
 
   std::vector<uint64_t> image_ids;
   ok = publish_representations(runtime, execution.execution_id, image_ids);
+  if (ok && options.stop_after_representations) {
+    ok = lardon3d_project_db_load_selected_execution(
+             runtime.state.project_db, execution.execution_id, &execution) ==
+             LARDON3D_PROJECT_DB_OK &&
+         execution.stage == LARDON3D_SELECTED_EXECUTION_CALIBRATION &&
+         execution.next_item_index == execution.item_count;
+  }
+  if (ok && options.stop_after_representations) {
+    std::printf(
+        "{\"record\":\"existing_representations_summary\",\"ok\":true,"
+        "\"execution_id\":%llu,\"next_item_index\":%u,\"item_count\":%u,"
+        "\"stage\":\"CALIBRATION\",\"selected_prefix_replayed\":false,"
+        "\"features_enqueued\":false,\"sparse_sfm_run\":false}\n",
+        static_cast<unsigned long long>(execution.execution_id),
+        execution.next_item_index, execution.item_count);
+    stop_runtime(runtime);
+    return 0;
+  }
   if (ok && options.restart == RestartBoundary::kRepresentations)
     ok = restart_runtime(runtime, execution.execution_id, "representations") &&
          publish_representations(runtime, execution.execution_id, image_ids);
@@ -2787,11 +3127,11 @@ int main(int argc, char **argv) {
    * campaign-size rule; callers use one empty project per campaign. */
   const Lardon3DFeatureExtractorParameters orb{8192, 8, 20};
   std::vector<Lardon3DProjectDbFeatureSet> features;
-  if (ok) ok = extract_features(runtime, image_ids, orb, features);
+  if (ok) ok = extract_features(runtime, execution.execution_id, image_ids, orb, features);
   if (ok && options.restart == RestartBoundary::kFeatures) {
     ok = restart_runtime(runtime, execution.execution_id, "features") &&
          publish_representations(runtime, execution.execution_id, image_ids) &&
-         extract_features(runtime, image_ids, orb, features);
+         extract_features(runtime, execution.execution_id, image_ids, orb, features);
   }
 
   uint64_t geometry_task_id = 0;

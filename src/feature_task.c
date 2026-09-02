@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <openssl/evp.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -25,6 +26,18 @@ typedef struct {
   Lardon3DResourceGovernor *governor;
   Lardon3DProjectDbFeatureExtractTask parameters;
 } Lardon3DFeatureTaskContext;
+
+enum {
+  FEATURE_BATCH_MAX = 12,
+  FEATURE_BATCH_CHILD_STACK = 1024 * 1024,
+};
+
+typedef struct {
+  char project_path[PATH_MAX];
+  Lardon3DProjectDb *database;
+  Lardon3DResourceGovernor *governor;
+  Lardon3DProjectDbFeatureExtractBatchTask parameters;
+} Lardon3DFeatureBatchTaskContext;
 
 static void destroy_context(void *userdata) { free(userdata); }
 
@@ -127,6 +140,247 @@ static bool load_validated_source(const Lardon3DFeatureTaskContext *context, cha
   }
   unsigned char actual[32];
   return file_hash(path, actual) && memcmp(actual, asset.sha256, 32) == 0;
+}
+
+static void batch_runtime_state(const Lardon3DFeatureBatchTaskContext *context,
+                                Lardon3DAppState *state) {
+  lardon3d_app_state_init(state);
+  state->project_loaded = true;
+  state->project_db = context->database;
+  state->resource_governor = context->governor;
+  (void)snprintf(state->project_path, sizeof(state->project_path), "%s", context->project_path);
+}
+
+static bool batch_checkpoint(Lardon3DFeatureBatchTaskContext *context, Lardon3DTask *task,
+                             uint32_t cursor) {
+  Lardon3DAppState state;
+  batch_runtime_state(context, &state);
+  Lardon3DProjectDbFeatureExtractBatchTask parameters = context->parameters;
+  parameters.task_id = lardon3d_task_id(task);
+  parameters.next_item_index = cursor;
+  return lardon3d_project_checkpoint_feature_extract_batch_task(&state, task, &parameters) ==
+         LARDON3D_PROJECT_TASK_CHECKPOINT_OK;
+}
+
+typedef struct {
+  Lardon3DFeatureBatchTaskContext *context;
+  uint32_t item_index;
+  uint64_t image_id;
+  char source_path[PATH_MAX];
+  bool already_ready;
+  Lardon3DFeatureExtractResult result;
+  Lardon3DExtractedFeatures features;
+} FeatureBatchWorker;
+
+static void *extract_batch_item(void *value) {
+  FeatureBatchWorker *worker = value;
+  if (worker->already_ready) return NULL;
+  Lardon3DFeatureExtractorParameters parameters = {
+      worker->context->parameters.max_features,
+      worker->context->parameters.pyramid_levels,
+      worker->context->parameters.fast_threshold};
+  worker->result = lardon3d_feature_extract_orb(worker->source_path, &parameters,
+                                                &worker->features);
+  return NULL;
+}
+
+typedef struct {
+  FeatureBatchWorker *workers;
+  size_t count;
+  size_t first;
+  size_t stride;
+} FeatureBatchParticipant;
+
+static void *extract_batch_participant(void *value) {
+  FeatureBatchParticipant *participant = value;
+  for (size_t index = participant->first; index < participant->count;
+       index += participant->stride)
+    (void)extract_batch_item(&participant->workers[index]);
+  return NULL;
+}
+
+static bool extract_batch_window(FeatureBatchWorker *workers, size_t count,
+                                 unsigned int admitted_threads) {
+  if (!workers || count == 0 || count > FEATURE_BATCH_MAX || admitted_threads == 0) return false;
+  size_t participants = count < admitted_threads ? count : admitted_threads;
+  pthread_t children[FEATURE_BATCH_MAX - 1];
+  FeatureBatchParticipant work[FEATURE_BATCH_MAX];
+  pthread_attr_t attributes;
+  if (pthread_attr_init(&attributes) != 0) return false;
+  if (pthread_attr_setstacksize(&attributes, FEATURE_BATCH_CHILD_STACK) != 0) {
+    (void)pthread_attr_destroy(&attributes);
+    return false;
+  }
+  size_t created = 0;
+  bool started = true;
+  for (size_t participant = 1; participant < participants; ++participant) {
+    work[participant] = (FeatureBatchParticipant){workers, count, participant, participants};
+    /* Participants own only disjoint extraction outputs. SQLite, Feature Store
+       publication, cursor advancement, and generic checkpoints remain owner-only. */
+    if (pthread_create(&children[created], &attributes, extract_batch_participant,
+                       &work[participant]) != 0) {
+      started = false;
+      break;
+    }
+    ++created;
+  }
+  if (pthread_attr_destroy(&attributes) != 0) started = false;
+  work[0] = (FeatureBatchParticipant){workers, count, 0, participants};
+  if (started) (void)extract_batch_participant(&work[0]);
+  for (size_t index = 0; index < created; ++index)
+    if (pthread_join(children[index], NULL) != 0) started = false;
+  return started;
+}
+
+static void destroy_batch_outputs(FeatureBatchWorker *workers, size_t count) {
+  if (!workers) return;
+  /* A joined window owns every participant output until ordered owner
+     publication consumes it. Any boundary failure must release the whole
+     window; the Governor reservation must not outlive abandoned ORB buffers. */
+  for (size_t index = 0; index < count; ++index)
+    lardon3d_extracted_features_destroy(&workers[index].features);
+}
+
+static bool run_batch_body(Lardon3DTask *task, Lardon3DFeatureBatchTaskContext *context) {
+  for (;;) {
+    if (!lardon3d_task_checkpoint(task)) return false;
+    Lardon3DProjectDbFeatureExtractBatchTask persisted;
+    Lardon3DProjectDbSelectedExecution execution;
+    if (lardon3d_project_db_load_feature_extract_batch_task(
+            context->database, lardon3d_task_id(task), &persisted) != LARDON3D_PROJECT_DB_OK ||
+        memcmp(&persisted.parameter_fingerprint, &context->parameters.parameter_fingerprint,
+               32) != 0 ||
+        lardon3d_project_db_load_selected_execution(context->database,
+            context->parameters.selected_execution_id, &execution) != LARDON3D_PROJECT_DB_OK)
+      return lardon3d_task_fail(task, "État durable Feature batch invalide.");
+    if (persisted.next_item_index == execution.item_count)
+      return lardon3d_task_set_durable_progress(task, execution.item_count, execution.item_count,
+                                                "Extraction Feature batch terminée.") &&
+             batch_checkpoint(context, task, execution.item_count);
+
+    Lardon3DTaskExecutionContract contract;
+    if (!lardon3d_task_execution_contract(task, &contract) || contract.cpu_threads == 0 ||
+        contract.batch_size == 0 || contract.batch_size > FEATURE_BATCH_MAX)
+      return lardon3d_task_fail(task, "Contrat Governor Feature batch invalide.");
+    size_t count = execution.item_count - persisted.next_item_index;
+    if (count > contract.batch_size) count = contract.batch_size;
+    FeatureBatchWorker workers[FEATURE_BATCH_MAX] = {{0}};
+    for (size_t offset = 0; offset < count; ++offset) {
+      FeatureBatchWorker *worker = &workers[offset];
+      Lardon3DProjectDbSelectedExecutionItem item;
+      if (lardon3d_project_db_load_selected_execution_item(
+              context->database, context->parameters.selected_execution_id,
+              persisted.next_item_index + (uint32_t)offset, &item) != LARDON3D_PROJECT_DB_OK ||
+          !item.has_image)
+        return lardon3d_task_fail(task, "Item sélectionné Feature batch invalide.");
+      worker->context = context;
+      worker->item_index = item.item_index;
+      worker->image_id = item.image_id;
+      Lardon3DFeatureTaskContext single = {0};
+      single.database = context->database;
+      single.parameters.image_id = item.image_id;
+      (void)snprintf(single.project_path, sizeof(single.project_path), "%s", context->project_path);
+      Lardon3DProjectDbResult found = find_valid_feature_set(
+          &single, context->parameters.parameter_fingerprint);
+      worker->already_ready = found == LARDON3D_PROJECT_DB_OK;
+      if (found == LARDON3D_PROJECT_DB_CORRUPT ||
+          (found != LARDON3D_PROJECT_DB_OK && found != LARDON3D_PROJECT_DB_NOT_FOUND) ||
+          (!worker->already_ready && !load_validated_source(&single, worker->source_path)))
+        return lardon3d_task_fail(task, "Source ou Feature Set batch invalide.");
+    }
+
+    struct timespec begin = {0}, end = {0};
+    bool timing_known = clock_gettime(CLOCK_MONOTONIC, &begin) == 0;
+    if (!extract_batch_window(workers, count, contract.cpu_threads)) {
+      destroy_batch_outputs(workers, count);
+      return lardon3d_task_fail(task, "Participants Feature batch impossibles.");
+    }
+    if (!lardon3d_task_checkpoint(task)) {
+      destroy_batch_outputs(workers, count);
+      return false;
+    }
+    size_t durable_items = 0;
+    Lardon3DAppState state;
+    batch_runtime_state(context, &state);
+    Lardon3DFeatureExtractorParameters parameters = {
+        context->parameters.max_features, context->parameters.pyramid_levels,
+        context->parameters.fast_threshold};
+    for (size_t offset = 0; offset < count; ++offset) {
+      FeatureBatchWorker *worker = &workers[offset];
+      if (!worker->already_ready) {
+        if (worker->result != LARDON3D_FEATURE_EXTRACT_OK) {
+          destroy_batch_outputs(workers, count);
+          return lardon3d_task_fail(task, "Extraction ORB batch impossible.");
+        }
+        Lardon3DProjectDbFeatureSet set;
+        Lardon3DFeatureStoreResult published = lardon3d_feature_store_publish(
+            &state, worker->image_id, lardon3d_task_id(task), &parameters,
+            &worker->features, &set);
+        lardon3d_extracted_features_destroy(&worker->features);
+        if (published != LARDON3D_FEATURE_STORE_OK &&
+            published != LARDON3D_FEATURE_STORE_ALREADY_PRESENT) {
+          destroy_batch_outputs(workers, count);
+          return lardon3d_task_fail(task, "Publication Feature batch impossible.");
+        }
+        if (published == LARDON3D_FEATURE_STORE_OK) ++durable_items;
+      }
+      if (lardon3d_project_db_advance_feature_extract_batch_task(
+              context->database, lardon3d_task_id(task), worker->item_index,
+              worker->item_index + 1u) != LARDON3D_PROJECT_DB_OK ||
+          !lardon3d_task_set_durable_progress(task, worker->item_index + 1u,
+                                              execution.item_count,
+                                              "Feature batch publié.") ||
+          !batch_checkpoint(context, task, worker->item_index + 1u)) {
+        destroy_batch_outputs(workers, count);
+        return lardon3d_task_fail(task, "Curseur Feature batch impossible.");
+      }
+    }
+    timing_known = timing_known && clock_gettime(CLOCK_MONOTONIC, &end) == 0;
+    if (timing_known)
+      (void)lardon3d_task_internal_record_sequence(task, elapsed_ns(begin, end), durable_items);
+    if (persisted.next_item_index + count == execution.item_count) return true;
+    Lardon3DResourceReservation *reservation = NULL;
+    if (!lardon3d_task_sequence_break(task, context->governor, &reservation, &contract))
+      return false;
+  }
+}
+
+static bool run_batch(Lardon3DTask *task, void *userdata) {
+  Lardon3DFeatureBatchTaskContext *context = userdata;
+  Lardon3DTaskExecutionContract contract;
+  if (!lardon3d_task_execution_contract(task, &contract) || contract.cpu_threads == 0)
+    return lardon3d_task_fail(task, "Contrat CPU Feature batch invalide.");
+  Lardon3DOpenCvTaskThreadControl control = {
+      .previous = lardon3d_feature_opencv_thread_count(),
+      .restore_required = true,
+  };
+  /* Cross-image participants are the admitted CPU dimension. OpenCV stays at
+     one thread per extraction to prevent nested oversubscription; Queue owns
+     the sole process-wide guard. Configuration may mutate before verification
+     fails, so restoration duty exists before configure and covers every exit. */
+  if (!lardon3d_feature_opencv_configure_threads(1)) {
+    (void)lardon3d_opencv_task_threads_end(&control);
+    return lardon3d_task_fail(task, "Configuration OpenCV Feature batch impossible.");
+  }
+  bool result = run_batch_body(task, context);
+  if (!lardon3d_opencv_task_threads_end(&control))
+    return lardon3d_task_fail(task, "Restauration OpenCV Feature batch impossible.");
+  return result;
+}
+
+#ifdef LARDON3D_FEATURE_TASK_TESTING
+bool lardon3d_feature_extract_batch_test_run(Lardon3DTask *task) {
+  Lardon3DFeatureBatchTaskContext context = {0};
+  return run_batch(task, &context);
+}
+#endif
+
+static void finished_batch(const Lardon3DTask *task, void *userdata) {
+  Lardon3DFeatureBatchTaskContext *context = userdata;
+  Lardon3DProjectDbFeatureExtractBatchTask persisted;
+  if (lardon3d_project_db_load_feature_extract_batch_task(
+          context->database, lardon3d_task_id(task), &persisted) == LARDON3D_PROJECT_DB_OK)
+    (void)batch_checkpoint(context, (Lardon3DTask *)task, persisted.next_item_index);
 }
 
 static bool run_body(Lardon3DTask *task, void *userdata, size_t *durable_items) {
@@ -370,6 +624,124 @@ bool lardon3d_project_enqueue_feature_extract(Lardon3DAppState *state, uint64_t 
   if (!task) {
     return false;
   }
+  if (!lardon3d_task_queue_add(state->task_queue, task, NULL)) {
+    lardon3d_task_destroy(task);
+    return false;
+  }
+  return true;
+}
+
+static Lardon3DFeatureBatchTaskContext *make_batch_context(
+    const Lardon3DTaskReconstructionContext *runtime,
+    const Lardon3DProjectDbFeatureExtractBatchTask *parameters) {
+  if (!runtime || !runtime->project_path || !runtime->project_db ||
+      !runtime->resource_governor || !parameters) return NULL;
+  Lardon3DFeatureBatchTaskContext *context = calloc(1, sizeof(*context));
+  if (!context) return NULL;
+  int n = snprintf(context->project_path, sizeof(context->project_path), "%s",
+                   runtime->project_path);
+  if (n <= 0 || (size_t)n >= sizeof(context->project_path)) {
+    free(context);
+    return NULL;
+  }
+  context->database = runtime->project_db;
+  context->governor = runtime->resource_governor;
+  context->parameters = *parameters;
+  return context;
+}
+
+bool lardon3d_feature_extract_batch_reconstruct(
+    const Lardon3DTaskDurableSnapshot *snapshot, void *userdata,
+    Lardon3DTaskKindBinding *binding) {
+  Lardon3DTaskReconstructionContext *runtime = userdata;
+  if (!snapshot || !runtime || !binding) return false;
+  Lardon3DProjectDbFeatureExtractBatchTask parameters;
+  if (lardon3d_project_db_load_feature_extract_batch_task(
+          runtime->project_db, snapshot->id, &parameters) != LARDON3D_PROJECT_DB_OK)
+    return false;
+  unsigned char expected[32];
+  lardon3d_feature_extractor_parameter_fingerprint(
+      &(Lardon3DFeatureExtractorParameters){parameters.max_features,
+                                            parameters.pyramid_levels,
+                                            parameters.fast_threshold}, expected);
+  if (memcmp(expected, parameters.parameter_fingerprint, 32) != 0) return false;
+  Lardon3DFeatureBatchTaskContext *context = make_batch_context(runtime, &parameters);
+  if (!context) return false;
+  *binding = (Lardon3DTaskKindBinding){.callback = run_batch,
+                                       .userdata = context,
+                                       .userdata_destroy = destroy_context,
+                                       .finished_callback = finished_batch,
+                                       .finished_userdata = context};
+  return true;
+}
+
+Lardon3DTask *lardon3d_project_create_feature_extract_batch_task(
+    Lardon3DAppState *state, uint64_t selected_execution_id,
+    const Lardon3DFeatureExtractorParameters *parameters, uint64_t *task_id) {
+  if (task_id) *task_id = 0;
+  if (!state || !state->project_loaded || !state->project_db ||
+      !state->resource_governor || !parameters || !task_id ||
+      !lardon3d_feature_extractor_parameters_valid(parameters) || selected_execution_id == 0)
+    return NULL;
+  Lardon3DProjectDbSelectedExecution execution;
+  if (lardon3d_project_db_load_selected_execution(state->project_db, selected_execution_id,
+                                                   &execution) != LARDON3D_PROJECT_DB_OK ||
+      execution.stage < LARDON3D_SELECTED_EXECUTION_CALIBRATION || execution.item_count == 0)
+    return NULL;
+  uint64_t id = 0;
+  if (lardon3d_project_db_allocate_task_id(state->project_db, &id) != LARDON3D_PROJECT_DB_OK)
+    return NULL;
+  Lardon3DProjectDbFeatureExtractBatchTask durable = {
+      .task_id = id,
+      .selected_execution_id = selected_execution_id,
+      .next_item_index = 0,
+      .extractor_version = LARDON3D_FEATURE_EXTRACTOR_VERSION,
+      .max_features = parameters->max_features,
+      .pyramid_levels = parameters->pyramid_levels,
+      .fast_threshold = parameters->fast_threshold};
+  (void)snprintf(durable.extractor_kind, sizeof(durable.extractor_kind), "%s",
+                 LARDON3D_FEATURE_EXTRACTOR_KIND);
+  lardon3d_feature_extractor_parameter_fingerprint(parameters,
+                                                   durable.parameter_fingerprint);
+  Lardon3DTaskReconstructionContext runtime = {
+      state->project_path, state->project_db, state->resource_governor,
+      state->orb_vulkan_backend};
+  Lardon3DFeatureBatchTaskContext *context = make_batch_context(&runtime, &durable);
+  if (!context) return NULL;
+  /* One admitted participant owns decode, ORB pyramid/keypoints/descriptors,
+     and publication staging bounded by the existing conservative 512 MiB/item.
+     The 1..12 ceiling is operational benchmark capacity, not selected-domain
+     cardinality; Governor feedback records each joined window's useful items. */
+  Lardon3DResourceEstimate estimate = {
+      .memory_fixed_bytes = 64ULL * 1024 * 1024,
+      .memory_bytes_per_item = 512ULL * 1024 * 1024,
+      .minimum_batch_size = 1,
+      .maximum_batch_size = FEATURE_BATCH_MAX,
+      .desired_cpu_threads = FEATURE_BATCH_MAX,
+      .desired_io_slots = 1,
+      .task_class = LARDON3D_RESOURCE_TASK_CPU};
+  Lardon3DTask *task = lardon3d_task_create_typed(
+      "Extraction Feature sélectionnée", &estimate,
+      LARDON3D_FEATURE_EXTRACT_BATCH_TASK_KIND,
+      LARDON3D_FEATURE_EXTRACT_BATCH_TASK_KIND_VERSION, run_batch, context,
+      destroy_context);
+  if (!task || !lardon3d_task_assign_id(task, id) ||
+      !lardon3d_task_set_finished_callback(task, finished_batch, context) ||
+      !batch_checkpoint(context, task, 0)) {
+    lardon3d_task_destroy(task);
+    return NULL;
+  }
+  *task_id = id;
+  return task;
+}
+
+bool lardon3d_project_enqueue_feature_extract_batch(
+    Lardon3DAppState *state, uint64_t selected_execution_id,
+    const Lardon3DFeatureExtractorParameters *parameters, uint64_t *task_id) {
+  if (!state || !state->task_queue) return false;
+  Lardon3DTask *task = lardon3d_project_create_feature_extract_batch_task(
+      state, selected_execution_id, parameters, task_id);
+  if (!task) return false;
   if (!lardon3d_task_queue_add(state->task_queue, task, NULL)) {
     lardon3d_task_destroy(task);
     return false;
