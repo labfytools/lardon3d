@@ -1,198 +1,324 @@
 # Lardon3D
 
-Moteur de photogrammétrie générique, persistant, incrémental et sensible aux
-ressources, piloté par une TUI ncursesw.
+Lardon3D is a generic, persistent, incremental, resource-aware photogrammetry engine for Linux,
+controlled through an ncursesw TUI.
 
 ## Vision
 
-Lardon3D est un moteur de photogrammétrie Linux qui privilégie :
+Lardon3D is designed around the following principles:
 
-- **Stabilité** : aucune saturation du système hôte
-- **Déterminisme** : résultats reproductibles et traçables
-- **Faible consommation mémoire** : traitement par lots adaptatifs
-- **Reprise après interruption** : résultats atomiques et persistants
-- **Protection de la machine** : budgets bornés et respectueux
-- **Traçabilité** : historique des opérations et métriques
-- **Enrichissement progressif** : reconstruction incrémentale
+- **Scientific traceability**: results, identities, parameters and provenance are explicit.
+- **Determinism**: equivalent inputs and contracts produce reproducible, auditable outputs.
+- **Persistent progress**: long-running work is checkpointed and restartable.
+- **Bounded execution**: memory, CPU, GPU, I/O and temporary-storage use are explicitly bounded.
+- **Maximum safe useful throughput**: after preserving the interactive host reserve, available
+  resources should be used whenever they provide useful throughput.
+- **Incremental reconstruction**: new observations can extend previous results without silently
+  rewriting validated history.
+- **Atomic publication**: partially produced scientific outputs never masquerade as complete ones.
 
-Lardon3D ne vise pas simplement "dossier de photos → objet 3D", mais un ensemble
-progressif d'observations et de contraintes donnant une reconstruction géométrique
-persistante, enrichissable et versionnable.
+Lardon3D is not simply a "folder of photos -> 3D object" tool. Its target model is:
 
-## État actuel
+```text
+progressive observations and constraints
+    -> persistent geometric reconstruction
+    -> validated incremental enrichment
+    -> dense geometry / mesh / texture / export
+```
 
-### Briques validées
+## Current repository state
 
-- **Project** : cycle de vie persistant, identité stable et Project Database ouverte
-- **Import** : premier task kind de production, exécuté par la file générique en lots bornés et reprenables
-- **ScanSet / Image Catalog v1** : acquisitions, images logiques, provenance et assets SHA-256 persistants et paginés
-- **Capture / Asset Provenance v1** : Captures par ScanSet, associations source/dérivé
-  et sélection explicite d'une image logique — PASS / FROZEN
-- **Découverte et planification de campagne bornées** : racines explicites,
-  plan metadata-only et exécution par groupes via S3-E — PASS / FROZEN ; campagne
-  A6000 réelle validée sur 953 ARW + 953 JPEG MPF
-- **Feature Store v1/v2** : ORB U8×32, SIFT/RootSIFT F32×128 et lecture typée bornée
-- **Image View** : vues triées et filtrées pour la TUI
-- **Task** : moteur de tâches avec pause/reprise, annulation et séquences
-- **Task Checkpoint v1** : snapshot durable, protocole `.chk.next` → SQLite →
-  `.chk` sous verrou par tâche, et reprise sûre
-- **Project Database v23** : overlay optique additif au-dessus de la fondation
-  v22 PASS / FROZEN ; profils de boîtier et d'objectif, configurations
-  body+lens+focale, affectations campagne/Capture et calibrations exactement
-  compatibles, sans inférence ni backfill — IMPLEMENTED / VALIDATED / REVIEWED
-- **[Photo Quality Triage](docs/architecture/photo_quality_triage.md)** : métriques JPEG
-- **[Calibration Bootstrap v1](docs/architecture/calibration_bootstrap.md)** :
-  import borné d'une calibration optimisée et traçable avant le Sparse SfM à
-  calibration connue — PASS / FROZEN ; ni
-  auto-calibration interne ni EXIF comme source de calibration scientifique
-- **Exécution durable de campagne d'acquisition** : tâche générique à requête
-  typée immuable, confirmations `CALLER_EXPLICIT`, curseur et correspondance
-  tâche/groupe→Capture persistants ; un groupe S3-E par séquence, reprise par
-  la registry, la Queue et le Resource Governor existants
-- **Sparse SfM Gates C/D/E** : géométrie calibrée, noyau incrémental et Bundle
-  Adjustment final par composante, tous PASS / FROZEN
-- **Sparse SfM Gate F** : orchestration durable, runtime gouverné et publication
-  atomique, PASS / FROZEN
-- **MVS-M1** : frontière externe OpenMVS v2.4.0
-  `InterfaceCOLMAP`/`DensifyPointCloud`, export COLMAP déterministe (OpenCV
-  undistortion, observations transformées et tracks réels), texte exporté en
-  flux et tracks indexés sans rescanner quadratiquement les observations ; espace
-  de travail privé neuf par invocation sous le staging appelant, sans réemploi ;
-  identité dense liée à la reconstruction de base, au jeu source, au
-  `calibration_scope_identity` historique, au binding numérique MVS, au backend
-  et aux paramètres ; `L3DMDID2` v2 (220 octets) et binding `L3DMCAL1` v1 ; PLY
-  OpenMVS binaire little-endian validé (en-tête <= 1 MiB en octets bruts,
-  LF/CRLF acceptés, CR seul malformé rejeté, ligne <= 64 KiB), fusionné en
-  mode 0 — PASS / FROZEN
-- **Geometric Verification Model** : identité, masque d'inliers et modèle 3×3
-  persistants pour les policies Verifier v1/v2 historiques et v3 courante
-- **Geometric Verifier v3** : Fundamental USAC/MAGSAC, reprise et lots resource-aware
-- **Internal Parallelism + Compute Resources v1** : parallélisme interne borné,
-  sorties canoniques et admission Governor — PASS / FROZEN
-- **Task Kind Registry** : identité métier durable et reconstruction runtime explicite
-- **Recovery projet** : reprise automatique sélective et bornée des imports récupérables
-- **Task Queue** : file FIFO avec sélection adaptative et backpressure
-- **Hardware Profile** : détection des capacités matérielles
-- **Resource Snapshot** : capture instantanée des ressources
-- **Resource Governor** : arbitrage centralisé des budgets et réservations
-- **TUI observatoire / centre de contrôle** : modèle de vue pur et borné,
-  observation coalescée, progression durable/ETA honnête, écrans Tasks,
-  Resources, Optique et SSD, avec ncurses exclusivement sur le thread principal
-  — CURRENT / VALIDATED OPERATIONAL
-- **Contrôleur SSD externe optionnel** : frontière physique UDisks2/GDBus,
-  identité Drive+labels+UUIDs, drain sûr et capacités de contrôle exactes ; son
-  état physique est enregistré auprès du Governor, seul orchestrateur des
-  leases scratch de production — CURRENT / VALIDATED OPERATIONAL
+### Current Project Database
 
-### Intégration réelle validée
+The current Project DB schema is **v25**.
 
-Sony A6000 et Samsung S21 FE sont des preuves de validation de la chaîne
-générique. Ils ne définissent ni l'identité produit, ni un profil caméra
-hardcodé, ni une limite de CPU ou de dataset.
+The current head is additive:
 
-- **Intégration multi-campagne A6000 + S21 FE Engine Bay** : PASS — les plans
-  réels A6000 (953 paires confirmées `CALLER_EXPLICIT`) et Samsung SM-G990B
-  (3544 JPEG singleton) ont été validés dans deux ScanSets d'un même projet
-  temporaire, avec exécution durable, Governor/Queue et reprise sans Capture
-  dupliqué. Les campagnes réelles actuellement évaluées sont
-  `CALIBRATION_UNAVAILABLE`, donc le Sparse SfM réel est
-  `BLOCKED_BY_KNOWN_CALIBRATION_DATA` : ce n'est ni un échec logiciel, ni un
-  rejet de qualité, ni une autorisation d'importer une pseudo-calibration. La
-  suite reste le pipeline scientifique aval, selon la
-  [roadmap canonique](docs/roadmap/roadmap.md).
+```text
+v22  Selected scientific execution foundation
+v23  Generic optical-context overlay
+v24  raw.develop.batch/1 persistence
+v25  features.extract.batch/1 persistence
+```
 
-### Plus tard / différé
+Earlier schema versions remain valid historical contracts where their own documentation says so.
+No migration silently reinterprets historical scientific identities.
 
-- publication durable dense/mesh et consommation Task explicite du scratch
-  SSD optionnel ;
-- vidéo/keyframes et **Capture Guidance / Live Coverage** : analyse et viewer de
-  couverture, suggestions de prises de vue puis assistance live, après
-  reconstruction mature ;
-- exports et publication live ;
-- DAG général, pools multiples et parallélisme inter-tâches restent différés.
+### Current production task inventory
+
+The production registry currently contains **16 Task kinds**.
+
+All production Tasks pass through the existing Task -> Queue -> Resource Governor execution model.
+The Queue has one active callback at a time; Tasks may use bounded internal participants when their
+contract and measured scaling justify it.
+
+### Resource policy
+
+The canonical operational objective is:
+
+```text
+MAXIMUM SAFE USEFUL THROUGHPUT
+SERIALISM_REQUIRES_PROOF
+```
+
+Lardon3D first preserves the interactive host reserve required for the desktop, Firefox, audio and
+light interactive use. Safe and useful resources beyond that reserve belong to the active workload.
+
+On the current validation host, the normal observed outcome is approximately:
+
+```text
+16 logical CPUs total
+4 logical CPUs reserved for interactive host use
+12 logical CPUs available to the compute pool
+~3 GiB MemAvailable preserved as the hard RAM reserve
+Radeon 780M UMA available to validated and useful GPU backends
+```
+
+These are **reference-host observations, not portable product constants**. The Resource Governor
+derives usable capacity from the current host, affinity, topology, memory and pressure state.
+
+A long-running CPU1 or batch1 path is acceptable only when serialism, a measured scaling knee,
+memory, I/O, GPU execution or another concrete constraint justifies it. Per-item atomicity does not
+imply cross-item serialization.
+
+## Validated foundations
+
+The following major foundations are implemented and validated at their documented boundaries:
+
+- **Project / persistent lifecycle**
+- **Import and ScanSet / Image Catalog**
+- **Capture / Asset Provenance v1 — PASS / FROZEN**
+- **Bounded acquisition discovery and campaign execution — PASS / FROZEN**
+- **Photo Quality Triage / Acquisition Selection — PASS / FROZEN**
+- **Selected Scientific Execution — PASS / FROZEN**
+- **Feature Store v1/v2**
+  - ORB U8x32
+  - SIFT / RootSIFT F32x128
+  - bounded typed readers
+- **Visual Index v1**
+- **Candidate Pair generation**
+- **Matcher v1**
+  - ORB CPU / validated Vulkan hot path
+  - SIFT / RootSIFT CPU
+- **Geometric Verification Model**
+- **Geometric Verifier v3**
+- **Track Model / Track Builder v1 — PASS / FROZEN**
+- **Sparse SfM Gates C/D/E/F/G — PASS / FROZEN**
+- **Phase H v1 incremental reconstruction — PASS / FROZEN**
+- **MVS-M1 external OpenMVS boundary — PASS / FROZEN**
+- **Task Runtime / checkpoints / recovery**
+- **Task Queue**
+- **Task Kind Registry**
+- **Resource Governor / Compute Governor v2**
+- **Bounded internal parallelism — PASS / FROZEN**
+- **ORB Vulkan asynchronous execution — PASS / FROZEN**
+- **TUI runtime observatory / control center — CURRENT / VALIDATED OPERATIONAL**
+- **Optional external SSD controller — CURRENT / VALIDATED OPERATIONAL**
+- **Calibration Bootstrap v1 — PASS / FROZEN**
+- **Calibration Science v1 — PASS / FROZEN**
+- **Calibration Tooling v1 — PASS / FROZEN**
+- **Calibration Solver Preflight v1 — PASS**
+- **Project DB v24/v25 operational overlays — IMPLEMENTED / VALIDATED**
+ - raw.develop.batch/1 durable selected-execution path
+ - features.extract.batch/1 durable selected-execution path
+
+## Real-data validation
+
+Sony A6000 and Samsung S21 FE campaigns are validation evidence for the generic pipeline. They are
+not product identities, hardcoded camera profiles, CPU limits or dataset-size limits.
+
+### Real S21 Tracks
+
+```text
+REAL_S21_TRACKS=PASS/FROZEN
+```
+
+The retained real S21 proof validated the complete pre-SfM chain through Track Builder with the
+compact Track memory model and deterministic restart semantics.
+
+### Real A6000 pre-SfM
+
+```text
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
+
+The retained real A6000 proof uses the selected RAW-derived deterministic representation and
+completed the pipeline through Geometric Verification and Tracks without replaying already acquired
+upstream work.
+
+Final retained counts:
+
+```text
+Selected images       689
+Feature Sets          689
+Candidate Pairs       38,420
+Match Results         38,420
+Applicable GVRs       37,805
+Verified GVRs         10,952
+Rejected GVRs         26,853
+Track Sets            1
+Tracks                130,714
+Track observations    318,944
+```
+
+The restart proof reused the existing Track Set without duplicating GVR mappings, Track observations
+or Tracks.
+
+The real A6000 proof intentionally stopped before:
+
+```text
+Sparse SfM
+Sparse reconstruction
+Dense / MVS
+multi-campaign fusion
+```
+
+### Calibration status of the historical real campaigns
+
+The historical S21 and A6000 Engine Bay campaigns currently remain `CALIBRATION_UNAVAILABLE` for
+the known-calibration Sparse SfM contract.
+
+This is not a source failure, a quality rejection or permission to infer calibration from metadata.
+No pseudo-calibration, silent interpolation or inferred calibration identity is allowed.
+
+Therefore real Sparse SfM for those historical campaigns remains:
+
+```text
+BLOCKED_BY_KNOWN_CALIBRATION_DATA
+```
+
+Calibration Science v1 defines the protocol for future physically controlled calibration
+acquisitions. Calibration Tooling v1 validates an already acquired Science v1 evidence bundle and
+produces the bounded L3DCALB1 artifact; Calibration Bootstrap v1 imports that artifact. Neither
+stage solves calibration internally or turns EXIF into scientific calibration.
 
 ## Architecture
 
 ```text
-TUI / Projet
-    ↓
-Task Queue bornée (un worker, ordre/backpressure)
-    ↓
-Resource Governor (admission et réservation)
-    ↓
-Task callback admis (parallélisme interne borné si prouvé)
-    ↓
-Résultats atomiques / persistants
-    ↓
-Viewer (consommation passive de snapshots)
+TUI / Project
+    |
+    v
+bounded Task Queue
+(one active callback)
+    |
+    v
+Resource Governor
+(admission and reservation)
+    |
+    v
+admitted Task callback
+(bounded internal participants when justified)
+    |
+    v
+atomic / persistent scientific publication
+    |
+    v
+passive snapshot consumers
+(viewer remains future work)
 ```
 
-### Invariants fondamentaux
+Core invariants:
 
-- Aucun callback de tâche sans réservation active validée
-- La Queue/runtime ne décide jamais des ressources
-- Le Resource Governor est l'unique propriétaire des budgets
-- ncurses appartient exclusivement au thread principal
-- Les estimations de ressources sont immuables
-- Les buffers et files sont strictement bornés
+- no Task callback starts without a valid active reservation;
+- the Queue does not own resource policy;
+- the Resource Governor is the sole production resource authority;
+- ncurses remains owned by the main thread;
+- Task estimates and installed sequence contracts remain immutable for their defined lifetime;
+- buffers, queues, files, threads, participants and temporary work remain bounded;
+- owner-only durable publication does not imply serial preparation;
+- swap, zram and external scratch never become admitted RAM;
+- UMA GPU memory is charged exactly once against host memory.
 
-### TUI opérationnelle
+## Current TUI
 
-La TUI sépare le modèle de vue pur du rendu ncurses. Son observateur copie au
-plus 129 entrées Queue (64 pending, une active, 64 historiques) et coalesce les
-captures hôte autour d'une seconde ; aucun scan DB ou `/proc` volumineux n'a
-lieu par frame. La progression scientifique exacte provient seulement des
-compteurs durables typés. Le taux EWMA et l'ETA restent « calcul » jusqu'à deux
-intervalles positifs, excluent le préfixe repris et deviennent explicitement
-indéterminés, stalled ou throttled lorsque l'évidence l'exige.
+The TUI is a validated operational observatory and control center.
 
-Les tailles supportées sont 100×30 et plus en vue complète, 72×20 en compacte
-de référence, et jusqu'au minimum 60×15 ; en dessous, seul « Terminal trop
-petit » est affiché. Les couleurs ont toujours un équivalent textuel/bold/dim.
-`F1` à `F7` ouvrent aide, projets, import, viewer futur, tâches, ressources et
-optique. Le segment littéral `F10 SSD` reste visible à 60 colonnes et déclenche
-uniquement l'action autorisée par le contrôleur. Pendant une saisie, seules
-Enter, Échap et F10 sont actives ; pendant un import, seules `X` et F10 le sont,
-et quitter/retour accueil sont explicitement désactivés.
+It provides bounded observation of:
 
-Ouvrir, fermer ou changer de projet détruit et joint d'abord l'unique Queue,
-callbacks terminaux inclus, puis ferme Project DB et recrée une Queue vide. Le
-workflow optique utilise les alias metadata exacts, accepte normalement les
-objectifs manuels sans EXIF, crée des profils/configurations immuables et exige
-une affectation/sélection de calibration explicite et exactement compatible.
+- Project state;
+- Tasks and durable progress;
+- Resource Governor state;
+- CPU / RAM / swap / GPU information;
+- optical profiles and explicit calibration selection;
+- optional SSD state and safe control actions.
 
-## Pipeline cible
+The ncurses renderer and input handling remain on the main thread. Runtime observation is bounded
+and coalesced; the renderer does not scan Project DB or `/proc` extensively per frame.
+
+The validated layout supports:
 
 ```text
-Acquisitions
-→ catalogue
-→ features
-→ index visuel
-→ paires candidates
-→ matching
-→ vérification géométrique
-→ tracks / SfM
-→ dense
-→ mesh
-→ consolidation
-→ export
+full layout        >= 100x30
+reference compact  72x20
+minimum supported  60x15
 ```
+
+Below the minimum, only the bounded terminal-too-small fallback is rendered.
+
+The optical workflow supports electronic metadata aliases and manual lenses without EXIF. Missing,
+ambiguous or incompatible calibration remains visible and is never silently guessed.
+
+## Target pipeline
+
+```text
+acquisition
+-> catalog / Capture / provenance
+-> quality selection
+-> selected scientific representation
+-> features
+-> visual index
+-> candidate pairs
+-> matching
+-> geometric verification
+-> tracks
+-> Sparse SfM
+-> incremental / multi-campaign reconstruction
+-> dense / MVS
+-> mesh
+-> refinement
+-> texturing
+-> consolidation
+-> export
+```
+
+## Planned product areas
+
+The following areas remain future work and must not be confused with current implementation:
+
+- durable dense / mesh publication;
+- full Dense/MVS orchestration;
+- mesh refinement and texturing;
+- final export workflow;
+- viewer;
+- offline coverage analysis;
+- suggested supplementary viewpoints;
+- live camera localization;
+- live coverage overlay;
+- A6000 live acquisition integration;
+- S21 live acquisition integration;
+- capture guidance;
+- video ingestion and deterministic keyframe extraction;
+- explicit Task-owned scratch consumers;
+- general DAG / dependency scheduling.
+
+The final product contracts for these areas are being defined separately before implementation.
 
 ## Documentation
 
 ### Architecture
-- [Vue d'ensemble](docs/architecture/overview.md)
+
+- [Architecture overview](docs/architecture/overview.md)
 - [Runtime](docs/architecture/runtime.md)
-- [Système de tâches](docs/architecture/task_system.md)
-- [Registry des types de tâches](docs/architecture/task_kind_registry.md)
-- [File de tâches](docs/architecture/task_queue.md)
+- [Task system](docs/architecture/task_system.md)
+- [Task Kind Registry](docs/architecture/task_kind_registry.md)
+- [Task Queue](docs/architecture/task_queue.md)
 - [Resource Governor](docs/architecture/resource_governor.md)
-- [Parallélisme interne borné](docs/architecture/internal_parallelism.md)
-- [Pipeline sensible aux ressources](docs/architecture/resource_aware_pipeline.md)
-- [Intégration Queue/runtime ↔ Governor](docs/architecture/scheduler_resource_integration.md)
-- [Pipeline de reconstruction](docs/architecture/reconstruction_pipeline.md)
-- [Persistance](docs/architecture/persistence.md)
-- [Base de données projet](docs/architecture/project_database.md)
+- [Bounded internal parallelism](docs/architecture/internal_parallelism.md)
+- [Resource-aware pipeline](docs/architecture/resource_aware_pipeline.md)
+- [Queue / runtime / Governor integration](docs/architecture/scheduler_resource_integration.md)
+- [Reconstruction pipeline](docs/architecture/reconstruction_pipeline.md)
+- [Persistence](docs/architecture/persistence.md)
+- [Project Database](docs/architecture/project_database.md)
 - [Feature Store](docs/architecture/feature_store.md)
 - [Precision Feature Pipeline v1A](docs/architecture/precision_feature_pipeline.md)
 - [Visual Index](docs/architecture/visual_index.md)
@@ -202,35 +328,58 @@ Acquisitions
 - [Geometric Verification](docs/architecture/geometric_verification.md)
 - [Geometric Verifier](docs/architecture/geometric_verifier.md)
 - [Track Model](docs/architecture/tracks.md)
-- [Sparse SfM / Triangulation — Gate A](docs/architecture/sparse_sfm.md)
-- [Backend Vulkan ORB](docs/architecture/vulkan_matcher.md)
+- [Track Builder](docs/architecture/track_builder.md)
+- [Sparse SfM](docs/architecture/sparse_sfm.md)
+- [Calibration Bootstrap v1](docs/architecture/calibration_bootstrap.md)
+- [Calibration Science v1](docs/architecture/calibration_science_v1.md)
+- [Calibration Solver Preflight v1](docs/architecture/calibration_solver_preflight_v1.md)
+- [Photo Quality Triage](docs/architecture/photo_quality_triage.md)
+- [Vulkan ORB Matcher](docs/architecture/vulkan_matcher.md)
 - [Viewer](docs/architecture/viewer.md)
-- [Resource Boundary — No New Resource Subsystem](docs/architecture/resource_boundary.md)
-- [Audit global de maintenance — état consolidé](docs/architecture/global_maintenance_audit.md)
-- [Revue historique des fondations](docs/architecture/foundation_review.md)
+- [Resource Boundary](docs/architecture/resource_boundary.md)
+
+### Historical audit records
+
+- [Global Maintenance Audit](docs/architecture/global_maintenance_audit.md)
+- [Foundation Review](docs/architecture/foundation_review.md)
+
+Historical audit records preserve the state and evidence of their checkpoint. Older schema versions,
+Task counts or resource measurements inside them must not be mechanically modernized.
 
 ### Concepts
+
 - [Scan Sets](docs/concepts/scan_sets.md)
-- [Index visuel](docs/concepts/visual_index.md)
-- [Matching et tracks](docs/concepts/matching_and_tracks.md)
-- [Couches de reconstruction](docs/concepts/reconstruction_layers.md)
-- [Contraintes géométriques](docs/concepts/geometric_constraints.md)
+- [Visual Index](docs/concepts/visual_index.md)
+- [Matching and Tracks](docs/concepts/matching_and_tracks.md)
+- [Reconstruction Layers](docs/concepts/reconstruction_layers.md)
+- [Geometric Constraints](docs/concepts/geometric_constraints.md)
 
-### Développement
+Some concept documents are explicitly historical or superseded. Their status header determines
+whether they are current authority.
+
+### Development
+
 - [Build](docs/development/build.md)
-- [Tests](docs/development/testing.md)
-- [Concurrence](docs/development/concurrency.md)
-- [Profil de performance de la machine cible](docs/performance/target_hardware.md)
+- [Testing](docs/development/testing.md)
+- [Concurrency](docs/development/concurrency.md)
+- [Validation-host performance profile](docs/performance/target_hardware.md)
 
-### Roadmap
+### Roadmap and audits
+
 - [Roadmap](docs/roadmap/roadmap.md)
+- [Documentation Inventory Audit](docs/audits/documentation_inventory.md)
 
-## Build rapide
+## Build
+
+Meson and Ninja are the canonical build path.
 
 ```sh
-CC=clang meson setup build --wipe
-meson compile -C build -j8
+CC=clang meson setup build
+meson compile -C build
 ```
+
+Build parallelism should use safe host capacity. Do not treat a historical `-j8` or the current
+reference-host result of approximately `-j12` as a portable constant.
 
 ## Tests
 
@@ -239,57 +388,41 @@ meson test -C build --print-errorlogs
 git diff --check
 ```
 
-Pour les changements sensibles à la mémoire ou à la concurrence, ajouter ASan/UBSan et TSan.
+For memory-, lifetime- or concurrency-sensitive changes, use the applicable ASan/UBSan and TSan
+validation described in [Testing](docs/development/testing.md) and preserve documented third-party
+sanitizer qualifications.
 
-## Statut
+## Repository language
 
-Lardon3D est en développement actif. La persistance des tâches, le catalogue,
-le Feature Store multipasse, le Visual Index ORB, Candidate Pair Generator,
-Matcher v1, Geometric Verification Model et Geometric Verifier Fundamental v3
-sont implémentés. Le runtime Feature + Matcher + Verifier emploie des tâches durables,
-de petits lots, le Resource Governor interactif et un hot path Vulkan ORB exact avec
-fallback CPU. La feasibility Vulkan SIFT/RootSIFT a été rejetée ; ces deux matchers
-restent sur OpenCV L2. Track Model/Builder, les primitives géométriques Gate C,
-le noyau Sparse SfM incrémental Gate D et le Bundle Adjustment final Gate E sont
-implémentés et validés. L'orchestration Sparse SfM Gate F est PASS / FROZEN ;
-l'intégration Governor Gate G est **PASS / FROZEN**. MVS-M1 est **PASS / FROZEN** :
-une frontière OpenMVS v2.4.0 externe et bornée, sans publication dense durable
-ni MVS complet. Les sources sont liées par SHA-256
-complet, borné à 1 GiB par fichier régulier (sans budget agrégé de dataset) ; les
-octets source restent un binding distinct de l'identité dense. Celle-ci lie la
-reconstruction de base, le jeu d'images source, le `calibration_scope_identity`
-historique, le binding numérique de calibration MVS `L3DMCAL1` v1, le backend et
-les paramètres dans `L3DMDID2` v2 (220 octets). Chaque appel utilise un espace de
-travail privé neuf sous le staging appelant, sans réemploi d'une scène,
-profondeur, cache ou sortie antérieure. Le DAG, le viewer et les autres étapes
-denses restent des tickets séparés planifiés.
-La fondation Project DB v22, `raw.develop` et Calibration Bootstrap v1 reste
-**PASS / FROZEN**. La tête courante v23 ajoute seulement le contexte optique
-générique : neuf tables, migration transactionnelle sans backfill, objectifs
-manuels sans EXIF, configurations multiples par campagne et sélection de
-calibration exactement compatible. Les migrations de copies réelles S21/A6000
-ont conservé leurs lignes scientifiques et laissé l'overlay vide. Les campagnes
-réelles S21 et A6000 Engine Bay sont
-`CALIBRATION_UNAVAILABLE` par non-identifiabilité scientifique des données de
-calibration connues ; le Sparse SfM réel reste
-`BLOCKED_BY_KNOWN_CALIBRATION_DATA`, sans pseudo-calibration ni import inféré.
-Le Resource Governor ne constitue pas un Resource System générique : il reste
-l'unique propriétaire des budgets et le seul orchestrateur des leases scratch
-de production. Le contrôleur SSD UDisks2 est une frontière physique séparée,
-jamais un second scheduler ou Governor. Les seize Task kinds actuels ne
-consomment encore aucun scratch : l'espace disponible est une capacité
-observable, pas un usage fabriqué, et scratch/swap ne deviennent jamais de la
-RAM. La TUI/F10 et cette intégration sont validées opérationnellement. L'audit
-global est désormais `GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN` : après les builds
-Clang frais portable/Vulkan, les suites normales 64/64 et 65/65, les sanitizers
-applicables, TSan et les contrôles ABI, l'unique revue finale indépendante
-GPT-5.6 SOL/ULTRA a conclu PASS sans finding bloquant. Elle a indépendamment
-rejoué le build portable, la suite 64/64, une matrice focalisée 15/15 et les
-76/76 probes strictes C17/C++17 couvrant 19 headers publics modifiés/nouveaux,
-ainsi que l'ABI, les négatifs de seams production, le SHA du manifest GV et le
-diff-check. Ce gel clôt la gate de maintenance ; il n'exécute pas à lui seul la
-tranche scientifique suivante.
+The canonical language for repository documentation, agent contracts and production source comments
+is English.
 
-## Licence
+User-interface language is a separate product/localization concern.
 
-Projet privé - Tous droits réservés.
+## Status
+
+Lardon3D is under active development.
+
+The persistent pre-SfM pipeline is implemented through Tracks, the Sparse SfM C-G capability is
+implemented and frozen at its documented boundaries, Phase H v1 is frozen, and MVS-M1 provides the
+validated external OpenMVS boundary. Full real known-calibration Sparse SfM, dense publication,
+mesh, texturing, viewer and live capture guidance remain future work.
+
+The global maintenance checkpoint remains:
+
+```text
+global-maintenance-2026-09-01
+```
+
+The later real A6000 pre-SfM checkpoint is:
+
+```text
+real-a6000-pre-sfm-2026-09-02
+```
+
+Future reviews should preserve historical checkpoint meaning and review only the relevant delta
+unless concrete evidence requires reopening an unchanged FROZEN boundary.
+
+## License
+
+Lardon3D is licensed under the MIT License.
