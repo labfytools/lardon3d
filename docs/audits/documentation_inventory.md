@@ -414,6 +414,23 @@ docs/architecture/task_kind_registry.md states sixteen kinds but points to a Res
 
 The heading and cross-link must be synchronized without altering historical fourteen-kind audit evidence.
 
+# Repository language decision
+
+Human authority has selected English as the canonical repository language.
+
+The final repository target is:
+
+- DOCUMENTATION_LANGUAGE=ENGLISH
+- SOURCE_COMMENT_LANGUAGE=ENGLISH
+- AGENT_CONTRACT_LANGUAGE=ENGLISH
+- USER_INTERFACE_LANGUAGE=INDEPENDENT
+
+All technical documentation, agent contracts, prompt files and production source comments are to converge on English during the remediation passes.
+
+Translation must preserve scientific meaning, historical truth, FROZEN contracts, identities, numeric values, lifecycle state and evidence. A historical document may be translated but must not be silently modernized.
+
+The TUI language is a separate product/localization decision and is not changed by this documentation-language decision.
+
 # Product documentation intentionally deferred
 
 This documentation cleanup must not invent final contracts for:

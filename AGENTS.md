@@ -23,6 +23,36 @@
   Resolve locally determinable engineering problems from the existing code and
   canonical documentation.
 
+## Repository language policy
+
+The canonical language of the Lardon3D repository is English.
+
+This applies to:
+
+- README.md;
+- AGENTS.md;
+- all current and future files under docs/**;
+- prompt.md and all files under prompt/**;
+- source comments under include/lardon3d/** and src/**;
+- developer-facing technical documentation, diagnostics and engineering contracts where applicable.
+
+The repository must not intentionally mix French and English technical prose.
+Existing French documentation and source comments are to be converted to English during the planned documentation and source-comment remediation passes, without changing scientific meaning, FROZEN facts, historical evidence, numeric values, identities, lifecycle truth or contract authority.
+
+Historical documents may be translated, but translation must not modernize or reinterpret the historical state they record.
+
+User-interface language is a separate product concern. Existing TUI labels may remain in their current language until an explicit localization/product decision is made. Repository language policy does not require the UI to be English-only.
+
+Canonical markers:
+
+DOCUMENTATION_LANGUAGE=ENGLISH
+
+SOURCE_COMMENT_LANGUAGE=ENGLISH
+
+AGENT_CONTRACT_LANGUAGE=ENGLISH
+
+USER_INTERFACE_LANGUAGE=INDEPENDENT
+
 ## 2. FROZEN integrity
 
 The following current project foundation is protected and may change only
