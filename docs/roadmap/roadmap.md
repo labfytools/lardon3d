@@ -19,10 +19,10 @@ REAL_A6000_PRE_SFM                    PASS/FROZEN
 Sparse SfM capability Gates A-G       PASS/FROZEN
 Real A6000 Sparse SfM                 NOT EXECUTED
 Real A6000 Dense/MVS                  NOT EXECUTED
-DOCUMENTATION_REMEDIATION             IN_PROGRESS
-SOURCE_COMMENT_AUDIT                  NOT_STARTED
-PRODUCT_DEFINITION                    NOT_STARTED
-PROMPT_TREE                           NOT_STARTED
+DOCUMENTATION_FINDING_REMEDIATION     PASS
+SOURCE_COMMENT_AUDIT                  PASS
+PRODUCT_DEFINITION                    PASS/FROZEN
+PROMPT_TREE                           NEXT
 ```
 
 The current Project DB head is additive:
@@ -523,11 +523,12 @@ No calibration component silently turns metadata into scientific calibration.
 The current repository-maintenance sequence is:
 
 ```text
-Documentation Inventory Audit     PASS_WITH_FINDINGS
--> Documentation Remediation      IN_PROGRESS
--> Source Comment Audit
--> Product Definition
--> prompt.md / prompt/ contract tree
+Documentation Inventory Audit      PASS_WITH_FINDINGS
+Documentation Finding Remediation  PASS
+Source Comment Audit               PASS
+Source Comment Remediation         PASS
+Product Definition v1              PASS/FROZEN
+-> prompt.md / prompt/ contract tree NEXT
 -> implementation only after explicit human authorization
 ```
 
@@ -628,7 +629,7 @@ valid optical/calibration context, then registered or fused at the scientificall
 
 ## Future product areas
 
-The following areas remain future work until their contracts are explicitly defined and authorized.
+The following areas remain future implementation work. Their product requirements are now frozen in [Product Definition v1](../product/product_definition.md); subsystem implementation/scientific contracts remain to be authorized and acquired.
 
 ### Dense / MVS / mesh / texture / export
 
@@ -851,13 +852,15 @@ The established Queue/Governor plus bounded internal fan-out are sufficient to e
 The immediate repository work is:
 
 ```text
-DOCUMENTATION_REMEDIATION
--> SOURCE_COMMENT_AUDIT
--> PRODUCT_DEFINITION
--> PROMPT_TREE
+DOCUMENTATION_FINDING_REMEDIATION  PASS
+SOURCE_COMMENT_AUDIT               PASS
+SOURCE_COMMENT_REMEDIATION         PASS
+PRODUCT_DEFINITION_V1              PASS/FROZEN
+PROMPT_TREE                        NEXT
 ```
 
 No new Lardon3D implementation is authorized by this roadmap update.
 
-After those preparation phases, implementation order will be frozen in `prompt.md` and the numbered
-`prompt/` execution contract under explicit human authority.
+Implementation order is the next preparation phase and will be frozen in `prompt.md` and the numbered
+`prompt/` execution contract under explicit human authority. Product Definition v1 is the product-intent input to
+that tree; it is not implementation authorization.

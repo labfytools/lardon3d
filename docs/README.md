@@ -9,6 +9,8 @@ CURRENT_PRODUCTION_TASK_KINDS=16
 
 REAL_S21_TRACKS=PASS/FROZEN
 REAL_A6000_PRE_SFM=PASS/FROZEN
+PRODUCT_DEFINITION_V1=PASS/FROZEN
+PROMPT_TREE=NEXT
 ```
 
 This index separates current authority, historical evidence and future product-definition work.
@@ -201,22 +203,21 @@ The later A6000 checkpoint adds new operational evidence; it does not erase the 
 Concept documents may be historical or explanatory. They do not outrank the current specialized
 architecture contract.
 
-## Future product-definition boundary
+## Product definition
 
-The documentation audit does not invent final contracts for:
+Canonical target-product authority:
 
-- viewer;
-- A6000 live acquisition;
-- S21 live acquisition;
-- coverage analysis;
-- capture guidance;
-- suggested viewpoints;
-- video/keyframe ingestion;
-- final optics onboarding UX;
-- profile import/export UX;
-- dense/mesh/texture/export UX.
+- [Product Definition v1](product/product_definition.md)
 
-Those belong to the separate Product Definition and final prompt-tree phases.
+```text
+PRODUCT_DEFINITION_V1=PASS/FROZEN
+IMPLEMENTATION_AUTHORIZATION=NO
+PROMPT_TREE=NEXT
+```
+
+The product definition freezes desired end-product behavior without reopening existing FROZEN
+scientific contracts. Future implementation is authorized only by the subsequent execution-contract
+phase under explicit human authority.
 
 ## Repository language
 
