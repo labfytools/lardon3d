@@ -1,61 +1,170 @@
 # Feature Store v1/v2
 
-## Rôle et modèle
+## Status
 
-**IMPLEMENTED.** Le Feature Store est la mémoire visuelle locale persistante.
-Un `FeatureSet` logique appartient à une `image_id` et identifie exactement
-`orb` version 1 plus une configuration canonique. Il référence un
-`FeatureAsset` physique immutable. Deux images logiques portant le même contenu
-et la même configuration gardent deux `feature_set_id`, mais partagent le même
-asset lorsque leurs octets sont identiques. Les futurs matches référenceront
-`feature_set_id + feature_index`; ces deux valeurs sont immuables après
-publication.
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
 
-`feature_set_id` et `feature_asset_id` sont des identités SQLite
-`AUTOINCREMENT`. Une identité validée n'est jamais réattribuée. SQLite ne
-contient que les relations, empreintes, tailles et paramètres ; les tableaux de
-points et descripteurs restent hors DB.
+FEATURE_STORE_STATUS=IMPLEMENTED
+FEATURE_FILE_V1=FROZEN
+FEATURE_FILE_V2=IMPLEMENTED
 
-## Extracteur et configuration
+HISTORICAL_FEATURE_TASK=features.extract/1
+CURRENT_FEATURE_BATCH_TASK=features.extract.batch/1
+PROJECT_DB_V25_FEATURE_BATCH=IMPLEMENTED/VALIDATED
 
-L'extracteur production est ORB d'OpenCV 5, derrière une façade C. Aucune
-exception C++ ni `cv::Mat` ne traverse cette frontière. La registry statique
-expose `features.extract`, version 1. Une tâche traite exactement une image.
+PER_IMAGE_FEATURE_RESULT=ATOMIC
+PER_IMAGE_ATOMICITY_REQUIRES_CROSS_IMAGE_SERIALISM=NO
+OWNER_ONLY_PUBLICATION_REQUIRES_SERIAL_PREPARATION=NO
 
-La configuration v1 contient trois `uint32` : `max_features` (1..8192),
-`pyramid_levels` (1..16) et `fast_threshold` (1..255). Son fingerprint SHA-256
-porte sur les 24 octets canoniques `L3DORBP1`, version et trois entiers
-little-endian. Il ne dépend ni du padding, ni de la locale. Le contrat ORB v1
-produit 32 octets binaires par point.
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
 
-Au démarrage, avant la création du worker Queue, Lardon3D configure la baseline
-OpenCV process-wide depuis le compute-pool réel. `features.extract` publie la
-borne positive `int` acceptée par OpenCV ; le Resource Governor réduit toujours
-l'admission au budget hôte. Douze threads demeure une cohorte de validation,
-pas un plafond portable. La Queue conserve un callback actif ; aucun pool
-Lardon3D supplémentaire n'est créé pour ORB.
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
 
-Cette limite est une configuration opérationnelle, jamais un paramètre
-scientifique : elle n'entre ni dans le fingerprint ORB v1, ni dans l'identité
-FeatureSet, ni dans le Feature File. L'audit contrôlé OpenCV 5.0.0 aux limites
-1, 2, 4, 8 et 12 exige le même count, le même ordre et les mêmes valeurs
-binary32 des six champs keypoint persistés, les mêmes lignes/octets descriptor
-et le même SHA-256 du Feature File. `class_id` est une donnée interne
-`cv::KeyPoint` non publiée ; elle ne fait pas partie du record Feature File v1/v2
-gelé et ne peut donc définir une identité scientifique.
+The Feature Store is the persistent local visual-memory layer for Lardon3D.
 
-La limite de 100 000 000 pixels est vérifiée après `cv::imread` : l'API utilisée
-ne fournit pas de sonde de dimensions multi-format fiable sans décodage. Le pic
-mémoire du décodage peut donc précéder le rejet. Lardon3D ne revendique pas de
-bornage pré-décodage et n'embarque pas un parseur JPEG/PNG parallèle.
+The scientific identity of a Feature Set remains per image and immutable after publication. Project DB
+v25 adds an operational selected-execution batch Task, but does not change Feature Set identity,
+Feature File formats, ORB descriptor semantics or the historical single-image Task contract.
+
+## Role and identity model
+
+A logical `FeatureSet` belongs to one `image_id` and identifies:
+
+- one extractor kind;
+- one extractor version;
+- one canonical parameter fingerprint;
+- one exact source image content identity;
+- one immutable published Feature Asset.
+
+Two logical images with identical source content and identical extractor configuration keep distinct
+`feature_set_id` values. They may share the same immutable physical Feature Asset when the resulting
+Feature File bytes are identical.
+
+Downstream correspondence identity references:
+
+```text
+feature_set_id + feature_index
+```
+
+Both components are immutable after Feature Set publication.
+
+`feature_set_id` and `feature_asset_id` are SQLite `AUTOINCREMENT` identities. A committed published
+identity is never reassigned to another object. SQLite stores logical relations, hashes, sizes,
+extractor metadata and light metrics; keypoint arrays and descriptor arrays remain outside SQLite.
+
+## Extractor registry and scientific configuration
+
+The historical production ORB extractor uses OpenCV 5 behind a C boundary. No C++ exception or
+`cv::Mat` crosses the public C API.
+
+The historical registered Task Kind is:
+
+```text
+features.extract/1
+```
+
+That Task processes one image as one scientific unit.
+
+The current selected-execution operational Task Kind is:
+
+```text
+features.extract.batch/1
+```
+
+It processes multiple independently selected images under one durable owner while preserving one
+immutable Feature result per image.
+
+### ORB v1 configuration
+
+The ORB v1 configuration contains three `uint32_t` fields:
+
+- `max_features`, range `1..8192`;
+- `pyramid_levels`, range `1..16`;
+- `fast_threshold`, range `1..255`.
+
+Its SHA-256 parameter fingerprint is computed from the canonical 24-byte domain containing:
+
+```text
+L3DORBP1
+version
+max_features
+pyramid_levels
+fast_threshold
+```
+
+with fixed little-endian integer encoding.
+
+The fingerprint does not depend on C struct padding, locale, Task ID, resource reservation,
+admitted CPU count or admitted batch size.
+
+ORB v1 produces 32-byte binary descriptors.
+
+## OpenCV execution control
+
+OpenCV thread count is process-wide operational state, not scientific identity.
+
+Before Queue execution, Lardon3D establishes the validated OpenCV baseline from the actual host
+compute pool. The active heavy callback applies the count required by its admitted contract and
+restores the baseline on every exit path.
+
+The Queue retains one active callback. This prevents unrelated heavy Tasks from racing the same
+process-wide OpenCV configuration.
+
+Historical `features.extract/1` may use the admitted OpenCV CPU count inside one image extraction.
+
+For `features.extract.batch/1`, cross-image participants are the primary concurrency mechanism.
+Independent participants prepare different images; Lardon3D does not blindly multiply a full OpenCV
+thread team inside every participant.
+
+The admitted CPU count is resource policy and never enters:
+
+- ORB v1 fingerprint;
+- Feature Set identity;
+- Feature File bytes;
+- source-image identity.
+
+The controlled OpenCV 5.0.0 validation at 1, 2, 4, 8 and 12 threads required identical:
+
+- feature count;
+- keypoint order;
+- binary32 values of all six persisted keypoint fields;
+- descriptor row order and bytes;
+- complete Feature File SHA-256.
+
+Twelve threads are reference-host validation evidence, not a portable product ceiling.
+
+`cv::KeyPoint::class_id` is not persisted by the frozen Feature File record and therefore cannot
+define scientific identity.
+
+## Decode bound
+
+The 100,000,000-pixel limit is checked after `cv::imread`.
+
+The API used by this implementation does not provide a reliable multi-format dimension probe without
+decoding. Therefore decode peak memory can precede rejection.
+
+Lardon3D does not claim pre-decode memory bounding and does not maintain a parallel JPEG/PNG dimension
+parser for this purpose.
 
 ## Feature File v1
 
-Le fichier est little-endian et exige IEEE-754 binary32. Sa taille maximale est
-16 Mio et son nombre maximal de points 8192.
+Feature File v1 is little-endian and requires IEEE-754 binary32.
 
-| Offset | Taille | Champ |
-|---:|---:|---|
+Limits:
+
+```text
+maximum file size      16 MiB
+maximum feature count  8192
+ORB descriptor         U8 x 32
+```
+
+### Header
+
+| Offset | Size | Field |
+| ---: | ---: | --- |
 | 0 | 8 | magic `L3DFEAT\0` |
 | 8 | 4 | format version = 1 |
 | 12 | 4 | header size = 160 |
@@ -63,98 +172,456 @@ Le fichier est little-endian et exige IEEE-754 binary32. Sa taille maximale est
 | 20 | 4 | descriptor dimension = 32 |
 | 24 | 4 | descriptor type = U8 |
 | 28 | 4 | keypoint record size = 24 |
-| 32,36 | 4+4 | largeur, hauteur décodées |
-| 40,48,56 | 8+8+8 | offsets keypoints/descriptors, taille totale |
-| 64 | 32 | SHA-256 de l'asset image source |
-| 96 | 32 | fingerprint paramètres |
-| 128 | 16 | `orb\0` puis zéros réservés |
+| 32, 36 | 4 + 4 | decoded image width and height |
+| 40, 48, 56 | 8 + 8 + 8 | keypoint offset, descriptor offset, total size |
+| 64 | 32 | source image asset SHA-256 |
+| 96 | 32 | parameter fingerprint |
+| 128 | 16 | `orb\0` followed by reserved zero bytes |
 | 144 | 4 | extractor version = 1 |
-| 148 | 12 | réservés, zéro obligatoire |
+| 148 | 12 | reserved, must be zero |
 
-Chaque keypoint contient six mots de 32 bits : `x`, `y`, `size`, orientation,
-response en binary32, puis octave signé. `x/y` sont en pixels de l'image telle
-que décodée par OpenCV, origine en haut à gauche. `size` est le diamètre du
-voisinage en pixels. L'orientation est en degrés dans `[0,360)`. L'entrée `i`
-du bloc keypoints correspond exactement aux 32 octets du descriptor `i`.
+Each keypoint contains six 32-bit words:
 
-Le validateur contrôle magic, version, réservés, type, dimension, bornes,
-offsets, taille exacte, multiplications, SHA-256 externe et cohérence DB. Une
-version future est distinguée d'une corruption lorsque le fichier et son record
-DB sont cohérents. Le reader utilise `pread`, accepte au plus 256 éléments par
-appel et ne charge jamais le fichier entier.
+1. `x` binary32;
+2. `y` binary32;
+3. `size` binary32;
+4. orientation binary32;
+5. response binary32;
+6. signed octave.
 
-Le chemin DB est validé sous sa forme canonique exacte dérivée du SHA-256 avant
-toute ouverture. Une absence retourne `NOT_FOUND`; troncature, hash divergent,
-header ou métadonnées DB divergents retournent `CORRUPT`. Une version future
-retourne distinctement `UNSUPPORTED_VERSION`.
+`x` and `y` are image pixels in the OpenCV-decoded image with top-left origin.
 
-## Publication et persistance
+`size` is the neighborhood diameter in pixels.
 
-Layout : `assets/features/<2 hex>/<sha256 complet lowercase>`. Le SHA-256 porte
-sur le Feature File complet. Le protocole est : temporaire local, écriture,
-`fsync`, hash, `link` atomique sans écrasement, validation complète lors d'une
-adoption concurrente, `fsync` du répertoire, puis transaction SQLite. Un échec
-du dernier `fsync` est enregistré `PUBLISHED_NOT_DURABLE`. Un échec SQLite après
-publication laisse un fichier orphelin et aucune ligne logique partielle.
-Un nouvel essai qui revalide l'asset et réussit le `fsync` promeut explicitement
-sa durabilité vers `DURABLE` dans la transaction DB.
+Orientation is in degrees in `[0,360)`.
 
-Le sous-schéma introduit en v5 sépare `feature_assets`, `feature_sets` et
-`feature_extract_tasks`. L'unicité logique porte sur image, kind, version et
-fingerprint. Une tâche est persistée avant enqueue, passe par la queue et le
-Governor (CPU, IO, 576 Mio conservateurs, lot 1), puis checkpointée initialement
-et terminalement. La reprise recommence l'image entière : il n'existe pas de
-fausse reprise intra-ORB. La publication est idempotente.
+Keypoint record `i` corresponds exactly to descriptor row `i`.
 
-Pause et annulation sont coopératives avant/après l'appel ORB ; cet appel n'est
-pas interruptible. L'image gérée est rehashée avant extraction. Une image
-uniforme produit légitimement un Feature Set READY vide.
+## Feature File v1 validation
 
-Lardon3D ne garantit pas des octets ORB identiques entre versions d'OpenCV,
-plateformes ou backends. L'idempotence porte sur l'environnement courant et le
-contrat `extractor_version`; une évolution qui change durablement la sémantique
-ou les octets exige d'auditer et, si nécessaire, d'incrémenter cette version.
+The reader validates:
 
-## Statut
+- magic;
+- format version;
+- reserved-zero bytes;
+- descriptor type;
+- descriptor dimension;
+- count bounds;
+- offset bounds;
+- exact total size;
+- checked multiplication;
+- external SHA-256;
+- Project DB metadata consistency.
 
-**IMPLEMENTED** — ORB réel, formats v1/v2, assets content-addressed, DB v7,
-publication atomique, reader borné, task kind production et reprise automatique.
+A future format version is distinguished from corruption when both file and DB record are otherwise
+coherent.
 
-**NOT_YET_WIRED** — commande de réconciliation/scrub des orphelins, contrôle fin
-du backend parallèle OpenCV, orientation EXIF, lancement automatique de
-l'extraction après import et planification multi-image/DAG.
+The reader uses `pread`, reads at most 256 features per call and does not require loading the entire
+Feature File.
 
-**IMPLEMENTED** — Visual Index v1 consomme ce reader sans changer le format.
+The Project DB path must equal the canonical path derived from the stored SHA-256 before the file is
+opened.
 
-**IMPLEMENTED** — paires candidates, Matcher v1 et Match Store v1 consomment
-les Feature Sets persistés.
+Outcomes include:
 
-**IMPLEMENTED** — vérification géométrique et tracks. **Sparse SfM Gate A
-PASS**, the Sparse SfM v16 persistence model is **FROZEN** after Gate B;
-Gate C geometry and the synchronous in-memory Gate D incremental core are
-**IMPLEMENTED / PASS**. Final per-component Gate E BA is **PASS / FROZEN**;
-Gate F project/task orchestration is **PASS / FROZEN**. Gate G is
-**PASS / FROZEN**.
+- missing file -> `NOT_FOUND`;
+- truncation -> `CORRUPT`;
+- hash mismatch -> `CORRUPT`;
+- header/DB disagreement -> `CORRUPT`;
+- coherent unsupported future version -> `UNSUPPORTED_VERSION`.
 
-## Extension v2 multi-descriptor
+## Publication and persistence
 
-**IMPLEMENTED v1A.** ORB continue d'écrire exactement le v1 U8×32 historique.
-SIFT et RootSIFT écrivent le v2 F32×128. Le header v2 de 176 octets contient,
-aux offsets 0..64, magic, version, taille header, count, dimension, type, taille
-scalaire, taille record, dimensions image, capabilities, offsets des blocs et
-taille totale ; puis SHA source à 72, fingerprint à 104, kind sur 16 octets à
-136, version extracteur à 152 et vingt octets réservés nuls.
+Physical layout:
 
-Les valeurs durables sont `U8=1` et `F32=2`, de tailles 1 et 4. Chaque binary32
-est encodé little-endian sans dump de struct. Writer et reader rejettent NaN et
-Inf. Les lectures `descriptors_u8` et `descriptors_f32` refusent un type
-incompatible, utilisent `pread` et restent limitées à 256 features. La limite
-v1 reste 16 Mio ; la limite v2 est 64 Mio.
+```text
+assets/features/<first-2-hex>/<full-lowercase-sha256>
+```
 
-La façade d'extraction transporte aussi `descriptor_bytes`. La publication
-exige exactement `count × dimension × scalar_size`; elle refuse donc un buffer
-tronqué ou surdimensionné avant toute lecture ou création de fichier.
+The SHA-256 covers the complete Feature File.
 
-ProjectDb v7 ajoute les métriques légères de couverture. Le détail multipasse,
-la grille et RootSIFT sont canoniques dans
-`precision_feature_pipeline.md`.
+The publication protocol is:
+
+```text
+local temporary file
+-> write
+-> fsync file
+-> hash complete Feature File
+-> atomic no-overwrite link/publication
+-> fully validate any concurrently existing identical asset
+-> fsync parent directory
+-> SQLite transaction
+-> logical READY state
+```
+
+If the final parent-directory `fsync` fails after publication, durability is recorded as
+`PUBLISHED_NOT_DURABLE`.
+
+If SQLite fails after the physical file is published, the valid file remains an orphan and no partial
+logical Feature Set row is invented.
+
+A later exact retry may revalidate the physical asset, complete a successful directory `fsync` and
+promote durability to `DURABLE` in the Project DB transaction.
+
+## Historical Project DB Feature foundation
+
+The Feature Store persistence foundation separates:
+
+- `feature_assets`;
+- `feature_sets`;
+- `feature_extract_tasks`.
+
+Logical uniqueness is based on image, extractor kind, extractor version and parameter fingerprint.
+
+The historical `features.extract/1` Task is persisted before enqueue, admitted by Queue/Governor,
+executes one complete image and checkpoints at its durable boundaries.
+
+Its historical conservative execution shape includes:
+
+```text
+one image
+one atomic ORB extraction/publication
+no intra-image restart
+```
+
+The existing conservative single-image resource descriptor remains valid for those Tasks and their
+restart compatibility. It must not be generalized into a rule requiring all future independent images
+to execute serially.
+
+Pause and cancellation are cooperative before and after the OpenCV call. The OpenCV extraction itself
+is not interruptible.
+
+The managed source image is rehashed before extraction.
+
+A uniform image may legitimately publish a READY Feature Set with zero features.
+
+## Selected-execution Feature batch — Project DB v25
+
+Project DB v25 adds only:
+
+```text
+feature_extract_batch_tasks
+```
+
+and the durable Task Kind:
+
+```text
+features.extract.batch/1
+```
+
+The v24 -> v25 migration is transactional, additive and DDL-only.
+
+It does not:
+
+- create Feature Sets;
+- convert historical `features.extract/1` Tasks;
+- infer an `image_id`;
+- infer a Feature Set;
+- change ORB v1 parameters;
+- change Feature File v1/v2;
+- change Feature Set identity.
+
+### Durable owner identity
+
+One `features.extract.batch/1` owner is bound to:
+
+- one immutable selected execution;
+- one monotonic `next_item_index`;
+- the exact ORB extractor kind;
+- the exact ORB extractor version;
+- the exact ORB parameters;
+- the exact ORB parameter fingerprint.
+
+The selected execution order is authoritative.
+
+### Execution shape
+
+The current operational path is:
+
+```text
+one admitted owner Task
+-> bounded selected-item window
+-> bounded independent image participants
+-> each participant prepares one per-image Feature result
+-> participants perform no SQLite publication
+-> join
+-> owner validates or reuses the exact READY Feature Set
+-> owner publishes in selected-item order
+-> owner advances the durable Feature cursor
+-> generic Task progress/checkpoint follows
+```
+
+Each participant therefore computes an ordinary per-image scientific Feature result.
+
+The owner-only publication stage preserves deterministic selected-item order without requiring
+independent image preparation to run serially.
+
+### Atomicity and concurrency
+
+The scientific atomic result remains one Feature Set for one image.
+
+```text
+PER_IMAGE_FEATURE_RESULT=ATOMIC
+PER_IMAGE_ATOMICITY_REQUIRES_CROSS_IMAGE_SERIALISM=NO
+OWNER_ONLY_PUBLICATION_REQUIRES_SERIAL_PREPARATION=NO
+```
+
+Cross-image preparation may be concurrent when the Governor admits a useful bounded window.
+
+This is not a generic DAG scheduler and does not add a second global worker pool. The Task Queue still
+owns one active callback; the batch callback contains the bounded participant work.
+
+### Crash and restart
+
+An immutable Feature Set can become durable before the Feature-batch cursor or generic Task checkpoint
+advances.
+
+Therefore, after a crash:
+
+```text
+durable Feature Set may be ahead of Task checkpoint
+```
+
+but:
+
+```text
+Task checkpoint must never invent a Feature Set that is not durable
+```
+
+Restart revalidates and reuses the exact READY Feature Set and then converges the cursor. It does not
+derive identity from path, processing order or Task-local position.
+
+### Resource adaptation
+
+For the selected-execution Feature batch, increasing admitted CPU while the item window remains one
+cannot exercise additional independent images.
+
+The current validated resource model may therefore couple CPU and batch growth where required by the
+Feature-batch rung contract.
+
+That behavior is Task-specific operational policy, not a universal Governor rule.
+
+The canonical repository policy remains:
+
+```text
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+```
+
+Preserve the interactive host reserve and all RAM/CPU/IO/GPU safety constraints first. Within that
+safe envelope, use the maximum useful validated execution width.
+
+Per-item atomicity is not evidence that unrelated items must be serialized.
+
+## GPU boundary
+
+Feature Extraction currently remains CPU.
+
+The current production GPU audit classifies Feature Extraction as:
+
+```text
+FEATURE_GPU=REJECTED_WITH_MEASURED_OR_IMPLEMENTATION_EVIDENCE
+```
+
+On the validated OpenCV 5.0.0 host:
+
+- no usable ORB/SIFT Vulkan/OpenCL extraction seam is validated;
+- CUDA is unavailable in the installed OpenCV build;
+- no GPU path has proven byte-identical Feature Files for this boundary.
+
+Therefore Feature Extraction receives no production GPU path merely because the host has a GPU.
+
+This does not authorize avoidable CPU serialism. Cross-image CPU parallelism remains valid where its
+Task contract has been proven.
+
+## Environment and reproducibility
+
+Lardon3D does not claim ORB Feature File bytes are identical across arbitrary:
+
+- OpenCV versions;
+- platforms;
+- extractor backends.
+
+Idempotence is defined inside the supported environment and extractor-version contract.
+
+Any change that modifies durable Feature semantics or bytes requires explicit review and, when
+necessary, an extractor-version change. It must not silently reuse the old scientific identity.
+
+## Feature File v2 and multi-descriptor support
+
+**IMPLEMENTED v1A.**
+
+ORB continues to write the historical Feature File v1 U8x32 representation.
+
+SIFT and RootSIFT write Feature File v2 F32x128.
+
+### v2 header
+
+Feature File v2 has a 176-byte header.
+
+Its fields include:
+
+- magic;
+- explicit version;
+- header size;
+- feature count;
+- descriptor dimension;
+- descriptor type;
+- scalar size;
+- keypoint-record size;
+- decoded image dimensions;
+- capabilities;
+- keypoint/descriptor block offsets;
+- total size;
+- source SHA-256 at offset 72;
+- parameter fingerprint at offset 104;
+- 16-byte extractor kind at offset 136;
+- extractor version at offset 152;
+- twenty reserved zero bytes.
+
+Stable descriptor type values are:
+
+```text
+U8  = 1
+F32 = 2
+```
+
+with scalar sizes 1 and 4.
+
+Every binary32 value is explicitly encoded little-endian; persistent output is not a C/C++ struct
+dump.
+
+Writer and reader reject NaN and Inf.
+
+The typed descriptor readers:
+
+- use `pread`;
+- refuse incompatible descriptor type;
+- return at most 256 features per call.
+
+File-size limits remain:
+
+```text
+Feature File v1  16 MiB
+Feature File v2  64 MiB
+```
+
+The extraction facade also carries `descriptor_bytes`.
+
+Publication requires exactly:
+
+```text
+feature_count * descriptor_dimension * scalar_size
+```
+
+and rejects both truncated and oversized descriptor buffers before file creation/publication.
+
+The detailed multipass, grid and RootSIFT scientific contracts remain in
+[`precision_feature_pipeline.md`](precision_feature_pipeline.md).
+
+## Downstream consumers
+
+The Feature Store currently feeds implemented downstream stages:
+
+```text
+Feature Store
+    |
+    v
+Visual Index
+    |
+    v
+Candidate Pair
+    |
+    v
+Matcher
+    |
+    v
+Geometric Verification
+    |
+    v
+Tracks
+```
+
+Visual Index consumes the bounded Feature reader without changing Feature File format.
+
+Candidate Pair consumes Feature Set identities indirectly through Visual Index membership.
+
+Matcher consumes persisted Feature Sets and their descriptors.
+
+Geometric Verification and Tracks consume later correspondence products; they do not rewrite Feature
+Store identity.
+
+Sparse SfM Gates C through G are implemented and PASS/FROZEN, but real known-calibration Sparse SfM
+was not executed in the retained historical S21/A6000 campaigns.
+
+## Real A6000 evidence
+
+The retained real A6000 selected execution contains:
+
+```text
+Feature Sets       689
+Candidate Pairs    38,420
+Match Results      38,420
+```
+
+The v25 selected Feature-batch path completed all selected images.
+
+The retained checkpoint is:
+
+```text
+real-a6000-pre-sfm-2026-09-02
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
+
+The later GV/Tracks continuation required:
+
+```text
+Feature replay      0
+Candidate replay    0
+Matcher replay      0
+```
+
+and continued from retained immutable upstream products.
+
+This proves the current Feature-batch operational path and restart/reuse boundary on that campaign.
+It does not create calibration for that campaign and does not constitute real Sparse SfM execution.
+
+## Current unfinished work
+
+The following remain separate from the Feature Store scientific contract:
+
+- global orphan-file reconciliation/scrub;
+- EXIF orientation handling where still required;
+- generic dependency/DAG scheduling;
+- future extractor/backend work only after explicit equivalence/version review.
+
+Multi-image Feature execution itself is no longer an unfinished item:
+`features.extract.batch/1` is implemented and validated.
+
+## Summary
+
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
+
+FEATURE_STORE_STATUS=IMPLEMENTED
+
+FEATURE_FILE_V1=FROZEN
+FEATURE_FILE_V2=IMPLEMENTED
+
+HISTORICAL_FEATURE_TASK=features.extract/1
+CURRENT_FEATURE_BATCH_TASK=features.extract.batch/1
+PROJECT_DB_V25_FEATURE_BATCH=IMPLEMENTED/VALIDATED
+
+FEATURE_RESULT_IDENTITY=PER_IMAGE
+PER_IMAGE_FEATURE_RESULT=ATOMIC
+PER_IMAGE_ATOMICITY_REQUIRES_CROSS_IMAGE_SERIALISM=NO
+OWNER_ONLY_PUBLICATION_REQUIRES_SERIAL_PREPARATION=NO
+
+FEATURE_GPU=REJECTED_WITH_MEASURED_OR_IMPLEMENTATION_EVIDENCE
+
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+
+REAL_A6000_FEATURE_SETS=689
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
