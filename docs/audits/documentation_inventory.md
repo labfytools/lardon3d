@@ -2,7 +2,7 @@
 
 ## Status
 
-DOCUMENTATION_INVENTORY_AUDIT=IN_PROGRESS
+DOCUMENTATION_INVENTORY_AUDIT=PASS_WITH_FINDINGS
 
 Audit branch: docs-audit
 
@@ -564,10 +564,61 @@ The comment audit will focus on WHY, CONTRACT, INVARIANT, OWNERSHIP, IDENTITY, p
 
 No mass source-comment editing is authorized by this inventory.
 
+# Remediation closure — 2026-09-02
+
+The documentation finding-remediation pass is complete.
+
+```text
+D1=PASS
+D2=PASS
+D3=PASS
+D4=PASS
+D5=PASS
+
+BLOCKING_DOC_RESOLVED=7/7
+IMPORTANT_RESOLVED=11/11
+
+AUTHORITY_FINDINGS_RESOLVED=3/3
+LINK_FINDINGS_RESOLVED=1/1
+```
+
+D1 converged README, AGENTS, roadmap, Project DB and persistence on the current v25 lifecycle.
+
+D2 reconciled resource/runtime documentation with sixteen production Task kinds,
+`MAXIMUM_SAFE_USEFUL_THROUGHPUT`, `SERIALISM_REQUIRES_PROOF`, the v24 RAW batch path and the v25
+Feature batch path.
+
+D3 replaced stale developer API/build examples, removed fixed build-width policy and preserved the
+qualified sanitizer/TSan/Vulkan evidence boundaries.
+
+D4 reconciled Sparse SfM lifecycle, Track verifier lineage, Visual Index downstream status, current
+Geometric Verifier v3 and runtime current-state wording without reopening frozen scientific contracts.
+
+D5 adds `docs/README.md` as the navigation/authority map and removes the stale fifteen-kind
+cross-document anchor dependency.
+
+The historical `global-maintenance-2026-09-01` checkpoint remains authoritative evidence for the
+unchanged boundaries it reviewed. The later `real-a6000-pre-sfm-2026-09-02` checkpoint adds real-data
+operational evidence and does not erase the maintenance checkpoint.
+
+No source code, schema, Task Kind, scientific threshold, Sparse SfM execution, Dense/MVS execution,
+viewer or live-capture implementation is authorized by this closure.
+
+## Language normalization boundary
+
+Human authority selected English as the repository language.
+
+The documents modified by the finding-remediation pass are English. Other untouched documentation may
+still contain historical or current non-English prose. That remaining language-only normalization is
+tracked separately and must not be mistaken for an unresolved current-state authority finding.
+
+Translation of historical evidence must preserve the historical checkpoint exactly.
+
 # Phase state
 
 - DOCUMENTATION_INVENTORY_AUDIT=PASS_WITH_FINDINGS
-- DOCUMENTATION_REMEDIATION=IN_PROGRESS
-- SOURCE_COMMENT_AUDIT=NOT_STARTED
+- DOCUMENTATION_FINDING_REMEDIATION=PASS
+- DOCUMENTATION_LANGUAGE_NORMALIZATION=IN_PROGRESS
+- SOURCE_COMMENT_AUDIT=NEXT
 - PRODUCT_DEFINITION=NOT_STARTED
 - PROMPT_TREE=NOT_STARTED

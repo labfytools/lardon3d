@@ -305,6 +305,8 @@ The final product contracts for these areas are being defined separately before 
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
+
 ### Architecture
 
 - [Architecture overview](docs/architecture/overview.md)
