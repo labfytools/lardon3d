@@ -1,193 +1,293 @@
-# Instructions de build
+# Build
 
-## Prérequis
+## Status
 
-- **OS** : Linux (testé sur distributions récentes)
-- **Compilateur** : Clang (recommandé) ou GCC
-- **Système de build** : Meson + Ninja
-- **Dépendances principales** : ncursesw, SQLite, OpenSSL, GIO/GLib, OpenCV,
-  LibRaw, libexif, libpng, libdeflate, Ceres ; Vulkan reste optionnel
-- **Langages** : API publiques C17 et implémentation mixte C17/C++17
+```text
+BUILD_SYSTEM=MESON_NINJA
+PUBLIC_API_LANGUAGE=C17
+IMPLEMENTATION_LANGUAGES=C17_CXX17
+BUILD_PARALLELISM=HOST_AWARE
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+```
 
-## Bootstrap des outils
+Meson is the build-system authority. Do not duplicate dependency-version truth
+in this document when `meson.build` already enforces it.
 
-Les commandes ci-dessous installent seulement le compilateur, Meson/Ninja,
-`pkg-config` et ncurses. Les bibliothèques listées plus haut doivent aussi être
-disponibles dans les versions acceptées par `meson.build`; Meson reste la source
-de vérité et refuse explicitement une dépendance absente ou incompatible.
+## Requirements
+
+Lardon3D targets Linux.
+
+Primary toolchain:
+
+```text
+Clang or GCC
+Meson
+Ninja
+pkg-config
+```
+
+Major dependencies currently include ncursesw, SQLite, OpenSSL, GIO/GLib,
+OpenCV, LibRaw, libexif, libpng, libdeflate and Ceres. Vulkan remains optional
+at configuration level.
+
+Public APIs are C17. Implementation is mixed C17/C++17.
+
+## Bootstrap examples
+
+These commands install only the basic compiler/build front end; Meson remains
+authoritative for the complete dependency set.
+
+Debian/Ubuntu:
 
 ```sh
-# Debian / Ubuntu
 sudo apt install clang meson ninja-build libncursesw5-dev pkg-config
+```
 
-# Fedora
+Fedora:
+
+```sh
 sudo dnf install clang meson ninja-build ncurses-devel pkg-config
+```
 
-# Arch
+Arch Linux:
+
+```sh
 sudo pacman -S clang meson ninja ncurses pkgconf
 ```
 
-## Build standard
+## Standard build
+
+First configuration:
 
 ```sh
-# Première configuration
-CC=clang meson setup build
+CC=clang CXX=clang++ meson setup build
+```
 
-# Arbre existant
+Existing tree:
+
+```sh
 meson setup --reconfigure build
-meson compile -C build -j8
+meson compile -C build
 ```
 
-### Options utiles
+Do not hard-code `-j8` as project policy.
+
+Meson/Ninja should use host-appropriate parallelism unless a specific
+validation has a reason to constrain it.
+
+## Build parallelism policy
+
+The build is not governed by a portable fixed job count.
+
+Canonical policy:
+
+```text
+preserve the interactive host reserve
+then use maximum safe useful throughput
+```
+
+A reference host measurement such as 8 or 12 useful jobs is evidence for that
+host at that time, not a repository constant.
+
+If memory-heavy compilation or another active workload creates pressure,
+reduce build width for that run. Do not convert the temporary reduction into a
+global documentation rule.
+
+## Reconfigure versus wipe
+
+Prefer incremental reuse:
 
 ```sh
-# Build de debug (défaut)
-meson setup build --wipe
-
-# Build de release
-meson setup build --wipe --buildtype=release
-
-# Build avec optimisations aggressive
-meson setup build --wipe --buildtype=release -Db_lto=true
+meson setup --reconfigure build
+meson compile -C build
 ```
+
+Use `--wipe` only when a fresh configuration is actually required, such as:
+
+- switching sanitizer configuration in the same directory;
+- changing compiler family;
+- changing a configuration whose cached state cannot be reused safely;
+- reproducing a clean release/global-maintenance proof;
+- recovering from a stale or corrupt build directory.
+
+A normal edit/test loop should not wipe the build tree repeatedly.
+
+## Release build
+
+Use an explicit release directory or deliberate reconfiguration.
+
+Example:
+
+```sh
+CC=clang CXX=clang++ meson setup build-release --buildtype=release
+meson compile -C build-release
+```
+
+For LTO:
+
+```sh
+CC=clang CXX=clang++ meson setup build-release-lto --buildtype=release -Db_lto=true
+meson compile -C build-release-lto
+```
+
+Separate directories avoid destroying a useful incremental debug tree.
+
+## Vulkan configuration
+
+Portable CPU-only proof:
+
+```sh
+CC=clang CXX=clang++ meson setup build-portable -Dvulkan_orb=disabled
+meson compile -C build-portable
+```
+
+Vulkan-enabled proof:
+
+```sh
+CC=clang CXX=clang++ meson setup build-vulkan -Dvulkan_orb=enabled
+meson compile -C build-vulkan
+```
+
+A Vulkan-on build is not automatically a proof that every scientific path uses
+or should use the GPU.
+
+Current production GPU promotion remains limited by each subsystem's validated
+backend contract.
 
 ## Validation
 
+Normal configured tests:
+
 ```sh
-# Tests unitaires
 meson test -C build --print-errorlogs
-
-# Vérification du style (whitespace)
-git diff --check
-
-# Vérification autonome d'un header C public modifié
-cc -x c -std=c17 -fsyntax-only -Iinclude \
-  -include lardon3d/<header>.h /dev/null
 ```
 
-### Preuve fraîche de maintenance globale — 1er septembre 2026
-
-Le [registre canonique](../architecture/global_maintenance_audit.md) conserve
-le détail et les qualifications. Les résultats reproductibles acquis sont :
-
-| Configuration fraîche | Compilateurs/options | Build | Suite |
-| --- | --- | ---: | ---: |
-| portable | Clang/Clang++ 22.1.8, C17/C++17, `-Dvulkan_orb=disabled` | 931/931 | 64/64 sériel |
-| Vulkan | Clang/Clang++ 22.1.8, C17/C++17, `-Dvulkan_orb=enabled` | 939/939 | 65/65 sériel |
-| ASan/UBSan portable | Clang/Clang++ 22.1.8, `address,undefined` | graphe complet | 64/64 avec LSan désactivé après attribution externe |
-| TSan portable | GCC/G++ 16.2.1, Vulkan désactivé | cibles concurrentes | 14/14 + 220 répétitions |
-
-La suite Vulkan comprend `orb-vulkan-backend` sur la Radeon 780M RADV PHOENIX
-réelle. La cible de feasibility SIFT/RootSIFT, non enregistrée dans la suite,
-a été compilée/exécutée séparément : zéro divergence de décision Lowe mais des
-divergences d'index et de bits de distance, donc aucune promotion en backend
-production. Les probes stricts GCC/Clang C17+C++17 passent 76/76 sur les
-19 headers publics modifiés ou nouveaux, ainsi que le fixture ABI, le lien
-application et `git diff --check`; `scan3d/` reste intact.
-
-L'unique revue finale indépendante GPT-5.6 SOL/ULTRA a conclu PASS sans finding
-bloquant. Elle a indépendamment rejoué le build portable, la suite complète
-64/64, une matrice focalisée 15/15, les 76/76 probes de headers, l'ABI, les
-négatifs de seams production, le SHA-256 du manifest GV retenu et le diff-check.
-Le statut canonique est donc `GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN` ; les
-qualifications sanitizer ci-dessous restent néanmoins partie de la preuve.
-
-Une validation post-freeze a ensuite attribué le délai intermittent de
-`test-feature-task` à la capture de la télémétrie hôte réelle par ses Governors
-synthétiques. Le fixture utilise maintenant un `ResourceSnapshot` complet,
-privé, par Governor et compilé pour cette seule cible ; production continue de
-lire la télémétrie réelle et n'exporte aucun seam. Après correction du second
-Governor relevé en revue, Feature passe 100/100, la matrice ordonnée 4/4 et les
-suites finales portable/Vulkan 64/64 et 65/65 ; ASan/UBSan ciblé avec
-`detect_leaks=0` et TSan passent. Le registre canonique conserve la régression
-charge 5 `WAIT`/charge 0 `START` et la qualification exacte. Un timeout `task`
-isolé dans une suite normale mixte après reconstruction large reste
-non reproductible : le ciblé immédiat et sa matrice de revue 100/100 passent,
-sans modification de Task ni de son timeout.
-
-La première suite LSan complète est volontairement conservée comme non-PASS :
-57 OK, 6 FAIL et 1 timeout. Cinq échecs partagent exactement la fuite externe
-OpenCL de 3 808 octets/68 allocations ; les deux anomalies de 30 s n'ont aucun
-diagnostic sanitizer. Le délai Feature, absent du suivi initial, a ensuite été
-reproduit et corrigé comme décrit ci-dessus ; le délai Task reste non
-reproductible. La suite entière passe 64/64 avec ASan/UBSan actifs et
-`detect_leaks=0`, tandis qu'un sous-ensemble prouvé sans loader OpenCV/OpenCL
-passe 20/20 avec LSan actif. Il est donc incorrect de résumer cette preuve par
-« LSan 64/64 ».
-
-Le log Clang complet a aussi été audité. La conversion publique Sparse SfM
-`uint32_t → int` était matérielle et a été corrigée avec validation ciblée ; les
-autres émissions sont soit des conversions baseline déjà bornées, soit des
-tests/benchmarks, soit des headers OpenCV/Ceres externes. Les emplacements et
-justifications exacts restent centralisés dans le registre afin de ne pas
-dupliquer une seconde liste normative ici.
-
-## Build ASan/UBSan (debug mémoire)
-
-À exécuter pour tout ticket touchant la mémoire, les durées de vie ou les
-allocations :
+Whitespace/style boundary:
 
 ```sh
-CC=clang meson setup build-asan --wipe \
-    -Db_sanitize=address,undefined
-meson compile -C build-asan -j8
+git diff --check
+```
+
+Public C header probe:
+
+```sh
+cc -x c -std=c17 -fsyntax-only -Iinclude -include lardon3d/<header>.h /dev/null
+```
+
+Use `docs/development/testing.md` for sanitizer and validation policy.
+
+## ASan / UBSan build
+
+Example dedicated directory:
+
+```sh
+CC=clang CXX=clang++ meson setup build-asan -Db_sanitize=address,undefined
+meson compile -C build-asan
 meson test -C build-asan --print-errorlogs
 ```
 
-## Build TSan (concurrence)
+Do not claim an unqualified full LeakSanitizer pass from the retained global
+maintenance checkpoint. The external OpenCL loader qualification documented in
+the canonical audit remains part of that evidence.
 
-À exécuter pour tout ticket touchant la concurrence (pthread, mutex,
-variables de condition, états partagés) :
+## TSan build
+
+Use TSan only with the configuration that matches the intended proof.
+
+The retained global maintenance concurrency proof used GCC/G++ with Vulkan
+disabled, because the project TSan matrix and the Vulkan runtime validation are
+separate evidence boundaries.
+
+Example:
 
 ```sh
-CC=clang meson setup build-tsan --wipe \
-    -Db_sanitize=thread \
-    -Db_lundef=false
-meson compile -C build-tsan -j8
+CC=gcc CXX=g++ meson setup build-tsan -Db_sanitize=thread -Db_lundef=false -Dvulkan_orb=disabled
+meson compile -C build-tsan
 meson test -C build-tsan --print-errorlogs
 ```
 
-## Variables d'environnement
+The exact target subset, suppression qualification and repetition evidence are
+documented in `docs/development/concurrency.md` and the global maintenance
+audit.
 
-| Variable | Description |
-|---|---|
-| `CC` | Compilateur C (défaut : gcc) |
-| `CFLAGS` | Drapeaux de compilation supplémentaires |
-| `LDFLAGS` | Drapeaux de liaison supplémentaires |
+## Current retained maintenance checkpoint
 
-## Structure du build
+The canonical detailed evidence is:
+
+```text
+docs/architecture/global_maintenance_audit.md
+GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN
+```
+
+The 2026-09-01 checkpoint retained:
+
+```text
+portable Clang/Clang++ build and suite
+Vulkan-on Clang/Clang++ build and suite
+ASan/UBSan qualified run
+portable GCC/G++ TSan matrix
+public-header C17/C++17 probes
+ABI and application-link checks
+independent review
+```
+
+Those exact historical counts belong to the audit and should not be duplicated
+as a new current build contract.
+
+## Build directory layout
+
+A configured Meson tree typically contains:
 
 ```text
 build/
-├── src/          # objets et binaires
-├── tests/        # binaires de tests
-└── compile_commands.json  # pour LSP / clangd
+  src/
+  tests/
+  compile_commands.json
 ```
 
-## Dépannage
+Exact generated layout is Meson/Ninja output and may evolve.
 
-### Erreur : ncursesw introuvable
+## Environment
+
+Common variables include:
+
+| Variable | Purpose |
+| --- | --- |
+| `CC` | C compiler |
+| `CXX` | C++ compiler |
+| `CFLAGS` | additional C flags |
+| `CXXFLAGS` | additional C++ flags |
+| `LDFLAGS` | additional linker flags |
+
+Prefer Meson options for project features rather than ad-hoc environment flags
+that make builds difficult to reproduce.
+
+## Troubleshooting
+
+Check ncursesw discovery:
 
 ```sh
-# Vérifier l'installation
 pkg-config --libs ncursesw
-# Si absent, installer le paquet de développement ncursesw
 ```
 
-### Erreur : clang introuvable
+If Clang is unavailable, GCC is supported where the current Meson checks allow
+it.
 
-```sh
-# Utiliser gcc en alternative
-meson setup build --wipe
-# ou installer clang
-sudo apt install clang
+For a slow build, first preserve the existing build tree and let Ninja use
+normal host-aware scheduling. Reduce concurrency only when actual host pressure
+or another active workload justifies it.
+
+`ccache` may be used when available, but it is optional operational tooling and
+not part of scientific identity.
+
+## Rules
+
+```text
+NO_FIXED_GLOBAL_J8=YES
+NO_REPEATED_UNCHANGED_WIPE=YES
+HOST_AWARE_BUILD_PARALLELISM=YES
 ```
 
-### Build lent
-
-```sh
-# Réduire la parallélisation
-meson compile -C build -j4
-# ou utiliser ccache
-CC="ccache clang" meson setup build --wipe
-```
+Build configuration is operational state. It must not silently redefine
+scientific formats, fingerprints or persistence contracts.

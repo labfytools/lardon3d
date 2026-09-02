@@ -1,255 +1,412 @@
-# Règles de concurrence
+# Concurrency
 
-## Vue d'ensemble
-
-Lardon3D utilise un modèle de concurrence à thread unique pour ncurses
-et un modèle multi-thread pour le traitement. La séparation est stricte :
-le thread ncurses ne fait jamais de travail métier, et les workers ne
-touchent jamais ncurses.
-
-## Modèle de concurrence
+## Status
 
 ```text
-Thread principal (ncurses)
-├── Gestion des entrées
-├── Affichage TUI
-└── Orchestration
+NCURSES_OWNER=MAIN_THREAD_ONLY
+ACTIVE_HEAVY_QUEUE_CALLBACKS=1
+TASK_CANCELLATION=COOPERATIVE
+INTERNAL_PARALLELISM=BOUNDED
+OWNER_ONLY_PUBLICATION=CANONICAL_WHERE_REQUIRED
 
-Worker thread
-├── Exécution des tâches
-├── Calculs métier
-└── Écritures de résultats
+TSAN_PORTABLE_PROJECT_MATRIX=QUALIFIED_PASS
+TSAN_EXTERNAL_OPENCV_TBB=QUALIFIED
+VULKAN_CONCURRENCY_VALIDATION=SEPARATE
 
-SSD operation thread (0 ou 1, joinable)
-└── Un poll ou contrôle UDisks synchrone borné, sans ncurses ni Task
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
 ```
 
-## Règles fondamentales
+Lardon3D separates UI ownership from heavy processing.
 
-### 1. ncurses appartient au thread principal
+The main thread owns ncurses. The Task Queue owns one active heavy callback.
+Individual validated Task Kinds may create bounded internal participants inside
+that callback.
 
-```c
-// ✅ Correct : appel depuis le thread principal
-mvprintw(0, 0, "Progression: %d%%", progress);
+An SSD controller operation may also use at most one bounded joinable operation
+thread under its own ownership contract.
 
-// ❌ Interdit : appel depuis un worker
-// mvprintw() dans un thread secondaire
+## Execution model
+
+```text
+main thread
+  input
+  ncurses
+  TUI orchestration
+
+Task Queue worker
+  one active heavy callback
+  admitted Task sequence
+  optional bounded internal participants
+  deterministic owner publication
+
+SSD operation thread
+  zero or one bounded joinable controller operation
+  no ncurses
+  no Task callback
 ```
 
-### 2. Variables partagées protégées par mutex
+Internal participants are not a second global scheduler or Queue.
 
-```c
-// ✅ Correct
-pthread_mutex_lock(&queue->mutex);
-queue->count++;
-pthread_mutex_unlock(&queue->mutex);
+## Fundamental rules
 
-// ❌ Interdit
-// queue->count++; sans protection
+### ncurses ownership
+
+Only the main thread calls ncurses.
+
+Workers publish observable state through protected data. They never call
+`mvprintw`, `wrefresh`, or other ncurses APIs.
+
+### Shared mutable state
+
+Shared mutable state must have an explicit synchronization owner:
+
+```text
+mutex
+condition variable
+atomic primitive where the contract explicitly permits it
+single-thread ownership
+immutable-after-publication
 ```
 
-### 3. Variables de condition pour la synchronisation
+Do not rely on timing or "normally only one caller".
 
-```c
-// Producteur (caller de la Task Queue)
-pthread_mutex_lock(&queue->mutex);
-queue->ready = true;
-pthread_cond_signal(&queue->cond);
-pthread_mutex_unlock(&queue->mutex);
+### Condition variables
 
-// Consommateur (worker)
-pthread_mutex_lock(&queue->mutex);
-while (!queue->ready) {
-    pthread_cond_wait(&queue->cond, &queue->mutex);
-}
-// traitement
-pthread_mutex_unlock(&queue->mutex);
+Always test the predicate in a loop around `pthread_cond_wait()`.
+
+A signal is not durable state; the protected predicate is.
+
+### Cooperative cancellation
+
+Production Task cancellation is cooperative.
+
+Do not use `pthread_cancel()` to stop a Task.
+
+Task-specific non-preemptible operations finish their current atomic boundary
+before pause/cancel is observed.
+
+### Reservation before callback
+
+No Task callback runs without the Resource Governor admission/reservation
+required by its installed sequence contract.
+
+Fixed-resource Tasks do not bypass the Governor.
+
+### Terminal lifetime
+
+Terminal callback completion precedes destruction of Task userdata.
+
+Queue/Task ownership must ensure no observer dereferences freed userdata.
+
+## Lock ordering
+
+When multiple locks are required, the owning subsystem must define and preserve
+one order.
+
+Never add a reverse-order path to solve a local problem.
+
+Avoid holding one subsystem mutex while calling into another subsystem that may
+call back.
+
+Where practical:
+
+```text
+copy bounded state under lock
+release lock
+perform I/O / expensive work
+reacquire only for publication
 ```
 
-### 4. Pas de callback ncurses depuis un worker
+## Queue ingress lifetime
 
-```c
-// ✅ Correct : le worker signale au thread principal
-void worker_callback(task_t *task, void *userdata) {
-    shared_state_t *state = userdata;
-    pthread_mutex_lock(&state->mutex);
-    state->result_ready = true;
-    pthread_cond_signal(&state->cond);
-    pthread_mutex_unlock(&state->mutex);
-}
+The Queue owner closes ingress before destruction.
 
-// ❌ Interdit : appel ncurses depuis le worker
-// void worker_callback(...) {
-//     mvprintw(...);
-// }
+Shutdown waits for:
+
+- active worker completion;
+- registered in-flight API calls covered by the ownership contract;
+- terminal callbacks.
+
+This cannot make a raw C pointer safe if a caller begins a new call after the
+object has already been freed. Callers must obey lifetime ownership.
+
+## Bounded internal parallelism
+
+A validated Task Kind may use internal participants while the Queue callback
+remains the sole Task owner.
+
+Required shape:
+
+```text
+one admitted Task owner
+-> bounded participant count
+-> bounded private work
+-> join all participants
+-> owner-only deterministic publication when required
+-> Task-specific durable cursor
+-> generic checkpoint
+-> sequence_break
 ```
 
-## Primitives utilisées
+Participant count and memory must fit the admitted Resource Governor contract.
 
-| Primitive | Usage |
-|---|---|
-| `pthread_mutex_t` | Protection des données partagées |
-| `pthread_cond_t` | Synchronisation producteur/consommateur |
-| `pthread_create()` | Création des workers |
-| `pthread_join()` | Attente de fin des workers |
-| `pthread_cancel()` | Non utilisé pour interrompre une Task ; annulation coopérative |
+No participant may silently exceed the installed sequence contract.
 
-## Invariants de concurrence
+## Atomicity does not imply serialism
 
-1. **Un seul thread ncurses** : ncurses n'est jamais appelé depuis un
-   worker. Toute mise à jour de l'UI passe par des variables partagées
-   protégées.
+Per-item scientific atomicity and cross-item execution width are separate.
 
-2. **Mutex hiérarchique** : si plusieurs mutex sont acquis, toujours dans
-   le même ordre pour éviter les deadlocks.
-
-3. **Annulation coopérative** : les workers vérifient périodiquement un
-   drapeau d'annulation. Une Task n'est pas interrompue brutalement.
-
-4. **Réservation atomique** : la réservation du gouverneur est atomique.
-   Deux threads ne peuvent pas obtenir la même réservation.
-
-5. **Pas de callback sans réservation** : aucun callback de tâche n'est
-   invoqué sans réservation active. Cet invariant est maintenu même en
-   présence d'erreurs.
-
-6. **Retraite après callback** : la notification terminale finit avant la
-   destruction du userdata. Queue détruit la Task hors de son mutex et ne
-   conserve ensuite qu'un snapshot borné.
-
-7. **Fermeture d'ingress** : le propriétaire empêche les nouveaux appels Queue
-   avant `destroy()`. La fermeture interne attend le worker et chaque appel
-   enregistré avant le close ; elle ne peut rendre sûr un appel démarré après
-   la libération d'un pointeur C brut.
-
-8. **Parallélisme scientifique propriétaire** : lorsqu'un kind emploie des
-   participants internes, le callback Queue demeure l'unique propriétaire. Le
-   nombre de participants et leur mémoire sont admis par le Governor ; seul le
-   propriétaire publie le préfixe durable ordonné et joint tous les enfants.
-
-9. **Lease SSD par objet** : un lease scratch appartient à l'adresse exacte de
-   l'objet fourni par le caller. Tous ses champs sont lus/écrits sous le mutex
-   du contrôleur. Le caller lui garantit un accès exclusif et ne le copie, ne le
-    déplace ni ne le présente simultanément à deux contrôleurs. En production,
-    acquire/release passent par les wrappers Governor ; le Governor relâche son
-    mutex avant l'appel contrôleur, et le contrôleur ne rappelle jamais le
-    Governor. À la saturation légale `generation == UINT64_MAX`, seule la fin
-    du wrapper exact déjà sérialisé peut réconcilier sa propre opération et le
-    compte fondé sur les adresses ; une update publique au même watermark ne
-    peut pas rendre une autorité stale.
-
-10. **Owner SSD unique** : la TUI/main demande et poll l'opération ; au plus un
-    thread joinable exécute une opération bornée et ne touche jamais ncurses.
-    Le destroy le joint avant unregister. Une observation malformée enregistre
-    `ERROR` et ne confère aucune autorité de contrôle ou de lease.
-
-11. **Frontière projet** : les vues libèrent leurs borrows, puis la Queue est
-    annulée/jointe/détruite avant Project DB. Une Queue vide est créée ensuite.
-    Aucun callback terminal ne peut donc déréférencer une DB déjà fermée et
-    l'histoire d'un projet ne fuit pas dans le suivant.
-
-12. **Ordre d'arrêt global** : Queue et leases Task, puis fermeture projet,
-    join/unregister du binding SSD, contrôleur SSD, et enfin Governor. Un
-    unregister encore bloqué par un lease est un échec observable, jamais un
-    pointeur abandonné.
-
-## Anti-patterns
-
-### Deadlock
-
-```c
-// ❌ Risque de deadlock
-pthread_mutex_lock(&mutex_a);
-pthread_mutex_lock(&mutex_b);  // attend mutex_b
-
-// Dans un autre thread :
-pthread_mutex_lock(&mutex_b);
-pthread_mutex_lock(&mutex_a);  // attend mutex_a → DEADLOCK
+```text
+PER_ITEM_ATOMICITY_REQUIRES_CROSS_ITEM_SERIALISM=NO
+OWNER_ONLY_PUBLICATION_REQUIRES_SERIAL_PREPARATION=NO
 ```
 
-**Solution** : toujours acquérir les mutex dans le même ordre.
+Current examples include selected RAW, selected Feature extraction, Candidate
+Pair source work and outer Geometric Verification preparation.
 
-### Race condition
+Serialization is valid only where the subsystem's scientific, persistence,
+library or measured-throughput contract proves it necessary.
 
-```c
-// ❌ Race condition
-if (task->state == TASK_STATE_QUEUED) {
-    task->state = TASK_STATE_RUNNING;
-}
+## CPU/batch coupling
 
-// ✅ Correct
-pthread_mutex_lock(&task->mutex);
-if (task->state == TASK_STATE_QUEUED) {
-    task->state = TASK_STATE_RUNNING;
-}
-pthread_mutex_unlock(&task->mutex);
+CPU and batch/window are not globally independent dimensions.
+
+For a Task whose additional participants cannot do useful work while the
+admitted item window remains one, a Task-specific capability may couple those
+dimensions.
+
+Current validated examples include:
+
+```text
+candidate_pair.generate/1
+features.extract.batch/1
 ```
 
-### Use-after-free
+This is not a universal rule for all Task Kinds.
 
-```c
-// ❌ Use-after-free
-task_destroy(task);
-task_callback(task);  // task est libéré
+## Project lifetime boundary
 
-// ✅ Correct : le callback est entièrement revenu avant la destruction
-task_callback(task);
-task_destroy(task);
+Before closing a project:
+
+```text
+views release Project DB borrows
+-> Queue is cancelled/joined/destroyed
+-> Project DB closes
+-> fresh empty Queue may be created for the next project
 ```
 
-## Validation
+A terminal callback must never observe a Project DB already destroyed.
 
-Les readers Visual Index sont sans état partagé mutable. Une query copie la
-liste bornée des segments sous le mutex DB, puis effectue hash, lectures et
-accumulation après déverrouillage. Un update ne rend le nouveau segment visible
-qu'au commit memberships+segment ; une query en cours garde son snapshot.
+Project-specific runtime history must not leak into the next project.
 
-Pour tout ticket touchant la concurrence, exécuter :
+## Global shutdown boundary
+
+The current shutdown order preserves ownership across:
+
+```text
+Task Queue and Task leases
+-> project close
+-> join/unregister SSD binding
+-> SSD controller
+-> Resource Governor
+```
+
+A scratch unregister blocked by a real outstanding lease is an observable
+failure, not permission to abandon a live pointer.
+
+## SSD lease ownership
+
+A scratch lease belongs to the exact caller-owned lease object used for the
+operation.
+
+Its mutable fields are controlled under the SSD controller mutex.
+
+The caller must not:
+
+- copy a live lease;
+- move a live lease;
+- present the same lease object to two controllers;
+- release through a different ownership path.
+
+Production acquire/release uses the Resource Governor wrappers.
+
+The Governor releases its own mutex before entering the controller, and the
+controller does not callback into the Governor while holding its mutex.
+
+Scratch remains storage capacity, never RAM admission.
+
+## Visual Index readers
+
+Visual Index query readers do not share mutable query state.
+
+A query obtains a bounded segment snapshot under the Project DB boundary, then
+performs hash/read/accumulation after release.
+
+A concurrent update makes a new segment visible only at its canonical commit
+boundary. An already running query continues with its retained snapshot.
+
+## OpenCV process-wide state
+
+OpenCV thread configuration is process-wide.
+
+The active heavy Queue callback owns temporary mutation of that setting where a
+Task contract requires it and restores the previous/baseline value on all exit
+paths.
+
+Internal participants must not independently race `cv::setNumThreads()`.
+
+For Feature batch, cross-image participants are used while internal OpenCV
+threading is controlled explicitly.
+
+## Vulkan boundary
+
+ORB Vulkan concurrency is validated separately from portable TSan.
+
+The production AUTO contract currently uses:
+
+```text
+normal inflight depth = 1
+private validated safety depth = 2
+helpers = 0
+```
+
+Depth 2 is a private safety/benchmark capability and was rejected as the normal
+useful setting by measured throughput.
+
+A Vulkan backend failure produces complete CPU fallback before publication.
+Partial GPU scientific output is never published.
+
+## TSan policy
+
+For project concurrency changes, use a dedicated TSan build that matches the
+supported proof boundary.
+
+The retained global maintenance matrix used:
+
+```text
+GCC/G++
+Vulkan disabled
+selected concurrent targets
+deterministic repetitions
+```
+
+and completed the retained 14/14 target matrix plus 220 repetitions.
+
+The narrow suppression file is:
+
+```text
+tests/tsan-opencv.supp
+```
+
+It covers external non-instrumented OpenCV/TBB objects only.
+
+It must not suppress Lardon3D frames.
+
+Therefore the correct retained claim is not "TSan proves all concurrency".
+It is:
+
+```text
+portable project concurrency matrix passed under the documented qualification
+external OpenCV/TBB reports are narrowly qualified
+Vulkan concurrency has a separate validation boundary
+```
+
+## What TSan does not prove
+
+TSan is useful for instrumented conflicting memory access and some
+synchronization misuse.
+
+It does not prove absence of:
+
+- deadlock;
+- lost wakeup caused by incorrect predicate design;
+- lifetime bugs outside the exercised paths;
+- races hidden inside non-instrumented external libraries;
+- Vulkan driver/runtime correctness;
+- scientific determinism.
+
+Lock-order review, ownership reasoning and deterministic tests remain required.
+
+## Sanitizer command policy
+
+Do not encode fixed `-j8` as canonical validation.
+
+Example configuration:
 
 ```sh
-# Build TSan
-CC=clang meson setup build-tsan --wipe -Db_sanitize=thread -Db_lundef=false
-meson compile -C build-tsan -j8
+CC=gcc CXX=g++ meson setup build-tsan -Db_sanitize=thread -Db_lundef=false -Dvulkan_orb=disabled
+meson compile -C build-tsan
 meson test -C build-tsan --print-errorlogs
 ```
 
-TSan détecte automatiquement :
+Use host-aware compile/test parallelism unless the proof itself requires
+serialization.
 
-- les accès concurrents conflictuels instrumentés ;
-- certaines utilisations incohérentes des primitives de synchronisation.
+Do not repeatedly wipe an unchanged TSan tree.
 
-Il ne prouve pas l'absence de deadlock, de signal perdu ou de bug dans une
-bibliothèque non instrumentée. Les invariants de lifetime et d'ordre de locks
-restent donc soumis aux tests déterministes et à la revue.
+## Concurrency review checklist
 
-### Preuve TSan globale courante
+Before closing a concurrency-sensitive change, verify:
 
-La matrice fraîche emploie GCC/G++ 16.2.1 et désactive explicitement Vulkan.
-Elle passe 14/14 cibles couvrant Task, Project, Queue, Governor, registre/leases
-SSD, contrôleur SSD, observateur/TUI async, Candidate, Visual Index, Feature,
-Matcher et GV, puis 220/220 répétitions déterministes : **234/234** au total.
+- ncurses remains main-thread-only;
+- every shared mutable field has an explicit synchronization owner;
+- condition predicates are checked in loops;
+- lock order remains consistent;
+- no Task uses forced asynchronous cancellation;
+- Queue callbacks have an active reservation;
+- internal participants stay within the admitted contract;
+- all children join on every exit path;
+- owner-only publication remains ordered where required;
+- project-close ordering prevents DB use-after-close;
+- SSD lease ownership remains exact;
+- Task userdata outlives terminal notification;
+- appropriate deterministic concurrency tests pass;
+- portable TSan qualification is preserved;
+- Vulkan validation is reported separately;
+- ASan/UBSan is run when the change also affects lifetime/memory.
 
-La seule liste de suppressions est `tests/tsan-opencv.supp`, limitée aux objets
-partagés externes non instrumentés `libopencv_features.so`,
-`libopencv_core.so` et `libtbb.so`. Elle ne masque aucune frame Lardon3D. Les
-warnings GCC `-Wmaybe-uninitialized` des contrôles OpenCV Feature/SIFT sont
-classés non matériels : le callback fournit une Task non nulle et le helper
-initialise la structure avant toute autre sortie d'échec. Les warnings OpenCV
-du build GV appartiennent aux headers externes.
+## Current retained evidence
 
-Cette preuve TSan ne vaut pas validation de concurrence Vulkan. Le backend
-ORB Vulkan réel est couvert séparément par le build Clang Vulkan-on 939/939,
-la suite 65/65 et ses tests de backend/handle/publication ; cette séparation
-doit rester explicite dans tout rapport.
+The canonical global-maintenance record is:
 
-## Checklist de concurrence
+```text
+docs/architecture/global_maintenance_audit.md
+GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN
+```
 
-Avant de livrer un ticket touchant la concurrence :
+The current A6000 checkpoint is later:
 
-- [ ] Toutes les variables partagées sont protégées par un mutex
-- [ ] Les mutex sont toujours libérés (même en cas d'erreur)
-- [ ] Les variables de condition sont vérifiées dans une boucle `while`
-- [ ] Aucun appel ncurses depuis un worker
-- [ ] L'annulation des Tasks est coopérative (pas de `pthread_cancel`)
-- [ ] TSan ne signale aucune erreur
-- [ ] Le build ASan ne signale aucune fuite mémoire liée aux threads
+```text
+real-a6000-pre-sfm-2026-09-02
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
+
+The later A6000 proof exercised current bounded parallel paths through selected
+Feature batch, Candidate, Matcher, Geometric Verifier v3 and Tracks without
+changing the historical TSan qualification.
+
+Historical evidence remains historical; new changes require validation scoped
+to their actual concurrency surface.
+
+## Summary
+
+```text
+NCURSES_OWNER=MAIN_THREAD_ONLY
+ACTIVE_HEAVY_QUEUE_CALLBACKS=1
+TASK_CANCELLATION=COOPERATIVE
+INTERNAL_PARALLELISM=BOUNDED
+
+PER_ITEM_ATOMICITY_REQUIRES_CROSS_ITEM_SERIALISM=NO
+OWNER_ONLY_PUBLICATION_REQUIRES_SERIAL_PREPARATION=NO
+
+TSAN_PORTABLE_PROJECT_MATRIX=QUALIFIED_PASS
+TSAN_EXTERNAL_OPENCV_TBB=QUALIFIED
+VULKAN_CONCURRENCY_VALIDATION=SEPARATE
+
+NO_FIXED_GLOBAL_J8=YES
+NO_REPEATED_UNCHANGED_WIPE=YES
+
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+```

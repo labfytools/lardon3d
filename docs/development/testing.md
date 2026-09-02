@@ -1,136 +1,298 @@
-# Procédures de test
+# Testing
 
-## Vue d'ensemble
+## Status
 
-Lardon3D utilise le framework de test intégré à Meson. Chaque module possède
-un fichier de test dans `tests/` correspondant au module testé.
+```text
+DOCUMENTATION_LANGUAGE=ENGLISH
+TEST_POLICY=HOST_AWARE
+REPEATED_UNCHANGED_EXPENSIVE_VALIDATION=AVOID
+TSAN_OPEN_CV_TBB_QUALIFICATION=REQUIRED
+VULKAN_CONCURRENCY_VALIDATION=SEPARATE
+```
 
-## Lancer les tests
+Lardon3D uses Meson's test runner. Tests live under `tests/` and combine unit,
+integration, persistence, restart, resource and real-path validation.
+
+## Normal commands
+
+Run the configured suite:
 
 ```sh
-# Tous les tests
 meson test -C build --print-errorlogs
+```
 
-# Un test spécifique
-meson test -C build test_task_queue --print-errorlogs
+Run one named test:
 
-# Tests avec verbose
+```sh
+meson test -C build <test-name> --print-errorlogs
+```
+
+Verbose execution:
+
+```sh
 meson test -C build -v --print-errorlogs
+```
 
-# Réexécuter uniquement les tests échoués
+Re-run failures only:
+
+```sh
 meson test -C build --reprint=failed
 ```
 
-## Structure des tests
+Use the names registered by the current `meson.build`; this document does not
+maintain a second authoritative list of every test target.
+
+## Validation policy
+
+Validation must match the change.
+
+A documentation-only change normally requires:
 
 ```text
-tests/
-├── test_task_queue.c    # tests de la file de tâches
-├── test_task.c          # tests du module task
-├── test_resource_governor.c  # tests du gouverneur
-├── test_hardware_profile.c   # tests du profil matériel
-├── test_import.c        # tests de l'import
-├── test_project.c       # tests des projets
-└── test_*.c             # autres modules
+git diff --check
+targeted content checks
+targeted link/authority review
 ```
 
-## Écrire un test
+It does not justify wiping and rebuilding unchanged code.
 
-```c
-#include <glib.h>
-#include "lardon3d/task.h"
+A code change normally requires, in increasing scope:
 
-void test_task_create(void) {
-    task_estimate_t est = {
-        .ram_bytes = 1024 * 1024,
-        .gpu_bytes = 0,
-        .cpu_weight = 1,
-        .io_weight = 0,
-        .batch_size = 10,
-        .batch_max = 100
-    };
-    task_t *t = task_create("test", &est, NULL, NULL);
-    g_assert_nonnull(t);
-    g_assert_cmpint(task_get_state(t), ==, TASK_STATE_IDLE);
-    task_destroy(t);
-}
-
-int main(int argc, char **argv) {
-    g_test_init(&argc, &argv, NULL);
-    g_test_add_func("/task/create", test_task_create);
-    return g_test_run();
-}
+```text
+targeted build
+targeted tests
+broader affected suite
+sanitizer or concurrency validation when relevant
+full suite when the change or release boundary justifies it
 ```
 
-## Conventions
+Do not repeatedly rerun an unchanged expensive suite between documentation
+edits merely to create activity.
 
-1. **Préfixe `test_`** : chaque fonction de test porte le préfixe `test_`.
-2. **Chemin hiérarchique** : le nom du test suit le pattern `/module/action`.
-3. **Asserts GLib** : utiliser `g_assert_*` pour les vérifications.
-4. **Nettoyage** : chaque test libère toutes ses ressources.
-5. **Isolation** : un test ne dépend pas de l'état d'un autre test.
-6. **Déterminisme** : les tests ne dépendent pas de l'heure, du filesystem
-   ou de l'état réseau (sauf test d'import).
+## Host-aware parallelism
 
-## Commentaires source
+Build and test parallelism are host-aware.
 
-Les commentaires documentent le pourquoi et les contrats non évidents :
-invariants, propriété et durée de vie, persistance, ainsi que limites et
-frontières de ressources. Les API publiques documentent leurs contrats non
-évidents. Ils ne paraphrasent pas le code ligne par ligne et sont mis à jour
-avec tout changement de comportement.
+Do not encode a project-wide fixed `-j8`, `--num-processes 1`, or equivalent
+constant as canonical policy.
 
-## Tests unitaires vs tests d'intégration
+The correct width depends on the current machine, interactive reserve, memory,
+toolchain and workload. Use all safe useful host capacity while preserving the
+defined interactive reserve.
 
-`test-visual-index` couvre les descriptors synthétiques, le retrieval ORB réel,
-les filtres inter-ScanSets, quatre queries concurrentes, la corruption/absence/
-troncature d'un segment et 4 000 Feature Sets synthétiques. Le scénario de
-reprise `visual_index.update` est exercé dans `test-feature-task`.
+```text
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+```
 
-| Type | Portée | Fichier |
-|---|---|---|
-| Unitaire | Un module isolé | `tests/test_<module>.c` |
-| Intégration | Interaction entre modules | `tests/test_<module>.c` avec dépendances réelles |
+If a temporary validation must be serialized for determinism, diagnosis or a
+known tool limitation, label that serialization as test-specific evidence
+rather than a global default.
 
-## Validation par ticket
+## Fresh build policy
 
-Avant de livrer un ticket, exécuter la séquence complète :
+Do not use `meson setup --wipe` by default.
+
+Prefer:
 
 ```sh
-# 1. Build clean
-CC=clang meson setup build --wipe
-meson compile -C build -j8
-
-# 2. Tests
-meson test -C build --print-errorlogs
-
-# 3. Style
-git diff --check
-
-# 4. Si mémoire/concurrence touchés
-CC=clang meson setup build-asan --wipe -Db_sanitize=address,undefined
-meson compile -C build-asan -j8
-meson test -C build-asan --print-errorlogs
-
-# 5. Si concurrence touchée
-CC=clang meson setup build-tsan --wipe -Db_sanitize=thread -Db_lundef=false
-meson compile -C build-tsan -j8
-meson test -C build-tsan --print-errorlogs
+meson setup --reconfigure build
+meson compile -C build
 ```
 
-## Dépannage
+Create or wipe a build directory when the configuration genuinely needs a
+fresh environment, for example:
 
-### Test qui échoue en ASan
+```text
+different sanitizer set
+portable Vulkan-off proof
+Vulkan-on proof
+compiler-family change
+known stale/corrupt build directory
+release-grade clean proof
+```
 
-Vérifier les durées de vie des allocations. Ne jamais libérer un objet puis
-y accéder. Vérifier que chaque `task_destroy()` est appelée.
+Repeated wipes of the same unchanged configuration waste time and invalidate
+incremental-build advantages.
 
-### Test qui échoue en TSan
+## Sanitizers
 
-Vérifier que toutes les variables partagées sont protégées par un mutex.
-Vérifier que ncurses est utilisé uniquement depuis le thread principal.
+### ASan / UBSan
 
-### Test qui échoue uniquement en release
+For memory, lifetime, ownership or undefined-behavior changes, use a dedicated
+sanitizer build.
 
-Vérifier les assertions et les overflow arithmétiques. Compiler avec
-`-fsanitize=undefined` pour détecter les comportements indéfinis.
+Example configuration:
+
+```sh
+CC=clang CXX=clang++ meson setup build-asan -Db_sanitize=address,undefined
+meson compile -C build-asan
+meson test -C build-asan --print-errorlogs
+```
+
+Reconfigure or wipe only when the existing sanitizer directory does not match
+the requested configuration.
+
+### LeakSanitizer qualification
+
+The retained global maintenance evidence must not be summarized as
+`LSan 64/64`.
+
+The full first leak-enabled run exposed an externally attributed OpenCL loader
+leak and two timeout anomalies. The retained qualified result is:
+
+```text
+ASan/UBSan full suite: PASS with detect_leaks=0
+proved subset without the external loader: LSan PASS
+full leak-enabled suite: not an unqualified PASS
+```
+
+Preserve that distinction in future reports unless new evidence supersedes it.
+
+## ThreadSanitizer
+
+Concurrency changes require TSan where the instrumented boundary is meaningful.
+
+The retained global maintenance TSan proof used GCC/G++ with Vulkan disabled
+and covered the selected concurrent targets plus deterministic repetitions.
+
+The only retained suppression file is:
+
+```text
+tests/tsan-opencv.supp
+```
+
+Its purpose is limited to external OpenCV/TBB objects. It must not suppress
+Lardon3D frames.
+
+Therefore never report a blanket statement such as:
+
+```text
+TSan proves the entire Vulkan build race-free
+```
+
+The valid qualification is:
+
+```text
+project concurrent paths covered by the retained portable TSan matrix
+external OpenCV/TBB reports qualified by the narrow suppression boundary
+Vulkan concurrency validated separately
+```
+
+## Vulkan validation
+
+ORB Vulkan uses a separate validation boundary.
+
+The retained global maintenance evidence includes a Vulkan-on build and suite
+on the real Radeon 780M/RADV host, plus dedicated backend/handle/publication
+tests.
+
+That evidence is not interchangeable with TSan.
+
+SIFT/RootSIFT feasibility results did not establish a production GPU backend;
+do not turn feasibility checks into production validation claims.
+
+## Determinism and repetition
+
+Repeat tests when repetition proves something specific:
+
+```text
+deterministic restart
+race sensitivity
+resource adaptation
+ordering stability
+flaky regression reproduction
+```
+
+Do not repeat unchanged tests without a stated purpose.
+
+When repetition is the evidence, record:
+
+```text
+exact test/corpus
+run count
+relevant configuration
+success/failure count
+digest or invariant when applicable
+```
+
+## Test isolation
+
+Tests should:
+
+- own and clean up their temporary resources;
+- avoid depending on another test's execution order;
+- avoid network state unless the test explicitly owns that dependency;
+- use synthetic/private Resource snapshots where the test is about deterministic
+  policy rather than live host telemetry;
+- avoid changing global process state without restoring it.
+
+OpenCV thread configuration is process-wide and must be restored on every exit
+path in tests that change it.
+
+## Public-header validation
+
+When a public C header changes, run a standalone C17 syntax probe in addition to
+normal build coverage.
+
+Conceptually:
+
+```sh
+cc -x c -std=c17 -fsyntax-only -Iinclude -include lardon3d/<header>.h /dev/null
+```
+
+Use the current supported compiler matrix when the change affects ABI or
+C/C++ interoperability.
+
+## Source comments
+
+Source comments explain non-obvious contracts:
+
+```text
+invariants
+ownership and lifetime
+persistence ordering
+resource boundaries
+recovery behavior
+scientific constraints
+```
+
+They should not paraphrase obvious code line by line.
+
+Repository source comments are English.
+
+## Current retained global maintenance evidence
+
+The canonical detailed record is:
+
+```text
+docs/architecture/global_maintenance_audit.md
+GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN
+```
+
+That historical checkpoint includes fresh portable/Vulkan builds, full suites,
+sanitizer work, TSan work, public-header probes, ABI/application-link checks and
+independent review.
+
+It remains historical evidence. New changes require only the validation
+appropriate to the changed surface unless a new global checkpoint is being
+created.
+
+## Ticket closure checklist
+
+Before closing a code ticket:
+
+- confirm the requested scope only was changed;
+- run `git diff --check`;
+- run targeted tests for changed behavior;
+- run the affected broader suite when justified;
+- run ASan/UBSan for memory/lifetime-sensitive changes;
+- run TSan for concurrency-sensitive project code when applicable;
+- keep Vulkan validation separate from portable TSan claims;
+- preserve exact external-library qualifications;
+- avoid fixed host-parallelism constants;
+- avoid repeated unchanged clean builds or suites;
+- report what actually ran, not a stronger claim.
+
+For documentation-only remediation, use documentation checks rather than
+rebuilding unchanged production code.
