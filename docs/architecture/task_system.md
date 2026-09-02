@@ -1,402 +1,874 @@
-# Système de tâches (Task System)
+# Task System
 
-## Extraction précise v1A
+## Status
 
-`features.extract.sift` et `features.extract.rootsift`, version 1, possèdent
-chacun leur lifecycle durable. Une tâche correspond à une image, est persistée
-avant enqueue et reprend avec le même `task_id`. `detectAndCompute` n'est pas
-interruptible : pause/cancel sont coopératifs à ses frontières et un crash
-recommence uniquement cette image. ORB READY n'est jamais recalculé par SIFT.
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
+CURRENT_PRODUCTION_TASK_KINDS=16
 
-## Objectif et responsabilités
+TASK_SYSTEM_STATUS=IMPLEMENTED
+GENERIC_CHECKPOINT_VERSION=1
 
-Le module `task` gère le cycle de vie complet des tâches de traitement dans
-Lardon3D. Il définit les états, la progression, la pause coopérative,
-l'annulation et les callbacks associés à chaque tâche.
+COMPUTE_GOVERNOR_V2=PASS/FROZEN
+ORB_VULKAN_ASYNC_EXECUTION=PASS/FROZEN
 
-Chaque tâche représente une unité de travail atomique : estimation des
-coûts, exécution sous réservation et publication d'un résultat validé.
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
 
-## Fichiers
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
 
-- `include/lardon3d/task.h` — types publics et API
-- `src/task.c` — implémentation
+The Task System owns the lifecycle of executable work in Lardon3D.
 
-## Types principaux
+It defines Task state, progress, cooperative pause/cancel, sequence boundaries, durable snapshots,
+checkpoint publication and the runtime contract used by Queue and Resource Governor.
 
-Les états réels sont `TASK_PENDING`, `TASK_RUNNING`, `TASK_PAUSED`,
-`TASK_CANCELLED`, `TASK_FAILED` et `TASK_COMPLETED`. Une rupture de séquence est
-une opération de réadmission, pas un état supplémentaire.
+It does not own scientific identity, Project DB schema design, dependency/DAG planning, artifact path
+resolution or resource-admission policy.
 
-## API publique
+## Files
 
-| Fonction | Description |
-|---|---|
-| `lardon3d_task_create()` | Alloue une tâche et copie son estimation |
-| `lardon3d_task_destroy()` | Annule, attend puis libère la tâche |
-| `lardon3d_task_start()` | Exécute sous réservation active |
-| `lardon3d_task_pause()` / `resume()` | Contrôle la pause coopérative |
-| `lardon3d_task_request_cancel()` | Demande l'annulation coopérative |
-| `lardon3d_task_checkpoint()` | Frontière coopérative en mémoire |
-| `lardon3d_task_sequence_break()` | Libère puis renouvelle la réservation |
-| `lardon3d_task_snapshot()` | Copie l'état d'observation runtime |
+Primary implementation:
 
-### Observation additive et ABI
+- `include/lardon3d/task.h`;
+- `src/task.c`.
 
-`Lardon3DTaskSnapshot` conserve exactement son layout historique. La structure
-additive `Lardon3DTaskObservation` répète ce préfixe dans un autre type et ajoute
-kind/version, compteurs durables, nombre de séquences et copie du contrat
-d'exécution installé. `lardon3d_task_observation()` initialise une sortie
-caller-owned et cohérente sous le mutex Task ; aucun pointeur interne ne sort.
+Task-specific reconstruction is provided through the Task Kind Registry. Queue admission and execution
+ordering are documented separately.
 
-`lardon3d_task_set_durable_progress()` ne peut être appelé par un owner typé
-qu'après publication de son préfixe métier. Ces compteurs ne sont ni déduits du
-pourcentage générique, ni d'un message, ni du nom de Task. Un
-`set_progress()` ultérieur les efface afin qu'une observation ne conserve pas
-une valeur exacte devenue stale. Cette couture sert la TUI mais ne change ni le
-codec checkpoint, ni l'identité scientifique, ni l'estimation immutable.
+## Core model
 
-### API durable
+A Task represents durable executable intent plus transient runtime state.
 
-| Fonction | Description |
-|---|---|
-| `lardon3d_task_durable_snapshot()` | Copie les champs durables sous mutex |
-| `lardon3d_task_restore()` | Reconstruit une tâche sans état d'exécution vivant |
-| `lardon3d_task_create_typed()` | Crée une tâche persistable avec kind/version immuables |
-| `lardon3d_task_restore_typed()` | Restaure une tâche typée et transfère l'ownership du userdata |
-| `lardon3d_task_checkpoint_save()` | Publie atomiquement un snapshot v1 |
-| `lardon3d_task_checkpoint_load()` | Lit et valide un checkpoint borné |
-| `lardon3d_task_checkpoint_stage()` / `promote_staged()` | Publie d'abord `<path>.next`, puis promeut sous le verrou par tâche |
+The durable part includes:
 
-Après `rename`, un échec du `fsync` du répertoire retourne
-`LARDON3D_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE` : la publication est visible,
-mais sa durabilité après crash n'est pas confirmée.
+- stable Task ID;
+- immutable Task Kind/version;
+- immutable durable resource estimate;
+- saved/recovery state;
+- bounded progress;
+- timestamps;
+- sequence count;
+- Task-specific durable cursor/payload owned outside the generic checkpoint.
 
-### Publication et reprise projet
+The transient part includes:
 
-Le protocole générique par tâche emploie le chemin canonique
-`.lardon3d/checkpoints/<task_id>.chk`, sa représentation staged `.chk.next` et
-le verrou consultatif `.chk.lock`. Le verrou sérialise un writer et la reprise
-sur le slot staged fixe ; il est détenu pour la séquence entière et sa fermeture
-par le noyau après crash ne constitue pas un état durable.
+- callback;
+- userdata;
+- mutex/condition state;
+- active reservation;
+- current admitted execution contract;
+- private capability envelope;
+- resource-feedback state;
+- worker-local execution details.
 
-L'ordre de publication est strictement : codec durable de `.next`, commit
-SQLite du résumé de tâche et de la référence checkpoint, puis promotion de
-`.next` vers le fichier canonique et durabilité du répertoire. DB et système de
-fichiers ne forment pas une transaction unique : si la promotion échoue ou sa
-durabilité est incertaine après le commit SQLite, `.next` reste la
-représentation de récupération possible.
+Transient runtime objects are never serialized into the generic checkpoint.
 
-La reprise acquiert d'abord `.lock`, puis recharge la ligne SQLite : la page de
-découverte peut être devenue périmée pendant l'attente. Elle valide le codec et
-la version du canonique et compare seulement les champs effectivement stockés
-dans le résumé DB — `task_id`, nom, états saved/recovery, progression et
-compteur de séquences. Les timestamps et l'estimation complète ne sont pas
-dupliqués par la DB et ne participent donc pas à ce test. Un canonique valide
-dont ce résumé correspond est prioritaire ; une `.next` absente, périmée ou
-corrompue est alors ignorée. Sinon, une `.next` valide qui correspond au même
-résumé est promue sous le même verrou puis reprise. Un ancien projet v22 ou
-antérieur qui ne possède que `.chk` reste ainsi récupérable. Toute autre
-absence, version non
-supportée, corruption ou divergence interdit la reprise de cette tâche sans
-affecter les autres entrées de l'inventaire.
+## Task states
 
-## Invariants
+The real states are:
 
-1. **Estimation durable immuable** : l'estimation stockée dans la Task courante
-   ne change jamais. Compute Governor v2 utilise une enveloppe privée de
-   capacités, distincte de ce snapshot et non persistée comme identité. Le
-   contrat choisi pour une séquence est lui aussi immutable jusqu'à sa
-   libération ; seule une séquence suivante peut être adaptée.
-2. **Transitions d'état validées** : le cycle nominal est
-   `PENDING → RUNNING → COMPLETED/FAILED/CANCELLED`, avec pause coopérative.
-3. **Pause et annulation coopératives** : le callback appelle périodiquement
-   `lardon3d_task_checkpoint()`. Aucun autre thread ne force son arrêt.
-4. **Progression bornée** : la progression ne peut jamais dépasser la valeur
-   maximale définie par l'estimation.
-5. **Reprise réadmise** : une tâche restaurée non terminale repasse par la
-   Queue/runtime et le Resource Governor avec une nouvelle réservation.
-6. **Snapshot court** : seuls les champs durables sont copiés sous le mutex ;
-   la sérialisation et les I/O ont lieu après déverrouillage.
+```text
+TASK_PENDING
+TASK_RUNNING
+TASK_PAUSED
+TASK_CANCELLED
+TASK_FAILED
+TASK_COMPLETED
+```
 
-## Interactions
+A sequence break is not a Task state.
 
-- **task_queue** : la file gère l'ordre d'exécution et invoque les callbacks.
-- **resource_governor** : l'estimation est utilisée pour la réservation avant
-  exécution.
-- **scheduler** : ses responsabilités restent représentées par le runtime et
-  l'unique Queue existants ; aucun second scheduler n'est introduit.
+It is an execution boundary at which the current reservation is released and the non-terminal Task
+must be admitted again before more work executes.
 
-### Frontière Compute Governor v2
+## Public API
 
-**COMPUTE_GOVERNOR_V2 — PASS / FROZEN.** Chaque kind de production
-reste propriétaire d'une Task et passe par l'unique Queue à un worker, puis par
-l'unique Resource Governor, même lorsque CPU, lot, mémoire, I/O et GPU sont
-tous fixes. Une dimension fixe n'autorise jamais à contourner l'admission.
+The public Task surface includes:
 
-Le code conserve une `Lardon3DResourceEstimate` canonique immutable pour la
-durabilité. Derrière les types opaques, chaque Task possède désormais une
-enveloppe privée bornée : par défaut une capacité fixe exactement égale à cette
-estimation ; seuls les kinds possédant des alternatives réelles en ajoutent.
-Queue et `sequence_break()` demandent au Governor de choisir et réserver une
-capacité depuis un seul snapshot courant. L'exécution reçoit ce contrat
-immutable et ne le renégocie pas en cours de séquence. Cette couture n'étend ni
-le descriptor public du Task Kind Registry, ni le checkpoint, ni le payload
-Project DB et n'ajoute aucune dimension d'identité scientifique.
+| Function | Purpose |
+| --- | --- |
+| `lardon3d_task_create()` | Create a Task and copy its immutable estimate |
+| `lardon3d_task_destroy()` | Request shutdown as needed, join execution lifetime, destroy |
+| `lardon3d_task_start()` | Execute while holding an active admitted reservation |
+| `lardon3d_task_pause()` / `resume()` | Cooperative pause control |
+| `lardon3d_task_request_cancel()` | Cooperative cancellation request |
+| `lardon3d_task_checkpoint()` | In-memory cooperative checkpoint boundary |
+| `lardon3d_task_sequence_break()` | Release current reservation and require re-admission |
+| `lardon3d_task_snapshot()` | Copy bounded runtime-observation state |
 
-Le Governor possède aussi la politique CPU hôte privée. Depuis le masque
-permis et la topologie package/core, il dérive un compute-pool par coeurs
-physiques complets ; un caller déjà précontraint fournit directement son pool.
-Sans topologie exploitable, le budget portable subsiste avec affinité inactive.
-Seul le worker lourd de Queue applique et vérifie son propre masque (`pid=0`)
-avant les callbacks, donc le creator/main/TUI reste libre. Le Governor ne mute
-jamais un TID auxiliaire énuméré : un `PIDFD_THREAD` ne stabilise pas le numéro
-TID consommé par `sched_setaffinity(tid)`. Le démarrage établit plutôt
-`MESA_SHADER_CACHE_DISABLE=true` avant tout pthread applicatif et toute
-initialisation Vulkan. Une absence prend ce défaut sûr ; `true`/`1` explicites
-sont conservés, tandis qu'une valeur explicite fausse ou malformée est respectée
-mais entraîne un refus de démarrage. Cette politique opérationnelle, sans état
-Task durable ni identité scientifique, supprime les helpers de cache Mesa
-observés qui élargissaient leur masque. Il n'existe plus de sweep post-init,
-latch de Task ou retry de recontrainte auxiliaire ; les diagnostics indiquent
-l'état et la raison de la politique sans prétendre une activité auxiliaire.
-Le nombre du pool borne toute admission CPU. Cette couture
-n'ajoute ni scheduler, ni worker, ni champ durable ou ABI publique.
+Durable APIs include:
 
-Le comportement de production normal ORB est `AUTO` Governor-owned. Les modes
-CPU/Vulkan explicites sont réservés au debug, benchmark et à la
-reproductibilité. Une Task normale nouvelle persiste une classe `MIXED`
-sémantiquement honnête ; cette signature reconstruit AUTO, tandis que toute
-signature CPU ORB ancienne ou courante reconstruit un CPU fixe et que Vulkan
-reste fixe. Création et reprise n'initialisent pas Vulkan sur le caller ; le
-premier begin appartient au worker Queue contraint. Le choix matériel ne
-devient ni payload ni identité. Seule une reprise AUTO établit la disponibilité
-Vulkan partagée ; les reprises fixes et historiques sont sans effet global,
-donc leur ordre ne dégrade pas AUTO. Une panne backend est publiée avant tout
-fallback ou sortie précoce ; une inéligibilité de paire reste locale et ne
-possède aucun handle à terminer. Le Governor conserve une télémétrie fixe et
-bornée par kind/backend (dernière durée, travail durable, débit, backend
-sélectionné/réel, contrat, pression et raison) et aucune grande histoire
-persistante. L'adaptation générique utilise deux observations de référence et
-deux du palier d'essai. Le lot ORB Vulkan, plus bruité, exige huit séquences
-pures consécutives pour chacune de ces fenêtres avant toute décision ; une
-observation Matcher mesure la cadence de bout en bout depuis la réadmission
-réussie jusqu'au checkpoint générique durable, et non le seul callback de
-calcul. Le temps de calcul seul reste diagnostique. Ainsi le Governor apprend
-le coût de séquence amorti par le lot et un checkpoint échoué ne l'entraîne pas.
-Une
-admission adaptative encore permise sous pression installe
-CPU1, lot minimum et inflight minimum avant sa réservation. Inflight ORB normal
-reste fixé à 1; helpers reste 0. Les callbacks atomiques n'annoncent
-un item que si extraction et publication propre sont durables ; READY,
-`ALREADY_PRESENT` et `PUBLISHED_NOT_DURABLE` sont des observations zéro qui
-n'avancent pas la rampe.
-L'A/B forcé ABBA a mesuré seulement +2,077617 % à depth 2
-(54,661652238 contre 55,797311953 paires/s), sous le deadband 5 %, avec digest identique,
-quatre séquences de fallback local par exécution et zéro panne/discard. Depth 2 est donc
-**REJECTED_WITH_MEASURED_REASON** pour AUTO normal. Cette décision Matcher est
-gelée ; l'intégration TUI, la validation exécutable et la revue finale
-indépendante sont acquises. L'audit global qui contient cette frontière est
-désormais `GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN`.
+| Function | Purpose |
+| --- | --- |
+| `lardon3d_task_durable_snapshot()` | Copy durable generic fields under the Task mutex |
+| `lardon3d_task_restore()` | Restore a Task without live execution state |
+| `lardon3d_task_create_typed()` | Create a persistable Task with immutable kind/version |
+| `lardon3d_task_restore_typed()` | Restore a typed Task and transfer userdata ownership |
+| `lardon3d_task_checkpoint_save()` | Atomically publish a generic checkpoint v1 |
+| `lardon3d_task_checkpoint_load()` | Read and validate a bounded checkpoint |
+| `lardon3d_task_checkpoint_stage()` | Publish the staged checkpoint representation |
+| `lardon3d_task_checkpoint_promote_staged()` | Promote staged state under the Task checkpoint lock |
 
-Pour Matcher Vulkan, le lease privé de capacité matérialise le contrat de la
-séquence seulement après son admission. Il alloue un ou deux payloads de
-640 Kio sans requête pending, les conserve jusqu'au nettoyage complet de la
-séquence, puis rend depth 2 à depth 1 avant `sequence_break()`. Une allocation
-depth 2 échouée ne modifie pas le contrat scientifique et conduit à la paire CPU
-complète; elle ne laisse ni réservation suivante sous-facturée, ni résultat
-Vulkan partiel.
+Exact API declarations remain authoritative in the public headers.
 
-Cette boucle est maintenant `observe → choose → execute → measure → adapt next`.
-Les CPU réductibles progressent par paliers de puissances de deux, puis vers la
-capacité exacte du kind ou du compute-pool lorsque ce dernier palier diffère ;
-CPU et lot ne sont jamais essayés ensemble. Les observations
-hôte privées comprennent utilisation du pool, mémoire/PSI/swap actif, GPU busy
-et RSS observé, sans confondre RSS et réservation. Le dernier diagnostic peut
-être tiré par numéro de série ou formaté dans un buffer borné ; le runtime ne
-l'imprime pas directement dans le TUI. Le contrat déjà installé demeure
-immutable même si une nouvelle observation arrive pendant son exécution.
-Un agrégat privé de taille fixe complète ce dernier diagnostic : il compte les
-admissions et séquences effectivement enregistrées et somme leurs métriques en
-saturant, afin qu'un poller lent ne transforme pas des changements coalescés en
-fausse histoire exhaustive. Il vit uniquement avec le Governor courant.
-Pour la matrice forcée du runner, cet agrégat sépare les fallbacks par
-inéligibilité locale, panne backend et raison autre/inconnue, à la fois par
-séquence diagnostique et par item exact. Le compte d'items avance une seule fois
-après la publication durable du fallback CPU complet; le travail d'une
-séquence sélectionnée CPU reste à zéro. Ce commit opérationnel immédiat survit à
-l'échec ou l'annulation d'une paire suivante, mais ne crée ni séquence réussie,
-ni débit durable, ni adaptation. Un high-water mark non persisté le rend
-idempotent pendant la vie de la Task. La Task n'expose alors qu'une capacité
-Vulkan aux batch/depth demandés : absence de GPU/backend/mémoire ne peut donc
-pas devenir une admission CPU. Une panne backend tardive laisse la publication
-CPU complète déjà durable mais fait échouer la Task de benchmark après
-checkpoint; seul le compte d'items localement inéligibles, égal entre cohortes
-comparées même lorsque leur batch diffère, reste admissible pour l'évidence.
-Les anciens logs batch 2/4, à quatre contre trois séquences locales pour les
-mêmes items/digest, sont préliminaires et ne déterminent aucun débit utile. La
-matrice item-valide suivante mesure batch 2/4/8/12 à
-54,180767704/66,094373197/74,784998723/76,755814095 paires/s. Les deux premiers
-gains de palier dépassent le deadband, celui de 8 à 12 vaut seulement
-+2,635308425 % : AUTO normal s'arrête à batch 8 et batch 12 reste un contrôle
-privé sûr rejeté pour la politique normale.
-Le run sans override `short-auto-batch8-governor-v2.stdout.jsonl` valide ensuite
-la Task réelle : `1 → 2 → 4 → 8`, 4113/4113 résultats, 76,072 paires/s, digest
-identique, six items locaux et aucune panne/discard. La cadence de séquence
-inclut réadmission et checkpoint durable; inflight reste 1 et helpers 0.
-Le run S21 final crée ensuite la Task normale 2831 en mode AUTO, sans option
-backend/lot/inflight. Ses 21 630 admissions sont toutes Vulkan; la Task publie
-172 741/172 741 résultats, termine `COMPLETE` à 100 %, avec zéro doublon et
-curseur complet. La seule admission YELLOW produit un contrat batch 1, puis
-les admissions GREEN suivantes remontent de façon bornée jusqu'à batch 8. Le
-contrat actif n'est jamais muté sous le callback : chaque changement appartient
-à la séquence suivante.
+## Observation API and ABI boundary
 
-Le runner d'évidence réel crée les nouvelles Tasks Matcher normales par l'API
-AUTO. Son contrôle `synchronous` est un flag de contexte compilé seulement dans
-le target benchmark/test : il ne modifie ni Task durable, ni envelope, ni
-contrat installé, ni callback de production. Puisque ce flag n'est pas
-checkpointé, le runner refuse expressément de l'appliquer à une reprise Matcher
-pendante. Le chemin rolling/recovery normal reste inchangé.
+The historical layout of `Lardon3DTaskSnapshot` remains unchanged.
 
-Dans ce même target seulement, `--matcher-inflight 1|2` reconstruit avant la
-création d'une Task neuve une enveloppe AUTO Vulkan à profondeur fixe et batch
-2 par défaut. `--matcher-batch 2|4|8|12`, valable seulement avec inflight et
-rolling AUTO, fixe aussi le lot. Ces contrôles ne remplacent pas le Governor : l'admission, la mémoire
-par slot, l'UMA et la réservation de séquence restent identiques. Le contrôle
-est refusé pour les modes explicites, pour synchronous depth 2 et pour une Task
-pendante. Une garde de processus restaure les tokens privés sur toute sortie;
-aucun token, champ de contexte, payload ou comportement correspondant n'est
-compilé dans `lardon3d`.
+The additive `Lardon3DTaskObservation` type carries an observation-oriented copy that includes the
+historical snapshot prefix plus current typed/runtime fields such as:
 
-## Statut
+- Task Kind/version;
+- durable progress counters;
+- sequence count;
+- installed execution contract.
 
-**IMPLEMENTED** — cycle de vie, pause/annulation coopératives, séquences
-adaptatives et fondation de checkpoints persistants isolés.
+`lardon3d_task_observation()` fills caller-owned memory while holding the Task mutex only long enough
+to obtain a coherent copy.
 
-**IMPLEMENTED** — une registry statique peut reconstruire explicitement le
-callback et le userdata d'un kind connu. Le destructeur du userdata est détenu
-par la tâche restaurée et exécuté après arrêt de son exécution.
+No internal pointer escapes.
 
-**IMPLEMENTED** — `import.images` utilise la pause, l'annulation, les ruptures
-de séquence et les checkpoints génériques ; une tâche restaurée conserve son ID
-lors de sa soumission explicite à la file.
+`lardon3d_task_set_durable_progress()` is owned by typed Task code and is used only after the
+Task-specific durable prefix has been published.
 
-**IMPLEMENTED** — resoumission automatique sélective des tâches production à
-l'ouverture du projet.
+Durable counters are not inferred from:
 
-**NOT_YET_WIRED** — dépendances/DAG entre Tasks. Il n'existe volontairement pas
-de timer autosave générique : chaque kind persiste d'abord son curseur métier à
-sa frontière atomique, puis publie son checkpoint générique.
+- generic percentage;
+- Task message;
+- Task display name.
 
-**IMPLEMENTED** — `visual_index.update` traite jusqu'à seize Feature Sets par
-séquence, checkpoint après commit de segment et repasse par le Governor.
+A later generic `set_progress()` invalidates exact durable counters when required so observation does
+not preserve stale exactness.
 
-**IMPLEMENTED** — `candidate_pair.generate` traite jusqu'à soixante-quatre
-Feature Sets par séquence, interroge le Visual Index, persiste les paires
-candidates avec idempotence, checkpoint après chaque lot et repasse par le
-Governor via `sequence_break`. La reprise est idempotente avec le curseur
-`after_feature_set_id` rechargé depuis la DB.
+This observation seam serves the TUI and diagnostics. It does not change:
 
-**PASS / FROZEN — Compute Governor v2.** `matcher.run` traite une
-Candidate Pair atomique à la fois, par lots opérationnels bornés jusqu'à 12.
-Le code courant consomme honnêtement CPU, lot et GPU du contrat choisi. Feature,
-SIFT et RootSIFT appliquent l'admission OpenCV `1..compute-pool`; RAW et Photo Quality
-restent CPU1. Pour ORB normal, le Governor choisit GPU-first ou CPU complet pour la prochaine
-séquence, sans mutation pendant son exécution. Ces dimensions ne changent ni
-identité scientifique ni publication. Le callback persiste le curseur
-`after_candidate_pair_id`, checkpoint après publication de chaque lot et
-effectue une rupture de séquence avant le suivant. Une paire repassée après un
-crash est réutilisée par son Match Result. La soumission Vulkan rolling est
-privée et request-bound; le contrat normal de séquence fige inflight 1. Deux slots
-maximum restent disponibles à la couture privée de sûreté/benchmark et portent
-chacun command/fence/buffers/query et un handle exact tandis
-que device/pipeline/layout/cache restent partagés. Le propriétaire soumet
-jusqu'à la profondeur admise, finit le plus ancien et publie toujours le
-préfixe canonique contigu; toute sortie, annulation ou exception nettoie les
-handles encore privés. Les buffers du second slot ne sont mappés que pendant
-une séquence depth 2 admise et sont libérés avant la rupture suivante. Helpers
-reste 0 et le contrôle synchrone force depth 1.
+- generic checkpoint codec;
+- Task identity;
+- scientific identity;
+- immutable durable estimate.
 
-**IMPLEMENTED** — `geometric_verifier.run` v1 traite des Match Results
-indépendants sous un callback propriétaire, avec jusqu'à 16 participants sûrs,
-8 utiles et 16 parents par lot. Project DB v13 conserve sa configuration
-scientifique et `after_match_result_id`. L'USAC interne reste
-`isParallel=false`; le propriétaire publie le préfixe canonique ordonné avant
-le curseur. Pause, annulation, checkpoint et rupture de séquence restent
-coopératifs aux frontières des parents et des lots.
+## Fundamental invariants
 
-**IMPLEMENTED** — `track_builder.run` v1 est une tâche durable de rebuild
-complet. Le scope GVR est persistant et immuable ; la reprise rejoue depuis le
-début avant publication et l'exact reuse Gate C absorbe un crash post-publication.
-Pause et annulation sont observées avant/after l'unité Gate B non préemptible.
+### Immutable durable estimate
 
-**PASS / FROZEN** — `acquisition_campaign.run` v1 est une
-tâche durable reconstruite par la registry existante à partir de son Task ID et
-de sa requête typée immuable Project DB v20. Elle matérialise un seul groupe
-S3-E par séquence, vérifie pause/annulation aux frontières de groupe, retient
-transactionnellement Capture et curseur avant progression/checkpoint, puis
-appelle `sequence_break` avant le groupe suivant. Sa reprise passe par la Queue
-et le Resource Governor existants ; aucune boucle d'exécution parallèle n'est
-introduite.
+The `Lardon3DResourceEstimate` stored with the durable Task remains immutable.
 
-**PASS / FROZEN** — le callback `photo_quality.triage` v1 réutilise ce
-même Task/Queue/Resource Governor et une `sequence_break` entre groupes. Sa requête typée
-est immuable ; le `next_group_id` canonique commence à 1, avance à `k+1` après le résultat
-`k`, puis vaut `N+1` à terminaison. Résultat et curseur sont durables avant le checkpoint
-générique, de sorte qu'une reprise ne devine ni ne réanalyse une identité déjà publiée. La
-réservation charge le contexte retenu et 20 MiB de travail par groupe ; le
-JPEG au-dessus de la limite opérationnelle de décodage 8192 pixels reste en attente
-`UNAVAILABLE + SUSPECT` (ni erreur de décodage ni rejet) ; une entrée admise est réduite à
-1024 pixels maximum avant analyse. Cette borne ne limite ni la campagne ni le dataset.
+Compute Governor v2 may attach a private capability envelope to the live Task, but that envelope is not
+the durable estimate and is not persisted as scientific identity.
 
-Le chemin de production de l'import ne possède plus de thread ni de drapeau
-d'annulation privés. Son wrapper TUI ne fait qu'enqueue/cancel/observer la
-tâche générique. Chaque callback traite un lot borné, checkpoint hors mutex de
-tâche, puis effectue une rupture de séquence afin d'obtenir un nouveau contrat
-et une nouvelle réservation.
+The contract selected for one admitted sequence is also immutable until that sequence ends.
 
-Le callback terminal optionnel est notifié exactement une fois pour
-`COMPLETED`, `FAILED` ou `CANCELLED`, jamais pour une pause ou une rupture de
-séquence. L'état est fixé sous mutex, puis la réservation terminale est libérée
-avant l'appel hors mutex. `join()` attend la fin du callback ; le userdata reste
-donc valide pendant celui-ci et son destructeur n'est appelé qu'ensuite par la
-destruction de la tâche.
+Only a later sequence may receive a different resource contract.
 
-L'observation TUI ne change pas cette ownership : elle ne retient ni Task ni
-userdata et ne pilote aucune transition. Le contrat installé de la Task active
-est l'unique source exacte pour CPU/lot ; un diagnostic Governor par kind ne
-peut pas être attribué à cette Task sans association Task+séquence.
+### Valid state transitions
 
-Une tâche reconstruite mais refusée avant transfert à la queue est abandonnée
-localement : son userdata est détruit, sans callback terminal ni écriture
-durable d'une fausse annulation. Une annulation explicitement demandée conserve
-le contrat de notification terminale.
+The nominal lifecycle is:
 
-Depuis Project Database v7, la base peut enregistrer transactionnellement un
-résumé
-`Lardon3DTaskDurableSnapshot` et la référence de son checkpoint. Elle ne stocke
-ni estimation sérialisée complète, ni callback, ni réservation, et ne remplace
-pas la validation du fichier checkpoint avant `task_restore()`.
+```text
+PENDING
+-> RUNNING
+-> COMPLETED | FAILED | CANCELLED
+```
 
-`lardon3d_project_checkpoint_task()` est la frontière runtime : elle capture le
-snapshot, stage le fichier hors mutex de tâche, met à jour la DB, puis promeut
-le fichier canonique sous le verrou par tâche. L'API d'inventaire retourne des
-snapshots dont le codec/version et le résumé DB ont été validés, mais ne peut
-appeler `task_restore()` que via un descriptor connu ; aucun pointeur n'est
-persistant.
+with cooperative pause/resume where supported.
 
-## Project DB courant
+No callback may force another thread into an undocumented state transition.
 
-Le schéma Project DB courant est v23. Cette évolution additive ne modifie ni le
-codec checkpoint v1, ni les règles de reprise ci-dessus ; elle ajoute le modèle
-optique générique décrit dans [Project Database](project_database.md).
+### Cooperative pause and cancellation
 
-## Limites
+Pause and cancellation are checked at Task-specific safe boundaries.
 
-- Aucune priorité interne : l'ordre est FIFO stable avec bypass des seuls
-  `WAIT` ressources.
-- Pas encore de DAG pour ordonner des reprises interdépendantes.
-- Aucune dépendance inter-tâches (pas de DAG).
-- Pas encore de références génériques d'artefacts métier validés dans le codec
-  checkpoint ; les payloads typés conservent leurs propres références durables.
+A Task callback calls the generic checkpoint/pause/cancel interfaces where its scientific contract
+permits interruption.
+
+Non-interruptible third-party calls complete their current atomic work before the Task observes the
+request.
+
+No other thread forcefully kills a callback.
+
+### Bounded progress
+
+Generic progress remains bounded by the Task estimate/contract.
+
+Task-specific exact durable cursors remain authoritative for restart and are not reconstructed from
+generic percentage.
+
+### Re-admitted restart
+
+A restored non-terminal Task returns through:
+
+```text
+Task Kind Registry
+-> Task Queue
+-> Resource Governor
+-> active reservation
+-> callback
+```
+
+It does not resume with a stale pre-crash reservation.
+
+### Short mutex hold
+
+Task snapshot fields are copied under the Task mutex.
+
+Serialization and file I/O happen after the mutex is released.
+
+## Sequence model
+
+A sequence is the resource-admission unit for work that can make bounded progress and then safely yield.
+
+Conceptually:
+
+```text
+admit
+-> install immutable sequence contract
+-> execute bounded work
+-> publish Task-specific durable result/cursor
+-> generic checkpoint
+-> release reservation
+-> sequence_break
+-> re-admit
+```
+
+A Task whose scientific contract is one indivisible operation may have exactly one sequence.
+
+A Task with repeatable bounded items may have many sequences.
+
+Sequence boundaries do not create a second scheduler. They return control to the existing Queue and
+Governor.
+
+## Durable checkpoint v1
+
+The generic checkpoint codec remains version 1.
+
+It stores only the bounded generic Task snapshot. Large scientific artifacts and Task-specific payloads
+remain outside the checkpoint.
+
+It never serializes:
+
+- mutexes;
+- condition variables;
+- callbacks;
+- userdata pointers;
+- worker handles;
+- Governor objects;
+- reservations;
+- CPU affinity masks;
+- GPU device identity;
+- scratch leases.
+
+## Standalone checkpoint publication
+
+For the standalone file publication primitive:
+
+1. encode a bounded temporary file in the same directory;
+2. synchronize file contents;
+3. atomically rename/publish;
+4. synchronize the parent directory.
+
+If failure occurs before rename, the old published checkpoint remains unchanged.
+
+If rename succeeded but the parent-directory sync fails, the result is:
+
+```text
+LARDON3D_TASK_CHECKPOINT_PUBLISHED_NOT_DURABLE
+```
+
+The new visible file is valid, but crash/power-loss durability of the directory entry is not claimed.
+
+## Project checkpoint protocol
+
+The project-integrated checkpoint slot uses:
+
+```text
+.lardon3d/checkpoints/<task_id>.chk
+.lardon3d/checkpoints/<task_id>.chk.next
+.lardon3d/checkpoints/<task_id>.chk.lock
+```
+
+The advisory `.chk.lock` serializes the writer and recovery logic for the fixed staged slot.
+
+The lock is process synchronization only. Kernel release after process death is not durable recovery
+state.
+
+The project publication order is:
+
+```text
+capture durable Task snapshot
+-> publish validated .chk.next
+-> commit SQLite Task summary + checkpoint reference
+-> promote .chk.next to canonical .chk under .chk.lock
+-> synchronize the checkpoint directory
+```
+
+Filesystem and SQLite are not claimed to be one distributed transaction.
+
+If SQLite fails after a staged file was published, that file may remain an orphan while Project DB
+retains the previous logical truth.
+
+If SQLite commits and staged promotion later fails or has uncertain directory durability, `.chk.next`
+remains a potential recovery representation.
+
+## Project recovery
+
+Recovery acquires `.chk.lock` and reloads the SQLite record after lock acquisition because the
+discovery page may have become stale while waiting.
+
+It validates:
+
+- checkpoint codec;
+- checkpoint version;
+- bounded fields;
+- Project DB summary agreement.
+
+The DB comparison covers only fields actually stored in the generic `tasks` summary, including:
+
+- `task_id`;
+- name;
+- saved state;
+- recovery state;
+- progress;
+- sequence count.
+
+The DB does not duplicate the full durable estimate or all checkpoint timestamps, so recovery does not
+pretend to compare fields that are not stored there.
+
+A valid canonical `.chk` whose stored summary matches Project DB has priority.
+
+If canonical state is unusable, a valid matching `.chk.next` may be promoted under the same lock and
+used.
+
+A historical project that legitimately contains only canonical `.chk` remains recoverable.
+
+Missing, corrupt, future-version or summary-divergent checkpoint state makes that Task
+non-recoverable without corrupting unrelated Tasks.
+
+## Task Kind Registry boundary
+
+Generic Task recovery does not guess business logic.
+
+A durable Task record is classified through the production Task Kind Registry.
+
+Typed recovery distinguishes at least:
+
+```text
+LEGACY_UNTYPED
+UNKNOWN_TASK_KIND
+UNSUPPORTED_TASK_KIND_VERSION
+```
+
+A business-specific reconstruct function is selected only by exact supported kind/version.
+
+No persisted callback or code address exists.
+
+The current production registry contains:
+
+```text
+CURRENT_PRODUCTION_TASK_KINDS=16
+```
+
+including the additive:
+
+```text
+raw.develop.batch/1
+features.extract.batch/1
+```
+
+## Queue boundary
+
+Every production Task passes through the single existing Task Queue, including Tasks whose resource
+contract is completely fixed.
+
+The Queue owns stable execution-order behavior.
+
+It does not invent Task resource budgets.
+
+A pending Task is executed only after the Resource Governor returns an executable admitted contract and
+a reservation is successfully installed.
+
+The current architecture keeps one active heavy Queue callback.
+
+Bounded internal participants inside that callback are not additional Queue workers.
+
+## Resource Governor boundary
+
+```text
+COMPUTE_GOVERNOR_V2=PASS/FROZEN
+```
+
+The Resource Governor owns:
+
+- RAM admission;
+- CPU admission;
+- IO admission;
+- GPU admission;
+- host reserve;
+- pressure response;
+- capability selection;
+- transient reservations;
+- bounded adaptive feedback.
+
+The Task owns its declared workload and scientific work.
+
+Resource policy never changes scientific input identity merely to fit a machine.
+
+## Private capability envelope
+
+A live Task has a bounded private capability envelope.
+
+By default, a Task with no alternatives has one capability equal to its honest fixed contract.
+
+Kinds with validated alternatives may expose multiple legal capabilities.
+
+The capability envelope is not:
+
+- a new public Task Kind descriptor;
+- a Project DB payload;
+- a generic checkpoint field;
+- a scientific fingerprint;
+- a second scheduler.
+
+Queue admission and `sequence_break()` ask the Governor to select from the legal envelope using one
+current resource snapshot.
+
+The chosen sequence contract is installed once and stays unchanged until release.
+
+## Canonical resource policy
+
+```text
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+```
+
+The interactive host reserve and all safety constraints are preserved first.
+
+Inside the remaining safe envelope, Lardon3D should use the maximum validated useful resources.
+
+Leaving safe useful CPU/GPU capacity idle solely because an older Task was once measured at a smaller
+width is not a stability policy.
+
+Reference-host values remain observations, not portable constants.
+
+## Adaptation dimensions
+
+The Governor may adapt only dimensions explicitly exposed by the Task's validated capability contract.
+
+Typical dimensions include:
+
+- CPU participants;
+- batch/window size;
+- ORB Vulkan inflight depth where that private seam exists.
+
+A selected contract is never mutated during execution.
+
+### Independent-dimension trials
+
+Where dimensions are independently meaningful, adaptation should isolate them so measured throughput
+changes can be attributed correctly.
+
+The historical generic rule of trying one dimension at a time remains appropriate for such Tasks.
+
+### Coupled CPU/batch trials
+
+CPU and batch are **not universally required to be independent**.
+
+For a Task whose extra CPU participants cannot perform useful work while batch/window remains one,
+testing `CPU2/batch1` does not measure actual scaling.
+
+A Task-specific validated capability may therefore expose coupled CPU/batch rungs.
+
+Current examples include:
+
+```text
+candidate_pair.generate/1
+features.extract.batch/1
+```
+
+where CPU and admitted item window may advance together so every tested rung exercises independent
+work.
+
+This is explicit Task-specific policy. It does not mean all Tasks couple CPU and batch.
+
+```text
+CPU_AND_BATCH_MAY_COUPLE_WHEN_TASK_CONTRACT_REQUIRES=YES
+GLOBAL_CPU_BATCH_COUPLING_RULE=NO
+```
+
+This correction preserves scientific identity because admitted width is operational state.
+
+## Per-item atomicity versus cross-item concurrency
+
+A scientific item can remain atomic while independent items execute concurrently.
+
+Examples include:
+
+- selected RAW Captures;
+- selected Feature images;
+- Candidate source memberships;
+- Match Results prepared by Geometric Verifier.
+
+Therefore:
+
+```text
+PER_ITEM_ATOMICITY_REQUIRES_CROSS_ITEM_SERIALISM=NO
+OWNER_ONLY_PUBLICATION_REQUIRES_SERIAL_PREPARATION=NO
+```
+
+Owner-only publication can preserve deterministic durable order after bounded participants join.
+
+## Feedback loop
+
+The private adaptation loop is conceptually:
+
+```text
+observe
+-> choose
+-> reserve
+-> execute
+-> publish/checkpoint
+-> measure durable useful work
+-> adapt a later sequence
+```
+
+Only successfully completed durable work counts as useful throughput where the Task contract requires
+such feedback.
+
+Uncertain or non-durable publication must not be counted as successful work for resource scaling.
+
+Current feedback is bounded process-local operational state and is not persisted as scientific
+history.
+
+## Host telemetry boundary
+
+Current private host observation may include:
+
+- compute-pool CPU use;
+- `MemAvailable`;
+- CPU/memory/IO PSI;
+- active swap deltas;
+- selected GPU busy signal;
+- process RSS/HWM diagnostics.
+
+RSS/HWM is process observation, not a Task reservation.
+
+Missing optional telemetry becomes unknown rather than fabricated pressure.
+
+The Resource Governor owns interpretation of those signals.
+
+Task code does not directly lower scientific quality based on telemetry.
+
+## Pressure behavior
+
+A resource contract already installed for a healthy bounded sequence is not asynchronously shrunk
+because a new pressure sample arrives.
+
+Pressure affects later admission.
+
+Where policy still permits execution under pressure, the Governor may return the Task to its minimum
+safe capability before reservation.
+
+After pressure recovery, useful width may ramp again according to the validated per-kind adaptation
+contract.
+
+## Matcher ORB AUTO boundary
+
+ORB Matcher has a validated GPU-first operational path.
+
+For normal AUTO operation:
+
+```text
+backend selection       Governor-owned AUTO
+preferred eligible path Vulkan
+fallback                complete CPU recomputation
+normal inflight depth   1
+validated safety depth  2
+normal useful batch     up to 8
+```
+
+Depth 2 was measured safe but did not meet the accepted useful-throughput deadband for normal AUTO
+policy.
+
+Matcher batch 12 likewise remains a safe/private validation capability where documented, while the
+normal useful AUTO ceiling remains 8.
+
+These choices do not change:
+
+- Matcher Task Kind/version;
+- Match Result identity;
+- Match File bytes;
+- Matcher scientific fingerprint;
+- durable cursor.
+
+A backend failure never publishes a partial Vulkan result.
+
+## Feature execution
+
+### Historical single-image paths
+
+The following single-image scientific Tasks remain valid:
+
+```text
+features.extract/1
+features.extract.sift/1
+features.extract.rootsift/1
+```
+
+One image remains the atomic Feature result.
+
+Non-interruptible OpenCV extraction restarts that image after a crash rather than claiming intra-image
+resume.
+
+### Current selected Feature batch
+
+Project DB v25 adds:
+
+```text
+features.extract.batch/1
+```
+
+One durable owner handles an immutable selected execution.
+
+Bounded participants prepare independent images, join, and the owner publishes/reuses READY Feature
+Sets in selected-item order before advancing the typed cursor and generic Task checkpoint.
+
+Cross-image preparation may run concurrently while per-image Feature publication remains atomic.
+
+## RAW selected batch
+
+Project DB v24 adds:
+
+```text
+raw.develop.batch/1
+```
+
+Independent selected RAW items may be prepared in a bounded admitted window.
+
+The owner publishes the canonical selected prefix and advances the selected-execution cursor.
+
+The historical `raw.develop/1` path remains valid.
+
+## Candidate Pair Task
+
+`candidate_pair.generate/1` processes bounded Visual Index source work and publishes canonical
+Candidate Pairs.
+
+Its current validated resource model includes a batch range up to 64 and coupled CPU/batch adaptation
+where required to exercise participants.
+
+Participants perform read/preparation work; owner publication remains deterministic.
+
+A restart loads `after_feature_set_id` and reuses already persisted Candidate Pairs idempotently.
+
+## Visual Index Task
+
+`visual_index.update/1` processes bounded Feature Set input and publishes immutable deterministic
+segments.
+
+It checkpoints only after the segment publication boundary required by its persistence contract.
+
+A segment with uncertain publication durability is not counted as successful adaptive work.
+
+## Geometric Verifier Task
+
+`geometric_verifier.run/1` uses outer cross-item concurrency while preserving the validated
+per-item scientific solver configuration.
+
+The current validated execution shape supports:
+
+- up to 8 useful participants;
+- up to 16 safe participants/window entries;
+- owner-only canonical publication.
+
+Project DB v13 owns its typed Task cursor.
+
+The internal USAC/MAGSAC scientific solver remains in the validated non-parallel inner configuration.
+
+## Track Builder
+
+`track_builder.run/1` is a durable full-rebuild Task over one immutable GVR scope.
+
+Restart rebuilds from the explicit scope and publishes/reuses the exact Track Set according to the
+Track Builder contract.
+
+No hidden dependency graph is persisted by the Task System.
+
+## Acquisition campaign
+
+`acquisition_campaign.run/1` is a durable Task over an immutable Project DB v20 request.
+
+One S3-E group is materialized per sequence.
+
+The Task-specific Capture mapping and cursor become durable before generic progress/checkpoint.
+
+Restart uses retained explicit Capture identity rather than inferring from paths, hashes or image IDs.
+
+## Photo Quality Triage
+
+`photo_quality.triage/1` reuses the same Task/Queue/Governor machinery.
+
+Its canonical one-based `next_group_id` is Task-specific durable state.
+
+Result and cursor publication precede generic checkpoint advancement.
+
+The Task System does not reinterpret already published quality identity from generic percentage.
+
+## Import Task
+
+The production import path no longer owns a private execution thread or private cancellation flag.
+
+Its TUI wrapper enqueues, cancels and observes the generic Task.
+
+Each callback executes bounded admitted work, publishes its Task-specific durable state, checkpoints and
+uses a sequence break when more work remains.
+
+## Sparse SfM
+
+`sparse_sfm.run/1` is **PASS/FROZEN**.
+
+Its historical fixed CPU1/batch1 execution contract remains valid for that frozen scientific Task.
+
+This is not a global Task System rule.
+
+Sparse SfM Gates C through G are implemented. Historical real S21/A6000 campaigns have not executed
+real known-calibration Sparse SfM because known calibration remains unavailable for those campaigns.
+
+## Incremental reconstruction
+
+`incremental_reconstruction.run/1` is **PASS/FROZEN**.
+
+It recomputes its atomic Phase H result from immutable predecessor/extension/calibration inputs after
+restart.
+
+No transient solver state is persisted in the generic checkpoint.
+
+## Terminal callback ownership
+
+An optional terminal callback is notified exactly once for:
+
+```text
+COMPLETED
+FAILED
+CANCELLED
+```
+
+It is not a notification for pause or sequence break.
+
+Terminal state is committed under the Task mutex.
+
+The terminal reservation is released before the callback is invoked outside the Task mutex.
+
+`join()` waits for terminal callback completion.
+
+Userdata therefore remains valid for the callback and is destroyed only afterward by Task destruction.
+
+## Reconstructed Task rejected before Queue transfer
+
+A reconstructed Task that is rejected locally before ownership transfers to Queue is destroyed locally.
+
+Its userdata destructor runs.
+
+No terminal callback is fabricated and no false durable cancellation is written.
+
+An explicit user-requested cancellation remains a real lifecycle transition and keeps its terminal
+notification semantics.
+
+## TUI observation boundary
+
+The TUI observes copied Task/Queue/Governor state.
+
+It does not retain Task userdata and does not drive hidden lifecycle transitions.
+
+The installed execution contract on the active Task is the authoritative Task-specific CPU/batch
+contract for that sequence.
+
+A Governor diagnostic keyed only by Task Kind cannot be attributed to one specific Task unless the
+observation also establishes the Task/sequence association.
+
+## Current Project DB
+
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
+```
+
+The current additive chain includes:
+
+```text
+v22  selected scientific execution foundation
+v23  generic optical-context overlay
+v24  raw.develop.batch/1 persistence
+v25  features.extract.batch/1 persistence
+```
+
+These schema additions do not change generic checkpoint codec v1.
+
+Project DB stores logical Task summaries and typed Task-specific payloads. It does not store live
+reservations, callbacks, affinity masks or Governor feedback history.
+
+## Current real checkpoint
+
+The retained current upstream real checkpoint is:
+
+```text
+real-a6000-pre-sfm-2026-09-02
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
+
+The run exercised current Task/Queue/Governor/restart behavior through:
+
+- selected RAW batch;
+- selected Feature batch;
+- Visual Index;
+- Candidate Pair;
+- Matcher;
+- Geometric Verifier v3;
+- Track Builder.
+
+The final continuation retained zero Sparse SfM Tasks/reconstructions and performed no Dense/MVS work.
+
+## Limits
+
+Current Task System limits/non-goals include:
+
+- one active heavy Queue callback;
+- no generic Task dependency DAG;
+- no internal priority system beyond current Queue policy;
+- no generic artifact-reference graph in checkpoint v1;
+- no generic autosave timer;
+- no second scheduler;
+- no generic preemption of third-party atomic calls;
+- no persistence of Resource Governor feedback;
+- no authoritative scratch-consuming Task Kind at the current checkpoint.
+
+Task-specific code owns the durable scientific/business cursor and must publish that state before the
+generic checkpoint is allowed to claim corresponding progress.
+
+## Summary
+
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
+CURRENT_PRODUCTION_TASK_KINDS=16
+
+TASK_SYSTEM_STATUS=IMPLEMENTED
+GENERIC_CHECKPOINT_VERSION=1
+
+TASK_QUEUE_ACTIVE_HEAVY_CALLBACKS=1
+GENERIC_TASK_DAG=NOT_IMPLEMENTED
+GENERIC_AUTOSAVE_TIMER=NOT_PRESENT
+
+CPU_AND_BATCH_MAY_COUPLE_WHEN_TASK_CONTRACT_REQUIRES=YES
+GLOBAL_CPU_BATCH_COUPLING_RULE=NO
+
+PER_ITEM_ATOMICITY_REQUIRES_CROSS_ITEM_SERIALISM=NO
+OWNER_ONLY_PUBLICATION_REQUIRES_SERIAL_PREPARATION=NO
+
+CURRENT_SCRATCH_CONSUMING_TASK_KINDS=0
+
+COMPUTE_GOVERNOR_V2=PASS/FROZEN
+ORB_VULKAN_ASYNC_EXECUTION=PASS/FROZEN
+
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+
+REAL_A6000_PRE_SFM=PASS/FROZEN
+```
