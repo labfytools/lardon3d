@@ -2,174 +2,333 @@
 
 ## Status
 
-**ACCEPTED** — architecture decision for the post-Gate C documentation freeze.
+**ACCEPTED / CURRENT.**
 
-Current Sparse SfM gates A through G are **PASS / FROZEN**.
-Project Database: current schema **v24**; the v22 foundation, v23 optical overlay, and historical
-v16 science remain frozen.
+This document preserves the historical no-new-subsystem decision while reconciling it with the
+current repository state.
 
-This record is normative for the separation of responsibilities. Its original
-Gate C/G decision introduced no implementation or syntax. Later explicitly
-authorized additions, including the additive Project DB v23 optics overlay,
-the v24 RAW batch Task association, and
-the bounded UDisks2 SSD controller, must remain on their own side of this
-boundary and do not create a generic Resource System.
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
+CURRENT_PRODUCTION_TASK_KINDS=16
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+NO_NEW_SUBSYSTEM=ACCEPTED
+```
+
+Sparse SfM Gates A through G remain **PASS / FROZEN** at their documented scientific boundaries.
+
+The current Project DB head is v25. The additive lineage is:
+
+```text
+v22  selected scientific execution foundation
+v23  generic optical-context overlay
+v24  raw.develop.batch/1 persistence
+v25  features.extract.batch/1 persistence
+```
+
+The original Gate C/G decision did not create a generic Resource System. Later authorized additions,
+including the v23 optics overlay, v24 RAW-batch Task persistence, v25 Feature-batch Task persistence
+and the bounded UDisks2 SSD controller, remain on their own side of this boundary and do not create
+one.
+
+Historical schema numbers, Task counts and measurements remain valid where they describe the
+checkpoint at which they were recorded. They are not current-state authority unless explicitly
+labelled current.
+
+## Purpose
+
+This document defines the separation between:
+
+1. scientific and persistent identity;
+2. specialized artifact resolution and validation;
+3. Task-owned runtime residency;
+4. Resource Governor admission and execution budgets.
+
+It also records the architectural decision that Lardon3D does **not** currently need a generic
+runtime Resource System, generic artifact resolver, runtime dependency graph or cross-store cache.
+
+The runtime resource policy itself is owned by
+[Resource Governor](resource_governor.md). This document defines the architectural boundary around
+that policy and must not duplicate or weaken it.
 
 ## Context
 
-Lardon3D contains a Resource Governor and persistent stores for images,
-features, matches, geometric results, tracks and Sparse SfM data. The term
-“resource” in the Governor denotes an execution budget, not a loadable runtime
-object.
+Lardon3D contains a Resource Governor and persistent stores for images, Features, matches, geometric
+verification results, Tracks and Sparse SfM data.
 
-The repository does not define a generic Resource System, generic artifact
-resolver, runtime cache, resource handle or runtime dependency graph.
+The word *resource* in Resource Governor means an execution budget or capacity. It does not mean a
+generic loadable application object.
 
-## Current system
+The repository therefore does not currently define:
 
-### 1. Persistent identity and metadata
+- a generic Resource System;
+- a generic artifact resolver;
+- a shared runtime object cache;
+- generic loaded-object handles;
+- generic unload semantics;
+- a runtime dependency graph;
+- a cross-store residency manager.
 
-Project Database v23 owns current logical identities and relations; v16 remains
-the historical Sparse SfM persistence boundary. SQLite IDs identify
-projects, ScanSets, images, assets, Feature Sets, results, tracks and Sparse
-SfM records. SHA-256 values identify published file contents. Metadata stores
-sizes, states, provenance and project-relative artifact paths.
-
-Logical identity and physical content identity are distinct: two logical
-images or Feature Sets may share one immutable physical asset.
-
-### 2. Artifact resolution and validation
-
-Resolution is specialized by each store. Readers derive project-relative paths,
-validate content-addressed layouts, verify sizes and SHA-256 values, then
-validate file formats and metadata. Feature, Match and Sparse SfM readers are
-bounded and do not constitute a generic Resource System.
-
-External import sources are persisted as provenance. After a successful import,
-the managed asset is canonical and no longer depends on the source path. A
-moved project does not make an absolute external source portable.
-
-### 3. Runtime residency and ownership
-
-Tasks and processing backends own their working buffers. Readers and temporary
-objects have explicit local lifetimes. Vulkan ORB has its own bounded backend
-state. There is no shared runtime resource cache, generic loaded-object handle,
-generic unload operation or generic dependency lifetime.
-
-### 4. Resource governance
-
-The Resource Governor owns policy decisions for RAM, GPU, CPU and IO budgets.
-It consumes immutable task estimates, samples system pressure, chooses bounded
-lots and creates opaque transient reservations. A task must hold an active
-reservation before executing its callback and releases it exactly once. The
-later additive SSD integration also makes it the sole production orchestrator
-for scratch leases, without adding scratch to RAM admission or to the Task
-estimate.
-
-The Governor does not own persistent IDs, resolve paths, validate file formats,
-load application objects, cache data or manage semantic dependencies.
-
-## Problem statement
-
-No current or clearly-next requirement demonstrates the need for a generic
-runtime Resource System or a cross-store artifact resolver. Existing stores
-already provide the identity, path and validation behavior required by their
-contracts, while the Governor already provides resource admission.
-
-Adding another layer now would invent ownership, syntax, persistence and
-lifetime rules without a consumer and could contaminate frozen Gate B
-persistence.
-
-## Four-layer model
+## Current four-layer model
 
 ```text
-identity / metadata
-        ↓
+persistent identity / metadata
+        |
+        v
 specialized artifact resolution and validation
-        ↓
-task-owned runtime buffers and lifetimes
-        ↓
-Governor admission, reservation and bounded execution
+        |
+        v
+Task-owned runtime buffers and lifetimes
+        |
+        v
+Resource Governor admission, reservation and bounded execution
 ```
 
-The layers remain separate. No layer is promoted into a generic Resource
-System by this decision.
+The four layers remain separate. No layer becomes a generic Resource System by implication.
 
-## Resource Governor boundary
+## 1. Persistent identity and metadata
 
-The Governor remains independent of scientific/artifact identity. It answers
-whether an operation fits current budgets; it does not answer what an asset is
-or where it lives. Tasks create estimates, request reservations, execute
-bounded work and release reservations. The additive external-storage registry
-copies physical capacity/state and arbitrates process-local scratch leases, but
-does not resolve paths, own files, persist device identity or add SSD/swap to
-RAM.
+Project DB v25 is the current persistent logical-state head.
 
-### Task demand declaration versus admission policy
+Earlier layers remain valid foundations:
 
-**FROZEN.** A task producer owns the immutable declaration of the workload it
-submits through the existing `Lardon3DResourceEstimate` contract. Constructing
-that estimate from immutable payload, input shape and known implementation
-characteristics describes what the task expects to require; it is not a
-Governor policy decision.
+- v16: historical Sparse SfM persistence model;
+- v17: durable Sparse SfM Task payload;
+- v18: Phase H v1 incremental reconstruction metadata;
+- v19: Capture / Asset Provenance;
+- v20: durable acquisition-campaign execution;
+- v21: Photo Quality Triage;
+- v22: selected scientific execution;
+- v23: generic optical context;
+- v24: selected RAW-batch Task persistence;
+- v25: selected Feature-batch Task persistence.
 
-The existing Task Runtime, queue and Governor remain responsible for deciding
-whether and when the declared work is admitted and for creating the mandatory
-reservation. Admission thresholds, current machine state, pressure, telemetry,
-adaptive tuning, swap or scratch policy and future estimate calibration remain
-outside the task producer. A producer never changes scientific inputs or
-identity in response to resources.
+SQLite IDs identify logical project objects. SHA-256 identifies immutable published bytes.
 
-Gate F may therefore construct the immutable Sparse SfM task estimate required
-by `lardon3d_task_create_typed()` and submit the task through the normal queue.
-It does not inspect resource snapshots, decide admission, create reservations,
-change Governor or queue policy, or bypass the reservation invariant. The
-estimate is operational metadata and is excluded from the Sparse SfM parameter
-fingerprint, candidate identity and scientific determinism. Gate G owns
-resource-management and admission policy, but Gate G core does not modify the
-fields of the frozen Sparse SfM Gate F v1 estimate.
+These identities remain distinct. In particular:
 
-Gate F v1 freezes its declarative Sparse SfM RAM request as the checked sum
-`128 MiB + I*64 KiB + T*2048 + O*512`, rounded upward to one MiB, where `I`,
-`T` and `O` are immutable participating-image, Track and observation counts.
-The complete amount is fixed RAM for one atomic batch; per-item RAM and all GPU
-fields are zero, batch bounds are one, and the task requests one CPU thread and
-one IO slot in the CPU class. These coefficients are conservative operational
-policy inputs, not measured dynamically or included in scientific identity.
+```text
+Capture != file
+Capture != Asset
+Capture != image_id
+Capture != SHA-256
+Capture != path
+Capture != basename
+Capture != Task ID
+Capture != campaign group ID
+```
 
-### Gate G resource-policy implementation
+Resource management must never generalize, merge or reinterpret these identities.
 
-**PASS / FROZEN.** The G0a contract is implemented and validated. All seven G0
-human decisions remain resolved.
+Logical identity and physical-content identity are separate. Multiple logical objects may refer to one
+immutable physical asset when the relevant store contract permits it.
 
-#### Pending admission and snapshot freshness
+## 2. Specialized artifact resolution and validation
 
-When pending work exists but every candidate receives `WAIT`, the existing Task
-Queue worker performs a timed wait of at most 500 milliseconds. An earlier
-enqueue, resume, resource-change, cancellation or shutdown signal wakes it
-immediately. On timeout it repeats the normal stable queue scan and obtains new
-snapshots through the existing admission path. No monitor thread, scheduler or
-subsystem is added. The separate polling interval for a running sequential task
-waiting at `lardon3d_task_sequence_break()` remains 50 milliseconds.
+Artifact resolution remains owned by the relevant store or subsystem.
 
-Production snapshots use `CLOCK_MONOTONIC`. A directly supplied snapshot is
-fresh through an age of exactly 1000 milliseconds. A snapshot older than 1000
-milliseconds or timestamped in the future must produce `WAIT`, must not produce
-`START` or `REDUCE_BATCH`, creates no reservation and does not mutate Governor
-policy state. Normal production admission captures synchronously through
-`lardon3d_resource_governor_reserve_available()` immediately before evaluation.
+A specialized reader may:
+
+- derive a project-relative path;
+- validate a content-addressed layout;
+- verify expected size;
+- verify SHA-256;
+- validate a versioned file format;
+- validate bounded metadata;
+- reject corruption.
+
+Feature, Match, Track, checkpoint, calibration and reconstruction readers do not become a generic
+Resource System merely because they perform similar validation steps.
+
+External import paths are provenance. Once import publishes a managed asset, that managed asset is the
+canonical project-owned content. Moving a project does not make an absolute external source path
+portable.
+
+A future internal artifact resolver may be reconsidered only if concrete cross-store duplication
+justifies it. Such a refactor is not authorized by this document.
+
+## 3. Runtime residency and ownership
+
+Tasks and their processing backends own working buffers for the lifetime defined by their execution
+contract.
+
+Readers, decoded objects and temporary structures have explicit local lifetimes.
+
+Validated backends may own bounded private state. For example, the Vulkan ORB backend owns its
+validated bounded device/pipeline/request state.
+
+The current architecture intentionally has no:
+
+- shared generic residency cache;
+- generic loaded-object handle;
+- generic unload API;
+- cache-eviction protocol;
+- runtime object dependency lifetime;
+- cross-backend residency manager.
+
+Owner-only durable publication does not imply serial preparation. Runtime ownership and publication
+ordering are separate concerns.
+
+## 4. Resource governance
+
+The Resource Governor is the sole production authority for runtime resource admission.
+
+It owns policy for:
+
+- CPU;
+- RAM;
+- GPU capacity and eligibility;
+- I/O admission;
+- pressure response;
+- bounded batch/concurrency selection;
+- process-local scratch lease orchestration where explicitly supported.
+
+The Governor does **not** own:
+
+- persistent scientific IDs;
+- Capture identity;
+- Asset identity;
+- artifact paths;
+- file-format validation;
+- application-object loading;
+- semantic dependency graphs;
+- scientific thresholds;
+- scientific fingerprints.
+
+A production Task must hold the required active reservation before executing admitted work and must
+release it according to the established runtime contract.
+
+## Canonical utilization objective
+
+The current human-authorized operational policy is:
+
+```text
+MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF
+```
+
+The system first preserves the interactive host reserve. Safe and useful capacity beyond that reserve
+belongs to the active Lardon3D workload.
+
+On the current reference host, the normal observed policy outcome is approximately:
+
+```text
+16 logical CPUs total
+4 logical CPUs reserved for interactive host use
+12 logical CPUs available to the compute pool
+~3 GiB MemAvailable preserved as the hard RAM reserve
+Radeon 780M UMA available to validated and useful GPU backends
+```
+
+These values are reference-host evidence, not portable product constants.
+
+A future host must derive its usable capacity from actual topology, allowed affinity, memory,
+pressure and backend capability. The current 12-compute-thread result must never become a global
+product ceiling.
+
+A long-running CPU1 or batch1 path with independent executable work is not automatically justified by
+historical descriptors. It requires a concrete reason such as:
+
+- true dependency or scientific serialism;
+- a measured useful-scaling knee;
+- memory pressure or bound;
+- I/O saturation;
+- validated GPU execution making additional CPU work useless;
+- a publication dependency that cannot safely be separated from preparation;
+- another measured and documented constraint.
+
+Per-item atomicity does not imply cross-item serialization.
+
+Ordered or owner-only publication does not imply serial preparation.
+
+The accepted internal pattern is, where applicable:
+
+```text
+one admitted owner Task
+    -> bounded independent participants / preparation
+    -> join all participants
+    -> deterministic owner-only publication
+```
+
+This pattern does not create a second scheduler or worker-pool subsystem.
+
+## Task demand declaration versus admission policy
+
+A Task producer declares immutable operational demand through the existing resource-estimate contract.
+That declaration describes the workload shape and safe execution envelope; it is not an admission
+decision.
+
+The Task Runtime, Queue and Governor decide whether and when work is admitted.
+
+A producer must not change scientific inputs, identities, thresholds or fingerprints in response to
+machine pressure.
+
+Resource estimates, measured scaling envelopes and backend eligibility remain operational metadata.
+They do not become scientific identity unless a separate explicit scientific contract says otherwise.
+
+### Historical Gate F v1 Sparse SfM estimate
+
+Gate F v1 recorded this declarative Sparse SfM RAM estimate:
+
+```text
+128 MiB + I*64 KiB + T*2048 + O*512
+```
+
+rounded upward to one MiB, with immutable participating-image, Track and observation counts
+`I`, `T` and `O`.
+
+That historical Gate F v1 descriptor used:
+
+- complete RAM as fixed RAM for one atomic batch;
+- per-item RAM zero;
+- GPU fields zero;
+- batch one;
+- CPU1;
+- one I/O slot;
+- CPU resource class.
+
+The formula remains valid historical/FROZEN evidence for the Gate F v1 contract and existing persisted
+Tasks that carry it.
+
+It must **not** be generalized into a repository-wide rule that all future or revisited operational
+paths remain CPU1/batch1. The current `SERIALISM_REQUIRES_PROOF` authority governs any explicitly
+authorized operational re-evaluation while scientific identity remains unchanged.
+
+A change to a persisted estimate formula requires its own explicit compatibility/version contract and
+must never silently reinterpret an existing Task.
+
+## Gate G resource-policy implementation
+
+Gate G remains **PASS / FROZEN** at its validated boundary.
+
+### Pending admission and snapshot freshness
+
+When pending work exists but every candidate receives `WAIT`, the existing Queue worker performs the
+validated bounded timed wait. Enqueue, resume, resource change, cancellation or shutdown may wake it
+earlier.
+
+The original Gate G validated values remain historical/current implementation facts where unchanged:
+
+- pending-work timed wait: at most 500 ms;
+- running sequential `sequence_break()` polling interval: 50 ms;
+- production time source: `CLOCK_MONOTONIC`;
+- directly supplied snapshot freshness: through exactly 1000 ms.
+
+A future-timestamped or stale required snapshot must not produce an executable reservation.
+
 There is no last-known-good cache, grace cache or telemetry-cache subsystem.
 
-A mandatory whole-snapshot capture failure is an operational/internal resource
-error: the queued task becomes `FAILED`, no callback starts and no reservation
-leaks. Unavailable optional CPU, memory or IO PSI and vmstat/swap telemetry is
-unknown and asserts no artificial pressure. Actual GPU demand with no selected
-GPU is `REJECT`; temporarily unknown required live VRAM for a selected dedicated
-GPU is `WAIT`. VRAM availability is never fabricated.
+A mandatory whole-snapshot capture failure is an operational failure: no callback starts and no
+reservation may leak.
 
-#### Conservative RAM accounting and platform
+Optional unavailable telemetry remains unknown rather than asserting fabricated pressure.
 
-Gate G core preserves the conservative live admission model:
+Required GPU demand with no eligible selected GPU is rejected. Required dedicated-GPU live-memory
+capacity that is temporarily unknown waits rather than inventing VRAM.
+
+### RAM accounting
+
+The validated Gate G model remains conservative:
 
 ```text
 available_ram = max(
@@ -180,287 +339,406 @@ available_ram = max(
 )
 ```
 
-The implementation retains its checked, saturating subtraction order. On a
-capable host, the default hard/admission reserve is approximately 3 GiB of
-`MemAvailable`; the 3–4 GiB interval is a non-escalating caution band and does
-not subtract 4 GiB from capacity. Smaller hosts use a deterministic fractional
-reserve so at least bounded work remains possible. A custom policy can still
-set explicit reserve/floor values.
-Possible overlap between `MemAvailable` and already-materialized memory from an
-active reservation is accepted. The deliberate bias is false `WAIT`, not
-overcommit. Gate G adds no RSS tracking, materialization state, allocation
-measurement, reservation resizing or live per-task monitoring. The current
-single-worker topology remains unchanged.
+Subtraction is checked and saturating.
 
-Gate G core supports a native unconstrained Linux host process. Capacity uses
-the existing `_SC_PHYS_PAGES`, `_SC_PAGESIZE` and `/proc/meminfo` mechanisms.
-It is not cgroup v2, systemd `MemoryMax`, `RLIMIT_AS` or `RLIMIT_DATA` aware and
-does not claim correct host-capacity admission inside a tighter constrained
-container or service. Effective constrained-runtime accounting is deferred. No
-cgroup write, systemd dependency or new dependency is authorized.
+On the reference host, the hard reserve is approximately 3 GiB `MemAvailable`. The 3–4 GiB interval
+is a caution/pressure region, not a permanent extra 1 GiB subtraction from every Task.
 
-#### Sparse SfM estimate authority
+Smaller hosts must derive a bounded reserve without making the reference-host value a constant.
 
-Gate G consumes and restores the exact Sparse SfM Gate F estimate above and
-does not alter any producer field. Batch adaptation is permitted only for task
-contracts whose existing minimum/maximum range allows it; Sparse SfM remains
-fixed at batch one. Restart retains the estimate persisted when the task was
-created and evaluates it against newly captured machine telemetry.
+Potential overlap between `MemAvailable` and already materialized memory charged to an active
+reservation is intentionally conservative. The bias is false `WAIT`, not overcommit.
 
-Any future coefficient change requires a separate explicit review and an
-operational formula/version contract applying only to newly created tasks. It
-must not alter F0, candidate identity, Gate D/E parameters or existing persisted
-tasks. Estimate-formula refinement is not part of Gate G core.
+The current native-host capacity model does not claim cgroup-v2, systemd `MemoryMax`, `RLIMIT_AS` or
+`RLIMIT_DATA` constrained-service correctness. Supporting tighter constrained-runtime accounting is a
+separate capability.
 
-#### Selected GPU
+### CPU policy
 
-Gate G core supports one selected GPU and no multi-GPU scheduling. Hardware
-Profile deterministically selects the lowest numeric `/sys/class/drm/cardN`
-accepted by its selection rules and retains that identity internally. Snapshot
-capacity and live usage must refer to that same device; Resource Snapshot must
-not perform an independent first-usable-GPU selection. Memory is never summed
-across devices and reservations are not made per device.
+CPU admission is topology- and affinity-aware where the validated Governor implementation provides
+that evidence.
 
-Dedicated memory uses the selected device's capacity and usage. UMA/shared GPU
-demand is charged exactly once against system RAM and never against a second
-fictitious VRAM pool. Backend and fallback selection remain task-producer/task
-contract responsibilities, not Governor policy. Multi-GPU and complex hybrid
-topologies are deferred.
+The current reference-host compute pool is approximately 12 logical CPUs after preserving the
+interactive reserve. This is not a hardcoded product maximum.
 
-#### Scratch, persistence and science
+A caller whose process affinity is already constrained must not receive a second artificial global
+12-thread ceiling merely because the reference host produced that result.
 
-Scratch demand remains excluded from Gate G core: no scratch field was added to
-`Lardon3DResourceEstimate`, and Sparse SfM still has no scratch consumer, spill
-algorithm or out-of-core path. Swap, zram and external SSD capacity never
-enlarge scientific RAM admission.
+### GPU policy
 
-An explicitly authorized, bounded SSD controller owns physical discovery and
-lifecycle through UDisks2/GDBus: exact labels, stable Drive+filesystem UUID
-identity, fixed-capacity low-level scratch capabilities and safe drain. It is
-not a scheduler, Governor, Task admission path, generic allocator or project
-persistence layer. It never formats, partitions, repairs, powers off, forces
-swap removal or performs destructive cleanup. No code outside that reviewed
-controller may add ad-hoc `swapon`, `swapoff`, mount/unmount or shell control.
+Gate G currently supports one selected GPU for production admission; multi-GPU scheduling remains
+deferred.
 
-The controller's validated bounded snapshot is registered with the Governor.
-The Governor is the only production entry for scratch acquire/release and
-fails closed during drain, error, absence, replacement or unknown authority.
-This is process-local operational ownership, not a new scientific resource
-dimension: no scratch field is added to `Lardon3DResourceEstimate`, and all
-fourteen current Task kinds have zero scratch consumers. A future consumer
-still requires an explicit Task-specific eligibility, lifetime and cleanup
-contract. Registered scratch/swap totals remain telemetry and never enlarge
-host-memory capacity.
+Hardware Profile and Resource Snapshot must agree on the same selected device.
 
-Validation is state-complete, not a friendly-enum shortcut. Pairing or any
-control/allocation authority requires the currently detected Drive and both
-UUID-bearing partitions, exact nonempty identities, known positive partition
-extents and coherent activity/mount/drain/capability facts. Contradictory
-`ABSENT` data is malformed; partial `DETECTED` is non-actionable. A disconnected
-sticky hazard remains a non-allocating `ERROR`, and only the exact original
-tuple after complete reconnection can regain drain authority.
+Dedicated GPU capacity and usage refer to that selected device only.
 
-The source generation legally saturates at `UINT64_MAX`. Public same-generation
-material changes remain stale and cannot regrant authority. The only exception
-is private provenance for the exact serialized Governor wrapper operation: it
-may reconcile its own saturated acquire/release and the address-backed lease
-count, then permit checked unregister. This does not create a generic
-same-generation update or weaken fail-closed telemetry.
+UMA/shared GPU allocations are charged exactly once against host RAM. No fictitious second VRAM pool
+may enlarge capacity.
 
-Gate G core requires no Project DB v18, resource-history, reservation,
-telemetry, policy or scratch table. Reservations and snapshots remain ephemeral;
-the generic Task checkpoint already owns estimate durability. Resource policy,
-machine data and hardware identity never enter F0, `sfm_version`, candidate
-identity or a resource fingerprint. No resource-policy version is required for
-Gate G core.
+A backend that is both **VALIDATED AND USEFUL** should be preferred when Governor-safe and eligible.
+An unvalidated GPU path must never be promoted merely to increase GPU utilization.
 
-Gate G never changes scientific thresholds, seeds, iteration limits, image or
-track selection, Bundle Adjustment parameters, Gate D, Gate E, F0, candidate
-identity, Track Model, Track Builder scientific semantics, Feature Store,
-calibration identity or Project DB reconstruction semantics.
+Backend correctness, exact fallback semantics and scientific equivalence remain backend/Task
+contracts, not generic Governor identity policy.
 
-#### Known derivable implementation defects
+## Scratch, swap and external SSD
 
-These implementation obligations required no further human policy decision and
-are implemented:
+Swap, zram and external scratch never enlarge admitted RAM.
 
-- **G-D01:** `UINT64_MAX` is the final valid reservation ID; the following
-  reservation creation fails without an executable decision, reservation or
-  accounting charge.
-- **G-D02:** pressure, recovery and slow-start streak counters must saturate at
-  the largest meaningful threshold and never wrap.
-- **G-D03:** selected dedicated-GPU capacity and live usage must refer to the
-  same Hardware Profile-selected DRM device.
+Scratch availability is a capacity, not fabricated Task usage.
 
-`TOTAL REMAINING GATE G HUMAN DECISIONS: 0`.
+The bounded external SSD controller owns physical discovery and lifecycle for the reviewed
+UDisks2/GDBus contract. It is not:
 
-#### Closure validation
+- a scheduler;
+- a second Governor;
+- a Task admission system;
+- a generic allocator;
+- Project DB persistence;
+- a generic Resource System.
 
-The complete normal suite passes 41/41 and the Gate G resource/task core passes
-the targeted ASan/UBSan/LSan validation with leak detection enabled. The three
-OpenCL-touching tests `candidate-pair-task`, `feature-task` and
-`precision-consolidation` pass functionally and under ASan/UBSan with leak
-detection disabled. Their LeakSanitizer-only termination has the identical
-external `/opt/cuda/lib64/libOpenCL.so` signature of 3808 bytes in 68
-allocations and is not classified as a Lardon3D Gate G leak. The real-machine
-`orb-vulkan-backend` test, `git diff --check`, and the complete human diff review
-pass. No Gate G human decision or implementation blocker remains.
+The reviewed physical identity uses the exact Drive plus filesystem labels/UUIDs required by the SSD
+contract.
 
-The later global-maintenance sanitizer run preserves that qualification rather
-than overwriting it: its first full LSan pass reports the same exact external
-signature in five OpenCL-loading tests, plus two nonreproduced 30-second timing
-events. ASan/UBSan then pass 64/64 with leak detection disabled, and a
-loader-free project-owned subset passes LSan 20/20. Fresh GCC TSan covers the
-resource/controller/Queue/TUI concurrency boundary inside its 14/14 plus 220
-repeat matrix; Vulkan is deliberately outside TSan and is validated by the
-fresh hardware suite 65/65. The independent final review subsequently passed
-with zero blocking findings, so the enclosing lifecycle is now
-`GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN`. This freezes the audited resource
-boundary without turning scratch, swap or future dense work into RAM capacity.
+The controller must fail closed for incomplete, contradictory, replaced or unknown physical state.
 
-## Project DB boundary
+It does not silently:
 
-The historical Project DB v16 migration and Sparse SfM reconstruction model
-remain unchanged and frozen. Gate F advanced that historical head to v17 only
-with `sparse_sfm_tasks`; later authorized migrations through v23 likewise add no
-resource table, handle table, cache table, dependency table or Governor policy
-field. The v23 optical tables describe camera/lens/calibration context, not
-runtime resource residency.
+- format;
+- partition;
+- fsck/repair;
+- power off;
+- force swap removal;
+- delete project data;
+- execute ad-hoc shell control.
 
-This resource-boundary decision itself authorizes no future schema expansion,
-bundle redesign, Track Model change, Track Builder change or persistence API
-redesign.
+No unrelated code may invent parallel `swapon`, `swapoff`, mount/unmount or destructive control paths
+outside the reviewed controller/Governor ownership.
+
+### Governor scratch ownership
+
+The controller's bounded snapshot may be registered with the Resource Governor.
+
+The Governor wrappers are the sole production entry for process-local scratch lease acquire/release.
+
+Drain must refuse new leases and wait for exact release of existing leases.
+
+The controller does not invent which Tasks are eligible for scratch. A future scratch consumer
+requires an explicit Task-specific contract defining:
+
+- eligibility;
+- storage bound;
+- lease lifetime;
+- path/workspace ownership;
+- restart semantics;
+- cancellation cleanup;
+- failure cleanup;
+- safe drain interaction.
+
+At the current checkpoint, all 16 production Task kinds have zero authoritative scratch consumption.
+
+A future dense/mesh Task may become a real consumer, but that capability is not created by this
+document.
+
+### Physical-state fail-closed behavior
+
+Pairing or control authority requires coherent currently detected state including the reviewed Drive
+and required UUID-bearing partitions.
+
+Partial `DETECTED` state is observable but non-actionable.
+
+A disconnected sticky hazard may preserve identity only as non-allocating `ERROR`.
+
+Only the exact original tuple after complete reconnection may regain drain authority.
+
+Controller source generation may legally saturate at `UINT64_MAX`. Public same-generation material
+changes remain stale and may not regrant authority. The reviewed private Governor wrapper may
+reconcile only its own exact serialized acquire/release completion at saturation; this exception does
+not create a generic same-generation-update rule.
+
+## Pressure and recovery
+
+CPU, memory and I/O pressure may reduce admission.
+
+Active swap-in/swap-out deltas may contribute to pressure decisions.
+
+When pressure clears, useful resources must be re-admitted. A reduced rung must not become a
+permanent throttle merely because it was once selected under pressure.
+
+Host responsiveness is protected by the explicit reserve and pressure feedback, not by intentionally
+leaving additional safe and useful resources idle.
+
+## Persistence boundary
+
+Resource reservations, live machine telemetry and transient policy state remain ephemeral.
+
+Project DB through v25 contains no generic:
+
+- resource-history table;
+- reservation table;
+- resource-object table;
+- resource-handle table;
+- cache table;
+- dependency graph;
+- generic scratch-allocation table.
+
+The additive v23, v24 and v25 migrations do not change this decision:
+
+- v23 stores optical context;
+- v24 stores the typed owner association for `raw.develop.batch/1`;
+- v25 stores the typed owner/progress contract for `features.extract.batch/1`.
+
+They are persistence contracts for their own domains, not a generic resource layer.
+
+The generic Task checkpoint owns persisted Task estimate durability where applicable.
+
+Resource policy, current machine data and hardware identity do not enter scientific fingerprints merely
+because they influence admission.
+
+This document authorizes no new schema version.
+
+Future Project DB changes beyond v25 require explicit human authority and their own persistence
+contract.
+
+## Scientific boundary
+
+Resource policy must never silently change:
+
+- scientific thresholds;
+- deterministic seeds;
+- iteration limits;
+- image selection;
+- Track selection;
+- calibration identity;
+- Sparse SfM candidate identity;
+- Bundle Adjustment scientific parameters;
+- Track Model semantics;
+- Track Builder scientific semantics;
+- Feature Store scientific identity;
+- Geometric Verification scientific identity.
+
+Operational optimization is allowed only within explicitly authorized operational contracts while
+preserving the exact scientific result.
+
+## Historical Gate G implementation obligations
+
+The following reviewed implementation obligations remain acquired:
+
+- **G-D01**: `UINT64_MAX` is the final valid reservation ID; the following reservation creation fails
+  without an executable decision, reservation or accounting charge.
+- **G-D02**: pressure, recovery and slow-start streak counters saturate at the largest meaningful
+  threshold and never wrap.
+- **G-D03**: selected dedicated-GPU capacity and live usage refer to the same Hardware
+  Profile-selected DRM device.
+
+The historical Gate G record closed with:
+
+```text
+TOTAL REMAINING GATE G HUMAN DECISIONS=0
+```
+
+## Validation evidence and qualification
+
+Historical validation evidence must remain interpreted at its checkpoint.
+
+Gate G originally closed with its complete normal suite and targeted resource/task sanitizer coverage.
+
+The OpenCL-loading LeakSanitizer qualification is historical and remains valid: the externally sourced
+`/opt/cuda/lib64/libOpenCL.so` signature was not reclassified as a Lardon3D leak.
+
+The later global-maintenance checkpoint supersedes the need to repeat that whole historical validation
+for unchanged code. It established:
+
+```text
+GLOBAL_MAINTENANCE_AUDIT=PASS/FROZEN
+```
+
+with fresh portable/Vulkan builds, normal suites, applicable sanitizer work, the documented
+OpenCV/TBB/third-party qualifications, concurrency review, ABI/header checks and independent final
+review.
+
+The maintenance checkpoint is:
+
+```text
+global-maintenance-2026-09-01
+```
+
+Unchanged FROZEN systems inherit that evidence unless a concrete delta crosses their boundary.
+
+The later real A6000 checkpoint:
+
+```text
+real-a6000-pre-sfm-2026-09-02
+```
+
+adds operational and real-data proof through Geometric Verification and Tracks. It does not create a
+generic Resource System and does not execute Sparse SfM or Dense/MVS.
 
 ## Options considered
 
-### A. Governor evolution
+### A. Turn the Governor into artifact identity/storage ownership
 
-Rejected by the original no-new-subsystem decision when it meant scientific
-identity or artifact ownership. The later explicitly authorized, additive
-external-storage registry stays within the same boundary: it copies physical
-state and arbitrates leases, but owns no file, path, persistent identity or
-generic loaded resource.
+Rejected.
+
+The Governor owns admission and execution budgets. It must not become the owner of scientific identity,
+artifact paths, file formats or application-object lifetime.
 
 ### B. Internal artifact resolver
 
-Deferred as a possible future refactoring, not a current subsystem. It may be
-reconsidered if concrete duplication appears in path resolution,
-canonicalization, artifact validation or moved-project handling.
+Deferred.
+
+A shared resolver may be reconsidered only after concrete cross-store duplication demonstrates a real
+maintenance or correctness problem.
 
 ### C. Generic Resource System
 
-Rejected for the current ticket. No demonstrated requirement needs shared
-runtime residency, cache eviction, explicit unload, stable handles, stale-handle
-protection, runtime dependency graphs, asynchronous loading, streaming or
-CPU/GPU dual residency.
+Rejected for the current architecture.
 
-### D. No new subsystem
+No demonstrated requirement currently needs shared generic residency, cache eviction, explicit unload,
+stable generic handles, stale-handle protection, runtime dependency graphs, asynchronous loading,
+streaming or CPU/GPU dual residency.
 
-Accepted. Existing stores and the Governor cover current requirements while
-preserving independent ownership and bounded execution.
+### D. Preserve the four-layer model
+
+Accepted.
+
+Existing specialized stores plus the Task/Queue/Governor architecture satisfy current requirements
+without inventing another subsystem.
 
 ## Decision
 
-**NO_NEW_SUBSYSTEM**
+```text
+NO_NEW_SUBSYSTEM
+```
 
-The repository must not add a generic Resource System, generic artifact
-resolver or Governor asset integration as part of the current architecture.
+Do not add a generic Resource System, generic artifact resolver or persistent-asset ownership layer
+inside the Resource Governor merely because multiple subsystems consume files or memory.
 
-## Rationale
+This is an architectural boundary, not a prohibition on all future additive capabilities.
 
-- Existing persistent identities are sufficient.
-- Existing stores already validate their own artifacts.
-- Existing task and backend ownership is explicit and bounded.
-- Existing Governor policy remains sufficient for RAM/CPU/GPU/I/O admission.
-- No new persistent syntax or replacement ABI is required; later observation
-  and scratch APIs are additive C17 surfaces.
-- Gate B v16 remains untouched.
-- The decision is reversible if a concrete future requirement appears.
-
-## Current scope
-
-- Preserve the four-layer separation above.
-- Continue using specialized readers and stores.
-- Keep the Governor policy-oriented and independent of asset identity.
-- Treat Gate A, Gate B and Gate C as closed at their verified boundaries.
-- Correct factual documentation drift without turning future designs into
-  current contracts.
+A concrete future requirement may justify revisiting the decision through an explicitly scoped human
+ticket.
 
 ## Explicit non-goals
 
-- Resource manager or generic loader.
-- Global runtime cache or eviction policy.
-- Generic resource handles or stale-handle protection.
-- Generic dependency graph or cycle management.
-- Streaming or asynchronous resource loading.
-- CPU/GPU dual-residency manager.
-- Project DB schema changes justified only as a generic Resource System. The
-  separately authorized historical v18–v22 and current v23 migrations remain
-  governed by their own persistence contracts.
-- Bundle redesign.
-- Governor integration with persistent asset identity.
-- BA, new orchestration, Task Runtime redesign or renderer redesign.
+This decision does not authorize:
+
+- a generic loader;
+- a global runtime cache;
+- cache eviction policy;
+- generic resource handles;
+- stale-handle infrastructure;
+- generic dependency graphs;
+- cycle management;
+- asynchronous generic loading;
+- generic streaming;
+- CPU/GPU dual-residency management;
+- multi-GPU scheduling;
+- a new Project DB schema version;
+- bundle redesign;
+- Governor ownership of persistent Asset identity;
+- a second scheduler;
+- a second Queue;
+- a second Governor;
+- a second persistence subsystem.
 
 ## Syntax impact
 
-No new syntax is required. Do not introduce `resource://`, `asset://`, UUID,
-manifest or handle syntax without a later concrete requirement and decision.
-Existing SQLite, Feature File, Match File, checkpoint and specialized path
-contracts remain authoritative in their own domains.
+No new syntax is required.
 
-## Persistence impact
+Do not introduce `resource://`, `asset://`, generic UUID handle syntax, generic resource manifests or
+similar syntax without a later concrete requirement and explicit design decision.
 
-The historical Project DB v16 migration remains unchanged. Gate F added only
-the v17 typed-task payload described above; the current v23 overlay is additive
-and creates no backfill. Existing scientific IDs, hashes, metadata and relative
-paths are not renamed, generalized or duplicated by resource management.
+Existing SQLite, Feature File, Match File, checkpoint, calibration and specialized path contracts
+remain authoritative in their own domains.
 
-## Memory / resource impact
+## Memory impact
 
-The original no-new-subsystem decision added none beyond existing task
-estimates and Governor reservations. The later SSD controller owns only its
-fixed-capacity snapshot/lease/action state; the Governor retains one bounded
-copy and fixed wrapper-operation/lease accounting. Neither adds a cache, Task
-residency or RAM budget. Existing bounded readers and backend buffers remain
-responsible for their own memory.
+The no-new-subsystem decision itself adds no runtime cache or generic residency budget.
+
+The SSD integration retains only its reviewed bounded controller state plus the Governor's bounded
+registered copy and process-local lease accounting.
+
+Existing readers, Tasks and backend implementations remain responsible for their own explicitly
+bounded memory.
 
 ## Concurrency impact
 
-The original decision introduced no shared mutable state, worker, callback,
-lock or lifetime protocol. The SSD controller owns its own mutex and fixed
-lease table. The TUI binding owns at most one joinable bounded-operation thread
-and the Governor owns its registry mutex state. Governor never holds its mutex
-while entering the controller, and the controller never calls Governor. At
-shutdown Queue/Task leases end before unregister, then controller ends before
-Governor; no background polling loop or second scheduler exists.
+The decision creates no second worker topology.
+
+The reviewed SSD controller owns its own bounded synchronization.
+
+The TUI/controller integration may own the explicitly reviewed joinable operation thread, but this is
+not a scheduler.
+
+The Governor must not hold its registry mutex while entering the controller, and the controller must
+not call back into the Governor.
+
+Application shutdown order remains ownership-sensitive:
+
+```text
+destroy/join Queue and release Task leases
+-> checked unregister of SSD binding
+-> destroy SSD controller
+-> destroy Resource Governor
+```
 
 ## Security impact
 
-No new path-resolution surface is introduced. Existing specialized validation,
-content hashing, bounded input handling and protected file opening remain in
-force. No generic external-file access is added.
+No generic path-resolution surface is introduced.
+
+Existing specialized validation, content hashing, bounded parsing and protected file-opening behavior
+remain authoritative.
+
+The resource boundary does not authorize arbitrary external-file access or shell execution.
 
 ## Testing requirements for future changes
 
-Future store changes must retain their own path, hash, size, format,
-publication and corruption tests. Future Governor changes must retain admission,
-reservation, pressure, bounds and concurrency tests.
+A future specialized store change must retain tests for the relevant:
 
-Only if a future requirement creates a shared resolver or runtime residency
-layer should new syntax, ownership, lifetime, cache, dependency and resource
-scale tests be designed.
+- path contract;
+- SHA-256/content identity;
+- size bound;
+- format validation;
+- publication ordering;
+- corruption rejection;
+- retry/restart semantics.
+
+A future Governor change must retain tests for the relevant:
+
+- admission;
+- reservation;
+- release;
+- pressure;
+- recovery;
+- bounds;
+- topology/affinity;
+- UMA accounting;
+- backend eligibility;
+- concurrency.
+
+Resource-sensitive tests and benchmarks follow the same canonical policy as production:
+
+```text
+preserve interactive host reserve
+-> use maximum safe useful remaining resources
+```
+
+Artificial test serialization requires a concrete reason such as shared mutable fixtures, sanitizer
+behavior, deterministic dependency, memory/I/O pressure or exclusive GPU state.
 
 ## Future extension triggers
 
-A resolver may be reconsidered only after concrete cross-store duplication in:
+An internal artifact resolver may be reconsidered only after concrete cross-store duplication appears
+in areas such as:
 
 - path resolution;
 - canonicalization;
-- artifact validation; or
+- artifact validation;
 - moved-project handling.
 
-A generic Resource System may be reconsidered only after multiple real
-requirements emerge among:
+A generic Resource System may be reconsidered only after multiple real requirements emerge among:
 
 - shared runtime residency;
 - cache and eviction;
@@ -469,26 +747,41 @@ requirements emerge among:
 - runtime dependency graphs;
 - asynchronous loading;
 - streaming;
-- CPU/GPU dual residency; or
+- CPU/GPU dual residency;
 - invalidation.
 
-These are trigger conditions, not current requirements or roadmap commitments.
+These are trigger conditions, not current roadmap commitments.
 
-## Gate B freeze proof
+## Historical Gate B freeze proof
 
-- No schema or persistence code is changed by this decision.
-- No new persistent identity is introduced.
-- No Track Model or Track Builder contract is changed.
-- No bundle or migration is introduced.
-- Governor ownership remains limited to execution budgets.
-- At the Gate B freeze, Project DB remained v16; the later additive Gate F v17
-  migration does not alter that historical proof.
+The original Gate B freeze proof remains historical and valid:
+
+- the Gate B decision itself changed no schema or persistence code;
+- it introduced no new persistent identity;
+- it changed no Track Model or Track Builder contract;
+- it introduced no generic bundle or resource migration;
+- Governor ownership remained limited to execution budgets;
+- Project DB was v16 at that historical checkpoint.
+
+Later additive migrations v17 through v25 do not rewrite that historical proof.
 
 Therefore Gate B remains **PASS / FROZEN**.
 
-## Open questions
+## Current authority summary
 
-None block the current decision. Future viewer, dense reconstruction, artifact
-reconciliation or GPU residency requirements must be evaluated independently
-when their implementations become concrete. Future questions do not create
-current implementation requirements.
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
+CURRENT_PRODUCTION_TASK_KINDS=16
+RESOURCE_UTILIZATION_POLICY=MAXIMUM_SAFE_USEFUL_THROUGHPUT
+SERIALISM_REQUIRES_PROOF=CANONICAL
+GOVERNOR_RESOURCE_AUTHORITY=SOLE_PRODUCTION_AUTHORITY
+GENERIC_RESOURCE_SYSTEM=ABSENT
+NO_NEW_SUBSYSTEM=ACCEPTED
+```
+
+The four-layer separation remains the current architecture.
+
+Resource-policy details are owned by `resource_governor.md`; reference-host measurements are owned by
+`../performance/target_hardware.md`; engineering obligations are owned by `../../AGENTS.md`.
+
+This document defines the boundary between those concerns and scientific/persistent identity.
