@@ -397,9 +397,9 @@ bool run_impl(Lardon3DTask *t, void *p) {
             c->db, lardon3d_task_id(t), group_id, materialized_capture_id,
             group_id) != LARDON3D_PROJECT_DB_OK)
       return lardon3d_task_fail(t, "Rétention de Capture impossible.");
-    /* Limite de reprise acceptée: entre le retour de S3-E et cette rétention
-     * durable, une identité de capture ne peut pas être déduite à posteriori
-     * depuis les chemins/métadonnées/ID d'image.
+    /* Accepted recovery boundary: between S3-E returning and this durable
+     * retention, Capture identity cannot be reconstructed retroactively from
+     * paths, metadata, or image IDs.
      */
 #ifdef LARDON3D_ACQUISITION_CAMPAIGN_TASK_TESTING
     const char *after_retention =

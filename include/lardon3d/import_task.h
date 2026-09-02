@@ -42,7 +42,7 @@ bool lardon3d_project_enqueue_image_import(Lardon3DAppState *state, uint64_t sca
 bool lardon3d_image_import_reconstruct(const Lardon3DTaskDurableSnapshot *snapshot, void *context,
                                        Lardon3DTaskKindBinding *binding);
 
-/* Compatibilité TUI : handle léger sur une tâche de la queue, sans thread. */
+/* TUI compatibility: lightweight handle over a Queue Task, with no private thread. */
 Lardon3DImportTask *lardon3d_import_task_create(void);
 bool lardon3d_import_task_start(Lardon3DImportTask *task, Lardon3DAppState *state,
                                 const char *source_directory);

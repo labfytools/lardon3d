@@ -42,10 +42,6 @@ typedef struct {
  * serialized worker. capacity bounds pending Tasks, not terminal history; the
  * Governor retains resource-admission ownership and must outlive the Queue.
  *
- * File d'exécution bornée, à ordre d'attente FIFO avec sélection adaptative du
- * premier travail admissible, et un seul worker: ownership d'ordonnancement et
- * de backpressure seulement. L'admission des demandes reste au Governneur.
- *
  * CONTRACT: after a successful add, the Queue owns Task and its userdata. Once
  * the Task is terminal and its finished callback has returned, the Queue keeps
  * only a snapshot and promptly destroys the real Task outside the Queue lock.
@@ -73,8 +69,8 @@ Lardon3DTaskQueue *lardon3d_task_queue_create(
  * starts after destruction safe. NULL is accepted. Never call destroy
  * synchronously from a Task finished callback running on this Queue. */
 void lardon3d_task_queue_destroy(Lardon3DTaskQueue *queue);
-/* La file devient propriétaire de task uniquement en cas de succès.
- * Bloquante : attend une place libre si la file est pleine. A zero Task ID is
+/* The Queue takes ownership of task only on success.
+ * Blocking: waits for a free slot when the Queue is full. A zero Task ID is
  * assigned from a nonzero monotonic sequence and is never generated twice
  * during this Queue lifetime, including after terminal-history eviction or
  * removal. Once UINT64_MAX has been generated (or consumed by a restored
@@ -85,8 +81,8 @@ bool lardon3d_task_queue_add(
     Lardon3DTask *task,
     uint64_t *task_id
 );
-/* Non-bloquante : retourne false si la file est pleine ou en arrêt.
-   La file devient propriétaire de task uniquement en cas de succès. */
+/* Non-blocking: returns false if the Queue is full or stopping.
+   The Queue takes ownership of task only on success. */
 bool lardon3d_task_queue_try_add(
     Lardon3DTaskQueue *queue,
     Lardon3DTask *task,

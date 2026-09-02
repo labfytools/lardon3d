@@ -9,9 +9,9 @@
 #include <lardon3d/visual_index.h>
 
 typedef struct {
-  uint32_t generated_count;    // paires nouvellement créées
-  uint32_t skipped_count;      // paires déjà existantes (idempotence)
-  uint32_t queried_count;      // candidats retournés par le Visual Index
+  uint32_t generated_count;    // newly created pairs
+  uint32_t skipped_count;      // already existing pairs (idempotent reuse)
+  uint32_t queried_count;      // candidates returned by the Visual Index
 } Lardon3DCandidatePairGenStats;
 
 Lardon3DVisualIndexResult lardon3d_candidate_pair_generate(

@@ -612,8 +612,8 @@ lardon3d_task_destroy(Lardon3DTask *task)
                 "Annulation demandée.");
             (void)pthread_cond_broadcast(&task->condition);
         } else {
-            /* Une tâche locale jamais soumise peut être abandonnée sans
-             * publier une fausse annulation métier. */
+            /* A local Task that was never submitted may be abandoned without
+             * publishing a false business-level cancellation. */
             finish_locked(task, TASK_CANCELLED, "Tâche abandonnée.");
             task->finished_notified = true;
         }
@@ -885,7 +885,7 @@ lardon3d_task_checkpoint(Lardon3DTask *task)
 }
 
 enum {
-    /* Attente bornée entre deux tentatives d'admission : 50 ms. */
+    /* Bounded wait between admission attempts: 50 ms. */
     LARDON3D_SEQUENCE_ADMISSION_WAIT_NS = 50000000ULL,
 };
 
@@ -931,7 +931,7 @@ lardon3d_task_sequence_break(
         (void)lardon3d_resource_governor_release(governor, previous);
     }
     for (;;) {
-        /* Vérifier pause et annulation avant chaque tentative d'admission. */
+        /* Check pause and cancellation before every admission attempt. */
         (void)pthread_mutex_lock(&task->mutex);
         while (task->pause_requested && !task->cancel_requested) {
             task->state = TASK_PAUSED;
@@ -962,7 +962,7 @@ lardon3d_task_sequence_break(
             &next
         );
         if (!admitted) {
-            /* Erreur interne : échec d'allocation ou d'instantané. */
+            /* Internal error: allocation or resource-snapshot failure. */
             if (next) {
                 (void)lardon3d_resource_governor_release(governor, next);
             }
@@ -1079,8 +1079,8 @@ lardon3d_task_sequence_break(
             (void)pthread_mutex_unlock(&task->mutex);
             return false;
         case LARDON3D_RESOURCE_WAIT:
-            /* Indisponibilité temporaire : ne pas échouer, attendre un
-             * changement de ressources puis retenter l'admission. */
+            /* Temporary unavailability: do not fail the Task; wait for a
+             * resource change and retry admission. */
             if (next) {
                 (void)lardon3d_resource_governor_release(governor, next);
             }
@@ -1091,7 +1091,7 @@ lardon3d_task_sequence_break(
             );
             break;
         default:
-            /* Décision inconnue : erreur interne, ne jamais boucler. */
+            /* Unknown decision: internal error; never loop on it. */
             if (next) {
                 (void)lardon3d_resource_governor_release(governor, next);
             }

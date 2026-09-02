@@ -325,11 +325,11 @@ const char *lardon3d_resource_decision_name(
 Lardon3DResourcePressure lardon3d_resource_governor_pressure(
     Lardon3DResourceGovernor *governor
 );
-/* Enregistre les métriques d'un lot terminé pour l'adaptation dynamique
- * de la taille des lots futurs. batch_size est le nombre d'éléments dont le
- * traitement a été validé dans ce lot. peak_memory_bytes == 0 signifie que
- * la mesure est inconnue et n'alimente jamais l'adaptation mémoire. Le buffer
- * est borné (8 entrées par classe de tâche). Thread-safe. */
+/* Records metrics from one completed batch for dynamic adaptation of future
+ * batch sizes. batch_size is the number of items whose processing was validated
+ * in this batch. peak_memory_bytes == 0 means the measurement is unknown and
+ * never feeds memory adaptation. The buffer is bounded to 8 entries per Task
+ * class. Thread-safe. */
 bool lardon3d_resource_governor_record_batch(
     Lardon3DResourceGovernor *governor,
     Lardon3DResourceTaskClass task_class,

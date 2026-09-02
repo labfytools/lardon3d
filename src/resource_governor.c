@@ -1797,8 +1797,8 @@ record_batch_locked(
     metrics[head] = (Lardon3DBatchMetrics) {
         .batch_size = batch_size,
         .duration_ns = duration_ns,
-        /* Zéro est le marqueur persistant « mesure inconnue ». La boucle
-         * d'adaptation ignore explicitement ces échantillons. */
+        /* Zero is the sentinel for an unknown measurement. The adaptation
+         * loop explicitly ignores these samples. */
         .peak_memory_bytes = peak_memory_bytes,
     };
     head = (head + 1) % LARDON3D_BATCH_METRICS_CAPACITY;
@@ -1836,9 +1836,9 @@ adaptive_batch_limit(
             % LARDON3D_BATCH_METRICS_CAPACITY;
         const Lardon3DBatchMetrics *m = &governor->batch_metrics[class_index][idx];
         if (m->batch_size > 0 && m->peak_memory_bytes > 0) {
-            /* Coût par élément le plus défavorable observé : une moyenne
-             * sous-estimerait le pic et laisserait un lot dépasser son
-             * budget. La stabilité de l'hôte prime sur le débit. */
+            /* Use the worst observed per-item cost: an average would
+             * underestimate the peak and could let a batch exceed its
+             * budget. Host safety takes precedence over throughput. */
             uint64_t per_item = m->peak_memory_bytes / m->batch_size
                 + (m->peak_memory_bytes % m->batch_size != 0);
             if (per_item > measured_per_item) {
@@ -1853,9 +1853,9 @@ adaptive_batch_limit(
     if (measured_per_item <= memory_bytes_per_item) {
         return static_batch;
     }
-    /* Éviter l'overflow de la multiplication : si static_batch est trop
-     * grand pour être multiplié sans débordement, on retourne 1 (le lot le
-     * plus conservateur possible) plutôt que de saturer à SIZE_MAX. */
+    /* Avoid multiplication overflow: if static_batch is too large to
+     * multiply safely, return 1 (the most conservative batch) instead of
+     * saturating to SIZE_MAX. */
     if (static_batch > UINT64_MAX / memory_bytes_per_item) {
         return 1;
     }
@@ -3222,10 +3222,10 @@ evaluate_locked(
             )
         );
     }
-    /* Le lot maximal visé est corrigé par les métriques mesurées : c'est la
-     * nouvelle cible du contrat, pas une réduction faute de ressources. La
-     * correction ne descend jamais sous minimum_batch_size pour éviter un
-     * WAIT persistant. */
+    /* Measured metrics adjust the target maximum batch: this becomes the
+     * contract target, not a reduction caused by current resource shortage.
+     * The adjustment never falls below minimum_batch_size, avoiding a
+     * persistent WAIT. */
     size_t adapted_maximum = adaptive_batch_limit(
         governor,
         estimate->task_class,
@@ -3626,7 +3626,7 @@ lardon3d_resource_governor_record_batch(
         return false;
     }
     if (batch_size == 0) {
-        /* No-op réussi : aucune métrique, aucun réveil inutile. */
+        /* Successful no-op: no metrics and no unnecessary wake-up. */
         return true;
     }
     (void)pthread_mutex_lock(&governor->mutex);

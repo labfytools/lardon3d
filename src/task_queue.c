@@ -290,9 +290,9 @@ unlink_pending(Lardon3DTaskQueue *queue, TaskNode *previous, TaskNode *node)
     }
     node->next_pending = NULL;
     --queue->pending_count;
-    /* Chaque retrait libère une place. Plusieurs producteurs peuvent dormir
-     * pendant que le worker retire plusieurs tâches avant qu'ils reprennent
-     * le mutex ; chacun de ces retraits doit donc produire un réveil. */
+    /* Every removal frees one slot. Multiple producers may be asleep while
+     * the worker removes several Tasks before they reacquire the mutex, so
+     * every removal must signal one waiter. */
     (void)pthread_cond_signal(&queue->not_full);
 }
 
@@ -361,12 +361,11 @@ destroy_retired(TaskNode *retired)
     }
 }
 
-/* Parcourt la file d'attente dans son ordre FIFO et sélectionne la première
- * tâche admissible; une attente de ressources peut donc laisser passer une
- * tâche antérieure sans lui faire perdre sa place dans la file.
- * Les tâches terminales ou refusées sont retirées de la file d'attente.
- * Une tâche en attente de ressources reste en file et sera réévaluée.
- * Retourne NULL si aucune tâche ne peut démarrer immédiatement. */
+/* Scans pending Tasks in FIFO order and selects the first admissible one.
+ * A resource WAIT may therefore let a later Task run without removing the
+ * waiting Task from its position. Terminal or rejected Tasks are removed.
+ * A resource-waiting Task remains queued for later re-evaluation.
+ * Returns NULL when no Task can start immediately. */
 static TaskNode *
 select_admissible(
     Lardon3DTaskQueue *queue,
@@ -541,10 +540,10 @@ queue_worker(void *context)
                 );
             }
         }
-        /* La tâche peut avoir libéré et re-réservé via sequence_break pendant
-         * son callback. Dans ce cas la réservation d'origine est déjà libérée
-         * et cet appel est sans effet ; la réservation courante de la tâche a
-         * été libérée par lardon3d_task_start. */
+        /* The Task may have released and re-reserved through sequence_break
+         * during its callback. In that case the original reservation is
+         * already released and this call is a no-op; lardon3d_task_start
+         * released the Task's current reservation. */
         if (reservation) {
             (void)lardon3d_resource_governor_release(
                 queue->governor,
@@ -763,7 +762,7 @@ lardon3d_task_queue_destroy(Lardon3DTaskQueue *queue)
     free(queue);
 }
 
-/* Appelée sous le mutex queue. Ne signale pas not_empty sur échec. */
+/* Called with the Queue mutex held. Does not signal not_empty on failure. */
 static bool
 enqueue_locked(
     Lardon3DTaskQueue *queue,

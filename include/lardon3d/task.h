@@ -108,8 +108,8 @@ Lardon3DTask *lardon3d_task_create_typed(
     Lardon3DTaskUserdataDestroy userdata_destroy
 );
 void lardon3d_task_destroy(Lardon3DTask *task);
-/* Exécute le callback dans le thread appelant. Le callback est invoqué hors
- * mutex de tâche; le contract d'exécution et l'état appartiennent à la tâche.
+/* Executes the callback on the calling thread. The callback runs outside
+ * the Task mutex; the execution contract and state remain owned by the Task.
  */
 bool lardon3d_task_start(
     Lardon3DTask *task,
@@ -169,16 +169,16 @@ Lardon3DTask *lardon3d_task_restore_typed(
     void *userdata,
     Lardon3DTaskUserdataDestroy userdata_destroy
 );
-/* Une restauration typée réussie transfère userdata/userdata_destroy à la
- * tâche. En cas d'échec, l'appelant en reste propriétaire. */
+/* A successful typed restore transfers userdata/userdata_destroy ownership
+ * to the Task. On failure, the caller retains ownership. */
 bool lardon3d_task_kind_is_valid(const char *task_kind);
 bool lardon3d_task_kind(
     const Lardon3DTask *task,
     char task_kind[LARDON3D_TASK_KIND_CAPACITY],
     uint32_t *task_kind_version
 );
-/* Appelé au plus une fois, hors mutex de tâche et après libération de la
- * réservation terminale. Le userdata de tâche reste vivant jusqu'au retour. */
+/* Invoked at most once, outside the Task mutex and after the terminal
+ * reservation is released. Task userdata remains alive until the callback returns. */
 bool lardon3d_task_set_finished_callback(
     Lardon3DTask *task,
     Lardon3DTaskFinishedCallback callback,
@@ -190,21 +190,20 @@ bool lardon3d_task_resource_estimate(
     const Lardon3DTask *task,
     Lardon3DResourceEstimate *estimate
 );
-/* L'exécution ne reçoit pas de politique d'admission : c'est au gouverneur de
- * confirmer la réservation avant l'exécution.
+/* Execution does not receive admission policy: the Governor must confirm
+ * the reservation before execution.
  */
 bool lardon3d_task_execution_contract(
     const Lardon3DTask *task,
     Lardon3DTaskExecutionContract *contract
 );
-/* Libère la réservation courante, en obtient une nouvelle auprès du gouverneur
- * et met à jour le contrat. À appeler uniquement depuis le callback en cours
- * d'exécution. Une réponse WAIT du gouverneur est une indisponibilité
- * temporaire : la fonction attend un changement de ressources puis retente
- * l'admission sans échouer la tâche. Les bornes de lot se poursuivent après
- * cette nouvelle admission. Retourne false si la tâche est annulée
- * (TASK_CANCELLED), si le gouverneur répond REJECT ou en cas d'erreur interne
- * (TASK_FAILED). */
+/* Releases the current reservation, obtains a new one from the Governor,
+ * and updates the execution contract. Call only from the currently executing
+ * callback. A Governor WAIT is temporary unavailability: this function waits
+ * for a resource change and retries admission without failing the Task. Batch
+ * bounds continue under the new admission. Returns false if the Task is
+ * cancelled (TASK_CANCELLED), the Governor returns REJECT, or an internal
+ * error fails the Task (TASK_FAILED). */
 bool lardon3d_task_sequence_break(
     Lardon3DTask *task,
     Lardon3DResourceGovernor *governor,
