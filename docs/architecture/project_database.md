@@ -1,1296 +1,1087 @@
-# Base de données projet Lardon3D
+# Lardon3D Project Database
 
-## Contexte optique générique — Project DB v23
+## Authority and current state
 
-**IMPLEMENTED / VALIDATED / REVIEWED.** La tête courante v23 est une migration
-transactionnelle additive au-dessus de la fondation scientifique et de
-persistance v22 **PASS / FROZEN**. Elle crée neuf tables sans aucune ligne :
-`camera_body_profiles`, `camera_body_aliases`, `lens_profiles`,
-`lens_profile_aliases`, `optical_configurations`,
-`acquisition_campaign_group_optics`, `capture_optical_configurations`,
-`optical_calibration_profiles` et `capture_calibration_selections`.
+This document defines the persistent Project Database architecture and the durable contracts that
+span schema versions. Historical sections remain authoritative for the version they describe, but
+present-tense statements in this document use the current schema head.
 
-Boîtier, objectif, configuration optique et calibration sont quatre identités
-distinctes. Une configuration lie exactement un boîtier, un objectif et une
-focale entière optionnelle en micromètres. Un objectif manuel sans EXIF est un
-cas normal : son profil explicite ne requiert aucun alias metadata. Le fixture
-Meike vérifie ce chemin générique ; il ne crée aucun branchement produit par
-marque ou modèle. Les alias make/model, lorsqu'ils existent, sont des couples
-exacts `BINARY`, jamais une recherche fuzzy, une correction de casse ou une
-preuve d'identité implicite.
-
-Une campagne peut assigner une configuration différente à chaque groupe avant
-sa matérialisation. Lorsque S3-E retourne le Capture, la même transaction
-retient la correspondance groupe→Capture, copie l'affectation optique avec sa
-provenance campagne et avance le curseur. Un rollback tardif annule les trois
-mutations. Une affectation explicite post-import est possible seulement pour un
-Capture encore non affecté ; l'absence reste `NOT_FOUND` et ne crée pas de
-profil « inconnu ».
-
-Un profil de calibration référence une calibration sparse immuable existante et
-une seule configuration exacte. Il ne copie, recalcule, interpole ni fabrique
-aucun coefficient. Les listes compatibles filtrent uniquement cette identité
-exacte. La sélection sur Capture est toujours explicite et exige la même
-configuration des deux côtés ; plusieurs profils compatibles restent ambigus
-jusqu'à cette sélection. Retry exact et naturel converge, un conflit durable
-valide retourne `CONSTRAINT`, tandis qu'une ligne ou dépendance persistée
-malformée retourne `CORRUPT` avant comparaison avec une demande alternative.
-
-La migration v22→v23 n'inspecte ni EXIF, chemin, basename, SHA-256, dimensions,
-nom d'appareil, ni calibration historique. Elle ne réinterprète donc aucune
-Capture, image ou calibration v16–v22. Le marqueur `schema_version=23` reste le
-point de publication durable ; un échec de création ou un update de marqueur
-qui ne cible pas exactement la v22 rollbacke toute la migration.
-
-### Overlay v24 — développement RAW sélectionné borné
-
-Le schéma courant v24 ajoute uniquement
-`raw_development_batch_tasks(task_id, selected_execution_id)`. `task_id`
-référence l'état générique Task et `selected_execution_id` est unique ; la
-ligne ne copie aucun Capture, asset, image, chemin, groupe ni curseur. La
-migration v23→v24 est transactionnelle et DDL-only : elle ne crée aucune
-association historique et son marqueur v24 est son point de publication.
-
-`raw.develop.batch/1` recharge le curseur de `selected_executions` à chaque
-fenêtre admise. Après jointure de tous les participants, seul le callback Task
-propriétaire appelle `record_selected_representation` en ordre croissant. Le
-commit item+curseur précède toujours la progression/checkpoint générique ; un
-crash peut donc laisser celle-ci en retard, jamais en avance. Une reprise repart
-du curseur sélectionné durable sans deviner l'identité d'une sortie RAW déjà
-publiée. Le schéma et le chemin historique `raw.develop/1` restent valides.
-
-### Overlay v25 — extraction Feature sélectionnée bornée
-
-**IMPLEMENTED / VALIDATION IN PROGRESS.** La migration transactionnelle
-v24→v25 ajoute uniquement `feature_extract_batch_tasks`. Sa ligne lie un Task
-`features.extract.batch/1` à une exécution sélectionnée immutable, retient le
-préfixe monotone `next_item_index` et copie le domaine ORB exact
-kind/version/paramètres/fingerprint. La migration est DDL-only : elle ne crée
-aucune ligne, ne convertit aucune Task `features.extract/1` historique et
-n'infère aucun image ID ou Feature Set.
-
-Les participants CPU préparent des images sélectionnées indépendantes sans
-accès SQLite. Après leur jointure, le propriétaire publie les Feature Sets dans
-l'ordre sélectionné, avance un item seulement si le Feature Set READY exact est
-durable, puis checkpoint la progression générique. Un crash peut donc laisser
-le checkpoint générique ou le curseur Feature en retard sur un Feature Set
-immutable déjà publié ; la reprise revalide ce résultat exact et converge sans
-deviner une identité. Les formats, keypoints, descripteurs ORB U8×32,
-fingerprint et Feature Store FROZEN restent inchangés.
-
-La validation a migré via l'API production des copies des projets réels S21 et
-A6000 : version 23, `integrity_check` et clés étrangères propres, comptes et
-lignes scientifiques inchangés, neuf tables optiques vides et SHA-256 des
-sources inchangés. La suite normale 57/57, dix tests focalisés, cinq cibles
-ASan/UBSan, les contrôles de headers C17/C++ et la revue indépendante après
-correction sont acquis. Cette preuve porte sur l'overlay et sa compatibilité ;
-elle ne crée aucune calibration scientifique pour ces campagnes.
-
-### Workflow TUI optique courant
-
-La TUI v23 appelle exclusivement les API publiques bornées ; elle ne modifie
-pas directement SQLite. Elle peut inspecter un Capture, rechercher des alias
-metadata par égalité exacte, parcourir par pages de 16 les boîtiers, objectifs,
-configurations et calibrations compatibles, créer un nouveau profil ou une
-nouvelle configuration immuable, puis affecter explicitement un groupe de
-campagne ou un Capture lorsque le contrat ci-dessus l'autorise. Un objectif
-Meike manuel sans électronique ni alias reste une donnée normale, et un lookup
-sans correspondance demeure unresolved.
-
-La sélection d'une calibration reste explicite et exige l'exacte configuration
-du Capture. Une absence, plusieurs candidats, une incompatibilité, `BUSY`, I/O
-ou corruption sont présentés comme tels ; la TUI ne fabrique jamais de profil
-« inconnu », de compatibilité ou d'identité. `R` permet un retry explicite après
-un échec de bind/chargement. `[` revient à la première page et `]` charge la
-suivante ; chaque libellé annonce seulement le compte de la page courante et
-l'existence exacte d'une suite. Le modèle TUI emprunte la DB jusqu'à unbind et
-doit être détaché avant la fermeture projet, conformément au
-[runtime](runtime.md#observatoire-tui-actuel).
-
-## Snapshot d'exécution scientifique sélectionnée — Project DB v22
-
-**PASS / FROZEN.** La migration additive v21→v22 ajoute
-`capture_source_assets`, `selected_executions`, `selected_execution_items` et
-`raw_development_tasks`.
-`capture_source_assets` retient l'association explicitement publiée par S3-E entre un Capture,
-son asset `SOURCE` et le kind JPEG ou RAW déjà validé. La publication de l'association SOURCE et
-du kind est transactionnelle et un retry exact converge ; un autre kind est un conflit. Les
-Captures provenant d'une v21 restent honnêtement sans mapping : la migration ne déduit rien de
-leur chemin, nom, SHA-256, ordre d'attache ou image logique.
-
-Un snapshot ordonné retient explicitement
-la relation `quality_task_id/group_id → campaign_task_id/group_id → capture_id`; les deux espaces
-de `group_id` restent indépendants et une égalité numérique n'est jamais une identité. Les deux
-tâches doivent viser le même ScanSet, le triage doit être terminé et chaque résultat retenu doit
-être effectivement inclus au moment du snapshot. Le snapshot et son ordre deviennent ensuite
-immuables.
-
-Chaque item reçoit un `image_id` seulement par association explicite déjà durable dans
-`capture_images`. La publication de cette représentation et l'avancement du curseur sont
-transactionnels ; un retry exact converge, tandis qu'un autre `image_id` est un conflit. Après le
-dernier item, un `calibration_scope_id` existant ne peut être attaché que si chaque image retenue
-est membre de ce scope. Le stage terminal `READY` représente donc exactement l'intersection
-`QUALITY_SELECTED ∩ REPRESENTATION_READY ∩ CALIBRATION_ASSIGNED` sans inférer Capture depuis
-Asset, SHA-256, chemin, basename, Task ID, groupe ou `image_id`.
-
-Le snapshot fixe aussi la source de représentation de chaque item. Un item A6000 retient
-explicitement l'`asset_id` RAW déjà associé comme `SOURCE` au Capture ; un item dont la
-représentation est une image source retient explicitement l'absence d'identité RAW. Cette paire
-discriminant/Asset est immuable et fait partie de l'exact retry du snapshot. La création vérifie
-l'association RAW dans `capture_source_assets` ; aucune exécution ultérieure ne retrouve le RAW depuis
-un chemin, SHA-256, basename, index source ou numéro de groupe.
-
-Le curseur est borné à 4096 items et ne réserve aucune ressource d'exécution. Cette fondation v22
-n'ajoute ni scheduler, worker pool, sidecar, cache décodé, ni nouvelle Queue/Governor. Le
-coordinateur scientifique et le développement RAW borné restent des étapes d'exécution séparées.
-L'importeur Calibration Bootstrap v1 valide un artifact borné contre ce snapshot, crée/réutilise les
-calibrations et le scope immuables, puis emploie cette attache v22 ; il n'étend pas le schéma et n'exécute
-ni solveur ni développement RAW.
-
-Le développeur RAW expose aussi une entrée bornée par `source_asset_id` explicite. Elle exige la
-relation RAW du Capture, charge le chemin géré depuis cet ID, vérifie les octets contre le SHA-256
-persisté, puis réutilise sans modification RAW Policy v1. Le chemin géré n'est donc qu'un accès aux
-octets après résolution d'identité explicite, jamais une méthode de découverte d'identité.
-
-La v22 amendée ajoute `raw_development_tasks` pour l'exécution durable mince de cette entrée. Une
-ligne retient exactement `task_id`, `capture_id`, `source_asset_id`, une phase monotone
-`PENDING → PUBLISHED` et, en phase publiée, l'`image_id` dérivée explicitement associée au même
-Capture. Le couple Capture/SOURCE RAW est immuable, doit exister dans `capture_source_assets` avec
-le kind RAW, et n'est jamais retrouvé depuis un chemin, digest, nom, image ou ID opérationnel.
-Snapshot Task générique, référence du checkpoint et ligne typée sont écrits dans une même
-transaction. L'asset et l'image immuables peuvent précéder ce checkpoint si le processus meurt :
-le retry exact S3-B1 converge par contenu puis publie la phase et l'`image_id` sans deviner
-l'identité. Les lectures de reprise rejettent types SQLite, phases, nullabilité et relations
-Capture/RAW/image incohérents comme corruption durable.
-
-La suite normale v22 a passé 53/53, les contrôles syntaxiques C17 et `git diff
---check` ont passé, la validation ciblée ASan/UBSan a passé et l'audit final a
-conclu au PASS. La suite ASan/UBSan complète reste qualifiée par le comportement
-LSan du pilote tiers RADV ; elle ne constitue pas un PASS complet du dépôt.
-Cette évidence gèle la frontière de persistance v22 décrite ici, sans changement
-de contrat ni de schéma. Les campagnes réelles peuvent donc conserver un snapshot
-et leurs représentations sans être scientifiquement exécutables : une absence de
-calibration connue reste `CALIBRATION_UNAVAILABLE`, non une raison d'inférer ou
-de créer une identité, une calibration ou une migration supplémentaire.
-
-## Photo Quality Triage — Project DB v21
-
-**PASS / FROZEN.** La migration additive v20→v21 ajoute
-`photo_quality_triage_tasks` et `photo_quality_triage_results` sans modifier les tables
-v20 ni les identités Capture/Asset/image. Chaque résultat conserve le `group_id` canonique
-du plan (1..N). `next_group_id` utilise la même identité à base 1 : valeur initiale 1,
-avancement de `k` vers `k+1` après publication du résultat `k`, et valeur terminale `N+1`.
-Un éventuel `group_index = group_id - 1` reste strictement privé à l'exécuteur. Résultat et
-curseur sont atomiques avant le checkpoint Task générique. Les lectures valident les types,
-signes, bornes et relations dans les valeurs SQLite 64 bits avant toute conversion vers
-les champs C étroits et exigent le dispatch générique exact
-`photo_quality.triage/v1`. Recommandation mesurée et override humain restent
-distincts.
-
-## Capture / Asset Provenance v1 — Project DB v19 (historique FROZEN)
-
-**PASS / FROZEN.** La migration transactionnelle v18→v19
-ajoute seulement une fondation de catalogue : `captures`, `capture_images`,
-`capture_assets`, `capture_selections` et `asset_derivations`. Un `Capture`
-appartient à un seul ScanSet ; il n'est ni un `image_id` ni une nouvelle identité
-scientifique. Les assets source et dérivés peuvent lui être associés sans créer
-d'image logique. Une sélection courante optionnelle référence exactement une
-image déjà associée au Capture et ne modifie jamais cette image, son asset, ni
-les résultats scientifiques existants.
-
-L'association explicite d'un asset `SOURCE` existant à un Capture existant est
-idempotente : si cette même association existe déjà avec le rôle `SOURCE`, elle
-est acceptée sans nouvelle ligne ni migration de schéma. Elle ne crée aucune
-image logique, ne modifie aucune sélection et ne réalise aucun appariement
-automatique.
-
-### S3-E — Orchestration d'ingestion multi-source v1
-
-**PASS / FROZEN.** S3-E reçoit un ScanSet explicite et au
-plus 64 chemins source explicitement fournis par l'appelant ; il ne parcourt
-jamais un répertoire. Chaque fichier est d'abord publié comme asset immuable
-géré, puis son évidence S3-D est extraite depuis ces octets publiés. Le
-regroupement automatique ne crée un Capture commun que pour une relation
-`SAME_ACQUISITION_STRONG` unique et mutuelle. Les noms, chemins, SHA-256,
-timestamps, modèle, évidence faible, contradictions et ambiguïtés ne sont
-jamais une identité de Capture et ne donnent jamais lieu à un rapprochement
-automatique. Deux assets identiques dans une requête sont rejetés de façon
-déterministe.
-
-L'appelant peut aussi déclarer explicitement des groupes. Ce résultat porte la
-basis `CALLER_EXPLICIT`, distincte de la basis scientifique `STRONG`; cette
-provenance est un résultat de l'opération v1, non une nouvelle colonne durable.
-Les siblings sont persistés exclusivement avec S3-C. Pour la représentation,
-un JPEG caméra reste un asset `SOURCE` et devient une image logique du même
-Capture via la publication source-image transactionnelle; un RAW reste
-`SOURCE` et son image est produite seulement par S3-B1, avec son PNG `DERIVED`.
-RAW et JPEG d'une même acquisition ne créent pas deux Captures. La sélection ne
-change que si l'appelant demande explicitement la représentation sélectionnée.
-
-Project DB reste strictement v19, sans migration ni fusion de Captures. Après
-qu'un Capture ID a été renvoyé ou durablement retenu, une reprise doit fournir
-explicitement `resume_capture_id`: publication, attaches S3-C et représentation
-convergent alors sans réhoming ni doublon logique. Une panne avant que
-l'appelant ait retenu cet ID ne peut pas offrir une reprise whole-request
-exactly-once en v19; S3-E n'infère volontairement jamais une identité de
-reprise depuis SHA, chemin, basename, timestamp, métadonnées ou `image_id`.
-
-`asset_derivations` est volontairement limité à un parent asset et un enfant
-asset, avec kind/version et fingerprint canonique de 32 octets. Il n'est pas un
-DAG générique et ne réalise aucun développement RAW ni extraction vidéo. La
-migration crée, par `image_id` croissant, un Capture legacy indépendant pour
-chaque image v18, relie son asset comme source et rend cette même image
-sélectionnée. Aucun nom de fichier, EXIF ou rapprochement de siblings n'est
-interprété ; les IDs et la sémantique v18 restent inchangés.
-
-### Couche finale bornée de découverte et de planification de campagne
-
-**PASS / FROZEN.** Cette couche reçoit de 1 à 64 racines
-absolues, lexicalement normalisées et explicitement fournies par l'appelant.
-Elle ne parcourt pas récursivement : chaque racine et chacune de ses entrées
-immédiates régulières est inspectée sans suivre de lien symbolique. Seuls les
-fichiers `.arw`, `.jpg` et `.jpeg`, sans sensibilité à la casse, sont des
-sources supportées. La découverte, les groupes et les propositions sont chacun
-bornés à 4096 éléments et les chemins sont ordonnés de façon déterministe par
-`strcmp`.
-
-La planification appelle S3-D uniquement sur les métadonnées : elle ne lit pas
-de pixels, n'écrit pas en base et ne matérialise aucun asset ou Capture. Une
-association automatique est admise seulement pour une relation forte unique et
-mutuelle. Un stem de nom de fichier identique est une proposition, jamais une
-identité. Les contradictions, ambiguïtés, comparaisons insuffisantes et cas non
-résolus restent des singletons. L'appelant peut confirmer explicitement de 1 à
-64 groupes ; chacun est alors étiqueté `CALLER_EXPLICIT`. Une confirmation
-réelle explicite reste nécessaire avant tout regroupement.
-
-Le plan et sa progression appartiennent à l'appelant. Ils retiennent les
-`capture_id` et `resume_capture_id` retournés afin de reprendre par Capture ;
-aucune garantie whole-request exactly-once n'existe avant cette rétention.
-L'exécution applique le lot par groupe, avec exactement un appel S3-E par
-groupe figé. S3-E demeure l'unique matérialisateur et les représentations
-restent explicites. Project DB demeure v19 : cette couche ne détourne ni Task,
-ni checkpoint, et n'ajoute aucun sous-système de persistance.
-
-La validation structurelle JPEG accepte un fichier ordinaire jusqu'à son EOI,
-puis uniquement du remplissage nul. Si et seulement si l'image primaire porte
-un segment APP2 commençant par `MPF\0`, ce remplissage peut être suivi d'une
-nouvelle image JPEG structurellement validée par le même parseur ; jusqu'à huit
-images au total sont admises, en mémoire constante. Chaque intervalle et la fin
-physique restent limités à des octets nuls. Une image ajoutée sans preuve MPF,
-un trailer non nul, une image secondaire tronquée ou sans EOI et un neuvième
-élément sont corrompus. Les marqueurs ressemblants dans les payloads APP/EXIF
-et les données entropy-coded ne deviennent jamais des frontières de conteneur.
-
-Observation autorisée sur le jeu A6000 réel, en dry run : 953 ARW, 953 JPEG,
-soit 1906 sources ; métadonnées OK pour les 1906 sources, indisponibles 0 et
-autres erreurs 0. Les fichiers JPEG Sony sont des conteneurs MPF valides avec
-une image secondaire et un remplissage final nul. Leurs métadonnées ne portent
-pas d'`ImageUniqueID` utilisable en commun avec les RAW : fortes 0,
-propositions candidates par stem 953, ambiguïtés 0, contradictions 0,
-comparaisons insuffisantes 1814512, non résolus 1906 et groupes automatiques
-planifiés 1906. L'inversion de l'ordre des racines a réussi la vérification de
-déterminisme. Ce dry run n'a effectué ni écriture DB, ni matérialisation, ni
-développement RAW ; il ne prouve donc pas un compte physique de 1906
-acquisitions et n'affaiblit pas S3-D. Les 953 propositions nécessitent une
-confirmation explicite `CALLER_EXPLICIT` avant tout regroupement. Le fixture
-d'intégration couvre l'adaptateur, sa matérialisation et son retry ; aucune
-mutation de campagne complète n'a été effectuée.
-
-Restent hors S3 : TUI, scrub d'assets et réconciliation des orphelins, ainsi
-que vidéo et reconstruction aval lorsqu'ils sont applicables. L'identité
-opérationnelle persistante de campagne, son exécution par Task/Queue/Governor
-et sa reprise sont définies par Project DB v20 ci-dessous ; ils ne modifient pas
-le contrat S3.
-
-## Exécution durable de campagne d'acquisition — Project DB v20
-
-**PASS / FROZEN.** La migration transactionnelle additive
-v19→v20 ajoute `acquisition_campaign_tasks` et
-`acquisition_campaign_captures`, sans modifier les tables ni les identités
-Capture/Asset de v19. Une base v19 est donc ouverte par la chaîne séquentielle
-existante ; un échec de migration laisse la v19 complète et utilisable.
-
-`acquisition_campaign_tasks` est lié une-à-une à la tâche générique par
-`task_id`, qui est l'identité opérationnelle de la campagne. La création et les
-checkpoints enregistrent dans une même transaction le snapshot Task générique,
-sa référence de checkpoint et le record typé de campagne. Ce record conserve le
-`scanset_id`, le curseur historique `next_group_id`, le nombre de groupes et
-une requête immuable. Pour cette table de campagne, malgré son nom historique,
-le curseur est une position de prochain travail à base zéro dans `0..N` : sa
-valeur est le nombre de groupes one-based déjà retenus. Un upsert ne peut le
-faire progresser que si ScanSet, nombre de groupes et octets de requête sont
-identiques.
-
-La requête v1 est un codec borné, déterministe, à magic/version explicites et
-champs entiers de largeur fixe little-endian. Elle sérialise les sources, leurs
-métadonnées déjà validées, les confirmations et les options d'ingestion ; elle
-est refusée si ses bornes, longueurs, énumérations, indices, plan ou octets de
-fin ne sont pas valides. Les confirmations sont ainsi persistées explicitement
-et ne confèrent que la basis `CALLER_EXPLICIT`, jamais une inférence `STRONG`.
-
-Les groupes de plan gardent leurs IDs un-based. Pour chaque groupe achevé,
-`acquisition_campaign_captures` conserve la relation unique
-`(task_id, group_id) → capture_id` et interdit qu'un même Capture corresponde à
-deux groupes de la même tâche. L'état durable valide contient exactement le
-préfixe de mappings `1..next_group_id`, aucun trou et aucun mapping en avance ;
-chaque Capture existe dans le ScanSet de la campagne. Après le retour de S3-E,
-une transaction unique retient la relation du groupe courant et avance ce
-curseur, avant la progression générique et le checkpoint. La reprise peut alors
-transmettre le `capture_id` retenu à S3-E, sans réhoming ni inférence depuis un
-chemin, SHA, basename, timestamp, métadonnée ou `image_id`. Une storage class,
-borne, dispatch kind/version ou relation durable malformée retourne `CORRUPT`
-avant toute mutation et ne fournit jamais un faux `resume_capture_id`.
-
-Chaque séquence matérialise un seul groupe. Pause et annulation restent
-coopératives aux frontières de groupe ; après un groupe non terminal,
-`sequence_break` rend la réservation et force la réadmission par la Queue et le
-Resource Governor existants. À l'ouverture, la registry existante reconstruit
-la tâche depuis le Task ID et la requête durable, puis le mécanisme de reprise
-existant la soumet à la Queue. Cette tranche n'introduit aucun runtime, queue,
-governor, scheduler ou stockage parallèle et reste générique pour les sources
-mono-source comme multi-source.
-
-La fenêtre résiduelle acceptée est strictement l'arrêt après le retour de S3-E
-et avant la transaction de rétention du Capture. Aucun `capture_id` n'est alors
-inféré et aucune garantie exactly-once ne lui est attribuée ; les autres
-frontières s'appuient sur la relation retenue et le curseur transactionnel.
-
-### S3-D — Acquisition Pairing Evidence v1
-
-**PASS / FROZEN.** S3-D extrait, depuis des
-assets source immuables, un ensemble fixe et borné de métadonnées d'évidence
-d'appariement. Pour les RAW, l'extraction est metadata-only avec LibRaw ; pour
-les JPEG, elle utilise libexif. Cette évidence n'est pas une identité
-scientifique et ne modifie ni les identités existantes ni leur sémantique.
-
-La politique d'appariement v1 est la suivante : entre deux assets distincts,
-seul un `ImageUniqueID` caméra connu, non vide et exactement partagé est une
-évidence forte, éligible à une association automatique dans une future
-intégration. Les timestamp, make/model, numéro de série du boîtier concordant,
-dimensions/exposition et basename sont faibles ou corroboratifs : ils ne
-constituent jamais une identité. Des `ImageUniqueID` connus contradictoires, ou
-des numéros de série de boîtier connus contradictoires, signifient que les
-assets sont différents. Une valeur absente n'est pas un conflit. Une ambiguïté
-n'est jamais résolue par l'ordre des assets.
-
-S3-D n'effectue aucune écriture en base ni changement de schéma : Project DB
-reste v19 et S3-C attach demeure l'unique primitive de persistance. S3-E
-réutilise cette évidence sans la redéfinir.
-
-## Phase H — décision Project DB v18
-
-**PASS / FROZEN.** La migration transactionnelle v17→v18
-ajoute `derivation_identity` au parent `sparse_reconstructions`, puis crée
-`incremental_reconstructions` et `incremental_reconstruction_tasks`.
-Les lignes Gate F ont `derivation_identity IS NULL` et gardent exactement leur
-`parameter_fingerprint`. Leur tuple candidat historique est imposé par un
-index UNIQUE partiel. Les lignes dérivées H stockent le vrai fingerprint H
-dans `parameter_fingerprint` et l'identité scientifique H canonique dans
-`derivation_identity`, elle-même protégée par un second index UNIQUE partiel.
-La reconstruction transactionnelle du parent et de ses tables filles conserve
-les IDs, lignes, clés étrangères et cascades v17 sans réécrire les données
-scientifiques.
-La première table associe atomiquement un snapshot Sparse SfM complet à son
-prédécesseur, au Track Set d'extension, au scope de calibration, au kind/version
-H, au fingerprint H et à son identité scientifique SHA-256 unique. La seconde
-conserve le payload immuable de la tâche durable H. Aucun état de réservation,
-snapshot de ressources, géométrie partielle, sous-ensemble d'observations,
-remappage de composante ou graphe de filiation n'est persisté. Un redémarrage
-recalcule depuis les entrées immuables.
-
-La publication H réutilise sans le relâcher le validateur structurel historique
-du snapshot complet. Géométrie et métadonnées H sont insérées dans une même
-transaction ; une erreur tardive de métadonnées annule aussi toute la nouvelle
-géométrie. Les lignes Gate F v16/v17 restent inchangées et leurs recherches
-exactes conservent leur sémantique.
-
-## Gate F — décision historique Project DB v17
-
-**PASS / FROZEN.** La migration historique v15→v16 et le
-modèle de reconstruction Sparse SfM v16 restent inchangés. Gate F a fait
-avancer la tête de schéma alors courante à v17 par une migration strictement
-additive contenant une seule table métier de tâche : `sparse_sfm_tasks`.
-
-Cette table suit le modèle des autres Task Kinds durables : une ligne par
-`task_id`, clé primaire et clé étrangère vers `tasks(task_id)` avec suppression
-en cascade. Elle conserve les références immuables `track_set_id` et
-`calibration_scope_id`, `sfm_kind`, `sfm_version`, puis les 27 valeurs effectives
-de `Lardon3DSparseIncrementalParameters`, y compris les sous-structures
-relative-pose, PnP et refinement. Les entiers suivent leurs largeurs C
-canoniques ; les flottants finis sont stockés en SQLite `REAL` et doivent
-retrouver exactement leurs bits binary64 après fermeture/réouverture.
-
-Le Task Kind et sa version restent dans `tasks` et versionnent l'interprétation
-du payload. Le fingerprint F0 est dérivé au rechargement et n'est pas dupliqué.
-Le checkpoint générique v1 n'est pas modifié. L'écriture du résumé générique et
-du payload typé est une transaction unique ; une ligne absente, incompatible
-ou invalide interdit la reconstruction runtime sans appliquer de valeurs par
-défaut.
-
-Les quatre champs `uint64_t` de domaine complet — limites observations/Tracks
-et seeds déterministes relative-pose/PnP — sont chacun un BLOB de huit octets
-little-endian avec `CHECK(length(...)=8)`. L'API exige la classe BLOB et la
-longueur exacte au rechargement. Les métriques globales persistées restent les
-diagnostics Gate F calculés sur toutes les observations retenues du résultat
-Gate E final ; elles ne participent pas à l'identité.
-
-La publication Gate F est la projection durable du résultat scientifique
-complet : une composante est persistée si et seulement si ses nombres d'images
-enregistrées et de landmarks sont tous deux strictement positifs. Une
-composante dont le BA est rejeté mais dont la géométrie Gate D reste valide est
-persistée exactement ; seule une composante de graphe non reconstruite est
-omise. Les comptes et métriques globaux décrivent exclusivement la géométrie
-effectivement persistée. Aucun placeholder ni table diagnostique n'est ajouté.
-
-> Version publiée par cette section historique : **v20** ; la tête actuelle
-> est v23 comme défini en ouverture du document. La migration transactionnelle
-> additive v19→v20 ajoute les records de campagne durable décrits ci-dessus
-> sans modifier les
-> tables ni identités Capture/Asset de v19. La migration transactionnelle
-> v18→v19 ajoute la fondation Capture/Asset Provenance sans modifier les tables
-> scientifiques historiques. La migration transactionnelle v17→v18 ajoute le
-> discriminateur générique nullable et les deux tables H minimales décrites
-> ci-dessus. La migration v16→v17 ajoute le
-> payload durable typé `sparse_sfm_tasks`. La migration transactionnelle v15→v16 ajoute
-> le modèle persistant Sparse SfM (calibrations, scopes et reconstructions).
-> La migration transactionnelle v14→v15 ajoute
-> `track_builder_tasks` pour le payload durable explicite du Task Builder. La
-> migration transactionnelle v13→v14 ajoute
-> les tables `track_sets`, `tracks` et `track_observations` pour le Track
-> Model v1. La migration v12→v13 ajoute uniquement `geometric_verifier_tasks`
-> pour la tâche durable. La migration v11→v12 ajoute le modèle immutable
-> `geometric_verification_results`. La migration v10→v11 ajoute
-> `matcher_tasks` pour la tâche Matcher durable. La version v10 publiée ajoute
-> uniquement `match_results` pour le Match Result Model. La migration v8→v9
-> ajoute la table `candidate_pair_generate_tasks` pour la tâche durable
-> Candidate Pair. La migration v7→v8 ajoute la table `candidate_pairs` pour
-> le sous-système Candidate Pair.
-> Les migrations historiques restent ordonnées et les faults d'injection
-> vérifient le rollback.
-
-## Vision
-
-La base de données projet stocke les métadonnées de reconstruction et les relations entre les
-entités. Elle est conçue pour être légère, persistante et permettre la reprise après interruption.
-
-## Sparse SfM Gate B (v16)
-
-Le modèle Sparse SfM v1 est publié atomiquement dans les tables
-`sparse_calibrations`, `sparse_calibration_scopes`,
-`sparse_calibration_scope_images`, `sparse_reconstructions`,
-`sparse_reconstruction_components`, `sparse_registered_images`,
-`sparse_landmarks` et `sparse_landmark_observations`. Les résultats sont
-immuables et les collections volumineuses sont lues par curseurs bornés ; la
-base ne charge jamais une reconstruction complète par défaut. Les coordonnées
-restent dans le repère arbitraire de chaque composant et les références
-d'observation ne dupliquent ni descripteurs ni coordonnées de pixels.
-Les relations de suppression disposent d'index enfants dédiés, notamment sur
-`calibration_id` dans les membres de scope et `calibration_scope_id` dans les
-reconstructions, afin que les vérifications FK restent indexées.
-
-## Structure conceptuelle
-
-### Entités principales
-
-#### Project
-- Identifiant unique
-- Nom et description
-- Date de création
-- Configuration
-- Chemins des répertoires
-
-#### Scan Set
-- Identifiant unique
-- Nom de l'acquisition
-- Date
-- Provenance
-- État de traitement
-
-#### Image
-- Identifiant unique
-- Chemin du fichier
-- Métadonnées EXIF
-- État de traitement
-- Appartenance aux scan sets
-
-#### Feature Set
-- Identifiant unique
-- Type de descripteur
-- Paramètres
-- Chemin des données
-
-#### Visual Signature
-- Identifiant unique
-- Type d'index
-- Paramètres
-- Chemin des données
-
-#### Candidate Pair
-- Identifiant unique (`candidate_pair_id`)
-- Image source (`image_id_a`)
-- Image cible (`image_id_b`)
-- Ordre canonique : `image_id_a < image_id_b`
-- Self-pairs interdits
-- Unicité persistante
-- Date de création (`created_at`)
-
-#### Verified Pair
-- Identifiant unique
-- Candidate pair source
-- Statut (validée, rejetée)
-- Métriques
-
-#### Track Set (v14)
-- Identifiant unique (`track_set_id`)
-- Identité de reuse (builder, verifier, scope)
-- Nombre de tracks et GVR
-- Immutable après publication
-
-#### Track (v14)
-- Identifiant unique (`track_id`)
-- Track Set parent
-- Nombre d'observations (≥ 2)
-- Pas de coordonnées 3D en v1
-
-#### Track Observation (v14)
-- Identifiant composite `(track_set_id, feature_set_id, feature_index)`
-- Track parent
-- Position dans le track (`position_in_track`)
-- Feature Set et index de feature
-
-#### Camera
-- Identifiant unique
-- Modèle
-- Paramètres intrinsèques
-- Distorsion
-
-#### Pose
-- Identifiant unique
-- Camera
-- Translation
-- Rotation
-- Qualité
-
-#### Point3D
-- Identifiant unique
-- Position
-- Couleur
-- Qualité
-- Observations
-
-#### Reconstruction Layer
-- Identifiant unique
-- Type (sparse, dense, mesh, etc.)
-- Provenance
-- Transformations
-- Qualité
-- Chemin des données
-
-#### Measurement
-- Identifiant unique
-- Type
-- Valeur
-- Incertitude
-- Cible géométrique
-
-#### Document Source
-- Identifiant unique
-- Type (plan, croquis, etc.)
-- Chemin
-- Métadonnées
-
-#### Geometric Constraint
-- Identifiant unique
-- Type
-- Paramètres
-- Sources
-- Poids
-
-#### Artifact
-- Identifiant unique
-- Type
-- État (temporaire, publié)
-- Chemin
-- Métadonnées
-
-#### Checkpoint
-- Identifiant unique
-- État du pipeline
-- Métadonnées
-- Date
-
-## Relations
-
-- Project → Scan Set (1:N)
-- Scan Set → Image logique (1:N)
-- Image logique → Image Asset (N:1)
-- Image → Feature Set (1:N)
-- Image → Visual Signature (1:N)
-- Candidate Pair → Image (2)
-- Verified Pair → Candidate Pair (1)
-- Track Set → Track (1:N, CASCADE)
-- Track → Track Observation (1:N, CASCADE)
-- Track Observation → Feature Set (N:1)
-- Camera → Pose (1:N)
-- Pose → Reconstruction Layer (N:M)
-- Reconstruction Layer → Artifact (1:N)
-- Measurement → Point3D (N:1)
-- Document Source → Geometric Constraint (N:M)
-- Geometric Constraint → Point3D (N:M)
-- Artifact → Checkpoint (N:1)
-
-## Invariants
-
-- Chaque entité a un identifiant unique stable
-- Les relations sont explicitement définies
-- Les artefacts partiels ne sont jamais considérés comme valides
-- La reprise commence à la dernière frontière connue
-
-## Frontière avec les checkpoints de tâche
-
-Le modèle durable v1 et son codec fichier sont implémentés indépendamment du
-stockage. La base réutilise les mêmes règles de normalisation et de
-validation ; elle ne stockera jamais les objets pthread, callbacks, pointeurs,
-contrats ou réservations. Le fichier par tâche est une fondation, pas une
-Project Database miniature.
-
-La stratégie v1 retient un résumé logique interrogable dans SQLite et une
-référence vers le fichier checkpoint. Le fichier checkpoint validé reste la
-source complète pour `lardon3d_task_restore()` ; la DB seule ne reconstruit
-jamais une tâche. La cohérence compare uniquement les champs que la DB stocke
-dans `tasks` : `task_id`, nom, états saved/recovery, progression et compteur de
-séquences. Elle ne prétend pas comparer l'estimation complète ni les timestamps
-du snapshot. Une divergence de ce résumé ou un fichier invalide interdit la
-reprise.
-
-## Schéma v7 implémenté
-
-- `metadata(key PRIMARY KEY, value)` contient `schema_version=7` et
-  `next_task_id`, prochain ID durable allouable.
-- `project(singleton=1, stable_id UNIQUE, name, created_at, updated_at)` décrit
-  l'unique identité logique de la DB.
-- `tasks(task_id PRIMARY KEY, name, task_kind, task_kind_version, saved_state, recovery_state, progress,
-  sequence_count, started_sec/nsec, finished_sec/nsec, updated_at)` contient le
-  résumé durable. Les IDs v1 sont compris entre 1 et `INT64_MAX`.
-- `checkpoints(task_id PRIMARY KEY REFERENCES tasks ON DELETE CASCADE, path,
-  format_version, durability, updated_at)` représente `DURABLE` ou
-  `PUBLISHED_NOT_DURABLE`.
-- `artifacts(artifact_id PRIMARY KEY, kind, path, state, size_bytes,
-  producer_task_id REFERENCES tasks, created_at, updated_at)` inventorie des
-  fichiers externes. Les états v1 sont `STAGED` et `READY`.
-- `scansets(scanset_id INTEGER PRIMARY KEY AUTOINCREMENT, name, created_at, updated_at)`
-  représente les acquisitions logiques, y compris les ScanSets vides.
-- `image_assets(asset_id INTEGER PRIMARY KEY AUTOINCREMENT, sha256 UNIQUE, path UNIQUE,
-  size_bytes, state, created_at)` décrit les contenus physiques `READY`.
-- `images(image_id INTEGER PRIMARY KEY AUTOINCREMENT, scanset_id REFERENCES scansets,
-  asset_id REFERENCES image_assets, original_name, source_path,
-  producer_task_id REFERENCES tasks, imported_at)` décrit les images logiques.
-  `UNIQUE(scanset_id,asset_id)` interdit les doublons de contenu dans une même
-  acquisition sans fusionner deux acquisitions différentes.
-- `image_import_tasks(task_id PRIMARY KEY REFERENCES tasks ON DELETE CASCADE,
-  source_path, scanset_id REFERENCES scansets)` conserve les paramètres
-  métier immuables de `import.images`.
-- `feature_assets` conserve SHA-256, chemin content-addressed, taille,
-  durabilité et date de publication des Feature Files hors SQLite.
-- `feature_sets` relie image, extracteur/version/fingerprint, hash source,
-  type/dimension descriptor, compte, producteur et métriques légères
-  `occupied_cells`, `total_cells`, `coverage_ratio` et densité/Mpx.
-- `feature_extract_tasks` conserve les paramètres immuables ORB historiques.
-- `sift_extract_tasks` conserve kind `sift`/`rootsift`, version 1, limites,
-  paramètres OpenCV binary64, grille et fingerprint exacts.
-- `feature_support_sets` identifie une consolidation immutable, son image, ses
-  deux Feature Sets sources, son rayon et son fingerprint.
-- `feature_support_groups` conserve position représentative, distance locale
-  et `support_count`; `feature_support_members` normalise chaque référence
-  `feature_set_id + feature_index`, sans descriptor SQLite.
-- `visual_indexes` conserve l'identité `AUTOINCREMENT`, la configuration
-  Feature homogène, les paramètres LSH et leurs fingerprints.
-- `visual_index_segments` conserve identité `AUTOINCREMENT`, génération,
-  SHA-256, chemin, taille, compteurs, durabilité et tâche productrice.
-- `visual_index_memberships` a pour clé primaire
-  `(visual_index_id,feature_set_id)` et référence le segment immutable.
-- `visual_index_update_tasks` conserve `visual_index_id` et le curseur durable.
-
-Les indexes v6 sont
-`visual_index_segments(visual_index_id,generation)` et
-`visual_index_memberships(visual_index_segment_id,feature_set_id)`. Les FKs
-ciblent `visual_indexes`, `feature_sets`, `visual_index_segments` et `tasks`.
-Les postings ne sont jamais stockés dans SQLite.
-
-`AUTOINCREMENT` couvre les identités publiées catalogue, Feature Store et
-Visual Index. Il
-empêche la réutilisation d'un ID issu d'une transaction validée même si sa ligne
-maximale est supprimée plus tard. Le coût de `sqlite_sequence` est accepté pour
-garantir qu'un futur Feature Store, match ou track ne voie jamais son identifiant
-désigner un autre objet. Les IDs de transactions rollbackées ne sont pas
-considérés publiés et peuvent être réutilisés.
-
-Les indexes ajoutés en v4 sont `images(scanset_id,image_id)`, pagination réelle,
-et `images(producer_task_id,image_id)`, recherche par tâche productrice. Le
-SHA-256 et le chemin asset sont déjà indexés par leurs contraintes `UNIQUE`.
-
-## Schéma v8 implémenté
-
-La migration v7→v8 ajoute la table `candidate_pairs` :
-
-```sql
-CREATE TABLE candidate_pairs(
-    candidate_pair_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(candidate_pair_id>0),
-    image_id_a INTEGER NOT NULL REFERENCES images(image_id),
-    image_id_b INTEGER NOT NULL REFERENCES images(image_id),
-    created_at INTEGER NOT NULL CHECK(created_at>=0),
-    CHECK(image_id_a < image_id_b),
-    UNIQUE(image_id_a, image_id_b)
-);
-CREATE INDEX candidate_pairs_image_a_idx ON candidate_pairs(image_id_a);
-CREATE INDEX candidate_pairs_image_b_idx ON candidate_pairs(image_id_b);
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
 ```
 
-**Invariants** :
-- `image_id_a < image_id_b` : ordre canonique garanti par CHECK SQL
-- Self-pairs interdits (impliqué par `image_id_a < image_id_b`)
-- `UNIQUE(image_id_a, image_id_b)` : unicité persistante
-- `created_at` : timestamp Unix secondes, non-négatif
+The current head is additive:
 
-**API** :
-- `lardon3d_project_db_create_candidate_pair()` — INSERT avec canonicalisation
-- `lardon3d_project_db_load_candidate_pair()` — SELECT par ID
-- `lardon3d_project_db_find_candidate_pair()` — SELECT par (image_a, image_b)
-- `lardon3d_project_db_list_candidate_pairs()` — SELECT paginé ORDER BY id
-
-**Notes** :
-- Le score et la source ne sont pas persistés dans cette version
-- La génération est déterministe pour mêmes entrées/configuration
-- L'idempotence est garantie par find avant create
-
-## Schéma v9 implémenté
-
-La migration v8→v9 ajoute la table `candidate_pair_generate_tasks` :
-
-```sql
-CREATE TABLE candidate_pair_generate_tasks(
-    task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
-    visual_index_id INTEGER NOT NULL CHECK(visual_index_id>0),
-    after_feature_set_id INTEGER NOT NULL CHECK(after_feature_set_id>=0),
-    top_k INTEGER NOT NULL CHECK(top_k>0 AND top_k<=256),
-    minimum_evidence_count INTEGER NOT NULL CHECK(minimum_evidence_count>=0
-        AND minimum_evidence_count<=1024),
-    scanset_filter INTEGER NOT NULL CHECK(scanset_filter>=0 AND scanset_filter<=2),
-    exclude_same_asset INTEGER NOT NULL CHECK(exclude_same_asset IN (0,1))
-);
+```text
+v22  Selected scientific execution foundation                 PASS / FROZEN
+v23  Generic optical-context overlay                          IMPLEMENTED / VALIDATED / REVIEWED
+v24  raw.develop.batch/1 persistence                          IMPLEMENTED / VALIDATED
+v25  features.extract.batch/1 persistence                     IMPLEMENTED / VALIDATED
 ```
 
-**Invariants** :
-- `task_id` référence `tasks(task_id)` avec ON DELETE CASCADE
-- `after_feature_set_id` : curseur de reprise, non-négatif
-- `top_k` : borné entre 1 et 256 (LARDON3D_VISUAL_INDEX_TOP_K_MAX)
-- `minimum_evidence_count` : borné entre 0 et 1024
-- `scanset_filter` : 0=ANY, 1=CURRENT, 2=OTHER
+Project DB v25 preserves the scientific and persistence meaning of every earlier retained row. No
+migration from v22 through v25 backfills scientific identity, infers camera/lens identity, invents
+calibration, rewrites Capture identity, or changes historical Task payload interpretation.
 
-**API** :
-- `lardon3d_project_db_record_candidate_pair_generate_task()` — UPSERT checkpoint
-- `lardon3d_project_db_load_candidate_pair_generate_task()` — SELECT par task_id
+The current real A6000 pre-SfM proof completed the v24 RAW-batch and v25 Feature-batch paths before
+Geometric Verification and Track publication. Therefore v24 and v25 are not validation-in-progress
+states.
 
-## Schéma v10 publié
+## Database role
 
-La migration v9→v10 ajoute uniquement `match_results` pour le Match Result
-Model. Son schéma et ses invariants restent inchangés.
+Project DB stores reconstruction metadata, durable execution payloads, immutable scientific
+identities, provenance relationships and restart state. Large binary scientific artifacts remain
+outside SQLite and are referenced through validated identities and paths.
 
-## Schéma v11 implémenté
+The database is designed to remain:
 
-La migration v10→v11 ajoute `matcher_tasks`. Cette table conserve uniquement
-la configuration immutable et le curseur durable :
+- persistent;
+- bounded in memory access;
+- restartable;
+- transactionally consistent;
+- explicit about identity;
+- independent from runtime-only resource reservations;
+- compatible with sequential additive migration.
 
-```sql
-CREATE TABLE matcher_tasks(
-    task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
-    after_candidate_pair_id INTEGER NOT NULL
-        CHECK(after_candidate_pair_id>=0),
-    feature_extractor_kind TEXT NOT NULL,
-    feature_extractor_version INTEGER NOT NULL
-        CHECK(feature_extractor_version>0),
-    feature_parameter_fingerprint BLOB NOT NULL
-        CHECK(length(feature_parameter_fingerprint)=32),
-    matcher_kind INTEGER NOT NULL CHECK(matcher_kind BETWEEN 0 AND 2),
-    ratio_threshold REAL NOT NULL
-        CHECK(ratio_threshold>0.0 AND ratio_threshold<1.0)
-);
+Project DB never persists pthread objects, callbacks, pointers, active Resource Reservations, worker
+objects, ncurses state or other process-local runtime state.
+
+## Identity invariants
+
+The following identities are distinct unless a specific FROZEN contract explicitly relates them:
+
+```text
+Capture != file
+Capture != Asset
+Capture != image_id
+Capture != SHA-256
+Capture != path
+Capture != basename
+Capture != Task ID
+Capture != campaign group ID
+Task ID != scientific acquisition identity
+campaign group ID != Capture identity
 ```
 
-Le curseur est le dernier `candidate_pair_id` checkpointé. Il n'implique ni
-continuité des IDs ni liste persistée de Candidate Pairs. La configuration ne
-peut pas changer lors d'un UPSERT ; seul le curseur avance.
+Specific meanings:
 
-## Schéma v13 implémenté
+- SHA-256 identifies immutable asset bytes.
+- `capture_id` identifies one physical acquisition representation in Project DB.
+- `image_id` identifies one scientific image representation.
+- `task_id` identifies durable execution work.
+- campaign `group_id` identifies one stable operational group inside a campaign request.
+- optical body, lens, optical configuration and calibration are separate identities.
 
-La migration v12→v13 ajoute uniquement `geometric_verifier_tasks`. Elle porte
-le curseur `after_match_result_id`, les sept paramètres scientifiques v1 et le
-fingerprint de contrôle. L'UPSERT autorise seulement le curseur à évoluer ; la
-configuration reste immuable. La migration est transactionnelle, son rollback
-forcé conserve une vraie v12 sans la table et un retry termine en v13.
+No migration may recover or manufacture Capture identity from path, digest, basename, timestamp,
+metadata, `image_id`, Task ID or campaign group ID unless an explicit future contract defines that
+identity.
 
-Le Match Result ci-dessous reste le contrat publié de v10 :
+## Current additive head
 
-```sql
-CREATE TABLE match_results(
-    match_result_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(match_result_id>0),
-    candidate_pair_id INTEGER NOT NULL
-        REFERENCES candidate_pairs(candidate_pair_id),
-    feature_set_id_a INTEGER NOT NULL
-        REFERENCES feature_sets(feature_set_id),
-    feature_set_id_b INTEGER NOT NULL
-        REFERENCES feature_sets(feature_set_id),
-    matcher_kind TEXT NOT NULL
-        CHECK(length(matcher_kind)>0 AND length(matcher_kind)<=64),
-    matcher_version INTEGER NOT NULL CHECK(matcher_version>0),
-    parameter_fingerprint BLOB NOT NULL
-        CHECK(length(parameter_fingerprint)=32),
-    result_status INTEGER NOT NULL CHECK(result_status IN (0,1)),
-    match_count INTEGER NOT NULL CHECK(match_count>=0 AND match_count<=8192),
-    match_asset_sha256 BLOB CHECK(match_asset_sha256 IS NULL OR
-        length(match_asset_sha256)=32),
-    match_asset_path TEXT CHECK(match_asset_path IS NULL OR
-        length(match_asset_path)>0),
-    match_asset_size_bytes INTEGER CHECK(match_asset_size_bytes IS NULL OR
-        match_asset_size_bytes>0),
-    created_at INTEGER NOT NULL CHECK(created_at>=0),
-    CHECK((result_status=0 AND match_count=0 AND match_asset_sha256 IS NULL
-           AND match_asset_path IS NULL AND match_asset_size_bytes IS NULL)
-       OR (result_status=1 AND match_count>0 AND match_asset_sha256 IS NOT NULL
-           AND match_asset_path IS NOT NULL AND match_asset_size_bytes IS NOT NULL)),
-    UNIQUE(candidate_pair_id, feature_set_id_a, feature_set_id_b,
-           matcher_kind, matcher_version, parameter_fingerprint)
-);
-CREATE INDEX match_results_candidate_pair_idx
-    ON match_results(candidate_pair_id);
-CREATE INDEX match_results_feature_set_a_idx
-    ON match_results(feature_set_id_a);
-CREATE INDEX match_results_feature_set_b_idx
-    ON match_results(feature_set_id_b);
+### Project DB v23 - generic optical-context overlay
+
+**IMPLEMENTED / VALIDATED / REVIEWED.**
+
+The v22 -> v23 migration is transactional and additive. It creates nine empty tables:
+
+- `camera_body_profiles`;
+- `camera_body_aliases`;
+- `lens_profiles`;
+- `lens_profile_aliases`;
+- `optical_configurations`;
+- `acquisition_campaign_group_optics`;
+- `capture_optical_configurations`;
+- `optical_calibration_profiles`;
+- `capture_calibration_selections`.
+
+A camera body, lens, optical configuration and calibration are four separate identities. An optical
+configuration binds exactly one body, one lens and an optional integer focal length in micrometers.
+
+A manual lens without EXIF is a normal supported case. Its explicit lens profile requires no metadata
+alias. The Meike fixture proves this generic path and does not introduce any brand- or model-specific
+product branch.
+
+Metadata aliases, when present, are exact `BINARY` make/model pairs. They are never fuzzy lookup,
+case folding, spelling correction or implicit identity evidence.
+
+A campaign may assign a different optical configuration to each group before materialization. When
+S3-E returns a Capture, the same transaction retains the group-to-Capture mapping, copies the
+campaign optical assignment and advances the campaign cursor. A late rollback reverts all three
+mutations.
+
+An explicit post-import optical assignment is allowed only for a Capture that is still unassigned.
+Absence remains `NOT_FOUND`; no synthetic "unknown" profile is created.
+
+A calibration profile references one existing immutable sparse calibration and exactly one optical
+configuration. It does not copy, recompute, interpolate or fabricate coefficients. Compatible lists
+filter only by exact optical-configuration identity.
+
+Calibration selection on a Capture is always explicit and requires an exact configuration match.
+Multiple compatible profiles remain ambiguous until one is selected. Exact retries converge. A
+valid durable conflict returns `CONSTRAINT`; malformed persisted state returns `CORRUPT` before
+comparison with an alternative request.
+
+The v22 -> v23 migration does not inspect EXIF, path, basename, SHA-256, dimensions, device name or
+historical calibration. `schema_version=23` is the durable publication point. Failure while creating
+the overlay or updating a marker that does not target exactly v22 rolls the migration back.
+
+### Project DB v24 - bounded selected RAW-batch persistence
+
+**IMPLEMENTED / VALIDATED.**
+
+The v23 -> v24 migration adds only:
+
+```text
+raw_development_batch_tasks(task_id, selected_execution_id)
 ```
 
-**Invariants** :
-- `UNIQUE(candidate_pair_id, feature_set_id_a, feature_set_id_b, matcher_kind, matcher_version,
-  parameter_fingerprint)` : identité déterministe 6 parties
-- `candidate_pair_id` référence `candidate_pairs(candidate_pair_id)` avec l'action par défaut
-  (NO ACTION)
-- `feature_set_id_a` et `feature_set_id_b` référencent `feature_sets(feature_set_id)`
-- `feature_set_id_a` appartient à `image_id_a` de la Candidate Pair, `feature_set_id_b` appartient
-  à `image_id_b` (validé par l'API create)
-- `NO_MATCH` impose `match_count=0` et aucun asset
-- `MATCHED` impose `match_count>0` et SHA/path/taille complets
-- les échecs d'exécution restent dans le Task Runtime et ne créent pas de ligne
-- `matcher_kind` borné à 64 caractères
-- `parameter_fingerprint` exactement 32 octets (SHA-256)
+`task_id` references generic Task state. `selected_execution_id` is unique. The row does not copy a
+Capture, Asset, image, path, campaign group or selected-execution cursor.
 
-**API** :
-- `lardon3d_project_db_create_match_result()` — INSERT avec validation des contraintes
-- `lardon3d_project_db_load_match_result()` — SELECT par ID
-- `lardon3d_project_db_find_match_result()` — SELECT par (candidate_pair_id, feature_set_id_a,
-  feature_set_id_b, matcher_kind, matcher_version, parameter_fingerprint)
-- `lardon3d_project_db_list_match_results()` — SELECT paginé ORDER BY id
-- `lardon3d_project_db_record_matcher_task()` — UPSERT configuration/curseur
-- `lardon3d_project_db_load_matcher_task()` — SELECT par task_id
+The migration is transactional and DDL-only. It creates no historical association, and the v24
+schema marker is its publication point.
 
-## Schéma v12 implémenté
+`raw.develop.batch/1` reloads the durable `selected_executions` cursor for every admitted window.
+Independent RAW items may be prepared concurrently by bounded participants. After all participants
+join, only the owner Task publishes selected representations, in increasing selected-item order.
 
-La migration v11→v12 ajoute uniquement `geometric_verification_results`. Le
-parent est un Match Result `MATCHED`; sa validation interligne reste dans l'API.
+The durable ordering is:
 
-Schéma abrégé (la chaîne SQL exécutable canonique reste dans `src/project_db.c`) :
-
-```sql
-CREATE TABLE geometric_verification_results(
-    geometric_verification_result_id INTEGER PRIMARY KEY AUTOINCREMENT
-        CHECK(geometric_verification_result_id>0),
-    match_result_id INTEGER NOT NULL
-        REFERENCES match_results(match_result_id) ON DELETE CASCADE,
-    verifier_kind INTEGER NOT NULL CHECK(verifier_kind=1),
-    verifier_version INTEGER NOT NULL
-        CHECK(verifier_version>0 AND verifier_version<=4294967295),
-    parameter_fingerprint BLOB NOT NULL
-        CHECK(length(parameter_fingerprint)=32),
-    status INTEGER NOT NULL CHECK(status IN (1,2)),
-    inlier_count INTEGER NOT NULL
-        CHECK(inlier_count>=0 AND inlier_count<=8192),
-    inlier_mask BLOB NOT NULL
-        CHECK(length(inlier_mask)>=1 AND length(inlier_mask)<=1024),
-    model_m00 REAL, model_m01 REAL, model_m02 REAL,
-    model_m10 REAL, model_m11 REAL, model_m12 REAL,
-    model_m20 REAL, model_m21 REAL, model_m22 REAL,
-    created_at INTEGER NOT NULL CHECK(created_at>=0),
-    CHECK(/* REJECTED: neuf NULL ; VERIFIED: neuf non-NULL */),
-    UNIQUE(match_result_id, verifier_kind, verifier_version,
-           parameter_fingerprint)
-);
-CREATE INDEX geometric_verification_results_parent_idx
-    ON geometric_verification_results(
-        match_result_id, geometric_verification_result_id
-    );
+```text
+bounded independent RAW preparation
+-> join all participants
+-> owner-only selected representation publication
+-> selected item + selected cursor commit
+-> generic Task progress/checkpoint
 ```
 
-Les valeurs stables sont FUNDAMENTAL=1, GEOMETRIC_REJECTED=1 et
-GEOMETRIC_VERIFIED=2. REJECTED interdit le modèle ; VERIFIED exige neuf valeurs
-finies. Pour les deux états, l'API impose taille canonique, padding nul et
-popcount exact du masque, ainsi que `inlier_count <= parent.match_count`.
-L'index parent sert la liste paginée ; la contrainte UNIQUE sert le find exact.
-Le contrat complet, dont l'ordre des bits, est dans
-`geometric_verification.md`.
+Therefore a crash may leave generic Task progress behind durable selected execution state, but never
+ahead of it. Restart resumes from durable selected state without guessing the identity of an already
+published RAW-derived representation.
 
-## Schéma v14 implémenté
+The historical `raw.develop/1` path remains valid. v24 does not modify RAW Policy v1, `L3DRAWD1`,
+Capture identity, image identity or calibration.
 
-La migration v13→v14 ajoute les tables `track_sets`, `tracks` et
-`track_observations` pour le Track Model v1. Le schéma complet est dans
-`tracks.md`. Schéma abrégé (la chaîne SQL exécutable canonique reste dans
-`src/project_db.c`) :
+The retained real A6000 proof completed this RAW-batch path.
 
-```sql
-CREATE TABLE track_sets(
-    track_set_id INTEGER PRIMARY KEY AUTOINCREMENT
-        CHECK(track_set_id > 0),
-    builder_kind TEXT NOT NULL
-        CHECK(length(builder_kind) > 0 AND length(builder_kind) <= 64),
-    builder_version INTEGER NOT NULL CHECK(builder_version > 0),
-    parameter_fingerprint BLOB NOT NULL
-        CHECK(length(parameter_fingerprint) = 32),
-    verifier_kind INTEGER NOT NULL CHECK(verifier_kind > 0),
-    verifier_version INTEGER NOT NULL CHECK(verifier_version > 0),
-    verifier_fingerprint BLOB NOT NULL
-        CHECK(length(verifier_fingerprint) = 32),
-    input_scope_hash BLOB NOT NULL
-        CHECK(length(input_scope_hash) = 32),
-    gvr_count INTEGER NOT NULL CHECK(gvr_count >= 1),
-    track_count INTEGER NOT NULL CHECK(track_count >= 0),
-    created_at INTEGER NOT NULL CHECK(created_at >= 0),
-    UNIQUE(builder_kind, builder_version, parameter_fingerprint,
-           verifier_kind, verifier_version, verifier_fingerprint,
-           input_scope_hash)
-);
+### Project DB v25 - bounded selected Feature-batch persistence
 
-CREATE TABLE tracks(
-    track_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(track_id > 0),
-    track_set_id INTEGER NOT NULL
-        REFERENCES track_sets(track_set_id) ON DELETE CASCADE,
-    observation_count INTEGER NOT NULL CHECK(observation_count >= 2)
-);
+**IMPLEMENTED / VALIDATED.**
 
-CREATE INDEX tracks_set_idx
-    ON tracks(track_set_id, track_id);
+The v24 -> v25 migration adds only `feature_extract_batch_tasks`.
 
-CREATE TABLE track_observations(
-    track_set_id INTEGER NOT NULL,
-    track_id INTEGER NOT NULL
-        REFERENCES tracks(track_id) ON DELETE CASCADE,
-    feature_set_id INTEGER NOT NULL
-        REFERENCES feature_sets(feature_set_id),
-    feature_index INTEGER NOT NULL CHECK(feature_index >= 0),
-    position_in_track INTEGER NOT NULL CHECK(position_in_track >= 0),
-    PRIMARY KEY(track_set_id, feature_set_id, feature_index),
-    UNIQUE(track_id, position_in_track)
-);
+A row binds one durable `features.extract.batch/1` Task to:
 
-CREATE INDEX track_observations_lookup_idx
-    ON track_observations(feature_set_id, feature_index, track_set_id);
+- one immutable selected execution;
+- a monotonic `next_item_index` prefix;
+- the exact ORB extractor kind/version/parameters/fingerprint domain.
+
+The migration is transactional and DDL-only. It creates no scientific rows, converts no historical
+`features.extract/1` Task, and infers no `image_id` or Feature Set.
+
+Selected images may be prepared concurrently by bounded CPU participants without SQLite access.
+After every participant joins, the owner publishes Feature Sets in selected order. An item advances
+only after the exact READY Feature Set is durable; generic Task progress/checkpoint follows.
+
+A crash may therefore leave generic progress or the Feature-batch cursor behind an immutable Feature
+Set that is already durable. Restart revalidates that exact result and converges without inventing
+identity.
+
+ORB U8x32 format, keypoints, descriptor semantics, Feature Store identity and fingerprints remain
+unchanged.
+
+The retained real A6000 proof completed the v25 Feature-batch path and preserved:
+
+```text
+Feature Sets       689
+Candidate Pairs    38,420
+Match Results      38,420
 ```
 
-**Invariants SQL** :
-- `PRIMARY KEY(track_set_id, feature_set_id, feature_index)` : dans un Track
-  Set donné, une observation n'apparaît qu'une fois
-- `REFERENCES tracks(track_id) ON DELETE CASCADE` : supprimer un track
-  supprime ses observations
-- `REFERENCES feature_sets(feature_set_id)` : le Feature Set existe
-- `CHECK(observation_count >= 2)` : minimum structurel
-- `UNIQUE(builder_kind, builder_version, parameter_fingerprint,
-  verifier_kind, verifier_version, verifier_fingerprint, input_scope_hash)` :
-  identité de reuse sur `track_sets`
-- `ON DELETE CASCADE` depuis `track_sets` : supprimer un set supprime tout
-- `UNIQUE(track_id, position_in_track)` : chaque position dans un track est
-  unique
+No acquisition, RAW development, Candidate generation or Matcher replay was required during the
+final A6000 GV/Tracks continuation.
 
-**Invariants API** (non protégés par le schéma SQL) :
-- `track_set_id` dans `track_observations` correspond au `track_set_id` du
-  `track_id` parent
-- Une seule observation par image par track (validation via
-  `feature_sets.image_id`)
-- `feature_index < feature_sets.feature_count`
-- `observation_count` cohérent avec le nombre réel d'observations
-- `track_count` cohérent avec le nombre réel de tracks
+## Optical TUI workflow
 
-**Statut** : les tables sont créées par la migration et validées par les
-tests. L'API C (`create_track_set`, `load_track_set`, `find_track_set`,
-`list_track_sets`, `load_track`, `list_tracks`, `find_track_by_observation`)
-est exposée et implémentée. Le Track Builder algorithmique et sa tâche durable
-sont implémentés par les Gates A–E ; la triangulation reste hors périmètre.
+The optical TUI uses bounded public APIs and does not write SQLite directly. It can:
 
-## Schéma v15 — payload durable Track Builder
+- inspect a Capture;
+- resolve exact metadata aliases;
+- page through bodies, lenses, configurations and compatible calibrations;
+- create immutable body/lens/configuration profiles;
+- explicitly assign campaign-group or Capture optics where the persistence contract permits;
+- explicitly select an exactly compatible calibration.
 
-La migration v14→v15 ajoute uniquement `track_builder_tasks`. Elle ne modifie
-aucune table du Track Model et ne change aucune identité scientifique. La ligne
-référence un fichier de scope atomiquement publié sous
-`.lardon3d/checkpoints/<task_id>.scope` et conserve sa taille, son SHA-256,
-son format, le sélecteur exact, le fingerprint Builder, `gvr_count` et
-`input_scope_hash`. Le fichier contient `L3DTSCP1`, une version explicite, le
-nombre d'IDs et des uint64 little-endian triés et uniques. Le contenu est
-rejoué depuis le début après interruption ; aucun curseur ne peut perdre des
-arêtes transitoires.
+A manual lens without electronics or metadata aliases is normal data. A lookup with no exact match
+remains unresolved.
 
-La reconstruction vérifie format, taille, checksum, bornes, tri, unicité,
-sélecteur, fingerprint et L3DTSIS1 avant de créer un callback neuf. Une
-corruption rend la tâche inexécutable sans créer de Track Set. Les tests
-couvrent une vraie base v14, migration, rollback injecté, retry,
-fermeture/réouverture et payload corrompu.
+Absence, multiple candidates, incompatibility, `BUSY`, I/O failure and corruption remain explicit.
+The TUI never fabricates an "unknown" profile, compatibility relationship or identity.
 
-## Ouverture et migrations
+The TUI model borrows Project DB until unbind and must be detached before project close. See
+[runtime.md](runtime.md).
 
-Une DB vide reçoit la chaîne de schémas jusqu'à v23 dans une transaction
-`BEGIN IMMEDIATE`. Une DB v1 reçoit transactionnellement les colonnes nullable
-`task_kind` et `task_kind_version`, puis les migrations v2→v3. Les anciennes lignes restent
-`NULL/NULL`, sans type inventé et sans perte des projets, tâches, checkpoints ou
-artefacts. Une interruption ou erreur provoque un rollback complet. Les DB v1
-à v22 sont migrées séquentiellement vers v23.
-Une v10 publiée est validée comme telle avant que v10→v11 crée
-`matcher_tasks` ; son absence n'est donc pas une corruption. Une version future est refusée et une DB contenant
-des tables sans métadonnée de version est considérée corrompue. La fonction
-interne de migration applique uniquement la chaîne séquentielle connue jusqu'à
-v23 ; une valeur hors de 1..23 est refusée. Les failures injectées de chaque
-étape rollbackent les objets et le marqueur de version de cette étape. Par
-exemple, la failure v12 rollbacke
-la table, l'index et le changement de version, laissant une vraie v11 utilisable.
-La failure injectée v13 conserve une vraie v12 sans `geometric_verifier_tasks` ;
-un retry applique ensuite v12→v13. La failure injectée v14 conserve une vraie
-v13 sans `track_sets` ; un retry applique ensuite v13→v14. La failure injectée
-v15 conserve une vraie v14 sans `track_builder_tasks` ; un retry applique
-ensuite v14→v15. Le même contrat couvre v16→v22 ; en v23, aucune des neuf
-tables optiques ni aucun marqueur v23 ne subsiste après la failure injectée, et
-un retry exact converge depuis la v22 intacte.
+## Project DB v22 - selected scientific execution snapshot
 
-Migration v1→v2 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
+**PASS / FROZEN.**
 
-```sql
-ALTER TABLE tasks ADD COLUMN task_kind TEXT;
-ALTER TABLE tasks ADD COLUMN task_kind_version INTEGER
-    CHECK(task_kind_version IS NULL OR task_kind_version > 0);
-UPDATE metadata SET value=2
-    WHERE key='schema_version' AND value=1;
+The v21 -> v22 additive migration adds:
+
+- `capture_source_assets`;
+- `selected_executions`;
+- `selected_execution_items`;
+- `raw_development_tasks`.
+
+`capture_source_assets` retains the explicit relation published by S3-E between a Capture, one
+`SOURCE` Asset and the already validated JPEG/RAW source kind. Publication of source association and
+source kind is transactional. Exact retry converges; a different source kind conflicts.
+
+Captures migrated from v21 remain honestly unmapped. Migration never derives a mapping from path,
+name, SHA-256, attachment order or logical image.
+
+An ordered selected-execution snapshot explicitly retains:
+
+```text
+quality_task_id/group_id
+-> campaign_task_id/group_id
+-> capture_id
 ```
 
-Migration v2→v3 exacte, exécutée entre `BEGIN IMMEDIATE` et `COMMIT` :
+The quality and campaign `group_id` namespaces remain independent. Numeric equality between them is
+never identity.
 
-```sql
-CREATE TABLE image_import_tasks(
-    task_id INTEGER PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
-    source_path TEXT NOT NULL
-);
-INSERT INTO metadata(key,value)
-VALUES('next_task_id',(
-    SELECT CASE
-        WHEN COALESCE(MAX(task_id),0)>=9223372036854775807 THEN 0
-        ELSE COALESCE(MAX(task_id),0)+1
-    END FROM tasks
-));
-UPDATE metadata SET value=3
-    WHERE key='schema_version' AND value=2;
+Both Tasks must target the same ScanSet, triage must be complete and every retained result must be
+included at snapshot creation. Snapshot contents and order are immutable afterward.
+
+Each selected item receives an `image_id` only through an already durable explicit `capture_images`
+association. Representation publication and selected cursor advance are transactional. Exact retry
+converges; a different `image_id` conflicts.
+
+After the final item, an existing `calibration_scope_id` may be attached only when every retained
+image belongs to that scope. Terminal `READY` is exactly:
+
+```text
+QUALITY_SELECTED
+INTERSECT REPRESENTATION_READY
+INTERSECT CALIBRATION_ASSIGNED
 ```
 
-Migration v3→v4 exacte, dans la même transaction :
+No step infers Capture from Asset, SHA-256, path, basename, Task ID, group ID or `image_id`.
 
-```sql
-CREATE TABLE scansets(
-    scanset_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(scanset_id>0),
-    name TEXT NOT NULL CHECK(length(name)>0 AND length(name)<256),
-    created_at INTEGER NOT NULL CHECK(created_at>=0),
-    updated_at INTEGER NOT NULL CHECK(updated_at>=created_at)
-);
-CREATE TABLE image_assets(
-    asset_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(asset_id>0),
-    sha256 BLOB NOT NULL UNIQUE CHECK(length(sha256)=32),
-    path TEXT NOT NULL UNIQUE CHECK(length(path)>0 AND length(path)<4096),
-    size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),
-    state INTEGER NOT NULL CHECK(state=1),
-    created_at INTEGER NOT NULL CHECK(created_at>=0)
-);
-CREATE TABLE images(
-    image_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(image_id>0),
-    scanset_id INTEGER NOT NULL REFERENCES scansets(scanset_id),
-    asset_id INTEGER NOT NULL REFERENCES image_assets(asset_id),
-    original_name TEXT NOT NULL CHECK(length(original_name)>0 AND length(original_name)<256),
-    source_path TEXT NOT NULL CHECK(length(source_path)>0 AND length(source_path)<4096),
-    producer_task_id INTEGER REFERENCES tasks(task_id),
-    imported_at INTEGER NOT NULL CHECK(imported_at>=0),
-    UNIQUE(scanset_id,asset_id)
-);
-CREATE INDEX images_scanset_idx ON images(scanset_id,image_id);
-CREATE INDEX images_producer_idx ON images(producer_task_id,image_id);
-ALTER TABLE image_import_tasks
-    ADD COLUMN scanset_id INTEGER REFERENCES scansets(scanset_id);
-INSERT INTO scansets(name,created_at,updated_at)
-    SELECT 'Imports antérieurs à ScanSet v1',0,0
-    WHERE EXISTS(SELECT 1 FROM image_import_tasks);
-UPDATE image_import_tasks
-    SET scanset_id=(SELECT scanset_id FROM scansets
-                    WHERE name='Imports antérieurs à ScanSet v1'
-                    ORDER BY scanset_id LIMIT 1)
-    WHERE scanset_id IS NULL;
-INSERT INTO metadata(key,value)
-    VALUES('legacy_image_catalog_pending',
-           CASE WHEN EXISTS(SELECT 1 FROM image_import_tasks) THEN 1 ELSE 0 END);
-UPDATE metadata SET value=4
-    WHERE key='schema_version' AND value=3;
+The snapshot also freezes the representation source. An A6000 selected item explicitly retains the
+RAW `asset_id` already associated as `SOURCE`. An item using a source image explicitly retains the
+absence of RAW identity. This discriminant/Asset pair is immutable and part of exact retry.
+
+The selected execution is bounded to 4096 items and reserves no execution resources by itself.
+
+Calibration Bootstrap v1 validates a bounded calibration artifact against this snapshot, creates or
+reuses immutable calibrations/scopes and attaches the result through v22 persistence. It does not
+extend the schema, solve calibration or perform RAW development.
+
+### Durable single-RAW Task
+
+The RAW developer also exposes a bounded entry point keyed by explicit `source_asset_id`. It
+requires the Capture/SOURCE-RAW relation, resolves managed bytes through that Asset ID, verifies the
+bytes against persisted SHA-256, then reuses RAW Policy v1 unchanged.
+
+`raw_development_tasks` stores exactly:
+
+- `task_id`;
+- `capture_id`;
+- `source_asset_id`;
+- monotonic phase `PENDING -> PUBLISHED`;
+- the derived `image_id` when published.
+
+Generic Task snapshot, checkpoint reference and typed RAW payload are written transactionally.
+Immutable Asset/image publication may precede the generic checkpoint if the process dies; exact S3-B1
+retry converges by content and publishes the phase/image identity without guessing.
+
+Persistent reads reject malformed SQLite storage classes, phases, nullability or inconsistent
+Capture/RAW/image relations as durable corruption.
+
+The v22 persistence boundary passed its retained normal, C17, targeted ASan/UBSan and review
+evidence. The full sanitizer context retains the documented third-party RADV/LSan qualification.
+This freeze concerns persistence, not real-camera calibration availability.
+
+## Project DB v21 - Photo Quality Triage
+
+**PASS / FROZEN.**
+
+The v20 -> v21 migration adds `photo_quality_triage_tasks` and
+`photo_quality_triage_results` without changing v20 Capture/Asset/image identities.
+
+Each result retains canonical plan `group_id` in `1..N`. `next_group_id` uses the same one-based
+identity:
+
+```text
+initial       1
+after group k k + 1
+terminal      N + 1
 ```
 
-Configuration v7 : `foreign_keys=ON`, `journal_mode=DELETE`,
-`synchronous=FULL`, `busy_timeout=5000`. Le mode DELETE convient au propriétaire
-unique actuel, évite les fichiers WAL/SHM durables et conserve la synchronisation
-forte. Le timeout borne l'attente d'un verrou externe à cinq secondes.
+A private `group_index = group_id - 1` may exist inside the executor but is not durable identity.
 
-## Concurrence et ownership
+Result and cursor become durable atomically before generic Task checkpoint. Reads validate SQLite
+64-bit storage class, sign, range and relationships before narrowing to public C fields and require
+the exact `photo_quality.triage/v1` dispatch.
 
-Une connexion opaque est sérialisée par un mutex interne. Chaque opération
-composée possède sa transaction entière ; aucune transaction publique ne peut
-rester ouverte entre deux appels. Aucune I/O d'artefact n'a lieu sous le mutex :
-le module confirme que le fichier publié et validé par l'appelant est régulier
-avant la mise à jour `READY`. Fermer la DB pendant un
-appel concurrent est interdit au propriétaire.
+Measured recommendation and explicit human override remain distinct.
 
-Les records et chaînes sont copiés dans des buffers fournis par l'appelant ;
-aucun pointeur SQLite n'en sort. Tous les statements sont finalisés dans
-l'appel. La liste de reprise utilise des pages fournies par l'appelant, limitées
-à 256 entrées. Elle ne retourne que les tâches normalisées `PENDING` possédant
-une référence checkpoint ; le fichier doit encore être chargé et validé.
+## Project DB v20 - durable acquisition-campaign execution
 
-## Branchement au projet
+**PASS / FROZEN.**
 
-`Lardon3DAppState` est l'instance projet runtime actuelle et possède exactement
-une `Lardon3DProjectDb *` pendant que `project_loaded` est vrai. La DB canonique
-est `<project_root>/project.db`. Elle est ouverte à la création/ouverture du
-projet et fermée une seule fois par `lardon3d_project_close()`. À l'arrêt de
-l'application, la task queue est arrêtée avant la fermeture du projet et de sa
-DB. Une fermeture concurrente à un appel projet/DB est interdite au propriétaire.
+The v19 -> v20 migration adds:
 
-`project.ini` v2 contient `name`, `stable_id` hexadécimal sur 128 bits et
-`version=2`. La même identité est enregistrée dans la table `project`. Toute
-divergence est une erreur. Un INI v1 sans identité adopte l'identité d'une DB
-existante ; sans DB, une identité est générée une seule fois puis l'INI est
-migré atomiquement avant de devenir la référence des ouvertures suivantes. Une
-DB existante sans ligne projet ne peut être initialisée que si l'INI possède
-déjà son identité.
+- `acquisition_campaign_tasks`;
+- `acquisition_campaign_captures`.
 
-Les checkpoints sont référencés par chemins relatifs portables :
-`.lardon3d/checkpoints/<task_id>.chk`. Leur publication générique met d'abord
-en durabilité `.chk.next`, commit ensuite SQLite, puis promeut `.next` vers le
-canonique sous `.chk.lock`. Le verrou est consultatif et vivant seulement pour
-le processus ; il sérialise writer et reprise, mais n'est pas une donnée de
-récupération.
+It does not change v19 Capture/Asset identities.
 
-L'inventaire projet utilise sa page DB seulement comme découverte. Après avoir
-obtenu `.chk.lock`, il recharge la ligne DB, car elle peut avoir changé pendant
-l'attente. Il choisit le canonique codec/version valide dont les champs du
-résumé DB correspondent exactement. Ce choix est prioritaire et ignore une
-`.next` périmée ou corrompue. Si le canonique ne correspond pas, une `.next`
-codec/version valide dont le même résumé correspond est promue sous le verrou
-puis utilisée. L'absence de `.next` reste normale pour un projet v22 ou antérieur
-contenant seulement `.chk`; toute autre absence, corruption, version future ou
-divergence classe seulement la tâche comme non récupérable.
+`acquisition_campaign_tasks` has a one-to-one relation to generic Task through `task_id`, the
+operational campaign identity. Creation and checkpoints transactionally retain generic Task snapshot,
+checkpoint reference and typed campaign payload.
 
-Après copie du record hors mutex SQLite, l'inventaire consulte la registry. Il
-distingue `LEGACY_UNTYPED`, `UNKNOWN_TASK_KIND` et
-`UNSUPPORTED_TASK_KIND_VERSION`. Aucun reconstructeur métier n'est appelé sous
-le mutex DB. Un upsert ne peut pas changer le couple kind/version d'un task ID.
+The campaign record stores:
 
-À l'ouverture, le projet lit des pages de 8 dans l'ordre croissant des task
-IDs. Chaque record est copié hors mutex DB avant reconstruction et enqueue. Une
-fenêtre pleine interrompt le scan sans modifier les tâches restantes. Le résumé
-borné expose `inspected`, `resumed`, `skipped`, `failed`, le nombre de
-checkpoints `PUBLISHED_NOT_DURABLE` repris et la saturation éventuelle.
+- `scanset_id`;
+- historical `next_group_id`;
+- group count;
+- immutable request bytes.
 
-Les erreurs d'ouverture/migration, de schéma ou d'identité restent fatales.
-Les erreurs propres à une tâche — legacy, kind inconnu/futur, checkpoint
-absent/invalide/futur, source indisponible ou reconstruction — sont non fatales.
-Un `BUSY` après le timeout SQLite arrête le scan sans boucle et laisse le projet
-ouvert.
+Despite its historical name, campaign-table `next_group_id` is a zero-based next-work position in
+`0..N`; its value equals the number of one-based groups already retained.
 
-## Statut
+An upsert may advance the cursor only when ScanSet, group count and immutable request bytes are exact
+matches.
 
-**IMPLEMENTED / VALIDATED / REVIEWED** — SQLite système, tête de schéma v23 et
-migrations séquentielles v1→…→v23, identité projet, transactions
-tâche+checkpoint, pagination de reprise, artefacts génériques et overlay
-optique additif. Les contrats scientifiques et de persistance v16–v22 conservent
-leurs statuts historiques PASS / FROZEN.
+The request v1 codec is bounded and deterministic with explicit magic/version, fixed-width
+little-endian integers, validated lengths/enums/indices and no trailing bytes. It persists explicit
+confirmations as `CALLER_EXPLICIT`, never as inferred `STRONG`.
 
-**IMPLEMENTED / VALIDATED / REVIEWED — Project DB v23** : profils boîtier et
-objectif data-driven, alias exacts optionnels, configurations multiples par
-campagne/Capture, profils de calibration exactement compatibles et sélection
-explicite. La migration ne backfill aucune identité ; les projets v22 restent
-récupérables et scientifiquement inchangés.
+Plan groups keep one-based IDs. For every completed group,
+`acquisition_campaign_captures` retains the unique relation:
 
-**PASS / FROZEN** — Project DB v20 : migration additive
-v19→v20, record typé de campagne lié au Task ID, requête immuable bornée,
-confirmations `CALLER_EXPLICIT`, curseur et relation unique
-task/groupe→Capture. La reprise reste celle de la registry, de la Queue et du
-Resource Governor existants ; aucune identité de Capture n'est inférée dans la
-fenêtre résiduelle pré-rétention.
+```text
+(task_id, group_id) -> capture_id
+```
 
-**IMPLEMENTED** — ouverture/fermeture avec le projet, identité INI/DB cohérente,
-publication de checkpoints par le projet et inventaire de reprise validé.
+A Capture cannot represent two groups of the same campaign Task. Valid durable state contains exactly
+the mapping prefix already retained, with no holes or mappings ahead of the cursor.
 
-**IMPLEMENTED** — kinds persistants, classification par registry et
-reconstruction explicite testée hors scheduler.
+After S3-E returns, one transaction retains the current group mapping and advances the campaign
+cursor before generic Task progress/checkpoint. Restart can then pass the retained `capture_id` back
+to S3-E without rehoming or inference.
 
-**IMPLEMENTED** — allocation transactionnelle de task IDs, paramètres
-immuables de `import.images` et reconstruction production explicite.
+Malformed storage class, bounds, dispatch kind/version or persistent relationship returns `CORRUPT`
+before mutation and never creates a false `resume_capture_id`.
 
-**IMPLEMENTED** — reprise automatique sélective, pagination de 8, ordre par ID,
-fenêtre de queue non bloquante et résumé consultable.
+Each Task sequence materializes one group. Pause/cancel are cooperative at group boundaries.
+A non-terminal group sets `sequence_break`, releases admission and requires re-admission by the
+existing Queue and Resource Governor.
 
-**IMPLEMENTED** — ScanSets, images logiques, assets SHA-256 et pagination
-bornée à 256. Les identités sont des `INTEGER PRIMARY KEY AUTOINCREMENT` SQLite
-allouées sous transaction ; aucun `SELECT MAX()+1` n'est utilisé en
-fonctionnement normal et une identité validée n'est jamais réutilisée.
+The registry reconstructs the Task from Task ID and immutable request at project open. No parallel
+runtime, Queue, Governor, Scheduler or persistence subsystem is introduced.
 
-**PASS / FROZEN** — Capture / Asset Provenance v1 :
-Capture borné par ScanSet, associations explicites asset/image, sélection
-courante optionnelle et dérivation asset à parent unique. S3-B1/S3-D/S3-E et la
-campagne bornée réutilisent cette fondation sans redéfinir ses identités ; la
-vidéo reste hors de S3.
+The accepted residual crash window is strictly after S3-E has created/returned a Capture but before
+the campaign transaction has retained that Capture. In this window Project DB deliberately does not
+infer `capture_id`; exactly-once is not claimed for that group.
 
-La migration v3→v4 ne lit pas `manifest.tsv`. Elle crée le ScanSet legacy et
-positionne `metadata.legacy_image_catalog_pending=1` dès qu'une ancienne tâche
-d'import existe. Cet indicateur signifie « données legacy potentiellement non
-cataloguées », pas « images migrées ».
+## Project DB v19 - Capture / Asset Provenance v1
 
-**IMPLEMENTED** — Track Model v1 : tables `track_sets`, `tracks` et
-`track_observations` créées par la migration v13→v14, contraintes SQL
-(unicité d'identité de reuse, CASCADE, observation unique par set) et
-tests de migration/failure validés. Le schéma complet et les invariants
-sont documentés dans `tracks.md`.
+**PASS / FROZEN.**
 
-**IMPLEMENTED** — Track Builder v1 durable : table `track_builder_tasks`, scope
-asset atomique, payload v1 validé, migration v14→v15 et rollback/retry testés.
+The v18 -> v19 migration adds:
 
-**IMPLEMENTED** — Sparse SfM v1 persistant : modèle v16 immutable, publication
-atomique, composants déterministes, lecteurs bornés, corruption/lifecycle
-validation, migration v15→v16 et comparateur fresh/migrated validés par Gate B.
-Le modèle de persistance est gelé pour v1 ; le solveur numérique reste hors de
-Project DB v16.
+- `captures`;
+- `capture_images`;
+- `capture_assets`;
+- `capture_selections`;
+- `asset_derivations`.
 
-Gate C ajoute uniquement des primitives numériques pures hors Project DB; aucune
-table, migration ou identité v16 supplémentaire n'est introduite.
+A Capture belongs to one ScanSet. It is not an `image_id` and does not redefine scientific image
+identity.
 
-**IMPLEMENTED** — API C Track Model v1 : header `project_db.h` et
-source `project_db.c` exposent `create_track_set`, `load_track_set`,
-`find_track_set`, `list_track_sets`, `load_track`, `list_tracks`,
-`find_track_by_observation` et `free_track`. Contraintes et
-invariants documentés dans `tracks.md`. Limites réelles : pas de
-Track Builder algorithmique, pas de tâche dédiée, pas de
-triangulation.
+Source and derived Assets may be attached without creating a logical image. An optional current
+selection references exactly one image already attached to the Capture and never mutates the image,
+its Asset or prior scientific results.
 
-**NOT_YET_WIRED** — autosave à toutes les transitions, retry UI des sources
-indisponibles, migration de la TUI legacy et réconciliation des fichiers
-orphelins et compaction Visual Index. Feature Store et Visual Index v1 sont implémentés.
-Visual Index v1 borne un index à 256 segments de 16 memberships, soit 4096 Feature Sets;
-la couverture de 50 000 Feature Sets nécessitera la compaction ou une évolution v2.
+Explicit attachment of an existing `SOURCE` Asset to an existing Capture is idempotent. The same
+association is accepted without a new row or migration. It creates no logical image, changes no
+selection and performs no automatic pairing.
 
-**PASS / FROZEN** — Phase H v1 : métadonnées d'identité et
-de prédécesseur dans `incremental_reconstructions`, payload durable dans
-`incremental_reconstruction_tasks`, snapshot complet publié atomiquement et
-réutilisation par identité H. Aucun graphe de dépendances n'est introduit.
+`asset_derivations` intentionally represents one parent Asset and one child Asset with kind/version
+and canonical 32-byte fingerprint. It is not a generic DAG and does not perform RAW development or
+video extraction.
+
+The v18 -> v19 legacy migration creates one independent legacy Capture per image in increasing
+`image_id`, attaches that image Asset as source and selects the same image. It does not interpret
+filename, EXIF or sibling relationships.
+
+### S3-E - Multi-Source Ingestion v1
+
+**PASS / FROZEN.**
+
+S3-E receives one explicit ScanSet and at most 64 caller-supplied source paths. It never scans a
+directory.
+
+Every source is first published as an immutable managed Asset. S3-D evidence is then extracted from
+those published bytes.
+
+Automatic grouping creates a common Capture only for a unique mutual `SAME_ACQUISITION_STRONG`
+relationship. Filename, path, SHA-256, timestamp, model, weak evidence, contradiction or ambiguity is
+never Capture identity.
+
+Duplicate Assets inside one request are rejected deterministically.
+
+The caller may provide explicit groups. Their provenance is `CALLER_EXPLICIT`, distinct from
+scientific `STRONG`. This basis is an operation result, not a new durable identity column.
+
+Sibling relations are persisted through S3-C. A camera JPEG remains `SOURCE` and may become a
+logical image of the Capture through transactional source-image publication. RAW remains `SOURCE`;
+its logical image is produced only through deterministic S3-B1 derived publication.
+
+RAW and JPEG from one acquisition do not create separate Captures. Selection changes only when the
+caller explicitly requests the selected representation.
+
+Once a Capture ID has been returned or durably retained, restart supplies that
+`resume_capture_id`. Publication and attachments then converge without rehoming or duplicate logical
+objects.
+
+Before the caller durably retains that ID, v19 does not claim whole-request exactly-once and never
+infers restart identity from SHA, path, basename, timestamp, metadata or `image_id`.
+
+### S3-D - Acquisition Pairing Evidence v1
+
+**PASS / FROZEN.**
+
+S3-D extracts a fixed bounded metadata evidence set from immutable source Assets.
+
+- RAW metadata extraction uses LibRaw without pixel decoding.
+- JPEG metadata extraction uses libexif.
+- Evidence is not scientific identity and does not modify existing identity semantics.
+
+Only a known, non-empty, exactly shared camera `ImageUniqueID` is strong evidence eligible for
+automatic association between two distinct Assets.
+
+Timestamp, make/model, matching body serial number, dimensions/exposure and basename are weak or
+corroborating only. Known conflicting `ImageUniqueID` or known conflicting body serial numbers prove
+that the Assets differ. Missing values are not conflicts. Ambiguity is never resolved by input order.
+
+S3-D performs no DB write and no schema change. S3-C remains the persistence primitive; S3-E consumes
+S3-D evidence without redefining it.
+
+### Bounded discovery and campaign planning
+
+**PASS / FROZEN.**
+
+The bounded discovery layer accepts 1..64 explicit absolute lexically normalized roots. It does not
+recurse. Each root and its immediate regular entries are inspected without following symlinks.
+
+Supported discovery suffixes are `.arw`, `.jpg` and `.jpeg`, case-insensitive. Discovery sources,
+groups and proposals are each bounded to 4096 elements. Paths use deterministic `strcmp` ordering.
+
+Planning runs S3-D metadata-only. It does not decode pixels, write Project DB or materialize Assets
+or Captures.
+
+Automatic association requires one unique mutual strong relationship. A shared filename stem is only
+a proposal. Contradictions, ambiguities, insufficient comparisons and unresolved inputs remain
+singletons.
+
+The caller may explicitly confirm groups; confirmed groups are `CALLER_EXPLICIT`.
+
+The plan and its transient progress are caller-owned. The durable campaign identity/restart mechanism
+is the v20 Task path above.
+
+The retained A6000 dry-run evidence observed:
+
+```text
+ARW sources                     953
+JPEG sources                    953
+total sources                   1906
+metadata OK                     1906
+strong groups                   0
+stem candidate proposals        953
+ambiguities                     0
+contradictions                  0
+```
+
+The Sony JPEG files were valid MPF containers with one secondary JPEG and zero-only trailing fill.
+The dry run did not write Project DB, materialize Captures or develop RAW. The 953 proposals required
+explicit `CALLER_EXPLICIT` confirmation.
+
+## Project DB v18 - Phase H v1 incremental reconstruction
+
+**PASS / FROZEN.**
+
+The v17 -> v18 migration:
+
+- adds nullable `derivation_identity` to `sparse_reconstructions`;
+- creates `incremental_reconstructions`;
+- creates `incremental_reconstruction_tasks`.
+
+Historical Gate F rows keep `derivation_identity IS NULL` and their exact
+`parameter_fingerprint`. Their historical candidate tuple remains protected by its partial UNIQUE
+index.
+
+Derived Phase H rows retain the true H fingerprint in `parameter_fingerprint` and canonical H
+scientific SHA-256 identity in `derivation_identity`, protected by a second partial UNIQUE index.
+
+Transactional reconstruction of the parent and child tables preserves v17 IDs, rows, foreign keys
+and cascades without rewriting scientific data.
+
+`incremental_reconstructions` atomically binds one complete Sparse SfM snapshot to:
+
+- its predecessor;
+- extension Track Set;
+- calibration scope;
+- H kind/version;
+- H fingerprint;
+- unique H scientific identity.
+
+`incremental_reconstruction_tasks` stores the immutable durable H Task payload.
+
+No Resource Reservation state, resource snapshot, partial geometry, observation subset, component
+remap or dependency graph is persisted. Restart recomputes from immutable inputs.
+
+Phase H publication reuses the full-snapshot structural validator. Geometry and H metadata are
+inserted in one transaction; late metadata failure rolls back the new geometry as well.
+
+## Project DB v17 - Gate F durable Sparse SfM Task
+
+**PASS / FROZEN.**
+
+The historical v15 -> v16 Sparse SfM persistence model remains unchanged. v16 -> v17 adds exactly one
+typed durable Task table: `sparse_sfm_tasks`.
+
+One row per `task_id` references generic `tasks(task_id)` with cascade deletion and retains:
+
+- immutable `track_set_id`;
+- immutable `calibration_scope_id`;
+- `sfm_kind`;
+- `sfm_version`;
+- the 27 effective `Lardon3DSparseIncrementalParameters` values.
+
+Finite floating-point values are stored as SQLite `REAL` and must round-trip exact binary64 bits.
+Canonical C-width integers preserve their defined domains.
+
+Task kind/version remain in `tasks` and version interpretation of the typed payload. The F0
+fingerprint is derived on reload and is not duplicated.
+
+Generic Task summary and typed payload are written in one transaction. Missing, incompatible or
+invalid typed state prevents runtime reconstruction; defaults are never silently substituted.
+
+The four full-domain `uint64_t` fields for observation/Track limits and relative-pose/PnP seeds are
+stored as exact eight-byte little-endian BLOBs.
+
+Global persisted metrics are Gate F diagnostics over the final retained Gate E observations. They do
+not participate in scientific identity.
+
+Gate F publication persists a component exactly when registered-image count and landmark count are
+both positive. A component whose BA was rejected but whose Gate D geometry remains valid is
+persisted unchanged; an unreconstructed graph component is omitted.
+
+## Project DB v16 - Sparse SfM persistence model
+
+**PASS / FROZEN.**
+
+Sparse SfM v1 is atomically published through:
+
+- `sparse_calibrations`;
+- `sparse_calibration_scopes`;
+- `sparse_calibration_scope_images`;
+- `sparse_reconstructions`;
+- `sparse_reconstruction_components`;
+- `sparse_registered_images`;
+- `sparse_landmarks`;
+- `sparse_landmark_observations`.
+
+Results are immutable. Large collections are accessed through bounded cursors; Project DB does not
+load a complete reconstruction by default.
+
+Coordinates remain in the arbitrary frame of each component. Observation references do not duplicate
+descriptors or pixel coordinates.
+
+Child indexes support foreign-key deletion/validation paths, including calibration members and
+reconstruction calibration scopes.
+
+Gate C adds pure numerical primitives outside Project DB and creates no extra v16 table or identity.
+
+## Project DB v15 - durable Track Builder payload
+
+The v14 -> v15 migration adds only `track_builder_tasks`. It changes no Track Model table and no
+scientific identity.
+
+The row references an atomically published scope file:
+
+```text
+.lardon3d/checkpoints/<task_id>.scope
+```
+
+The row retains size, SHA-256, format, exact selector, Builder fingerprint, `gvr_count` and
+`input_scope_hash`.
+
+The scope file contains `L3DTSCP1`, explicit version, ID count and sorted unique little-endian
+`uint64` IDs. Restart replays from the beginning; no cursor may discard transient graph edges.
+
+Reconstruction validates format, size, checksum, bounds, ordering, uniqueness, selector, fingerprint
+and `L3DTSIS1` before creating a new callback. Corruption makes the Task unreconstructable without
+creating a Track Set.
+
+## Project DB v14 - Track Model v1
+
+The v13 -> v14 migration creates:
+
+- `track_sets`;
+- `tracks`;
+- `track_observations`.
+
+The executable SQL remains canonical in `src/project_db.c`; the complete scientific contract is in
+[tracks.md](tracks.md).
+
+Core persistent invariants:
+
+```text
+Track Set identity:
+(builder_kind, builder_version, parameter_fingerprint,
+ verifier_kind, verifier_version, verifier_fingerprint,
+ input_scope_hash)
+
+track observation primary identity:
+(track_set_id, feature_set_id, feature_index)
+```
+
+SQL and API jointly enforce:
+
+- one observation occurrence per Track Set;
+- `observation_count >= 2`;
+- cascade Track/Track Set deletion semantics;
+- unique `position_in_track` per Track;
+- referenced Feature Set existence;
+- Track observation parent/set consistency;
+- at most one observation from one image in a Track;
+- `feature_index < feature_count`;
+- exact Track/observation counts.
+
+Track identities are immutable after publication.
+
+## Project DB v13 - durable Geometric Verifier Task
+
+The v12 -> v13 migration adds only `geometric_verifier_tasks`.
+
+It stores:
+
+- `after_match_result_id`;
+- the seven v1 scientific parameters;
+- the verifier control fingerprint.
+
+UPSERT may advance only the cursor. Configuration remains immutable. Transactional migration failure
+leaves a true v12 and exact retry converges.
+
+## Project DB v12 - Geometric Verification Result Model
+
+The v11 -> v12 migration adds only `geometric_verification_results`.
+
+Parent must be a `MATCHED` Match Result; cross-row validation remains in the API.
+
+Stable values include:
+
+```text
+FUNDAMENTAL=1
+GEOMETRIC_REJECTED=1
+GEOMETRIC_VERIFIED=2
+```
+
+Identity is:
+
+```text
+(match_result_id, verifier_kind, verifier_version, parameter_fingerprint)
+```
+
+`parameter_fingerprint` is exactly 32 bytes. Inlier-mask representation is canonical and bounded.
+REJECTED forbids a model; VERIFIED requires all nine finite 3x3 model values. Both states require
+canonical mask size/padding/popcount and `inlier_count <= parent.match_count`.
+
+See [geometric_verification.md](geometric_verification.md) for the complete bit-order contract.
+
+## Project DB v11 - durable Matcher Task
+
+The v10 -> v11 migration adds `matcher_tasks`.
+
+It stores immutable matcher configuration and durable `after_candidate_pair_id`. UPSERT may only
+advance the cursor.
+
+The cursor identifies the last checkpointed Candidate Pair ID; it does not imply contiguous IDs or
+a persisted Candidate Pair list.
+
+## Project DB v10 - Match Result Model
+
+The v9 -> v10 migration adds `match_results`.
+
+Persistent scientific identity is the six-part tuple:
+
+```text
+(candidate_pair_id,
+ feature_set_id_a,
+ feature_set_id_b,
+ matcher_kind,
+ matcher_version,
+ parameter_fingerprint)
+```
+
+Core invariants:
+
+- Candidate Pair exists.
+- Feature Set A belongs to Candidate Pair image A.
+- Feature Set B belongs to Candidate Pair image B.
+- `NO_MATCH` requires count zero and no match artifact.
+- `MATCHED` requires positive count and complete SHA/path/size artifact fields.
+- execution failures remain Task Runtime state and create no Match Result row.
+- `matcher_kind` text is bounded to 64 characters.
+- `parameter_fingerprint` is exactly 32 bytes.
+
+The executable SQL remains canonical in `src/project_db.c`.
+
+## Project DB v9 - durable Candidate Pair Task
+
+The v8 -> v9 migration adds `candidate_pair_generate_tasks`.
+
+The durable payload stores:
+
+- `visual_index_id`;
+- non-negative `after_feature_set_id`;
+- `top_k` in `1..256`;
+- `minimum_evidence_count` in `0..1024`;
+- `scanset_filter` in the defined enum domain;
+- boolean `exclude_same_asset`.
+
+UPSERT updates only the restart cursor under immutable configuration.
+
+## Project DB v8 - Candidate Pair Model
+
+The v7 -> v8 migration adds `candidate_pairs`.
+
+Persistent invariants:
+
+- `candidate_pair_id` is positive AUTOINCREMENT identity;
+- `image_id_a < image_id_b`;
+- self-pairs are impossible;
+- `(image_id_a, image_id_b)` is UNIQUE;
+- `created_at` is non-negative Unix seconds.
+
+The API canonicalizes image order before INSERT, supports exact find/load and paginated listing.
+
+## Project DB v7 - persistent project/runtime foundation
+
+The v7 foundation contains the durable project, Task, checkpoint, catalog, Feature Store and Visual
+Index state used by later migrations.
+
+Important tables include:
+
+- `metadata`;
+- `project`;
+- `tasks`;
+- `checkpoints`;
+- `artifacts`;
+- `scansets`;
+- `image_assets`;
+- `images`;
+- `image_import_tasks`;
+- `feature_assets`;
+- `feature_sets`;
+- `feature_extract_tasks`;
+- `sift_extract_tasks`;
+- Feature Support tables;
+- Visual Index tables and update Tasks.
+
+`metadata` contains the schema version and durable next Task ID state.
+
+`project` stores one stable logical Project identity.
+
+`tasks` stores durable generic Task summary and exact Task kind/version when known.
+
+`checkpoints` references `DURABLE` or `PUBLISHED_NOT_DURABLE` checkpoint publication state.
+
+`artifacts` inventories external files as `STAGED` or `READY`.
+
+`scansets`, `image_assets` and `images` store logical acquisition grouping, immutable content identity
+and logical scientific image identity.
+
+`UNIQUE(scanset_id, asset_id)` rejects duplicate content inside one ScanSet without merging distinct
+ScanSets.
+
+Feature assets remain external content-addressed files. SQLite stores Feature Set identity,
+extractor/version/fingerprint, source hash, descriptor type/dimension/count and lightweight coverage
+metrics.
+
+Visual Index postings remain outside SQLite. SQLite stores index identity, segment identity,
+membership and durable update cursor.
+
+Published catalog, Feature Store and Visual Index identities use SQLite `AUTOINCREMENT` where the
+contract requires non-reuse of committed identities. IDs from rolled-back transactions were never
+published and may be reused.
+
+SQLite configuration at this foundation is:
+
+```text
+foreign_keys=ON
+journal_mode=DELETE
+synchronous=FULL
+busy_timeout=5000
+```
+
+DELETE journal mode matches the current single-owner design, avoids persistent WAL/SHM files and
+preserves strong synchronization. The timeout bounds waiting on an external DB lock to five seconds.
+
+## Historical migration ledger
+
+The schema evolves only through sequential additive migrations.
+
+```text
+v1 -> v2    Task kind/version columns
+v2 -> v3    durable image-import Task payload and next Task ID metadata
+v3 -> v4    ScanSets, image Assets/images and legacy catalog marker
+v4 -> v7    Feature Store, Feature Support and Visual Index foundations
+v7 -> v8    Candidate Pair Model
+v8 -> v9    Candidate Pair durable Task
+v9 -> v10   Match Result Model
+v10 -> v11  Matcher durable Task
+v11 -> v12  Geometric Verification Result Model
+v12 -> v13  Geometric Verifier durable Task
+v13 -> v14  Track Model v1
+v14 -> v15  Track Builder durable payload
+v15 -> v16  Sparse SfM persistence
+v16 -> v17  Sparse SfM durable Task
+v17 -> v18  Phase H v1 persistence
+v18 -> v19  Capture / Asset Provenance v1
+v19 -> v20  durable acquisition-campaign execution
+v20 -> v21  Photo Quality Triage
+v21 -> v22  selected scientific execution + single RAW Task
+v22 -> v23  generic optical-context overlay
+v23 -> v24  selected RAW-batch Task persistence
+v24 -> v25  selected Feature-batch Task persistence
+```
+
+Historical version-specific contracts remain valid for the rows and checkpoints they describe.
+An older version number is not stale when the text explicitly describes historical state.
+
+## Opening and migration
+
+An empty Project DB is created and migrated through the complete known chain to v25.
+
+A supported historical DB is migrated sequentially to v25. Each migration is transactional. A
+migration failure rolls back both newly created objects and the schema-version marker for that step,
+leaving the prior version complete and retryable.
+
+The implementation rejects:
+
+- future schema versions;
+- missing/invalid schema-version metadata;
+- impossible version/storage-class combinations;
+- malformed required durable relationships.
+
+The migration implementation must recognize only the known sequential range through v25. It must not
+skip an intermediate contract.
+
+Important rollback properties retained from historical tests include:
+
+- v12 failure leaves true v11;
+- v13 failure leaves true v12 without `geometric_verifier_tasks`;
+- v14 failure leaves true v13 without Track Model tables;
+- v15 failure leaves true v14 without `track_builder_tasks`;
+- the same transactional principle covers v16 through v22;
+- v23 failure leaves no partial optical overlay and a true v22;
+- v24 failure leaves no partial RAW-batch table/marker and a true v23;
+- v25 failure leaves no partial Feature-batch table/marker and a true v24.
+
+Exact executable migration SQL is owned by `src/project_db.c`. Documentation may summarize it, but
+must not contradict the source or the FROZEN migration tests.
+
+## Task checkpoint boundary
+
+The durable Task model and its checkpoint codec are implemented independently from Project DB.
+
+Project DB stores a queryable logical summary and a checkpoint reference. The validated checkpoint
+file remains the complete source for `lardon3d_task_restore()`; SQLite alone never reconstructs a
+Task.
+
+DB/checkpoint consistency compares the fields that `tasks` actually stores, including Task ID, name,
+saved/recovery state, progress and sequence count. It does not pretend to compare fields that are not
+stored in the DB summary.
+
+A summary mismatch or invalid checkpoint prevents recovery.
+
+Checkpoint paths are portable relative paths:
+
+```text
+.lardon3d/checkpoints/<task_id>.chk
+```
+
+Generic publication ordering is:
+
+```text
+write and durably publish .chk.next
+-> commit SQLite checkpoint reference/summary
+-> under .chk.lock, promote .chk.next to canonical .chk
+```
+
+`.chk.lock` is advisory and process-local synchronization, not recovery data.
+
+Project inventory uses its DB page only for discovery. After acquiring `.chk.lock`, it reloads the DB
+row because the row may have changed while waiting.
+
+A valid canonical checkpoint whose summary matches DB wins over a stale/corrupt `.next`. If the
+canonical file does not match, a valid matching `.next` may be promoted under the lock.
+
+After copying the DB record outside the SQLite mutex, recovery consults the Task Kind Registry and
+distinguishes:
+
+- `LEGACY_UNTYPED`;
+- `UNKNOWN_TASK_KIND`;
+- `UNSUPPORTED_TASK_KIND_VERSION`.
+
+No business reconstructor is called while holding the Project DB mutex.
+
+Project open scans recoverable Tasks in pages of 8 by increasing Task ID. A full Queue window stops
+the scan without mutating remaining Tasks. The bounded summary reports `inspected`, `resumed`,
+`skipped`, `failed`, recovered `PUBLISHED_NOT_DURABLE` checkpoints and saturation.
+
+Project/schema/identity migration errors are fatal to open. Per-Task legacy/unknown/future kind,
+invalid checkpoint, unavailable source or reconstruction failure is non-fatal. SQLite `BUSY` after
+the configured timeout stops the scan without a retry loop and leaves the Project open.
+
+## Concurrency and ownership
+
+One opaque Project DB connection is serialized by an internal mutex.
+
+Each composite public operation owns its full transaction. No public transaction remains open across
+API calls.
+
+Artifact I/O does not occur under the SQLite mutex. The module verifies caller-published regular
+files before setting durable READY state.
+
+Closing Project DB concurrently with an active Project/DB API call is forbidden by owner contract.
+
+Records and strings are copied into caller-provided buffers. No SQLite pointer escapes the call.
+Statements are finalized before return.
+
+Bounded list/recovery APIs use caller-owned pages, with the documented maximums for each interface.
+
+## Project integration
+
+`Lardon3DAppState` owns exactly one `Lardon3DProjectDb *` while `project_loaded` is true.
+
+Canonical DB path:
+
+```text
+<project_root>/project.db
+```
+
+Project create/open opens the DB. `lardon3d_project_close()` closes it exactly once after the owning
+runtime has respected the Queue/DB lifetime boundary.
+
+Application shutdown destroys/joins the Task Queue before Project DB close.
+
+`project.ini` v2 stores:
+
+- project name;
+- 128-bit hexadecimal `stable_id`;
+- `version=2`.
+
+The same stable identity exists in Project DB `project`. Divergence is an error.
+
+A legacy INI without identity adopts an existing DB identity. If no DB exists, one identity is
+generated once and the INI is atomically migrated before later opens use it. An existing DB with no
+Project row may be initialized only when the INI already carries the identity required by the
+migration contract.
+
+## Real-data compatibility evidence
+
+The generic optical overlay was validated on migrated copies of real S21 and A6000 projects with
+scientific row counts preserved and the new optical tables empty until explicit use.
+
+The current A6000 Project DB v25 proof retains the current selected scientific pipeline state without
+identity rewriting:
+
+```text
+Selected images            689
+Feature Sets               689
+Candidate Pairs            38,420
+Match Results              38,420
+Applicable GVR             37,805
+Verified GVR               10,952
+Rejected GVR               26,853
+Track Sets                 1
+Tracks                     130,714
+Track observations         318,944
+Sparse SfM Tasks           0
+Sparse reconstructions     0
+Dense / MVS                0
+```
+
+The final continuation reused upstream durable work:
+
+```text
+ACQUISITION_REPLAY=0
+RAW_REPLAY=0
+FEATURE_REPLAY=0
+VISUAL_INDEX_REPLAY=0
+CANDIDATE_REPLAY=0
+MATCHER_REPLAY=0
+```
+
+The restart proof traversed existing Match Results, produced no duplicate GVR mapping and reused
+Track Set 1.
+
+This evidence proves persistence/restart behavior through Tracks. It does not create calibration for
+the historical A6000 campaign and does not authorize Sparse SfM or Dense/MVS execution.
+
+## Deferred persistence integration work
+
+The following items remain outside the acquired Project DB persistence boundary and must not be
+misreported as complete:
+
+- autosave wiring on every possible runtime transition;
+- UI retry workflow for unavailable sources;
+- legacy TUI migration cleanup;
+- orphan-file reconciliation and safe scrub;
+- Visual Index compaction or a future capacity evolution.
+
+Feature Store and Visual Index v1 themselves are implemented. Visual Index v1 retains the historical
+bounded capacity of 256 segments with 16 memberships per segment, for 4096 Feature Sets in one index.
+Larger scopes require compaction or an explicitly authorized evolution; this operational capacity
+must not be silently reinterpreted as a scientific dataset limit.
+
+## Status summary
+
+```text
+CURRENT_PROJECT_DB_SCHEMA=v25
+
+v22 selected scientific execution foundation       PASS/FROZEN
+v23 generic optical-context overlay                IMPLEMENTED/VALIDATED/REVIEWED
+v24 raw.develop.batch/1 persistence                IMPLEMENTED/VALIDATED
+v25 features.extract.batch/1 persistence           IMPLEMENTED/VALIDATED
+
+REAL_S21_TRACKS                                    PASS/FROZEN
+REAL_A6000_PRE_SFM                                 PASS/FROZEN
+```
+
+Current Project DB opens and migrates supported historical databases through the sequential known
+chain to v25.
+
+Historical contracts for Candidate Pair, Matcher, Geometric Verification, Tracks, Sparse SfM,
+Phase H, Capture/Asset Provenance, campaign execution, Photo Quality and selected scientific
+execution remain valid at the versions where they were introduced.
+
+No current Project DB migration:
+
+- invents Capture identity;
+- infers optical identity;
+- fabricates calibration;
+- turns metadata into scientific calibration;
+- converts historical Task kinds into newer Task kinds;
+- rewrites historical scientific rows;
+- creates a generic dependency DAG;
+- persists active Resource Governor reservations.
+
+Future schema changes beyond v25 require explicit human authorization.
