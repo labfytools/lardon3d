@@ -423,13 +423,13 @@ The final repository target is:
 - DOCUMENTATION_LANGUAGE=ENGLISH
 - SOURCE_COMMENT_LANGUAGE=ENGLISH
 - AGENT_CONTRACT_LANGUAGE=ENGLISH
-- USER_INTERFACE_LANGUAGE=INDEPENDENT
+- USER_INTERFACE_LANGUAGE=ENGLISH
 
 All technical documentation, agent contracts, prompt files and production source comments are to converge on English during the remediation passes.
 
 Translation must preserve scientific meaning, historical truth, FROZEN contracts, identities, numeric values, lifecycle state and evidence. A historical document may be translated but must not be silently modernized.
 
-The TUI language is a separate product/localization decision and is not changed by this documentation-language decision.
+The canonical TUI language is English. Existing non-English UI strings are to be remediated in an explicitly scoped UI-language pass; this documentation audit does not itself authorize executable UI changes.
 
 # Product documentation intentionally deferred
 
@@ -567,7 +567,7 @@ No mass source-comment editing is authorized by this inventory.
 # Phase state
 
 - DOCUMENTATION_INVENTORY_AUDIT=PASS_WITH_FINDINGS
-- DOCUMENTATION_REMEDIATION=NOT_STARTED
+- DOCUMENTATION_REMEDIATION=IN_PROGRESS
 - SOURCE_COMMENT_AUDIT=NOT_STARTED
 - PRODUCT_DEFINITION=NOT_STARTED
 - PROMPT_TREE=NOT_STARTED

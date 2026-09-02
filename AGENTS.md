@@ -41,7 +41,7 @@ Existing French documentation and source comments are to be converted to English
 
 Historical documents may be translated, but translation must not modernize or reinterpret the historical state they record.
 
-User-interface language is a separate product concern. Existing TUI labels may remain in their current language until an explicit localization/product decision is made. Repository language policy does not require the UI to be English-only.
+The canonical user-interface language is also English. Existing non-English TUI labels must converge on English during an explicitly scoped UI-language remediation pass; documentation-only work must not silently modify executable UI behavior.
 
 Canonical markers:
 
@@ -51,7 +51,7 @@ SOURCE_COMMENT_LANGUAGE=ENGLISH
 
 AGENT_CONTRACT_LANGUAGE=ENGLISH
 
-USER_INTERFACE_LANGUAGE=INDEPENDENT
+USER_INTERFACE_LANGUAGE=ENGLISH
 
 ## 2. FROZEN integrity
 
@@ -75,21 +75,18 @@ through an explicitly authorized, explicitly scoped human ticket:
 - Durable Acquisition-Campaign Execution — PASS/FROZEN
 - Global Maintenance Audit — PASS/FROZEN
 - Real S21 Tracks scientific result — PASS/FROZEN
+- Real A6000 pre-SfM scientific result — PASS/FROZEN
 
 Detailed subcontracts remain defined by their canonical documents. This file
 must not duplicate every S3 substage, scientific threshold, migration detail,
 or persistence format.
 
-Project DB v25 is the current additive operational schema in the active Feature
-batch tranche. It preserves v24 RAW batch, the v23 optical overlay and the v22
-scientific/persistence foundation. Its authorized purpose is limited to typed
-durable persistence for `features.extract.batch/1` through
-`feature_extract_batch_tasks`; it adds no scientific identity and must not
-reinterpret historical rows. Until the v25/Feature-batch tranche has completed
-its real-data proof and final review, its lifecycle must remain truthful rather
-than being marked `PASS/FROZEN` prematurely. Historical references to older
-Project DB versions remain valid where they describe the actual historical
-contract or migration path.
+Project DB v25 is the current additive operational schema. It preserves v24 RAW batch, the v23
+optical overlay and the v22 scientific/persistence foundation. Its additive purpose is typed durable
+persistence for `features.extract.batch/1` through `feature_extract_batch_tasks`; it adds no
+scientific identity and must not reinterpret historical rows. The v25 Feature-batch path has completed
+its retained real A6000 proof. Historical references to older Project DB versions remain valid where
+they describe the actual historical contract or migration path.
 
 The global maintenance implementation, fresh portable/Vulkan/sanitizer/
 concurrency validation and independent final review are acquired. Its lifecycle
@@ -107,6 +104,12 @@ Future reviews are delta-based from this checkpoint: begin with
 their directly affected contracts, tests, documentation, and crossed dependency
 boundaries. Unchanged PASS/FROZEN systems inherit this evidence and are reopened
 only by concrete evidence; do not repeat a global A-to-Z audit.
+
+The later real-data checkpoint is tag `real-a6000-pre-sfm-2026-09-02`. It establishes
+`REAL_A6000_PRE_SFM=PASS/FROZEN` through Geometric Verification and Tracks while explicitly
+leaving Sparse SfM and Dense/MVS unexecuted. This checkpoint adds later operational and real-data
+evidence; it does not erase or replace the `global-maintenance-2026-09-01` review authority for
+unchanged FROZEN systems.
 
 When a ticket declares `NO_NEW_SUBSYSTEM`, do not introduce an unrelated:
 
@@ -242,7 +245,7 @@ explicitly defines such an identity.
   progress distinct from generic runtime percentage, and keep unknown
   provenance visibly UNKNOWN. Full layout starts at 100x30, compact is
   supported through 60x15 (72x20 is the reference compact boundary), and only
-  the bounded "Terminal trop petit" fallback is allowed below that minimum.
+  the bounded terminal-too-small fallback is allowed below that minimum.
 - Preserve the contextual key contract. `F10 SSD` remains literally visible at
   60 columns in idle, text-input and import-running modes; text input owns only
   Enter/Escape/F10 and a running import owns only cancel (`X`) and F10 while
@@ -797,7 +800,9 @@ For Project DB:
   overlay;
 - v24 is the explicitly authorized additive operational RAW-batch migration and
   must not reinterpret scientific history;
-- future schema-version changes beyond the currently authorized v24 require
+- v25 is the additive Feature-batch migration for `features.extract.batch/1` and
+ must preserve v22/v23/v24 identities, rows and semantics;
+- future schema-version changes beyond the current v25 head require
   explicit human authorization;
 - migrations must be additive unless a different migration is explicitly
   authorized;
@@ -1015,7 +1020,7 @@ Every completed ticket report must include:
 STOP and request a human decision only when resolution requires:
 
 - changing a FROZEN scientific contract;
-- changing Project DB schema/version beyond already authorized v24 without
+- changing Project DB schema/version beyond the current v25 head without
   prior authorization;
 - introducing a genuinely new subsystem outside authorized scope;
 - files outside the authorized scope;
