@@ -950,5 +950,7 @@ CURRENT_NEXT                        PHYSICAL_AUTOFOCUS_OPTICAL_APPLICABILITY_VAL
 Implementation proceeds only through explicitly human-authorized tranches under `prompt.md` and the
 numbered `prompt/` execution contract. The current dependency is physical autofocus/optical
 applicability validation for real equipment, followed by a dedicated calibrated real campaign.
-Generic autofocus applicability machinery is available, but the real
-A6000 + E PZ 16-50 autofocus applicability remains blocked until physical evidence validates it.
+Generic autofocus applicability machinery is available. AF-study evidence can now be produced from
+already-materialized Calibration Workflow results without a second solver parser, while focus tokens
+remain explicit study annotations. The real A6000 + E PZ 16-50 autofocus applicability remains
+blocked until physical evidence validates it.

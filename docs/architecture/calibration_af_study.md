@@ -147,3 +147,44 @@ This v1 boundary does not:
 
 The future physical study supplies the evidence needed to decide whether the
 A6000 + E PZ 16-50 supports one domain, discrete domains, or exact focus only.
+
+## Materialized Workflow bridge v1
+
+**Status: PASS / FROZEN.**
+
+`CALIBRATION_AF_STUDY_WORKFLOW_BRIDGE_V1` is the additive conversion boundary
+between the already-FROZEN Calibration Workflow materializer and AF-study
+samples.
+
+It accepts a `Lardon3DCalibrationWorkflowExternalEvidence` that has already
+passed the existing immutable-file, solver-bundle and provenance checks. It
+does not parse `solve.json` or any other solver file again.
+
+The bridge:
+
+```text
+materialized Calibration Workflow evidence
++ caller-supplied exact focus token
++ caller-supplied FIT/HOLDOUT role
+-> Lardon3DCalibrationAfStudySample
+```
+
+The sample publishes `repeated_parameters[0]` only after checking that all three
+retained full solves remain exactly equal.
+
+Its `calibration_evidence_sha256` is independent of the focus token and
+FIT/HOLDOUT role and binds:
+
+- target identity;
+- optical-state identity;
+- solver executable/configuration identity;
+- initialization evidence;
+- validation evidence;
+- exact oriented dimensions;
+- exact published binary64 intrinsics.
+
+Therefore relabelling one calibration result cannot manufacture independent
+calibration evidence.
+
+The bridge performs no DB access, metadata interpretation, physical AF decision,
+thresholding, interpolation or extrapolation.
