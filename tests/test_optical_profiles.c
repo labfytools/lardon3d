@@ -1147,6 +1147,7 @@ static bool downgrade_to_v22_fixture(const char *path) {
   return raw_sql(
       path,
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE IF EXISTS feature_extract_batch_tasks;"
       "DROP TABLE raw_development_batch_tasks;"
       "DROP TABLE capture_calibration_selections;"
       "DROP TABLE optical_calibration_profiles;"

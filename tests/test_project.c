@@ -338,7 +338,7 @@ run_test(void)
     CHECK(write_ini(ini_path, "Projet Cycle", "A0000000000000000000000000000000", 2));
     CHECK(!lardon3d_project_open(&state, "Projet Cycle"));
     CHECK(!state.project_loaded && !state.project_db);
-    CHECK(strstr(state.status_message, "project.ini invalide") != NULL);
+    CHECK(strstr(state.status_message, "invalid project.ini") != NULL);
     CHECK(write_ini(ini_path, "Projet Cycle", "", 1));
     CHECK(lardon3d_project_open(&state, "Projet Cycle"));
     CHECK(strcmp(state.project_stable_id, stable_id) == 0);

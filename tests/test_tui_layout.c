@@ -303,7 +303,7 @@ run_test(void)
         &operation, &optics, 0, &palette,
         LARDON3D_TUI_INTERACTION_IDLE, 30, 100);
     CHECK(row_contains(16, 100, "Governor SSD IN_USE"));
-    CHECK(row_contains(16, 100, "alloc non"));
+    CHECK(row_contains(16, 100, "alloc no"));
     CHECK(row_contains(16, 100, "leases 2"));
     CHECK(row_contains(17, 100, "swap total/used"));
     CHECK(resizeterm(15, 60) == OK);
@@ -370,15 +370,15 @@ run_test(void)
     lardon3d_layout_draw_runtime(&state, "project", "name", NULL, &runtime,
         &operation, &optics, 0, &palette,
         LARDON3D_TUI_INTERACTION_TEXT_INPUT, 30, 100);
-    CHECK(row_contains(28, 100, "Enter valider"));
-    CHECK(row_contains(28, 100, "ESC annuler"));
-    CHECK(!row_contains(28, 100, "Q quitter"));
+    CHECK(row_contains(28, 100, "Enter confirm"));
+    CHECK(row_contains(28, 100, "ESC cancel"));
+    CHECK(!row_contains(28, 100, "Q quit"));
     CHECK(resizeterm(15, 60) == OK);
     lardon3d_layout_draw_runtime(&state, "project", "name", NULL, &runtime,
         &operation, &optics, 0, &palette,
         LARDON3D_TUI_INTERACTION_TEXT_INPUT, 15, 60);
     CHECK(row_contains(13, 60, "F10 SSD"));
-    CHECK(row_contains(13, 60, "Enter valider"));
+    CHECK(row_contains(13, 60, "Enter confirm"));
 
     state.screen = LARDON3D_SCREEN_IMPORT;
     Lardon3DImportTaskSnapshot import = {
@@ -390,15 +390,15 @@ run_test(void)
     lardon3d_layout_draw_runtime(&state, NULL, "", &import, &runtime,
         &operation, &optics, 0, &palette,
         LARDON3D_TUI_INTERACTION_IMPORT_RUNNING, 30, 100);
-    CHECK(row_contains(28, 100, "X annuler l'import"));
+    CHECK(row_contains(28, 100, "X cancel import"));
     CHECK(row_contains(28, 100, "Q/ESC"));
-    CHECK(row_contains(9, 100, "X : annuler"));
+    CHECK(row_contains(9, 100, "X: cancel"));
     CHECK(resizeterm(15, 60) == OK);
     lardon3d_layout_draw_runtime(&state, NULL, "", &import, &runtime,
         &operation, &optics, 0, &palette,
         LARDON3D_TUI_INTERACTION_IMPORT_RUNNING, 15, 60);
     CHECK(row_contains(13, 60, "F10 SSD"));
-    CHECK(row_contains(13, 60, "X annuler"));
+    CHECK(row_contains(13, 60, "X cancel"));
 
     state.screen = LARDON3D_SCREEN_TASKS;
     CHECK(resizeterm(30, 100) == OK);
@@ -426,8 +426,8 @@ run_test(void)
     lardon3d_layout_draw_runtime(&state, NULL, "", NULL, &runtime,
         &operation, &optics, 0, &palette, LARDON3D_TUI_INTERACTION_IDLE,
         30, 100);
-    CHECK(screen_contains(30, 100, "Progression scientifique"));
-    CHECK(!screen_contains(30, 100, "Progression runtime"));
+    CHECK(screen_contains(30, 100, "Scientific progress"));
+    CHECK(!screen_contains(30, 100, "Runtime progress"));
 
     state.screen = LARDON3D_SCREEN_HOME;
     runtime.active_task_known = true;
@@ -448,7 +448,7 @@ run_test(void)
         &operation, &optics, 0, &palette, LARDON3D_TUI_INTERACTION_IDLE,
         30, 100);
     CHECK(screen_contains(30, 100, "2.5%/s"));
-    CHECK(!screen_contains(30, 100, "2.5 unité/s"));
+    CHECK(!screen_contains(30, 100, "2.5 unit/s"));
 
     state.screen = LARDON3D_SCREEN_OPTICS;
     optics = (Lardon3DTuiOpticsSnapshot) {0};
@@ -458,7 +458,7 @@ run_test(void)
         &operation, &optics, 0, &palette, LARDON3D_TUI_INTERACTION_IDLE,
         30, 100);
     CHECK(screen_contains(30, 100, "BUSY"));
-    CHECK(screen_contains(30, 100, "R :"));
+    CHECK(screen_contains(30, 100, "R:"));
     CHECK(screen_contains(30, 100, "Project DB"));
 
     optics = (Lardon3DTuiOpticsSnapshot) {
@@ -474,10 +474,10 @@ run_test(void)
     lardon3d_layout_draw_runtime(&state, NULL, "", NULL, &runtime,
         &operation, &optics, 0, &palette, LARDON3D_TUI_INTERACTION_IDLE,
         30, 100);
-    CHECK(screen_contains(30, 100, "1/16 affich"));
-    CHECK(screen_contains(30, 100, ", suite"));
-    CHECK(screen_contains(30, 100, "[ premi"));
-    CHECK(screen_contains(30, 100, "] page suivante"));
+    CHECK(screen_contains(30, 100, "1/16 shown"));
+    CHECK(screen_contains(30, 100, ", more"));
+    CHECK(screen_contains(30, 100, "[ first"));
+    CHECK(screen_contains(30, 100, "] next page"));
 
     /* The legacy symbol accepts only baseline-sized objects. This call also
      * proves a NULL task array with a nonzero count is safely treated empty. */
@@ -494,7 +494,7 @@ run_test(void)
     CHECK(screen_contains(30, 100, "#55"));
     lardon3d_layout_draw(&state, NULL, "", NULL, NULL, 1,
         &legacy_summary, &legacy_resources, 30, 100);
-    CHECK(screen_contains(30, 100, "Aucune t"));
+    CHECK(screen_contains(30, 100, "No retained"));
 
     CHECK(resizeterm(14, 59) == OK);
     lardon3d_layout_draw_runtime(&state, NULL, "", NULL, &runtime,
@@ -502,7 +502,7 @@ run_test(void)
         14, 59);
     char line[60] = {0};
     CHECK(mvwinnstr(stdscr, 7, 0, line, 59) != ERR);
-    CHECK(strstr(line, "Terminal trop petit") != NULL);
+    CHECK(strstr(line, "Terminal too small") != NULL);
 
     (void)endwin();
     delscreen(screen);

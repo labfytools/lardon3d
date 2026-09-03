@@ -279,7 +279,7 @@ lardon3d_image_view_set_filter(
             (void)snprintf(
                 error_message,
                 error_message_size,
-                "Erreur : filtre invalide."
+                "Error: invalid filter."
             );
         }
         return false;
@@ -290,7 +290,7 @@ lardon3d_image_view_set_filter(
             (void)snprintf(
                 error_message,
                 error_message_size,
-                "Erreur : filtre trop long."
+                "Error: filter is too long."
             );
         }
         return false;
@@ -300,7 +300,7 @@ lardon3d_image_view_set_filter(
             (void)snprintf(
                 error_message,
                 error_message_size,
-                "Erreur : mémoire insuffisante pour la vue."
+                "Error: insufficient memory for the view."
             );
         }
         return false;
@@ -368,16 +368,16 @@ lardon3d_image_view_sort_name(Lardon3DImageSort sort)
 {
     switch (sort) {
     case LARDON3D_IMAGE_SORT_NAME_ASC:
-        return "Nom croissant";
+        return "Name ascending";
     case LARDON3D_IMAGE_SORT_NAME_DESC:
-        return "Nom décroissant";
+        return "Name descending";
     case LARDON3D_IMAGE_SORT_SIZE_ASC:
-        return "Taille croissante";
+        return "Size ascending";
     case LARDON3D_IMAGE_SORT_SIZE_DESC:
-        return "Taille décroissante";
+        return "Size descending";
     case LARDON3D_IMAGE_SORT_IMPORT_ORDER:
     default:
-        return "Ordre d'import";
+        return "Import order";
     }
 }
 

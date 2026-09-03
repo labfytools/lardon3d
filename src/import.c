@@ -106,7 +106,7 @@ trim_source_path(
 )
 {
     if (!input) {
-        set_status(state, "Erreur : dossier source vide.");
+        set_status(state, "Error: source directory is empty.");
         return false;
     }
 
@@ -121,11 +121,11 @@ trim_source_path(
 
     size_t length = (size_t)(end - start);
     if (length == 0) {
-        set_status(state, "Erreur : dossier source vide.");
+        set_status(state, "Error: source directory is empty.");
         return false;
     }
     if (length >= PATH_MAX) {
-        set_status(state, "Erreur : chemin source trop long.");
+        set_status(state, "Error: source path is too long.");
         return false;
     }
     (void)memcpy(output, start, length);
@@ -153,7 +153,7 @@ resolve_source_path(
         }
     }
 
-    set_status(state, "Erreur : chemin source trop long ou inaccessible.");
+    set_status(state, "Error: source path is too long or inaccessible.");
     return false;
 }
 
@@ -192,7 +192,7 @@ candidate_list_append(
             : candidates->capacity * 2;
         if (capacity < candidates->capacity
             || capacity > SIZE_MAX / sizeof(*candidates->items)) {
-            set_status(state, "Erreur : trop de fichiers à importer.");
+            set_status(state, "Error: too many files to import.");
             return false;
         }
         void *items = realloc(
@@ -200,7 +200,7 @@ candidate_list_append(
             capacity * sizeof(*candidates->items)
         );
         if (!items) {
-            set_status(state, "Erreur : mémoire insuffisante pour l'import.");
+            set_status(state, "Error: insufficient memory for import.");
             return false;
         }
         candidates->items = items;
@@ -215,7 +215,7 @@ candidate_list_append(
         filename
     );
     if (written < 0 || (size_t)written >= sizeof(candidate->filename)) {
-        set_status(state, "Erreur : nom de fichier trop long.");
+        set_status(state, "Error: filename is too long.");
         return false;
     }
     candidate->created = false;
@@ -232,24 +232,24 @@ ensure_originals_directory(
 {
     if (!join_path(images_path, state->project_path, "images")
         || !join_path(originals_path, images_path, "originals")) {
-        set_status(state, "Erreur : chemin du projet trop long.");
+        set_status(state, "Error: project path is too long.");
         return false;
     }
 
     struct stat info;
     if (lstat(images_path, &info) != 0 || !S_ISDIR(info.st_mode)) {
-        set_status(state, "Erreur : dossier images absent ou invalide.");
+        set_status(state, "Error: images directory is missing or invalid.");
         return false;
     }
     if (lstat(originals_path, &info) == 0) {
         if (!S_ISDIR(info.st_mode)) {
-            set_status(state, "Erreur : images/originals n'est pas un dossier.");
+            set_status(state, "Error: images/originals is not a directory.");
             return false;
         }
         return true;
     }
     if (errno != ENOENT || mkdir(originals_path, 0755) != 0) {
-        set_status(state, "Erreur : impossible de créer images/originals.");
+        set_status(state, "Error: unable to create images/originals.");
         return false;
     }
     return true;
@@ -303,7 +303,7 @@ manifest_begin(
             images_path,
             ".manifest.tsv.tmp.XXXXXX"
         )) {
-        set_status(state, "Erreur : chemin du manifeste trop long.");
+        set_status(state, "Error: manifest path is too long.");
         return false;
     }
 
@@ -316,18 +316,18 @@ manifest_begin(
         struct stat info;
         if (fstat(previous_descriptor, &info) != 0 || !S_ISREG(info.st_mode)) {
             (void)close(previous_descriptor);
-            set_status(state, "Erreur : manifest.tsv invalide.");
+            set_status(state, "Error: invalid manifest.tsv.");
             return false;
         }
         previous = fdopen(previous_descriptor, "r");
         if (!previous) {
             (void)close(previous_descriptor);
-            set_status(state, "Erreur : impossible de lire manifest.tsv.");
+            set_status(state, "Error: unable to read manifest.tsv.");
             return false;
         }
         writer->previous_exists = true;
     } else if (errno != ENOENT) {
-        set_status(state, "Erreur : impossible de lire manifest.tsv.");
+        set_status(state, "Error: unable to read manifest.tsv.");
         return false;
     }
 
@@ -336,7 +336,7 @@ manifest_begin(
         if (previous) {
             (void)fclose(previous);
         }
-        set_status(state, "Erreur : impossible de préparer manifest.tsv.");
+        set_status(state, "Error: unable to prepare manifest.tsv.");
         return false;
     }
     writer->file = fdopen(descriptor, "w");
@@ -346,7 +346,7 @@ manifest_begin(
             (void)fclose(previous);
         }
         manifest_abort(writer);
-        set_status(state, "Erreur : impossible d'écrire manifest.tsv.");
+        set_status(state, "Error: unable to write manifest.tsv.");
         return false;
     }
 
@@ -373,7 +373,7 @@ manifest_begin(
 
     if (!success) {
         manifest_abort(writer);
-        set_status(state, "Erreur : manifest.tsv invalide ou illisible.");
+        set_status(state, "Error: manifest.tsv is invalid or unreadable.");
     }
     return success;
 }
@@ -446,7 +446,7 @@ manifest_commit(Lardon3DAppState *state, ManifestWriter *writer)
     }
     if (!success) {
         (void)unlink(writer->temporary_path);
-        set_status(state, "Erreur : impossible de mettre à jour manifest.tsv.");
+        set_status(state, "Error: unable to update manifest.tsv.");
     }
     return success;
 }
@@ -602,7 +602,7 @@ analyze_source_directory(
 {
     DIR *directory = opendir(absolute_source);
     if (!directory) {
-        set_status(state, "Erreur : impossible d'ouvrir le dossier source.");
+        set_status(state, "Error: unable to open source directory.");
         return false;
     }
 
@@ -616,7 +616,7 @@ analyze_source_directory(
         struct dirent *entry = readdir(directory);
         if (!entry) {
             if (errno != 0) {
-                set_status(state, "Erreur : lecture du dossier source impossible.");
+                set_status(state, "Error: unable to read source directory.");
                 success = false;
             }
             break;
@@ -628,7 +628,7 @@ analyze_source_directory(
 
         char source_path[PATH_MAX];
         if (!join_path(source_path, absolute_source, entry->d_name)) {
-            set_status(state, "Erreur : chemin source trop long.");
+            set_status(state, "Error: source path is too long.");
             success = false;
             break;
         }
@@ -645,7 +645,7 @@ analyze_source_directory(
         if (has_forbidden_manifest_character(entry->d_name)) {
             set_status(
                 state,
-                "Erreur : nom de fichier incompatible avec le manifeste."
+                "Error: filename is incompatible with the manifest."
             );
             success = false;
             break;
@@ -653,7 +653,7 @@ analyze_source_directory(
 
         char destination_path[PATH_MAX];
         if (!join_path(destination_path, originals_path, entry->d_name)) {
-            set_status(state, "Erreur : chemin destination trop long.");
+            set_status(state, "Error: destination path is too long.");
             success = false;
             break;
         }
@@ -664,7 +664,7 @@ analyze_source_directory(
     }
 
     if (closedir(directory) != 0) {
-        set_status(state, "Erreur : fermeture du dossier source impossible.");
+        set_status(state, "Error: unable to close source directory.");
         success = false;
     }
     return success;
@@ -711,27 +711,25 @@ fail_import(
         (void)snprintf(
             state->status_message,
             sizeof(state->status_message),
-            "Import annulé : %zu copie%s retirée%s après erreur (%s).",
+            "Import cancelled: %zu %s removed after error (%s).",
             removed,
-            removed == 1 ? "" : "s",
-            removed == 1 ? "" : "s",
+            removed == 1 ? "copy" : "copies",
             reason
         );
     } else if (result->copied > 0) {
         (void)snprintf(
             state->status_message,
             sizeof(state->status_message),
-            "Erreur critique : %zu copie%s conservée%s sans manifeste (%s).",
+            "Critical error: %zu %s retained without manifest (%s).",
             result->copied,
-            result->copied == 1 ? "" : "s",
-            result->copied == 1 ? "" : "s",
+            result->copied == 1 ? "copy" : "copies",
             reason
         );
     } else {
         (void)snprintf(
             state->status_message,
             sizeof(state->status_message),
-            "Erreur d'import : %s.",
+            "Import error: %s.",
             reason
         );
     }
@@ -754,7 +752,7 @@ cancel_import(
     (void)snprintf(
         state->status_message,
         sizeof(state->status_message),
-        "Import annulé : %zu sur %zu fichiers traités.",
+        "Import cancelled: %zu of %zu files processed.",
         processed,
         result->admissible_found
     );
@@ -788,7 +786,7 @@ lardon3d_import_directory_batch(
     struct stat source_info;
     if (lstat(absolute_source, &source_info) != 0
         || !S_ISDIR(source_info.st_mode)) {
-        set_status(state, "Erreur : dossier source absent ou invalide.");
+        set_status(state, "Error: source directory is missing or invalid.");
         return LARDON3D_IMPORT_FAILED;
     }
     char images_path[PATH_MAX], originals_path[PATH_MAX];
@@ -804,7 +802,7 @@ lardon3d_import_directory_batch(
     DIR *directory = opendir(absolute_source);
     if (!directory) {
         manifest_abort(&manifest);
-        set_status(state, "Erreur : impossible d'ouvrir le dossier source.");
+        set_status(state, "Error: unable to open source directory.");
         return LARDON3D_IMPORT_FAILED;
     }
     CandidateList created = {0};
@@ -888,8 +886,8 @@ lardon3d_import_directory_batch(
         manifest_abort(&manifest);
         (void)rollback_created_files(&created, originals_path);
         free(created.items);
-        set_status(state, cancelled ? "Import annulé à une frontière sûre."
-                                    : "Erreur pendant un lot d'import.");
+        set_status(state, cancelled ? "Import cancelled at a safe boundary."
+                                    : "Error during an import batch.");
         return cancelled ? LARDON3D_IMPORT_CANCELLED : LARDON3D_IMPORT_FAILED;
     }
     if (!manifest_commit(state, &manifest)) {
@@ -899,7 +897,7 @@ lardon3d_import_directory_batch(
     }
     free(created.items);
     *complete = result->processed == result->admissible_found;
-    set_status(state, *complete ? "Import terminé." : "Lot d'import publié.");
+    set_status(state, *complete ? "Import completed." : "Import batch published.");
     publish_progress(control, result, result->processed, state->status_message);
     return LARDON3D_IMPORT_SUCCEEDED;
 }
@@ -919,7 +917,7 @@ lardon3d_import_directory_controlled(
     publish_progress(control, result, 0, "Analyse du dossier source...");
 
     if (!state->project_loaded) {
-        set_status(state, "Aucun projet chargé.");
+        set_status(state, "No project loaded.");
         publish_progress(control, result, 0, state->status_message);
         return LARDON3D_IMPORT_FAILED;
     }
@@ -935,19 +933,19 @@ lardon3d_import_directory_controlled(
         return LARDON3D_IMPORT_FAILED;
     }
     if (has_forbidden_manifest_character(absolute_source)) {
-        set_status(state, "Erreur : chemin source incompatible avec le manifeste.");
+        set_status(state, "Error: source path is incompatible with the manifest.");
         publish_progress(control, result, 0, state->status_message);
         return LARDON3D_IMPORT_FAILED;
     }
 
     struct stat source_directory_info;
     if (lstat(absolute_source, &source_directory_info) != 0) {
-        set_status(state, "Erreur : dossier source inexistant.");
+        set_status(state, "Error: source directory does not exist.");
         publish_progress(control, result, 0, state->status_message);
         return LARDON3D_IMPORT_FAILED;
     }
     if (!S_ISDIR(source_directory_info.st_mode)) {
-        set_status(state, "Erreur : la source n'est pas un dossier.");
+        set_status(state, "Error: source is not a directory.");
         publish_progress(control, result, 0, state->status_message);
         return LARDON3D_IMPORT_FAILED;
     }
@@ -956,7 +954,7 @@ lardon3d_import_directory_controlled(
     char originals_path[PATH_MAX];
     if (!join_path(images_path, state->project_path, "images")
         || !join_path(originals_path, images_path, "originals")) {
-        set_status(state, "Erreur : chemin du projet trop long.");
+        set_status(state, "Error: project path is too long.");
         publish_progress(control, result, 0, state->status_message);
         return LARDON3D_IMPORT_FAILED;
     }
@@ -978,7 +976,7 @@ lardon3d_import_directory_controlled(
     }
     if (analysis_cancelled) {
         free(candidates.items);
-        set_status(state, "Import annulé : 0 fichier traité.");
+        set_status(state, "Import cancelled: 0 files processed.");
         publish_progress(control, result, 0, state->status_message);
         return LARDON3D_IMPORT_CANCELLED;
     }
@@ -986,7 +984,7 @@ lardon3d_import_directory_controlled(
 
     if (import_is_cancelled(control)) {
         free(candidates.items);
-        set_status(state, "Import annulé : 0 fichier traité.");
+        set_status(state, "Import cancelled: 0 files processed.");
         publish_progress(control, result, 0, state->status_message);
         return LARDON3D_IMPORT_CANCELLED;
     }
@@ -1079,7 +1077,7 @@ lardon3d_import_directory_controlled(
                 source_path
             )) {
             success = false;
-            failure_reason = "écriture du manifeste impossible";
+            failure_reason = "unable to write manifest";
             break;
         }
         ++processed;
@@ -1129,7 +1127,7 @@ lardon3d_import_directory_controlled(
             state,
             result,
             removed,
-            "mise à jour du manifeste impossible"
+            "unable to update manifest"
         );
         publish_progress(control, result, processed, state->status_message);
         return LARDON3D_IMPORT_FAILED;
@@ -1139,13 +1137,11 @@ lardon3d_import_directory_controlled(
     (void)snprintf(
         state->status_message,
         sizeof(state->status_message),
-        "Import terminé : %zu copiée%s, %zu déjà présente%s.",
+        "Import completed: %zu copied, %zu already present.",
         result->copied,
-        result->copied == 1 ? "" : "s",
-        result->already_present,
-        result->already_present == 1 ? "" : "s"
+        result->already_present
     );
-    publish_progress(control, result, processed, "Import terminé.");
+    publish_progress(control, result, processed, "Import completed.");
     return LARDON3D_IMPORT_SUCCEEDED;
 }
 
@@ -1187,7 +1183,7 @@ lardon3d_import_directory_batch_to_scanset(
     struct stat directory_info;
     if (lstat(source, &directory_info) != 0 || !S_ISDIR(directory_info.st_mode)
         || S_ISLNK(directory_info.st_mode)) {
-        set_status(state, "Erreur : dossier source absent ou invalide.");
+        set_status(state, "Error: source directory is missing or invalid.");
         return LARDON3D_IMPORT_FAILED;
     }
     DIR *directory = opendir(source);
@@ -1254,15 +1250,15 @@ lardon3d_import_directory_batch_to_scanset(
         legacy_manifest_active = false;
     }
     if (cancelled) {
-        set_status(state, "Import annulé à une frontière sûre.");
+        set_status(state, "Import cancelled at a safe boundary.");
         return LARDON3D_IMPORT_CANCELLED;
     }
     if (!success) {
-        set_status(state, "Erreur pendant un lot d'import.");
+        set_status(state, "Error during an import batch.");
         return LARDON3D_IMPORT_FAILED;
     }
     *complete = !remaining;
-    set_status(state, *complete ? "Import terminé." : "Lot d'import publié.");
+    set_status(state, *complete ? "Import completed." : "Import batch published.");
     publish_progress(control, result, result->processed, state->status_message);
     return LARDON3D_IMPORT_SUCCEEDED;
 }

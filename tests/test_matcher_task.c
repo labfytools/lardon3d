@@ -360,6 +360,16 @@ static bool downgrade_project_to_historical_v10(const char *database_path) {
   }
   static const char sql[] =
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE IF EXISTS feature_extract_batch_tasks;"
+      "DROP TABLE IF EXISTS raw_development_batch_tasks;"
+      "DROP TABLE IF EXISTS selected_execution_items;"
+      "DROP TABLE IF EXISTS selected_executions;"
+      "DROP TABLE IF EXISTS raw_development_tasks;"
+      "DROP TABLE IF EXISTS capture_source_assets;"
+      "DROP TABLE IF EXISTS photo_quality_triage_results;"
+      "DROP TABLE IF EXISTS photo_quality_triage_tasks;"
+      "DROP TABLE IF EXISTS acquisition_campaign_captures;"
+      "DROP TABLE IF EXISTS acquisition_campaign_tasks;"
       "DROP TABLE IF EXISTS capture_calibration_selections;"
       "DROP TABLE IF EXISTS optical_calibration_profiles;"
       "DROP TABLE IF EXISTS capture_optical_configurations;"

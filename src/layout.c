@@ -60,7 +60,7 @@ draw_text(int row, int column, int available, const char *text)
 static void
 draw_too_small(int rows, int columns)
 {
-    static const char message[] = "Terminal trop petit";
+    static const char message[] = "Terminal too small";
     int row = rows > 0 ? rows / 2 : 0;
     int column = columns > (int)(sizeof(message) - 1)
         ? (columns - (int)(sizeof(message) - 1)) / 2
@@ -86,24 +86,24 @@ screen_title(Lardon3DScreen screen)
 {
     switch (screen) {
     case LARDON3D_SCREEN_PROJECTS:
-        return "Projets";
+        return "Projects";
     case LARDON3D_SCREEN_IMPORT:
         return "Import";
     case LARDON3D_SCREEN_VIEWER:
         return "Viewer";
     case LARDON3D_SCREEN_HELP:
-        return "Aide / contrats runtime";
+        return "Help / runtime contracts";
     case LARDON3D_SCREEN_TASKS:
-        return "Tâches";
+        return "Tasks";
     case LARDON3D_SCREEN_RESOURCES:
-        return "Ressources / Governor";
+        return "Resources / Governor";
     case LARDON3D_SCREEN_OPTICS:
-        return "Profils optiques immuables";
+        return "Immutable optical profiles";
     case LARDON3D_SCREEN_SSD:
-        return "SSD externe";
+        return "External SSD";
     case LARDON3D_SCREEN_HOME:
     default:
-        return "Observatoire Lardon3D";
+        return "Lardon3D Observatory";
     }
 }
 
@@ -116,26 +116,26 @@ screen_footer(
     Lardon3DTuiKeyContract keys = lardon3d_tui_key_contract(
         interaction_mode);
     if (keys.enter && keys.escape && keys.f10) {
-        return "F10 SSD | Enter valider | ESC annuler";
+        return "F10 SSD | Enter confirm | ESC cancel";
     }
     if (keys.cancel_import && keys.f10) {
-        return "F10 SSD | X annuler l'import | Q/ESC désactivés";
+        return "F10 SSD | X cancel import | Q/ESC disabled";
     }
     switch (screen) {
     case LARDON3D_SCREEN_PROJECTS:
-        return "F10 SSD | N Nouveau O Ouvrir C Fermer | ESC Accueil F7 Optique Q";
+        return "F10 SSD | N New O Open C Close | ESC Home F7 Optics Q";
     case LARDON3D_SCREEN_IMPORT:
-        return "F10 SSD | I Importer R Recharger S Tri/Filtre X Effacer | ESC Q";
+        return "F10 SSD | I Import R Reload S Sort/Filter X Clear | ESC Q";
     case LARDON3D_SCREEN_TASKS:
-        return "F10 SSD | ↑/↓ P pause R reprise C annuler | ESC F6 Ressources Q";
+        return "F10 SSD | ↑/↓ P pause R resume C cancel | ESC F6 Resources Q";
     case LARDON3D_SCREEN_RESOURCES:
-        return "F10 SSD | Observation seule: CPU/GPU/batch par Governor | ESC Q";
+        return "F10 SSD | Observation only: CPU/GPU/batch by Governor | ESC Q";
     case LARDON3D_SCREEN_OPTICS:
-        return "F10 SSD | TAB ↑/↓ [ première ] suivante B/L/C V/A/G/K/E R retry ESC Q";
+        return "F10 SSD | TAB ↑/↓ [ first ] next B/L/C V/A/G/K/E R retry ESC Q";
     case LARDON3D_SCREEN_SSD:
-        return "F10 SSD | activer/drainer/annuler drain (asynchrone) | ESC Q";
+        return "F10 SSD | enable/drain/cancel drain (asynchronous) | ESC Q";
     default:
-        return "F10 SSD | F1 Aide F2 Projets F3 Import F4 Viewer F5 Tâches F6 Ressources Q";
+        return "F10 SSD | F1 Help F2 Projects F3 Import F4 Viewer F5 Tasks F6 Resources Q";
     }
 }
 
@@ -233,8 +233,8 @@ static void
 draw_project_line(const Lardon3DAppState *state, int row, int columns)
 {
     char line[512];
-    (void)snprintf(line, sizeof(line), "Projet: %.120s%s%.370s",
-        state->project_loaded ? state->project_name : "aucun",
+    (void)snprintf(line, sizeof(line), "Project: %.120s%s%.370s",
+        state->project_loaded ? state->project_name : "none",
         state->project_loaded ? "  " : "",
         state->project_loaded ? state->project_path : "");
     draw_text(row, 2, columns - 4, line);
@@ -267,7 +267,7 @@ draw_home(
     int active_row = start + 6;
     if (!runtime->active_task_known) {
         draw_text_style(active_row, 2, columns - 4,
-            "Tâche active: aucune", LARDON3D_TUI_SEMANTIC_DIM, palette);
+            "Active task: none", LARDON3D_TUI_SEMANTIC_DIM, palette);
         return;
     }
     const Lardon3DTaskObservation *task =
@@ -302,7 +302,7 @@ draw_home(
                 (unsigned long long)task->id, task->name);
         } else {
             (void)snprintf(line, sizeof(line),
-                "scientifique indéterminé | #%llu %.18s",
+                "scientific unknown | #%llu %.18s",
                 (unsigned long long)task->id, task->name);
         }
     } else {
@@ -337,15 +337,15 @@ draw_home(
         if (runtime->active_progress.throughput_known) {
             (void)snprintf(throughput, sizeof(throughput),
                 runtime->active_progress.runtime_percentage
-                    ? "%.1f%%/s" : "%.1f unité/s",
+                    ? "%.1f%%/s" : "%.1f unit/s",
                 runtime->active_progress.units_per_second);
         } else {
             (void)snprintf(throughput, sizeof(throughput), "UNKNOWN");
         }
         (void)snprintf(line, sizeof(line),
-            "Durée %s | ETA %s | débit %s%s", elapsed, eta, throughput,
+            "Elapsed %s | ETA %s | throughput %s%s", elapsed, eta, throughput,
             runtime->active_progress.resumed_prefix_excluded
-                ? " | préfixe repris exclu" : "");
+                ? " | resumed prefix excluded" : "");
         draw_text(active_row + 2, 2, columns - 4, line);
     }
 }
@@ -353,9 +353,9 @@ draw_home(
 static void
 draw_projects(const char *input_text, const char *input_label, int columns)
 {
-    draw_text(5, 4, columns - 6, "N : Nouveau projet");
-    draw_text(6, 4, columns - 6, "O : Ouvrir un projet");
-    draw_text(7, 4, columns - 6, "C : Fermer le projet");
+    draw_text(5, 4, columns - 6, "N: New project");
+    draw_text(6, 4, columns - 6, "O: Open a project");
+    draw_text(7, 4, columns - 6, "C: Close project");
     draw_input_field(input_text, input_label, 9, columns);
 }
 
@@ -363,19 +363,19 @@ static void
 draw_catalog(const Lardon3DAppState *state, int rows, int columns)
 {
     if (!state->project_loaded || !state->image_view || !state->image_catalog) {
-        draw_text(5, 4, columns - 6, "Aucun projet chargé.");
+        draw_text(5, 4, columns - 6, "No project loaded.");
         return;
     }
     size_t count = lardon3d_image_view_count(state->image_view);
     size_t total = lardon3d_image_catalog_count(state->image_catalog);
     char line[512];
-    (void)snprintf(line, sizeof(line), "Images visibles: %zu / %zu | Tri: %s",
+    (void)snprintf(line, sizeof(line), "Visible images: %zu / %zu | Sort: %s",
         count, total, lardon3d_image_view_sort_name(
             lardon3d_image_view_sort(state->image_view)));
     draw_text(4, 2, columns - 4, line);
     const char *filter = lardon3d_image_view_filter(state->image_view);
-    (void)snprintf(line, sizeof(line), "Filtre: %s",
-        filter[0] ? filter : "aucun");
+    (void)snprintf(line, sizeof(line), "Filter: %s",
+        filter[0] ? filter : "none");
     draw_text(5, 2, columns - 4, line);
     size_t visible = rows > 12 ? (size_t)(rows - 12) : 1;
     size_t offset = lardon3d_image_view_offset(state->image_view);
@@ -407,7 +407,7 @@ draw_import(
     if (snapshot && snapshot->status == LARDON3D_IMPORT_TASK_RUNNING) {
         char line[256];
         (void)snprintf(line, sizeof(line),
-            "Import: %zu/%zu | copiés %zu | présents %zu | ignorés %zu",
+            "Import: %zu/%zu | copied %zu | present %zu | skipped %zu",
             snapshot->processed, snapshot->total, snapshot->copied,
             snapshot->already_present, snapshot->ignored);
         draw_text_style(5, 2, columns - 4, line,
@@ -427,7 +427,7 @@ draw_import(
         }
         if (percent > 100) percent = 100;
         draw_progress_bar(7, 2, columns - 4, percent, palette);
-        draw_text(9, 2, columns - 4, "X : annuler l'import");
+        draw_text(9, 2, columns - 4, "X: cancel import");
     } else if (input_text) {
         draw_input_field(input_text, input_label, 5, columns);
     } else {
@@ -446,18 +446,18 @@ draw_tasks(
 {
     char line[512];
     (void)snprintf(line, sizeof(line),
-        "Total %zu | running %zu | pending %zu | terminal cumulées %zu",
+        "Total %zu | running %zu | pending %zu | terminal cumulative %zu",
         runtime->task_summary.total, runtime->task_summary.running,
         runtime->task_summary.pending, runtime->task_summary.completed);
     draw_text(4, 2, columns - 4, line);
     if (runtime->task_count == 0) {
-        draw_text_style(6, 4, columns - 6, "Aucune tâche retenue.",
+        draw_text_style(6, 4, columns - 6, "No retained task.",
             LARDON3D_TUI_SEMANTIC_DIM, palette);
         return;
     }
     if (selected >= runtime->task_count) selected = runtime->task_count - 1;
     const Lardon3DTaskObservation *chosen = &runtime->tasks[selected];
-    (void)snprintf(line, sizeof(line), "Sélection #%llu %s | %s | %s",
+    (void)snprintf(line, sizeof(line), "Selection #%llu %s | %s | %s",
         (unsigned long long)chosen->id, chosen->name,
         chosen->has_task_kind ? chosen->task_kind : "untyped",
         lardon3d_task_state_name(chosen->state));
@@ -472,7 +472,7 @@ draw_tasks(
             : LARDON3D_TUI_SEMANTIC_CPU), palette);
     if (chosen->durable_progress_known) {
         (void)snprintf(line, sizeof(line),
-            "Progression durable: %llu/%llu%s",
+            "Durable progress: %llu/%llu%s",
             (unsigned long long)chosen->durable_completed,
             (unsigned long long)chosen->durable_total,
             chosen->state == TASK_COMPLETED
@@ -485,10 +485,10 @@ draw_tasks(
                 : LARDON3D_TUI_SEMANTIC_NORMAL, palette);
     } else if (chosen->has_task_kind) {
         draw_text_style(7, 2, columns - 4,
-            "Progression scientifique: indéterminée",
+            "Scientific progress: unknown",
             LARDON3D_TUI_SEMANTIC_WARNING, palette);
     } else {
-        (void)snprintf(line, sizeof(line), "Progression runtime: %u%%",
+        (void)snprintf(line, sizeof(line), "Runtime progress: %u%%",
             chosen->progress);
         draw_text(7, 2, columns - 4, line);
     }
@@ -576,7 +576,7 @@ format_external_storage_summary(
     (void)snprintf(line, capacity,
         "Governor SSD %s | alloc %s | scratch total/free %s/%s | leases %zu",
         status,
-        resource->scratch_new_allocations_allowed ? "oui" : "non",
+        resource->scratch_new_allocations_allowed ? "yes" : "no",
         scratch_total, scratch_free, resource->scratch_leases);
 }
 
@@ -590,7 +590,7 @@ draw_resources(
 {
     if (!resource->valid) {
         draw_text_style(5, 4, columns - 6,
-            "Ressources système indisponibles (UNKNOWN).",
+            "System resources unavailable (UNKNOWN).",
             LARDON3D_TUI_SEMANTIC_WARNING, palette);
         char external[512];
         format_external_storage_summary(
@@ -615,22 +615,22 @@ draw_resources(
             resource->cpu_admitted);
     }
     (void)snprintf(line, sizeof(line),
-        "CPU active/admis/disponible: %u/%s/%u (hôte %u) | utilisation %s",
+        "CPU active/admitted/available: %u/%s/%u (host %u) | utilization %s",
         resource->cpu_active, admitted, resource->cpu_available,
         resource->cpu_logical_total,
-        resource->cpu_utilization_known ? "connue" : "UNKNOWN");
+        resource->cpu_utilization_known ? "known" : "UNKNOWN");
     draw_text_style(6, 2, columns - 4, line,
         LARDON3D_TUI_SEMANTIC_CPU, palette);
     if (viewport == LARDON3D_TUI_VIEWPORT_FULL) {
         if (resource->cpu_utilization_known) {
             (void)snprintf(line, sizeof(line),
-                "CPU raison: %s | utilisation %u.%02u%%",
+                "CPU reason: %s | utilization %u.%02u%%",
                 resource->cpu_reason,
                 resource->cpu_utilization_basis_points / 100U,
                 resource->cpu_utilization_basis_points % 100U);
         } else {
             (void)snprintf(line, sizeof(line),
-                "CPU raison: %s | utilisation UNKNOWN",
+                "CPU reason: %s | utilization UNKNOWN",
                 resource->cpu_reason);
         }
         draw_text(7, 4, columns - 6, line);
@@ -645,14 +645,14 @@ draw_resources(
     }
     (void)snprintf(line, sizeof(line),
         "GPU %s | slots active/dispo %u/%u | busy %s | backend %s",
-        resource->gpu_present ? "présent" : "absent",
+        resource->gpu_present ? "present" : "absent",
         resource->gpu_slots_active, resource->gpu_slots_available,
         gpu_busy,
         lardon3d_tui_gpu_backend_name(resource->gpu_backend));
     draw_text_style(viewport == LARDON3D_TUI_VIEWPORT_FULL ? 9 : 7,
         2, columns - 4, line, LARDON3D_TUI_SEMANTIC_GPU, palette);
     if (viewport == LARDON3D_TUI_VIEWPORT_FULL) {
-        (void)snprintf(line, sizeof(line), "GPU raison: %s",
+        (void)snprintf(line, sizeof(line), "GPU reason: %s",
             resource->gpu_backend_reason);
         draw_text(10, 4, columns - 6, line);
     }
@@ -662,7 +662,7 @@ draw_resources(
     format_bytes(resource->ram_reserve_bytes, reserve);
     format_bytes(resource->ram_reserved_bytes, reserved);
     (void)snprintf(line, sizeof(line),
-        "RAM total %s | MemAvailable %s | réserve %s | réservée Task %s",
+        "RAM total %s | MemAvailable %s | reserve %s | Task reserved %s",
         total, available, reserve, reserved);
     draw_text(viewport == LARDON3D_TUI_VIEWPORT_FULL ? 11 : 8,
         2, columns - 4, line);
@@ -672,13 +672,13 @@ draw_resources(
         format_bytes(resource->swap_used_bytes, swap_used);
         if (resource->swap_delta_known) {
             (void)snprintf(line, sizeof(line),
-                "Swap total %s | utilisé %s | delta in/out %llu/%llu pages",
+                "Swap total %s | used %s | delta in/out %llu/%llu pages",
                 swap_total, swap_used,
                 (unsigned long long)resource->swap_pages_in_delta,
                 (unsigned long long)resource->swap_pages_out_delta);
         } else {
             (void)snprintf(line, sizeof(line),
-                "Swap total %s | utilisé %s | delta in/out UNKNOWN",
+                "Swap total %s | used %s | delta in/out UNKNOWN",
                 swap_total, swap_used);
         }
     } else {
@@ -702,7 +702,7 @@ draw_resources(
                 resource->helper_limit);
         }
         (void)snprintf(line, sizeof(line),
-            "Contrat: batch %s | inflight %s | helpers %s | I/O active/dispo %u/%u",
+            "Contract: batch %s | inflight %s | helpers %s | I/O active/available %u/%u",
             batch, inflight, helpers, resource->io_active,
             resource->io_available);
         draw_text(14, 2, columns - 4, line);
@@ -737,17 +737,17 @@ draw_resources(
                 external_swap_used);
         }
         (void)snprintf(line, sizeof(line),
-            "Governor SSD swap total/used %s/%s | identité %.120s",
+            "Governor SSD swap total/used %s/%s | identity %.120s",
             external_swap_total, external_swap_used,
             resource->external_storage_registered
                 ? resource->external_storage_identity : "UNKNOWN");
         draw_text(17, 2, columns - 4, line);
-        (void)snprintf(line, sizeof(line), "SSD raison: %.220s",
+        (void)snprintf(line, sizeof(line), "SSD reason: %.220s",
             resource->external_storage_registered
                 ? resource->external_storage_reason : "UNREGISTERED");
         draw_text(18, 2, columns - 4, line);
         draw_text(20, 2, columns - 4,
-            "Les choix CPU/GPU/batch sont observés; aucun réglage utilisateur normal.");
+            "CPU/GPU/batch choices are observed; no normal user tuning.");
     }
 }
 
@@ -775,17 +775,17 @@ draw_ssd(
     const Lardon3DSsdSnapshot *ssd = &runtime->ssd;
     char line[640];
     if (!runtime->ssd_controller_available) {
-        draw_text_style(4, 2, columns - 4, "Etat: UNKNOWN",
+        draw_text_style(4, 2, columns - 4, "State: UNKNOWN",
             LARDON3D_TUI_SEMANTIC_WARNING, palette);
         if (operation && operation->running) {
             (void)snprintf(line, sizeof(line),
-                "Opération asynchrone: %s (ncurses reste réactif)",
+                "Asynchronous operation: %s (ncurses remains responsive)",
                 lardon3d_tui_ssd_action_name(operation->action));
             draw_text_style(5, 2, columns - 4, line,
                 LARDON3D_TUI_SEMANTIC_WARNING, palette);
         }
         draw_text(7, 2, columns - 4,
-            "Contrôleur/télémétrie SSD indisponible; identité, swap, scratch et usage UNKNOWN.");
+            "SSD controller/telemetry unavailable; identity, swap, scratch and usage UNKNOWN.");
         return;
     }
     bool telemetry_actionable = !operation
@@ -802,7 +802,7 @@ draw_ssd(
     /* The async owner is exact operation state, not inferred device state. It
      * is the only way ENABLING can remain visible while the synchronous
      * controller holds its mutex through bounded side-effect verification. */
-    (void)snprintf(line, sizeof(line), "Etat: %s%s",
+    (void)snprintf(line, sizeof(line), "State: %s%s",
         lardon3d_ssd_state_name(displayed_state),
         displayed_state == LARDON3D_SSD_SAFE_TO_UNPLUG
             ? " — SAFE TO UNPLUG" : "");
@@ -810,7 +810,7 @@ draw_ssd(
         ssd_semantic(displayed_state), palette);
     if (operation && operation->running) {
         (void)snprintf(line, sizeof(line),
-            "Opération asynchrone: %s (ncurses reste réactif)",
+            "Asynchronous operation: %s (ncurses remains responsive)",
             lardon3d_tui_ssd_action_name(operation->action));
         draw_text_style(5, 2, columns - 4, line,
             LARDON3D_TUI_SEMANTIC_WARNING, palette);
@@ -822,10 +822,10 @@ draw_ssd(
          * booleans are observations. Rendering them as inactive/unmounted
          * would turn validation failure into guessed physical state. */
         draw_text_style(7, 2, columns - 4,
-            "UNKNOWN — télémétrie invalide: identité, lien, swap, scratch, mount et usage.",
+            "UNKNOWN — invalid telemetry: identity, link, swap, scratch, mount and usage.",
             LARDON3D_TUI_SEMANTIC_ERROR, palette);
         draw_text(9, 2, columns - 4,
-            "Contrôle F10 désactivé jusqu'à une observation bornée valide.");
+            "F10 control disabled until a valid bounded observation is available.");
         return;
     }
     char link_speed[64];
@@ -836,17 +836,17 @@ draw_ssd(
         (void)snprintf(link_speed, sizeof(link_speed), "UNKNOWN");
     }
     (void)snprintf(line, sizeof(line),
-        "Modèle: %s | série: %s | lien: %s",
+        "Model: %s | serial: %s | link: %s",
         ssd->model_known ? ssd->model : "UNKNOWN",
         ssd->serial_known ? ssd->serial : "UNKNOWN",
         link_speed);
     draw_text_style(7, 2, columns - 4, line,
         LARDON3D_TUI_SEMANTIC_SSD, palette);
-    (void)snprintf(line, sizeof(line), "Identité stable Drive: %s",
+    (void)snprintf(line, sizeof(line), "Stable Drive identity: %s",
         ssd->drive_identity[0] ? ssd->drive_identity : "UNKNOWN");
     draw_text(8, 2, columns - 4, line);
     (void)snprintf(line, sizeof(line),
-        "Paire exacte: %s | swap UUID %s | scratch UUID %s",
+        "Exact pair: %s | swap UUID %s | scratch UUID %s",
         ssd->pairing_valid ? "VALID" : "INVALID/UNKNOWN",
         ssd->swap_uuid[0] ? ssd->swap_uuid : "UNKNOWN",
         ssd->scratch_uuid[0] ? ssd->scratch_uuid : "UNKNOWN");
@@ -861,7 +861,7 @@ draw_ssd(
             format_bytes(ssd->swap_used_bytes, swap_used);
         }
         (void)snprintf(line, sizeof(line),
-            "Swap: %s | total %s | utilisé %s",
+            "Swap: %s | total %s | used %s",
             ssd->swap_active ? "ACTIVE" : "INACTIVE",
             swap_total, swap_used);
         draw_text(10, 2, columns - 4, line);
@@ -881,19 +881,19 @@ draw_ssd(
             ssd->scratch_lease_count, ssd->scratch_lease_capacity);
         draw_text(11, 2, columns - 4, line);
         (void)snprintf(line, sizeof(line),
-            "Drain demandé: %s | raison: %s",
-            ssd->drain_requested ? "oui" : "non",
+            "Drain requested: %s | reason: %s",
+            ssd->drain_requested ? "yes" : "no",
             ssd->reason[0] ? ssd->reason : "UNKNOWN");
         draw_text_style(12, 2, columns - 4, line,
             ssd->state == LARDON3D_SSD_ERROR
                 ? LARDON3D_TUI_SEMANTIC_ERROR
                 : LARDON3D_TUI_SEMANTIC_NORMAL, palette);
         draw_text(14, 2, columns - 4,
-            "F10 agit uniquement sur la paire Drive/UUID validée; jamais de format/repair/poweroff.");
+            "F10 acts only on the validated Drive/UUID pair; never format/repair/poweroff.");
         draw_text(15, 2, columns - 4,
-            "Le swap/SSD reste une sécurité/scratch physique, jamais de la RAM scientifique.");
+            "Swap/SSD remains safety/physical scratch, never scientific RAM.");
     } else {
-        (void)snprintf(line, sizeof(line), "Raison: %s",
+        (void)snprintf(line, sizeof(line), "Reason: %s",
             ssd->reason[0] ? ssd->reason : "UNKNOWN");
         draw_text_style(6, 2, columns - 4, line,
             ssd->state == LARDON3D_SSD_ERROR
@@ -904,7 +904,7 @@ draw_ssd(
             ssd->swap_active ? "ACTIVE" : "INACTIVE",
             ssd->scratch_mounted ? "MOUNTED" : "UNMOUNTED",
             ssd->scratch_lease_count,
-            ssd->drain_requested ? "oui" : "non");
+            ssd->drain_requested ? "yes" : "no");
         draw_text(10, 2, columns - 4, line);
     }
 }
@@ -950,14 +950,14 @@ draw_optics(
     if (!optics || !optics->project_bound) {
         const char *message = optics && optics->message[0]
             ? optics->message
-            : "Aucun Project DB lié; aucun profil ou assignation n'est deviné.";
+            : "No Project DB bound; no profile or assignment is guessed.";
         draw_text_style(5, 4, columns - 6, message,
             optics && optics->message[0]
                 ? LARDON3D_TUI_SEMANTIC_ERROR
                 : LARDON3D_TUI_SEMANTIC_WARNING, palette);
         if (optics && optics->message[0]) {
             draw_text(7, 4, columns - 6,
-                "R : réessayer explicitement la liaison Project DB.");
+                "R: explicitly retry Project DB binding.");
         }
         return;
     }
@@ -972,20 +972,20 @@ draw_optics(
         ? (optics->selected_configuration < optics->configuration_count
             ? optics->selected_configuration : 0) : 0;
     (void)snprintf(line, sizeof(line),
-        "Body [%zu/%zu affichés%s]: %s %s — %s",
+        "Body [%zu/%zu shown%s]: %s %s — %s",
         optics->body_count ? body + 1 : 0, optics->body_count,
-        optics->bodies_have_next ? ", suite" : "",
+        optics->bodies_have_next ? ", more" : "",
         optics->body_count ? optics->bodies[body].manufacturer : "UNKNOWN",
         optics->body_count ? optics->bodies[body].model : "",
-        optics->body_count ? optics->bodies[body].name : "aucun");
+        optics->body_count ? optics->bodies[body].name : "none");
     draw_text(4, 2, columns - 4, line);
     (void)snprintf(line, sizeof(line),
-        "Lens [%zu/%zu affichés%s]: %s %s — %s (%s)",
+        "Lens [%zu/%zu shown%s]: %s %s — %s (%s)",
         optics->lens_count ? lens + 1 : 0, optics->lens_count,
-        optics->lenses_have_next ? ", suite" : "",
+        optics->lenses_have_next ? ", more" : "",
         optics->lens_count ? optics->lenses[lens].manufacturer : "UNKNOWN",
         optics->lens_count ? optics->lenses[lens].model : "",
-        optics->lens_count ? optics->lenses[lens].name : "aucun",
+        optics->lens_count ? optics->lenses[lens].name : "none",
         optics->lens_count
             ? lens_interface_name(optics->lenses[lens].interface_kind)
             : "UNKNOWN");
@@ -999,24 +999,24 @@ draw_optics(
             &optics->configurations[configuration];
         if (selected->has_focal_length) {
             (void)snprintf(line, sizeof(line),
-                "Config [%zu/%zu affichés%s] #%llu body #%llu lens #%llu focal %u µm",
+                "Config [%zu/%zu shown%s] #%llu body #%llu lens #%llu focal %u µm",
                 configuration + 1, optics->configuration_count,
-                optics->configurations_have_next ? ", suite" : "",
+                optics->configurations_have_next ? ", more" : "",
                 (unsigned long long)selected->optical_configuration_id,
                 (unsigned long long)selected->camera_body_profile_id,
                 (unsigned long long)selected->lens_profile_id,
                 selected->focal_length_um);
         } else {
             (void)snprintf(line, sizeof(line),
-                "Config [%zu/%zu affichés%s] #%llu body #%llu lens #%llu focal ABSENT",
+                "Config [%zu/%zu shown%s] #%llu body #%llu lens #%llu focal ABSENT",
                 configuration + 1, optics->configuration_count,
-                optics->configurations_have_next ? ", suite" : "",
+                optics->configurations_have_next ? ", more" : "",
                 (unsigned long long)selected->optical_configuration_id,
                 (unsigned long long)selected->camera_body_profile_id,
                 (unsigned long long)selected->lens_profile_id);
         }
     } else {
-        (void)snprintf(line, sizeof(line), "Config: aucune");
+        (void)snprintf(line, sizeof(line), "Config: none");
     }
     draw_text(6, 2, columns - 4, line);
     if (optics->calibration_count > 0) {
@@ -1026,15 +1026,15 @@ draw_optics(
         const Lardon3DOpticalCalibrationProfile *calibration =
             &optics->calibrations[selected];
         (void)snprintf(line, sizeof(line),
-            "Pane %s | calibration [%zu/%zu affichées%s] #%llu %.28s v%u",
+            "Pane %s | calibration [%zu/%zu shown%s] #%llu %.28s v%u",
             optics_pane_name(optics->active_pane), selected + 1,
             optics->calibration_count,
-            optics->calibrations_have_next ? ", suite" : "",
+            optics->calibrations_have_next ? ", more" : "",
             (unsigned long long)calibration->calibration_profile_id,
             calibration->name, calibration->profile_version);
     } else {
         (void)snprintf(line, sizeof(line),
-            "Pane %s | calibration candidate: aucune",
+            "Pane %s | calibration candidate: none",
             optics_pane_name(optics->active_pane));
     }
     draw_text(7, 2, columns - 4, line);
@@ -1056,17 +1056,17 @@ draw_optics(
         draw_text_style(8, 2, columns - 4, line, semantic, palette);
     } else {
         draw_text_style(8, 2, columns - 4,
-            "Capture: non inspecté (V); unresolved reste absence d'assignation.",
+            "Capture: not inspected (V); unresolved remains no assignment.",
             LARDON3D_TUI_SEMANTIC_DIM, palette);
     }
     (void)snprintf(line, sizeof(line),
-        "Calibrations compatibles: %zu | sélection: %s",
+        "Compatible calibrations: %zu | selection: %s",
         optics->calibration_count,
-        optics->capture_selection_found ? "explicite" : "aucune/ambiguë");
+        optics->capture_selection_found ? "explicit" : "none/ambiguous");
     draw_text(9, 2, columns - 4, line);
     if (optics->metadata_lookup_performed) {
         (void)snprintf(line, sizeof(line),
-            "Métadonnées exactes: body %s | lens %s",
+            "Exact metadata: body %s | lens %s",
             optics->metadata_body_found ? "MATCH" : "UNRESOLVED",
             optics->metadata_lens_found ? "MATCH" : "UNRESOLVED");
         draw_text(10, 2, columns - 4, line);
@@ -1077,9 +1077,9 @@ draw_optics(
         draw_text(13, 2, columns - 4,
             "C config focal mm/?   V inspect capture   A assign capture   G task:group");
         draw_text(14, 2, columns - 4,
-            "K sélection calibration   E metadata exact   [ première page   ] page suivante   R retry");
+            "K select calibration   E exact metadata   [ first page   ] next page   R retry");
         draw_text_style(16, 2, columns - 4,
-            "Immutable: modifier = créer une nouvelle version/configuration.",
+            "Immutable: modify = create a new version/configuration.",
             LARDON3D_TUI_SEMANTIC_WARNING, palette);
     }
 }
@@ -1092,24 +1092,24 @@ draw_help(
 )
 {
     draw_text(4, 2, columns - 4,
-        "F1 aide, F2 projets, F3 import, F4 viewer futur, F5 tâches, F6 ressources,");
+        "F1 help, F2 projects, F3 import, F4 future viewer, F5 tasks, F6 resources,");
     draw_text(5, 2, columns - 4,
-        "F7 profils optiques, F10 SSD; ESC accueil; Q quitter.");
+        "F7 optical profiles, F10 SSD; ESC home; Q quit.");
     draw_text_style(7, 2, columns - 4,
-        "Vert=healthy, jaune=warning/throttled, rouge=error, cyan=GPU, bleu=CPU, magenta=SSD.",
+        "Green=healthy, yellow=warning/throttled, red=error, cyan=GPU, blue=CPU, magenta=SSD.",
         LARDON3D_TUI_SEMANTIC_HEALTHY, palette);
     draw_text(8, 2, columns - 4,
-        "Sans couleur/peu de paires, les libellés et bold/dim conservent le sens.");
+        "Without color/few color pairs, labels and bold/dim preserve meaning.");
     if (viewport == LARDON3D_TUI_VIEWPORT_FULL) {
         draw_text(10, 2, columns - 4,
-            "La TUI observe des snapshots bornés >=1s; aucun worker ne touche ncurses.");
+            "The TUI observes bounded snapshots >=1s; no worker touches ncurses.");
         draw_text(11, 2, columns - 4,
-            "Le Governor choisit CPU/GPU/batch. La TUI ne modifie ni admission ni science.");
+            "The Governor selects CPU/GPU/batch. The TUI changes neither admission nor science.");
         draw_text(12, 2, columns - 4,
-            "Dense (future) reste NOT_APPLICABLE; aucune étape future n'est RUNNING.");
+            "Dense (future) remains NOT_APPLICABLE; no future stage is RUNNING.");
     } else {
         draw_text(10, 2, columns - 4,
-            "Governor choisit les ressources; Dense future reste NOT_APPLICABLE.");
+            "Governor selects resources; future Dense remains NOT_APPLICABLE.");
     }
 }
 
@@ -1170,7 +1170,7 @@ lardon3d_layout_draw_runtime(
         break;
     case LARDON3D_SCREEN_VIEWER:
         draw_text_style(6, 4, columns - 8,
-            "Viewer Vulkan: PLANNED, aucun travail scientifique actif.",
+            "Vulkan viewer: PLANNED, no active scientific work.",
             LARDON3D_TUI_SEMANTIC_DIM, palette);
         break;
     case LARDON3D_SCREEN_HOME:

@@ -162,22 +162,22 @@ validate_file(
 {
     char *path = join_path(originals_path, filename);
     if (!path) {
-        set_error(error_message, error_message_size, "Erreur : chemin d'image trop long.");
+        set_error(error_message, error_message_size, "Error: image path is too long.");
         return false;
     }
     struct stat info;
     if (lstat(path, &info) != 0) {
         free(path);
-        set_error(error_message, error_message_size, "Erreur : image du manifeste absente.");
+        set_error(error_message, error_message_size, "Error: manifest image is missing.");
         return false;
     }
     free(path);
     if (S_ISLNK(info.st_mode) || !S_ISREG(info.st_mode)) {
-        set_error(error_message, error_message_size, "Erreur : image du manifeste non régulière.");
+        set_error(error_message, error_message_size, "Error: manifest image is not a regular file.");
         return false;
     }
     if (info.st_size < 0 || (uintmax_t)info.st_size != (uintmax_t)expected_size) {
-        set_error(error_message, error_message_size, "Erreur : taille d'image incohérente.");
+        set_error(error_message, error_message_size, "Error: inconsistent image size.");
         return false;
     }
     return true;
@@ -195,7 +195,7 @@ parse_line(
     char *first_tab = strchr(line, '\t');
     char *second_tab = first_tab ? strchr(first_tab + 1, '\t') : NULL;
     if (!first_tab || !second_tab || strchr(second_tab + 1, '\t')) {
-        set_error(error_message, error_message_size, "Erreur : ligne de manifeste invalide.");
+        set_error(error_message, error_message_size, "Error: invalid manifest line.");
         return false;
     }
     *first_tab = '\0';
@@ -206,23 +206,23 @@ parse_line(
 
     uint64_t size_bytes;
     if (!valid_filename(filename)) {
-        set_error(error_message, error_message_size, "Erreur : nom d'image invalide dans le manifeste.");
+        set_error(error_message, error_message_size, "Error: invalid image name in manifest.");
         return false;
     }
     if (!source_path[0]) {
-        set_error(error_message, error_message_size, "Erreur : chemin source vide dans le manifeste.");
+        set_error(error_message, error_message_size, "Error: empty source path in manifest.");
         return false;
     }
     if (!parse_size(size_text, &size_bytes)) {
-        set_error(error_message, error_message_size, "Erreur : taille invalide dans le manifeste.");
+        set_error(error_message, error_message_size, "Error: invalid size in manifest.");
         return false;
     }
     if (filename_exists(catalog, filename)) {
-        set_error(error_message, error_message_size, "Erreur : image dupliquée dans le manifeste.");
+        set_error(error_message, error_message_size, "Error: duplicate image in manifest.");
         return false;
     }
     if (catalog->total_size > UINT64_MAX - size_bytes) {
-        set_error(error_message, error_message_size, "Erreur : taille totale du catalogue trop grande.");
+        set_error(error_message, error_message_size, "Error: total catalog size is too large.");
         return false;
     }
     if (!validate_file(
@@ -235,7 +235,7 @@ parse_line(
         return false;
     }
     if (!append_entry(catalog, filename, source_path, size_bytes)) {
-        set_error(error_message, error_message_size, "Erreur : mémoire insuffisante pour le catalogue.");
+        set_error(error_message, error_message_size, "Error: insufficient memory for the catalog.");
         return false;
     }
     return true;
@@ -250,45 +250,45 @@ lardon3d_image_catalog_load(
 {
     set_error(error_message, error_message_size, "");
     if (!state || !state->project_loaded || !state->project_path[0]) {
-        set_error(error_message, error_message_size, "Aucun projet chargé.");
+        set_error(error_message, error_message_size, "No project loaded.");
         return NULL;
     }
 
     Lardon3DImageCatalog *catalog = calloc(1, sizeof(*catalog));
     if (!catalog) {
-        set_error(error_message, error_message_size, "Erreur : mémoire insuffisante pour le catalogue.");
+        set_error(error_message, error_message_size, "Error: insufficient memory for the catalog.");
         return NULL;
     }
     char *images_path = join_path(state->project_path, "images");
     char *originals_path = images_path ? join_path(images_path, "originals") : NULL;
     char *manifest_path = images_path ? join_path(images_path, "manifest.tsv") : NULL;
     if (!images_path || !originals_path || !manifest_path) {
-        set_error(error_message, error_message_size, "Erreur : chemin du catalogue trop long.");
+        set_error(error_message, error_message_size, "Error: catalog path is too long.");
         goto failure;
     }
 
     int descriptor = open(manifest_path, O_RDONLY | O_NOFOLLOW);
     if (descriptor < 0) {
         if (errno == ENOENT) {
-            set_error(error_message, error_message_size, "Aucune image importée.");
+            set_error(error_message, error_message_size, "No imported image.");
             free(images_path);
             free(originals_path);
             free(manifest_path);
             return catalog;
         }
-        set_error(error_message, error_message_size, "Erreur : impossible d'ouvrir manifest.tsv.");
+        set_error(error_message, error_message_size, "Error: unable to open manifest.tsv.");
         goto failure;
     }
     struct stat manifest_info;
     if (fstat(descriptor, &manifest_info) != 0 || !S_ISREG(manifest_info.st_mode)) {
         (void)close(descriptor);
-        set_error(error_message, error_message_size, "Erreur : manifest.tsv n'est pas régulier.");
+        set_error(error_message, error_message_size, "Error: manifest.tsv is not a regular file.");
         goto failure;
     }
     FILE *file = fdopen(descriptor, "r");
     if (!file) {
         (void)close(descriptor);
-        set_error(error_message, error_message_size, "Erreur : impossible de lire manifest.tsv.");
+        set_error(error_message, error_message_size, "Error: unable to read manifest.tsv.");
         goto failure;
     }
 
@@ -298,11 +298,11 @@ lardon3d_image_catalog_load(
     bool valid = length >= 0
         && strcmp(line, "filename\tsize_bytes\tsource_path\n") == 0;
     if (!valid) {
-        set_error(error_message, error_message_size, "Erreur : en-tête de manifest.tsv invalide.");
+        set_error(error_message, error_message_size, "Error: invalid manifest.tsv header.");
     }
     while (valid && (length = getline(&line, &capacity, file)) >= 0) {
         if (length == 0 || line[(size_t)length - 1] != '\n') {
-            set_error(error_message, error_message_size, "Erreur : ligne tronquée dans manifest.tsv.");
+            set_error(error_message, error_message_size, "Error: truncated line in manifest.tsv.");
             valid = false;
             break;
         }
@@ -316,13 +316,13 @@ lardon3d_image_catalog_load(
                 error_message_size
             )) {
             if (!error_message || !error_message_size || !error_message[0]) {
-                set_error(error_message, error_message_size, "Erreur : ligne de manifeste invalide.");
+                set_error(error_message, error_message_size, "Error: invalid manifest line.");
             }
             valid = false;
         }
     }
     if (ferror(file) || fclose(file) != 0) {
-        set_error(error_message, error_message_size, "Erreur : lecture de manifest.tsv impossible.");
+        set_error(error_message, error_message_size, "Error: unable to read manifest.tsv.");
         valid = false;
     }
     free(line);

@@ -175,7 +175,7 @@ run_test(void)
     );
     CHECK(catalog);
     CHECK(lardon3d_image_catalog_count(catalog) == 0);
-    CHECK(strcmp(error, "Aucune image importée.") == 0);
+    CHECK(strcmp(error, "No imported image.") == 0);
     CHECK(lardon3d_image_catalog_get(catalog, 0) == NULL);
     lardon3d_image_catalog_destroy(catalog);
     lardon3d_image_catalog_destroy(NULL);

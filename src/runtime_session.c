@@ -28,7 +28,7 @@ lardon3d_runtime_project_boundary(
     if (!state->task_queue) {
         (void)snprintf(state->status_message,
             sizeof(state->status_message),
-            "Erreur : impossible de recréer la file de tâches.");
+            "Error: unable to recreate the task queue.");
         return false;
     }
     return true;

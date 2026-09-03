@@ -58,7 +58,7 @@ static void set_database_status(Lardon3DAppState *state, Lardon3DProjectDb *data
   } else if (open_error) {
     (void)snprintf(detail, sizeof(detail), "%s", open_error);
   }
-  (void)snprintf(state->status_message, sizeof(state->status_message), "Erreur project.db : %.220s",
+  (void)snprintf(state->status_message, sizeof(state->status_message), "project.db error: %.220s",
                  detail[0] ? detail : fallback);
 }
 
@@ -72,7 +72,7 @@ static void clear_catalog(Lardon3DAppState *state) {
 static bool normalize_name(Lardon3DAppState *state, const char *input, char *output,
                            size_t output_size) {
   if (!input) {
-    set_status(state, "Erreur : le nom du projet est vide.");
+    set_status(state, "Error: project name is empty.");
     return false;
   }
 
@@ -88,21 +88,21 @@ static bool normalize_name(Lardon3DAppState *state, const char *input, char *out
 
   size_t length = (size_t)(end - start);
   if (length == 0) {
-    set_status(state, "Erreur : le nom du projet est vide.");
+    set_status(state, "Error: project name is empty.");
     return false;
   }
   if (length >= output_size) {
-    set_status(state, "Erreur : le nom du projet est trop long.");
+    set_status(state, "Error: project name is too long.");
     return false;
   }
   if ((length == 1 && start[0] == '.') || (length == 2 && start[0] == '.' && start[1] == '.')) {
-    set_status(state, "Erreur : nom de projet interdit.");
+    set_status(state, "Error: forbidden project name.");
     return false;
   }
 
   for (const char *character = start; character < end; ++character) {
     if (*character == '/' || *character == '\\' || iscntrl((unsigned char)*character)) {
-      set_status(state, "Erreur : nom de projet interdit.");
+      set_status(state, "Error: forbidden project name.");
       return false;
     }
   }
@@ -153,19 +153,19 @@ static bool resolve_projects_root(Lardon3DAppState *state, char root[PATH_MAX]) 
   const char *configured = getenv("LARDON3D_PROJECTS_ROOT");
   if (configured && configured[0]) {
     if (configured[0] != '/' || !copy_path(root, PATH_MAX, configured)) {
-      set_status(state, "Erreur : répertoire racine invalide.");
+      set_status(state, "Error: invalid project root directory.");
       return false;
     }
   } else {
     const char *home = getenv("HOME");
     if (!home || home[0] != '/') {
-      set_status(state, "Erreur : HOME est absent ou invalide.");
+      set_status(state, "Error: HOME is missing or invalid.");
       return false;
     }
 
     int written = snprintf(root, PATH_MAX, "%s/Documents/Lardon/Projets3D", home);
     if (written < 0 || (size_t)written >= PATH_MAX) {
-      set_status(state, "Erreur : chemin racine trop long.");
+      set_status(state, "Error: root path is too long.");
       return false;
     }
   }
@@ -189,22 +189,22 @@ static bool ensure_directory(Lardon3DAppState *state, const char *path,
   struct stat info;
   if (lstat(path, &info) == 0) {
     if (!S_ISDIR(info.st_mode)) {
-      set_status(state, "Erreur : un élément du chemin n'est pas un dossier.");
+      set_status(state, "Error: a path component is not a directory.");
       return false;
     }
     return true;
   }
   if (errno != ENOENT || created->count >= MAX_CREATED_DIRECTORIES) {
-    set_status(state, "Erreur : impossible de préparer le répertoire racine.");
+    set_status(state, "Error: unable to prepare the root directory.");
     return false;
   }
   if (mkdir(path, 0755) != 0) {
-    set_status(state, "Erreur : impossible de créer un dossier.");
+    set_status(state, "Error: unable to create a directory.");
     return false;
   }
   if (!copy_path(created->paths[created->count], sizeof(created->paths[created->count]), path)) {
     (void)rmdir(path);
-    set_status(state, "Erreur : chemin de dossier trop long.");
+    set_status(state, "Error: directory path is too long.");
     return false;
   }
   ++created->count;
@@ -215,7 +215,7 @@ static bool ensure_directory_tree(Lardon3DAppState *state, const char *path,
                                   CreatedDirectories *created) {
   char partial[PATH_MAX];
   if (!copy_path(partial, sizeof(partial), path)) {
-    set_status(state, "Erreur : chemin racine trop long.");
+    set_status(state, "Error: root path is too long.");
     return false;
   }
 
@@ -239,13 +239,13 @@ static bool write_project_ini(Lardon3DAppState *state, const char *project_path,
   char final_path[PATH_MAX];
   if (!join_path(final_path, sizeof(final_path), project_path, "project.ini") ||
       !join_path(temporary_path, sizeof(temporary_path), project_path, ".project.ini.tmp.XXXXXX")) {
-    set_status(state, "Erreur : chemin de project.ini trop long.");
+    set_status(state, "Error: project.ini path is too long.");
     return false;
   }
 
   int descriptor = mkstemp(temporary_path);
   if (descriptor < 0) {
-    set_status(state, "Erreur : impossible de créer project.ini.");
+    set_status(state, "Error: unable to create project.ini.");
     return false;
   }
 
@@ -253,7 +253,7 @@ static bool write_project_ini(Lardon3DAppState *state, const char *project_path,
   if (!file) {
     (void)close(descriptor);
     (void)unlink(temporary_path);
-    set_status(state, "Erreur : impossible d'écrire project.ini.");
+    set_status(state, "Error: unable to write project.ini.");
     return false;
   }
 
@@ -273,7 +273,7 @@ static bool write_project_ini(Lardon3DAppState *state, const char *project_path,
   }
   if (!success) {
     (void)unlink(temporary_path);
-    set_status(state, "Erreur : impossible d'écrire project.ini.");
+    set_status(state, "Error: unable to write project.ini.");
   }
   return success;
 }
@@ -283,7 +283,7 @@ bool lardon3d_project_create(Lardon3DAppState *state, const char *name) {
     return false;
   }
   if (state->project_loaded || state->project_db) {
-    set_status(state, "Erreur : un projet est déjà ouvert.");
+    set_status(state, "Error: a project is already open.");
     return false;
   }
 
@@ -298,11 +298,11 @@ bool lardon3d_project_create(Lardon3DAppState *state, const char *name) {
     return false;
   }
   if (!generate_stable_id(stable_id)) {
-    set_status(state, "Erreur : impossible de créer l'identité du projet.");
+    set_status(state, "Error: unable to create project identity.");
     return false;
   }
   if (!join_path(project_path, sizeof(project_path), root, normalized_name)) {
-    set_status(state, "Erreur : chemin du projet trop long.");
+    set_status(state, "Error: project path is too long.");
     return false;
   }
 
@@ -315,7 +315,7 @@ bool lardon3d_project_create(Lardon3DAppState *state, const char *name) {
   struct stat info;
   if (lstat(project_path, &info) == 0 || errno != ENOENT) {
     cleanup_directories(&created);
-    set_status(state, "Erreur : ce projet existe déjà.");
+    set_status(state, "Error: this project already exists.");
     return false;
   }
   if (!ensure_directory(state, project_path, &created)) {
@@ -329,7 +329,7 @@ bool lardon3d_project_create(Lardon3DAppState *state, const char *name) {
   for (size_t index = 0; index < sizeof(subdirectories) / sizeof(subdirectories[0]); ++index) {
     char path[PATH_MAX];
     if (!join_path(path, sizeof(path), project_path, subdirectories[index])) {
-      set_status(state, "Erreur : chemin de dossier trop long.");
+      set_status(state, "Error: directory path is too long.");
       cleanup_directories(&created);
       return false;
     }
@@ -349,7 +349,7 @@ bool lardon3d_project_create(Lardon3DAppState *state, const char *name) {
   if (!join_path(database_path, sizeof(database_path), project_path, "project.db") ||
       !join_path(ini_path, sizeof(ini_path), project_path, "project.ini")) {
     cleanup_directories(&created);
-    set_status(state, "Erreur : chemin de base projet trop long.");
+    set_status(state, "Error: project database path is too long.");
     return false;
   }
   Lardon3DProjectDb *database = NULL;
@@ -384,7 +384,7 @@ bool lardon3d_project_create(Lardon3DAppState *state, const char *name) {
   (void)copy_path(state->project_name, sizeof(state->project_name), normalized_name);
   (void)copy_path(state->project_path, sizeof(state->project_path), project_path);
   (void)snprintf(state->project_stable_id, sizeof(state->project_stable_id), "%s", stable_id);
-  (void)snprintf(state->status_message, sizeof(state->status_message), "Projet créé : %s",
+  (void)snprintf(state->status_message, sizeof(state->status_message), "Project created: %s",
                  state->project_name);
   return true;
 }
@@ -392,21 +392,21 @@ bool lardon3d_project_create(Lardon3DAppState *state, const char *name) {
 static bool read_project_ini(Lardon3DAppState *state, const char *path, ProjectMetadata *metadata) {
   int descriptor = open(path, O_RDONLY | O_NOFOLLOW);
   if (descriptor < 0) {
-    set_status(state, "Erreur : project.ini est absent ou inaccessible.");
+    set_status(state, "Error: project.ini is missing or inaccessible.");
     return false;
   }
 
   struct stat info;
   if (fstat(descriptor, &info) != 0 || !S_ISREG(info.st_mode)) {
     (void)close(descriptor);
-    set_status(state, "Erreur : project.ini n'est pas un fichier régulier.");
+    set_status(state, "Error: project.ini is not a regular file.");
     return false;
   }
 
   FILE *file = fdopen(descriptor, "r");
   if (!file) {
     (void)close(descriptor);
-    set_status(state, "Erreur : impossible de lire project.ini.");
+    set_status(state, "Error: unable to read project.ini.");
     return false;
   }
 
@@ -483,7 +483,7 @@ static bool read_project_ini(Lardon3DAppState *state, const char *path, ProjectM
   }
   if (!valid || !section_found || !name_found || !version_found ||
       (metadata->version == 2 && !stable_id_found) || (metadata->version == 1 && stable_id_found)) {
-    set_status(state, "Erreur : project.ini invalide.");
+    set_status(state, "Error: invalid project.ini.");
     return false;
   }
   return true;
@@ -494,7 +494,7 @@ bool lardon3d_project_open(Lardon3DAppState *state, const char *directory_name) 
     return false;
   }
   if (state->project_loaded || state->project_db) {
-    set_status(state, "Erreur : un projet est déjà ouvert.");
+    set_status(state, "Error: a project is already open.");
     return false;
   }
 
@@ -512,13 +512,13 @@ bool lardon3d_project_open(Lardon3DAppState *state, const char *directory_name) 
   if (!join_path(project_path, sizeof(project_path), root, normalized_directory) ||
       !join_path(ini_path, sizeof(ini_path), project_path, "project.ini") ||
       !join_path(database_path, sizeof(database_path), project_path, "project.db")) {
-    set_status(state, "Erreur : chemin du projet trop long.");
+    set_status(state, "Error: project path is too long.");
     return false;
   }
 
   struct stat info;
   if (lstat(project_path, &info) != 0 || !S_ISDIR(info.st_mode)) {
-    set_status(state, "Erreur : dossier projet absent ou invalide.");
+    set_status(state, "Error: project directory is missing or invalid.");
     return false;
   }
 
@@ -530,12 +530,12 @@ bool lardon3d_project_open(Lardon3DAppState *state, const char *directory_name) 
   bool database_existed = false;
   if (lstat(database_path, &info) == 0) {
     if (!S_ISREG(info.st_mode)) {
-      set_status(state, "Erreur : project.db n'est pas un fichier régulier.");
+      set_status(state, "Error: project.db is not a regular file.");
       return false;
     }
     database_existed = true;
   } else if (errno != ENOENT) {
-    set_status(state, "Erreur : project.db est inaccessible.");
+    set_status(state, "Error: project.db is inaccessible.");
     return false;
   }
 
@@ -606,7 +606,7 @@ bool lardon3d_project_open(Lardon3DAppState *state, const char *directory_name) 
   }
   if (database_result != LARDON3D_PROJECT_DB_OK) {
     if (database_result == LARDON3D_PROJECT_DB_CONSTRAINT) {
-      set_status(state, "Erreur : identité project.ini/project.db incohérente.");
+      set_status(state, "Error: inconsistent project.ini/project.db identity.");
     } else {
       set_database_status(state, database, database_error, "initialisation impossible");
     }
@@ -631,11 +631,11 @@ bool lardon3d_project_open(Lardon3DAppState *state, const char *directory_name) 
     (void)lardon3d_project_resume_recoverable_tasks(state, lardon3d_task_kind_registry_production(),
                                                     &summary);
     (void)snprintf(state->status_message, sizeof(state->status_message),
-                   "Projet ouvert — %zu tâche(s) reprise(s), %zu ignorée(s), %zu en échec%s.",
+                   "Project opened — %zu task(s) resumed, %zu skipped, %zu failed%s.",
                    summary.resumed, summary.skipped, summary.failed,
-                   summary.queue_full ? ", fenêtre de reprise saturée" : "");
+                   summary.queue_full ? ", recovery window saturated" : "");
   } else {
-    (void)snprintf(state->status_message, sizeof(state->status_message), "Projet ouvert : %s",
+    (void)snprintf(state->status_message, sizeof(state->status_message), "Project opened: %s",
                    state->project_name);
   }
   return true;
@@ -647,7 +647,7 @@ void lardon3d_project_close(Lardon3DAppState *state) {
   }
 
   if (!state->project_loaded) {
-    set_status(state, "Aucun projet à fermer.");
+    set_status(state, "No project to close.");
     return;
   }
 
@@ -659,7 +659,7 @@ void lardon3d_project_close(Lardon3DAppState *state) {
   state->project_path[0] = '\0';
   state->project_stable_id[0] = '\0';
   store_recovery_summary(state, NULL);
-  set_status(state, "Projet fermé.");
+  set_status(state, "Project closed.");
 }
 
 static bool checkpoint_paths(const Lardon3DAppState *state, uint64_t task_id,

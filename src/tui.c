@@ -126,7 +126,7 @@ reload_catalog(Lardon3DAppState *state, bool announce_success)
         (void)snprintf(
             state->status_message,
             sizeof(state->status_message),
-            "Erreur : impossible de construire la vue des images."
+            "Error: unable to build the image view."
         );
         lardon3d_image_view_destroy(state->image_view);
         state->image_view = NULL;
@@ -165,7 +165,7 @@ reload_catalog(Lardon3DAppState *state, bool announce_success)
         (void)snprintf(
             state->status_message,
             sizeof(state->status_message),
-            "Catalogue rechargé : %zu image%s.",
+            "Catalog reloaded: %zu image%s.",
             lardon3d_image_view_count(state->image_view),
             lardon3d_image_view_count(state->image_view) == 1 ? "" : "s"
         );
@@ -212,7 +212,7 @@ reset_project_session(Lardon3DAppState *state, TuiRuntime *runtime)
     if (!runtime->observer) {
         (void)snprintf(state->status_message,
             sizeof(state->status_message),
-            "Erreur : impossible de recréer l'observateur runtime.");
+            "Error: unable to recreate the runtime observer.");
         runtime->fatal_error = true;
         state->running = false;
         return false;
@@ -231,17 +231,17 @@ input_label(InputMode mode)
     case INPUT_IMPORT_DIRECTORY:
         return "Dossier source :";
     case INPUT_IMAGE_FILTER:
-        return "Filtre :";
+        return "Filter:";
     case INPUT_OPTICS_CREATE_BODY:
         return "Body immutable: manufacturer|model|name";
     case INPUT_OPTICS_CREATE_LENS:
         return "Lens: interface|range|min_mm|max_mm|maker|model|name";
     case INPUT_OPTICS_CREATE_CONFIGURATION:
-        return "Focale entière mm, ou ? pour absence explicite";
+        return "Integer focal length in mm, or ? for explicit absence";
     case INPUT_OPTICS_INSPECT_CAPTURE:
-        return "Capture ID à inspecter :";
+        return "Capture ID to inspect:";
     case INPUT_OPTICS_ASSIGN_CAPTURE:
-        return "Capture ID à assigner :";
+        return "Capture ID to assign:";
     case INPUT_OPTICS_ASSIGN_GROUP:
         return "Campaign Task ID:group ID :";
     case INPUT_OPTICS_LOOKUP_METADATA:
@@ -477,7 +477,7 @@ complete_optics_input(
 
     if (!runtime->optics_database) {
         (void)snprintf(state->status_message, sizeof(state->status_message),
-            "Aucun Project DB lié; aucune identité optique n'est devinée.");
+            "No Project DB bound; no optical identity is guessed.");
         input->mode = INPUT_NONE;
         return false;
     }
@@ -533,7 +533,7 @@ complete_optics_input(
         } else {
             (void)snprintf(state->status_message,
                 sizeof(state->status_message),
-                "Focale invalide: entier positif en millimètres ou ?.");
+                "Invalid focal length: positive integer in millimetres or ?.");
         }
     } else if (input->mode == INPUT_OPTICS_INSPECT_CAPTURE
         || input->mode == INPUT_OPTICS_ASSIGN_CAPTURE) {
@@ -577,7 +577,7 @@ complete_optics_input(
         } else {
             (void)snprintf(state->status_message,
                 sizeof(state->status_message),
-                "Format métadonnées invalide: make|model|lens_make|lens_model.");
+                "Invalid metadata format: make|model|lens_make|lens_model.");
         }
     }
     if (model_called) {
@@ -601,7 +601,7 @@ start_import_task(
         (void)snprintf(
             state->status_message,
             sizeof(state->status_message),
-            "Erreur : impossible de créer la tâche d'import."
+            "Error: unable to create the import task."
         );
         input->mode = INPUT_NONE;
         return false;
@@ -652,15 +652,15 @@ handle_active_input(
     }
 
     if (key == 27) {
-        const char *message = "Création du projet annulée.";
+        const char *message = "Project creation cancelled.";
         if (input->mode == INPUT_PROJECT_OPEN) {
-            message = "Ouverture du projet annulée.";
+            message = "Project opening cancelled.";
         } else if (input->mode == INPUT_IMPORT_DIRECTORY) {
-            message = "Import annulé.";
+            message = "Import cancelled.";
         } else if (input->mode == INPUT_IMAGE_FILTER) {
-            message = "Filtre annulé.";
+            message = "Filter cancelled.";
         } else if (is_optics_input(input->mode)) {
-            message = "Opération optique annulée.";
+            message = "Optics operation cancelled.";
         }
         input->mode = INPUT_NONE;
         (void)snprintf(
@@ -695,13 +695,13 @@ handle_active_input(
                     (void)snprintf(
                         state->status_message,
                         sizeof(state->status_message),
-                        "Aucune image ne correspond au filtre."
+                        "No image matches the filter."
                     );
                 } else {
                     (void)snprintf(
                         state->status_message,
                         sizeof(state->status_message),
-                        "Filtre appliqué : %.230s",
+                        "Filter applied: %.230s",
                         input->text
                     );
                 }
@@ -742,7 +742,7 @@ handle_active_input(
                 (void)snprintf(
                     state->status_message,
                     sizeof(state->status_message),
-                    "Erreur : filtre trop long."
+                    "Error: filter is too long."
                 );
                 return true;
             }
@@ -750,7 +750,7 @@ handle_active_input(
                 (void)snprintf(
                     state->status_message,
                     sizeof(state->status_message),
-                    "Erreur : saisie optique trop longue."
+                    "Error: optics input is too long."
                 );
                 input->mode = INPUT_NONE;
                 input->text[0] = '\0';
@@ -766,7 +766,7 @@ handle_active_input(
                 (void)snprintf(
                     state->status_message,
                     sizeof(state->status_message),
-                    "Erreur : chemin source trop long."
+                    "Error: source path is too long."
                 );
             } else {
                 if (reset_project_session(state, runtime)
@@ -810,7 +810,7 @@ handle_ssd_key(
     if (!runtime->ssd_operation) {
         (void)snprintf(state->status_message,
             sizeof(state->status_message),
-            "Contrôleur SSD indisponible; état UNKNOWN, aucune action.");
+            "SSD controller unavailable; state UNKNOWN, no action.");
         return true;
     }
     (void)lardon3d_tui_ssd_async_poll(
@@ -818,7 +818,7 @@ handle_ssd_key(
     if (runtime->ssd_operation_snapshot.running) {
         (void)snprintf(state->status_message,
             sizeof(state->status_message),
-            "Opération SSD %s déjà en cours.",
+            "SSD operation %s already running.",
             lardon3d_tui_ssd_action_name(
                 runtime->ssd_operation_snapshot.action));
         return true;
@@ -827,7 +827,7 @@ handle_ssd_key(
         || !runtime->ssd_operation_snapshot.controller_snapshot_actionable) {
         (void)snprintf(state->status_message,
             sizeof(state->status_message),
-            "Télémétrie SSD indéterminée/invalide; contrôle désactivé.");
+            "SSD telemetry unknown/invalid; control disabled.");
         return true;
     }
     Lardon3DTuiSsdAction action;
@@ -836,18 +836,18 @@ handle_ssd_key(
     if (!lardon3d_tui_ssd_action_for_snapshot(current, &action)) {
         (void)snprintf(state->status_message,
             sizeof(state->status_message),
-            "Aucune transition SSD sûre depuis %s.",
+            "No safe SSD transition from %s.",
             lardon3d_ssd_state_name(current->state));
         return true;
     }
     if (!lardon3d_tui_ssd_async_request(runtime->ssd_operation, action)) {
         (void)snprintf(state->status_message,
             sizeof(state->status_message),
-            "Impossible de lancer l'opération SSD bornée.");
+            "Unable to start the bounded SSD operation.");
         return true;
     }
     (void)snprintf(state->status_message, sizeof(state->status_message),
-        "SSD %s lancé hors du thread ncurses.",
+        "SSD %s started outside the ncurses thread.",
         lardon3d_tui_ssd_action_name(action));
     return true;
 }
@@ -885,15 +885,15 @@ handle_task_key(
         operation = "reprise";
         result = lardon3d_task_queue_resume(state->task_queue, task_id);
     } else if (key == 'c' || key == 'C') {
-        operation = "annulation";
+        operation = "cancellation";
         result = lardon3d_task_queue_cancel(state->task_queue, task_id);
     }
     if (!operation) {
         return false;
     }
     (void)snprintf(state->status_message, sizeof(state->status_message),
-        "Tâche #%llu: %s %s.", (unsigned long long)task_id,
-        operation, result ? "demandée" : "refusée/indisponible");
+        "Task #%llu: %s %s.", (unsigned long long)task_id,
+        operation, result ? "requested" : "rejected/unavailable");
     return true;
 }
 
@@ -967,7 +967,7 @@ handle_normal_input(
             (void)snprintf(
                 state->status_message,
                 sizeof(state->status_message),
-                "Quitter est désactivé pendant l'import."
+                "Quit is disabled during import."
             );
         } else if (key == 27) {
             (void)snprintf(
@@ -1129,7 +1129,7 @@ handle_normal_input(
                 (void)snprintf(
                     state->status_message,
                     sizeof(state->status_message),
-                    "Aucun projet chargé."
+                    "No project loaded."
                 );
                 return true;
             }
@@ -1148,7 +1148,7 @@ handle_normal_input(
                 (void)snprintf(
                     state->status_message,
                     sizeof(state->status_message),
-                    "Aucun projet chargé."
+                    "No project loaded."
                 );
             } else {
                 (void)reload_catalog(state, true);
@@ -1203,7 +1203,7 @@ handle_normal_input(
                 (void)snprintf(
                     state->status_message,
                     sizeof(state->status_message),
-                    "Filtre effacé."
+                    "Filter cleared."
                 );
             }
             return true;
