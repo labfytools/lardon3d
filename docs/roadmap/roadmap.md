@@ -11,7 +11,7 @@ It must not be used to reinterpret FROZEN scientific evidence.
 ## Current repository state
 
 ```text
-Project DB current schema             v25
+Project DB current schema             v26
 Production Task kinds                 16
 GLOBAL_MAINTENANCE_AUDIT              PASS/FROZEN
 REAL_S21_TRACKS                       PASS/FROZEN
@@ -24,7 +24,7 @@ SOURCE_COMMENT_AUDIT                  PASS
 PRODUCT_DEFINITION                    PASS/FROZEN
 PROMPT_TREE                           CURRENT
 USER_FACING_UI_LANGUAGE_NORMALIZATION PASS
-CURRENT_NEXT                          CALIBRATION_V2_HETEROGENEOUS_OPTICS_FOUNDATION
+CURRENT_NEXT                          CALIBRATION_V2_HETEROGENEOUS_CALIBRATION_PUBLICATION
 ```
 
 The current Project DB head is additive:
@@ -34,6 +34,7 @@ v22  selected scientific execution foundation
 v23  generic optical-context overlay
 v24  raw.develop.batch/1 persistence
 v25  features.extract.batch/1 persistence
+v26  Capture geometric state + exact calibration applicability
 ```
 
 Historical references to earlier versions remain valid when they describe the state of their own
@@ -529,9 +530,12 @@ silent calibration substitution remains forbidden
 ```
 
 The current Sparse calibration scope already models membership as `image_id -> calibration_id`; the
-next dependency is the additive durable heterogeneous-optics/applicability foundation, which must
-reuse that capability where it proves sufficient. Device-specific autofocus envelopes remain blocked
-until physical evidence validates them.
+v26 heterogeneous-optics foundation now durably records Capture geometric state and exact
+applicability while retaining that per-image scope model. Unknown state remains retained but
+`CALIBRATION_REQUIRED`, and exact compatibility resolves none/one/many candidates to
+`CALIBRATION_REQUIRED`/resolved/`SELECTION_REQUIRED`. The next dependency is heterogeneous
+calibration publication. Device-specific autofocus envelopes remain blocked until physical evidence
+validates them.
 
 Calibration Tooling v1 consumes an already acquired Science v1 evidence bundle, validates the bounded
 contract and produces deterministic `L3DCALB1` v1.

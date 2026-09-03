@@ -3,10 +3,10 @@
 ## Status
 
 ```text
-CURRENT_PROJECT_DB_SCHEMA=v25
+CURRENT_PROJECT_DB_SCHEMA=v26
 PRODUCTION_TASK_KINDS=16
 USER_FACING_UI_LANGUAGE_NORMALIZATION=PASS
-CURRENT_IMPLEMENTATION_CURSOR=CALIBRATION_V2_HETEROGENEOUS_OPTICS_FOUNDATION
+CURRENT_IMPLEMENTATION_CURSOR=CALIBRATION_V2_HETEROGENEOUS_CALIBRATION_PUBLICATION
 ```
 
 ## Authority
@@ -16,7 +16,7 @@ CURRENT_IMPLEMENTATION_CURSOR=CALIBRATION_V2_HETEROGENEOUS_OPTICS_FOUNDATION
 ## CURRENT
 
 ```text
-Project DB head                         v25
+Project DB head                         v26
 Production Task kinds                   16
 Feature Store                           IMPLEMENTED
 Visual Index                            IMPLEMENTED
@@ -36,6 +36,7 @@ Calibration workflow evidence materialization PASS/FROZEN
 Calibration workflow selected-execution binding PASS/FROZEN
 Calibration workflow Tooling/Bootstrap READY PASS/FROZEN
 Calibration Science v2 heterogeneous optics  PASS/FROZEN
+Calibration v2 optical-state foundation       PASS/FROZEN
 Adaptive capture settings semantics          PLANNED
 Autofocus v2 foundation                      PLANNED
 Calibration Tooling planarity alignment     PASS/FROZEN
@@ -48,6 +49,7 @@ v22 selected scientific execution foundation
 v23 generic optical-context overlay
 v24 raw.develop.batch/1
 v25 features.extract.batch/1
+v26 Capture geometric state/applicability
 ```
 
 ## FROZEN

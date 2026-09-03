@@ -119,6 +119,73 @@ typedef struct {
   uint64_t sparse_calibration_id;
 } Lardon3DOpticalCaptureCalibrationSelection;
 
+typedef enum {
+  LARDON3D_OPTICAL_OBSERVATION_UNKNOWN = 1,
+  LARDON3D_OPTICAL_OBSERVATION_OBSERVED = 2,
+} Lardon3DOpticalObservationState;
+
+typedef enum {
+  LARDON3D_OPTICAL_STABILIZATION_UNKNOWN = 1,
+  LARDON3D_OPTICAL_STABILIZATION_OFF = 2,
+  LARDON3D_OPTICAL_STABILIZATION_ON = 3,
+} Lardon3DOpticalStabilizationState;
+
+typedef enum {
+  LARDON3D_OPTICAL_GEOMETRIC_STATE_METADATA = 1,
+  LARDON3D_OPTICAL_GEOMETRIC_STATE_CALLER_EXPLICIT = 2,
+} Lardon3DOpticalGeometricStateProvenance;
+
+typedef enum {
+  LARDON3D_OPTICAL_CALIBRATION_REQUIRED = 1,
+  LARDON3D_OPTICAL_CALIBRATION_RESOLVED = 2,
+  LARDON3D_OPTICAL_CALIBRATION_SELECTION_REQUIRED = 3,
+} Lardon3DOpticalCalibrationResolutionKind;
+
+typedef struct {
+  uint64_t capture_id;
+  uint64_t optical_configuration_id;
+  uint32_t state_version;
+  Lardon3DOpticalGeometricStateProvenance provenance;
+  Lardon3DOpticalObservationState focus_state;
+  /* Focus is an exact, bounded observation token, not a physical-distance or
+   * autofocus domain. Empty is required when focus is explicitly unknown. */
+  char focus_observation[LARDON3D_OPTICAL_TEXT_CAPACITY];
+  Lardon3DOpticalObservationState aperture_state;
+  uint32_t aperture_x1000;
+  Lardon3DOpticalStabilizationState stabilization;
+  Lardon3DOpticalObservationState crop_state;
+  char crop_observation[LARDON3D_OPTICAL_TEXT_CAPACITY];
+  Lardon3DOpticalObservationState pipeline_state;
+  char pipeline_observation[LARDON3D_OPTICAL_TEXT_CAPACITY];
+  Lardon3DOpticalObservationState representation_state;
+  char representation_observation[LARDON3D_OPTICAL_TEXT_CAPACITY];
+  Lardon3DOpticalObservationState decoded_geometry_state;
+  uint32_t decoded_width;
+  uint32_t decoded_height;
+} Lardon3DOpticalCaptureGeometricState;
+
+typedef struct {
+  uint64_t applicability_id;
+  uint64_t calibration_profile_id;
+  uint64_t optical_configuration_id;
+  uint64_t exemplar_capture_id;
+} Lardon3DOpticalCalibrationApplicabilityV2;
+
+typedef struct {
+  Lardon3DOpticalCalibrationResolutionKind kind;
+  uint64_t applicability_id;
+  uint64_t calibration_profile_id;
+  uint64_t sparse_calibration_id;
+} Lardon3DOpticalCalibrationResolutionV2;
+
+typedef struct {
+  uint64_t capture_id;
+  uint64_t applicability_id;
+  uint64_t calibration_profile_id;
+  uint64_t optical_configuration_id;
+  uint64_t sparse_calibration_id;
+} Lardon3DOpticalCaptureCalibrationSelectionV2;
+
 /* All profile/config creation calls borrow input only for the call and return a
  * caller-owned, NUL-terminated copy; input and output storage must not overlap.
  * The generated row-ID field in a create input must be zero; referenced IDs
@@ -246,6 +313,44 @@ Lardon3DProjectDbResult lardon3d_optical_capture_calibration_select(
 Lardon3DProjectDbResult lardon3d_optical_capture_calibration_selection_load(
     Lardon3DProjectDb *database, uint64_t capture_id,
     Lardon3DOpticalCaptureCalibrationSelection *output);
+
+/* v26 state is Capture-owned and separate from both Capture identity and the
+ * v23 body/lens/focal configuration. Unknown values remain explicit. Create is
+ * immutable: an exact retry is idempotent and any differing tuple conflicts. */
+Lardon3DProjectDbResult lardon3d_optical_capture_geometric_state_create(
+    Lardon3DProjectDb *database,
+    const Lardon3DOpticalCaptureGeometricState *input,
+    Lardon3DOpticalCaptureGeometricState *output);
+Lardon3DProjectDbResult lardon3d_optical_capture_geometric_state_load(
+    Lardon3DProjectDb *database, uint64_t capture_id,
+    Lardon3DOpticalCaptureGeometricState *output);
+
+/* Applicability binds an existing v1 calibration profile to the exemplar's
+ * exact configuration and complete observed-state tuple. It authorizes no
+ * body/lens/focal substitution, unknown default, interpolation or extrapolation. */
+Lardon3DProjectDbResult lardon3d_optical_calibration_applicability_v2_create(
+    Lardon3DProjectDb *database, uint64_t calibration_profile_id,
+    uint64_t exemplar_capture_id,
+    Lardon3DOpticalCalibrationApplicabilityV2 *output);
+
+/* Resolution counts exact valid applicability rows. NONE is CALIBRATION_REQUIRED,
+ * ONE is RESOLVED, and MANY is SELECTION_REQUIRED. All are successful outcomes. */
+Lardon3DProjectDbResult lardon3d_optical_capture_calibration_resolve_v2(
+    Lardon3DProjectDb *database, uint64_t capture_id,
+    Lardon3DOpticalCalibrationResolutionV2 *output);
+/* Selection requires a complete observed geometric-state tuple and an exactly
+ * compatible applicability; UNKNOWN in any geometry-relevant field is a
+ * CONSTRAINT. The first selection is immutable, exact retry is idempotent, and
+ * a conflicting applicability is rejected without changing the selection. */
+Lardon3DProjectDbResult lardon3d_optical_capture_calibration_select_v2(
+    Lardon3DProjectDb *database, uint64_t capture_id, uint64_t applicability_id);
+/* Loads the Capture's durable v2 selection without creating or changing it.
+ * NOT_FOUND means no selection exists. OK returns the complete stored tuple
+ * only when its applicability remains exactly compatible with the Capture's
+ * complete observed geometric state; broken dependencies are CORRUPT. */
+Lardon3DProjectDbResult lardon3d_optical_capture_calibration_selection_load_v2(
+    Lardon3DProjectDb *database, uint64_t capture_id,
+    Lardon3DOpticalCaptureCalibrationSelectionV2 *output);
 
 #ifdef __cplusplus
 }

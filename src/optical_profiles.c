@@ -2062,3 +2062,642 @@ lardon3d_optical_capture_calibration_selection_load(
     memset(output, 0, sizeof(*output));
   return result;
 }
+
+static bool
+geometric_state_input_valid(const Lardon3DOpticalCaptureGeometricState *value) {
+  if (!value || !optical_id(value->capture_id) ||
+      !optical_id(value->optical_configuration_id) ||
+      value->state_version == 0 ||
+      (value->provenance != LARDON3D_OPTICAL_GEOMETRIC_STATE_METADATA &&
+       value->provenance != LARDON3D_OPTICAL_GEOMETRIC_STATE_CALLER_EXPLICIT) ||
+      value->focus_state < LARDON3D_OPTICAL_OBSERVATION_UNKNOWN ||
+      value->focus_state > LARDON3D_OPTICAL_OBSERVATION_OBSERVED ||
+      value->aperture_state < LARDON3D_OPTICAL_OBSERVATION_UNKNOWN ||
+      value->aperture_state > LARDON3D_OPTICAL_OBSERVATION_OBSERVED ||
+      value->crop_state < LARDON3D_OPTICAL_OBSERVATION_UNKNOWN ||
+      value->crop_state > LARDON3D_OPTICAL_OBSERVATION_OBSERVED ||
+      value->pipeline_state < LARDON3D_OPTICAL_OBSERVATION_UNKNOWN ||
+      value->pipeline_state > LARDON3D_OPTICAL_OBSERVATION_OBSERVED ||
+      value->representation_state < LARDON3D_OPTICAL_OBSERVATION_UNKNOWN ||
+      value->representation_state > LARDON3D_OPTICAL_OBSERVATION_OBSERVED ||
+      value->decoded_geometry_state < LARDON3D_OPTICAL_OBSERVATION_UNKNOWN ||
+      value->decoded_geometry_state > LARDON3D_OPTICAL_OBSERVATION_OBSERVED ||
+      value->stabilization < LARDON3D_OPTICAL_STABILIZATION_UNKNOWN ||
+      value->stabilization > LARDON3D_OPTICAL_STABILIZATION_ON)
+    return false;
+  const char *tokens[] = {value->focus_observation, value->crop_observation,
+                          value->pipeline_observation,
+                          value->representation_observation};
+  const Lardon3DOpticalObservationState states[] = {
+      value->focus_state, value->crop_state, value->pipeline_state,
+      value->representation_state};
+  for (size_t index = 0; index < 4; ++index)
+    if (!optical_text(tokens[index], LARDON3D_OPTICAL_TEXT_CAPACITY,
+                      states[index] == LARDON3D_OPTICAL_OBSERVATION_UNKNOWN) ||
+        ((states[index] == LARDON3D_OPTICAL_OBSERVATION_UNKNOWN) !=
+         (tokens[index][0] == '\0')))
+      return false;
+  return ((value->aperture_state == LARDON3D_OPTICAL_OBSERVATION_UNKNOWN &&
+           value->aperture_x1000 == 0) ||
+          (value->aperture_state == LARDON3D_OPTICAL_OBSERVATION_OBSERVED &&
+           value->aperture_x1000 > 0)) &&
+         ((value->decoded_geometry_state ==
+               LARDON3D_OPTICAL_OBSERVATION_UNKNOWN &&
+           value->decoded_width == 0 && value->decoded_height == 0) ||
+          (value->decoded_geometry_state ==
+               LARDON3D_OPTICAL_OBSERVATION_OBSERVED &&
+           value->decoded_width > 0 && value->decoded_height > 0));
+}
+
+static bool geometric_state_complete(
+    const Lardon3DOpticalCaptureGeometricState *value) {
+  /* UNKNOWN remains valid durable evidence, but it cannot prove geometric
+     compatibility or authorize publication/selection of an applicability. */
+  return value->focus_state == LARDON3D_OPTICAL_OBSERVATION_OBSERVED &&
+         value->aperture_state == LARDON3D_OPTICAL_OBSERVATION_OBSERVED &&
+         value->stabilization != LARDON3D_OPTICAL_STABILIZATION_UNKNOWN &&
+         value->crop_state == LARDON3D_OPTICAL_OBSERVATION_OBSERVED &&
+         value->pipeline_state == LARDON3D_OPTICAL_OBSERVATION_OBSERVED &&
+         value->representation_state == LARDON3D_OPTICAL_OBSERVATION_OBSERVED &&
+         value->decoded_geometry_state == LARDON3D_OPTICAL_OBSERVATION_OBSERVED;
+}
+
+static bool read_geometric_state(sqlite3_stmt *statement,
+                                 Lardon3DOpticalCaptureGeometricState *output) {
+  memset(output, 0, sizeof(*output));
+  for (int column = 0; column < 18; ++column) {
+    bool text = column == 5 || column == 10 || column == 12 || column == 14;
+    if (sqlite3_column_type(statement, column) !=
+        (text ? SQLITE_TEXT : SQLITE_INTEGER))
+      return false;
+  }
+  sqlite3_int64 capture_id = sqlite3_column_int64(statement, 0);
+  sqlite3_int64 configuration_id = sqlite3_column_int64(statement, 1);
+  sqlite3_int64 version = sqlite3_column_int64(statement, 2);
+  sqlite3_int64 aperture = sqlite3_column_int64(statement, 7);
+  sqlite3_int64 decoded_width = sqlite3_column_int64(statement, 16);
+  sqlite3_int64 decoded_height = sqlite3_column_int64(statement, 17);
+  if (capture_id <= 0 || configuration_id <= 0 || version <= 0 ||
+      (uint64_t)version > UINT32_MAX || aperture < 0 ||
+      (uint64_t)aperture > UINT32_MAX || decoded_width < 0 ||
+      (uint64_t)decoded_width > UINT32_MAX || decoded_height < 0 ||
+      (uint64_t)decoded_height > UINT32_MAX)
+    return false;
+  output->capture_id = (uint64_t)capture_id;
+  output->optical_configuration_id = (uint64_t)configuration_id;
+  output->state_version = (uint32_t)version;
+  output->provenance =
+      (Lardon3DOpticalGeometricStateProvenance)sqlite3_column_int64(statement,
+                                                                    3);
+  output->focus_state =
+      (Lardon3DOpticalObservationState)sqlite3_column_int64(statement, 4);
+  output->aperture_state =
+      (Lardon3DOpticalObservationState)sqlite3_column_int64(statement, 6);
+  output->aperture_x1000 = (uint32_t)aperture;
+  output->stabilization =
+      (Lardon3DOpticalStabilizationState)sqlite3_column_int64(statement, 8);
+  output->crop_state =
+      (Lardon3DOpticalObservationState)sqlite3_column_int64(statement, 9);
+  output->pipeline_state =
+      (Lardon3DOpticalObservationState)sqlite3_column_int64(statement, 11);
+  output->representation_state =
+      (Lardon3DOpticalObservationState)sqlite3_column_int64(statement, 13);
+  output->decoded_geometry_state =
+      (Lardon3DOpticalObservationState)sqlite3_column_int64(statement, 15);
+  output->decoded_width = (uint32_t)decoded_width;
+  output->decoded_height = (uint32_t)decoded_height;
+  if (!optical_copy_text(statement, 5, output->focus_observation,
+                         sizeof(output->focus_observation), true) ||
+      !optical_copy_text(statement, 10, output->crop_observation,
+                         sizeof(output->crop_observation), true) ||
+      !optical_copy_text(statement, 12, output->pipeline_observation,
+                         sizeof(output->pipeline_observation), true) ||
+      !optical_copy_text(statement, 14, output->representation_observation,
+                         sizeof(output->representation_observation), true))
+    return false;
+  return geometric_state_input_valid(output);
+}
+
+static const char geometric_state_columns[] =
+    "capture_id,optical_configuration_id,state_version,provenance,focus_state,"
+    "focus_observation,"
+    "aperture_state,aperture_x1000,stabilization,crop_state,crop_observation,"
+    "pipeline_state,"
+    "pipeline_observation,representation_state,representation_observation,"
+    "decoded_geometry_state,"
+    "decoded_width,decoded_height";
+
+static bool
+geometric_states_equal(const Lardon3DOpticalCaptureGeometricState *a,
+                       const Lardon3DOpticalCaptureGeometricState *b) {
+  return a->capture_id == b->capture_id &&
+         a->optical_configuration_id == b->optical_configuration_id &&
+         a->state_version == b->state_version &&
+         a->provenance == b->provenance && a->focus_state == b->focus_state &&
+         strcmp(a->focus_observation, b->focus_observation) == 0 &&
+         a->aperture_state == b->aperture_state &&
+         a->aperture_x1000 == b->aperture_x1000 &&
+         a->stabilization == b->stabilization &&
+         a->crop_state == b->crop_state &&
+         strcmp(a->crop_observation, b->crop_observation) == 0 &&
+         a->pipeline_state == b->pipeline_state &&
+         strcmp(a->pipeline_observation, b->pipeline_observation) == 0 &&
+         a->representation_state == b->representation_state &&
+         strcmp(a->representation_observation, b->representation_observation) ==
+             0 &&
+         a->decoded_geometry_state == b->decoded_geometry_state &&
+         a->decoded_width == b->decoded_width &&
+         a->decoded_height == b->decoded_height;
+}
+
+static Lardon3DProjectDbResult
+geometric_state_load_locked(Lardon3DProjectDb *database, uint64_t capture_id,
+                            Lardon3DOpticalCaptureGeometricState *output) {
+  char query[768];
+  int length =
+      snprintf(query, sizeof(query),
+               "SELECT %s FROM capture_geometric_states WHERE capture_id=?1",
+               geometric_state_columns);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = length < 0 || (size_t)length >= sizeof(query)
+                                       ? LARDON3D_PROJECT_DB_IO_ERROR
+                                       : prepare(database, query, &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    (void)sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE)
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    else if (code != SQLITE_ROW)
+      result = sqlite_result(database, code, "load Capture geometric state");
+    else if (!read_geometric_state(statement, output) ||
+             output->capture_id != capture_id ||
+             sqlite3_step(statement) != SQLITE_DONE)
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+  }
+  (void)sqlite3_finalize(statement);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_optical_capture_geometric_state_load(
+    Lardon3DProjectDb *database, uint64_t capture_id,
+    Lardon3DOpticalCaptureGeometricState *output) {
+  if (output)
+    memset(output, 0, sizeof(*output));
+  if (!database || !optical_id(capture_id) || !output)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  (void)pthread_mutex_lock(&database->mutex);
+  Lardon3DProjectDbResult result =
+      geometric_state_load_locked(database, capture_id, output);
+  (void)pthread_mutex_unlock(&database->mutex);
+  if (result != LARDON3D_PROJECT_DB_OK)
+    memset(output, 0, sizeof(*output));
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_optical_capture_geometric_state_create(
+    Lardon3DProjectDb *database,
+    const Lardon3DOpticalCaptureGeometricState *input,
+    Lardon3DOpticalCaptureGeometricState *output) {
+  if (output)
+    memset(output, 0, sizeof(*output));
+  if (!database || !output || input == output ||
+      !geometric_state_input_valid(input))
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  (void)pthread_mutex_lock(&database->mutex);
+  Lardon3DProjectDbResult result =
+      execute(database, "BEGIN IMMEDIATE", "begin Capture geometric state");
+  Lardon3DOpticalCaptureAssignment assignment = {0};
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = capture_assignment_load_locked(database, input->capture_id,
+                                            &assignment);
+  if (result == LARDON3D_PROJECT_DB_OK &&
+      assignment.optical_configuration_id != input->optical_configuration_id)
+    result = LARDON3D_PROJECT_DB_CONSTRAINT;
+  sqlite3_stmt *statement = NULL;
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = prepare(database,
+                     "INSERT OR IGNORE INTO capture_geometric_states "
+                     "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?"
+                     "15,?16,?17,?18)",
+                     &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)input->capture_id);
+    sqlite3_bind_int64(statement, 2,
+                       (sqlite3_int64)input->optical_configuration_id);
+    sqlite3_bind_int64(statement, 3, input->state_version);
+    sqlite3_bind_int64(statement, 4, input->provenance);
+    sqlite3_bind_int64(statement, 5, input->focus_state);
+    sqlite3_bind_text(statement, 6, input->focus_observation, -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 7, input->aperture_state);
+    sqlite3_bind_int64(statement, 8, input->aperture_x1000);
+    sqlite3_bind_int64(statement, 9, input->stabilization);
+    sqlite3_bind_int64(statement, 10, input->crop_state);
+    sqlite3_bind_text(statement, 11, input->crop_observation, -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 12, input->pipeline_state);
+    sqlite3_bind_text(statement, 13, input->pipeline_observation, -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 14, input->representation_state);
+    sqlite3_bind_text(statement, 15, input->representation_observation, -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 16, input->decoded_geometry_state);
+    sqlite3_bind_int64(statement, 17, input->decoded_width);
+    sqlite3_bind_int64(statement, 18, input->decoded_height);
+    result = step_done(database, statement, "insert Capture geometric state");
+    statement = NULL;
+  }
+  (void)sqlite3_finalize(statement);
+  Lardon3DOpticalCaptureGeometricState stored = {0};
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = geometric_state_load_locked(database, input->capture_id, &stored);
+  if (result == LARDON3D_PROJECT_DB_OK &&
+      !geometric_states_equal(&stored, input))
+    result = LARDON3D_PROJECT_DB_CONSTRAINT;
+  result = optical_commit_or_rollback(database, result,
+                                      "commit Capture geometric state",
+                                      "rollback Capture geometric state");
+  (void)pthread_mutex_unlock(&database->mutex);
+  if (result == LARDON3D_PROJECT_DB_OK)
+    *output = stored;
+  return result;
+}
+
+static const char exact_state_predicate[] =
+    "t.optical_configuration_id=e.optical_configuration_id AND "
+    "t.state_version=e.state_version AND t.provenance=e.provenance AND "
+    "t.focus_state=e.focus_state AND "
+    "t.focus_observation=e.focus_observation AND "
+    "t.aperture_state=e.aperture_state AND t.aperture_x1000=e.aperture_x1000 "
+    "AND t.stabilization=e.stabilization AND t.crop_state=e.crop_state AND "
+    "t.crop_observation=e.crop_observation AND "
+    "t.pipeline_state=e.pipeline_state AND "
+    "t.pipeline_observation=e.pipeline_observation AND "
+    "t.representation_state=e.representation_state AND "
+    "t.representation_observation=e.representation_observation AND "
+    "t.decoded_geometry_state=e.decoded_geometry_state AND "
+    "t.decoded_width=e.decoded_width AND t.decoded_height=e.decoded_height";
+
+Lardon3DProjectDbResult lardon3d_optical_calibration_applicability_v2_create(
+    Lardon3DProjectDb *database, uint64_t calibration_profile_id,
+    uint64_t exemplar_capture_id,
+    Lardon3DOpticalCalibrationApplicabilityV2 *output) {
+  if (output)
+    memset(output, 0, sizeof(*output));
+  if (!database || !optical_id(calibration_profile_id) ||
+      !optical_id(exemplar_capture_id) || !output)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  Lardon3DOpticalCalibrationProfile profile;
+  Lardon3DProjectDbResult result = lardon3d_optical_calibration_profile_load(
+      database, calibration_profile_id, &profile);
+  Lardon3DOpticalCaptureGeometricState state;
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = lardon3d_optical_capture_geometric_state_load(
+        database, exemplar_capture_id, &state);
+  if (result != LARDON3D_PROJECT_DB_OK)
+    return result;
+  if (profile.optical_configuration_id != state.optical_configuration_id ||
+      !geometric_state_complete(&state))
+    return LARDON3D_PROJECT_DB_CONSTRAINT;
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  result = execute(database, "BEGIN IMMEDIATE",
+                   "begin calibration applicability v2");
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = prepare(
+        database,
+        "INSERT OR IGNORE INTO "
+        "optical_calibration_applicabilities_v2(calibration_profile_id,optical_"
+        "configuration_id,exemplar_capture_id) VALUES(?1,?2,?3)",
+        &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)calibration_profile_id);
+    sqlite3_bind_int64(statement, 2,
+                       (sqlite3_int64)state.optical_configuration_id);
+    sqlite3_bind_int64(statement, 3, (sqlite3_int64)exemplar_capture_id);
+    result =
+        step_done(database, statement, "insert calibration applicability v2");
+    statement = NULL;
+  }
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = prepare(
+        database,
+        "SELECT "
+        "applicability_id,calibration_profile_id,optical_configuration_id,"
+        "exemplar_capture_id FROM optical_calibration_applicabilities_v2 WHERE "
+        "calibration_profile_id=?1 AND exemplar_capture_id=?2",
+        &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)calibration_profile_id);
+    sqlite3_bind_int64(statement, 2, (sqlite3_int64)exemplar_capture_id);
+    int code = sqlite3_step(statement);
+    if (code != SQLITE_ROW)
+      result = code == SQLITE_DONE
+                   ? LARDON3D_PROJECT_DB_CORRUPT
+                   : sqlite_result(database, code,
+                                   "load calibration applicability v2");
+    else {
+      sqlite3_int64 applicability_id = sqlite3_column_int64(statement, 0);
+      bool valid = true;
+      for (int column = 0; column < 4; ++column)
+        if (sqlite3_column_type(statement, column) != SQLITE_INTEGER)
+          valid = false;
+      if (!valid || applicability_id <= 0 ||
+          sqlite3_column_int64(statement, 1) !=
+              (sqlite3_int64)calibration_profile_id ||
+          sqlite3_column_int64(statement, 2) !=
+              (sqlite3_int64)state.optical_configuration_id ||
+          sqlite3_column_int64(statement, 3) !=
+              (sqlite3_int64)exemplar_capture_id ||
+          sqlite3_step(statement) != SQLITE_DONE) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else {
+        output->applicability_id = (uint64_t)applicability_id;
+        output->calibration_profile_id = calibration_profile_id;
+        output->optical_configuration_id = state.optical_configuration_id;
+        output->exemplar_capture_id = exemplar_capture_id;
+      }
+    }
+  }
+  (void)sqlite3_finalize(statement);
+  result = optical_commit_or_rollback(database, result,
+                                      "commit calibration applicability v2",
+                                      "rollback calibration applicability v2");
+  (void)pthread_mutex_unlock(&database->mutex);
+  if (result != LARDON3D_PROJECT_DB_OK)
+    memset(output, 0, sizeof(*output));
+  return result;
+}
+
+static Lardon3DProjectDbResult
+exact_candidates_locked(Lardon3DProjectDb *database, uint64_t capture_id,
+                        uint64_t required_applicability,
+                        Lardon3DOpticalCalibrationResolutionV2 *output,
+                        size_t *count) {
+  /* A broken v2 dependency is corruption, not evidence that calibration is
+     required. Validate the target configuration before exact-state filtering. */
+  sqlite3_stmt *validation = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT a.applicability_id FROM optical_calibration_applicabilities_v2 a "
+      "LEFT JOIN capture_geometric_states e ON e.capture_id=a.exemplar_capture_id "
+      "AND e.optical_configuration_id=a.optical_configuration_id LEFT JOIN "
+      "optical_calibration_profiles p ON p.calibration_profile_id=a.calibration_profile_id "
+      "AND p.optical_configuration_id=a.optical_configuration_id LEFT JOIN "
+      "sparse_calibrations s ON s.calibration_id=p.sparse_calibration_id WHERE "
+      "a.optical_configuration_id=(SELECT optical_configuration_id FROM "
+      "capture_geometric_states WHERE capture_id=?1) AND (e.capture_id IS NULL OR "
+      "p.calibration_profile_id IS NULL OR s.calibration_id IS NULL) LIMIT 1",
+      &validation);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(validation, 1, (sqlite3_int64)capture_id);
+    int code = sqlite3_step(validation);
+    if (code == SQLITE_ROW)
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    else if (code != SQLITE_DONE)
+      result = sqlite_result(database, code,
+                             "validate calibration applicability v2");
+  }
+  (void)sqlite3_finalize(validation);
+  if (result != LARDON3D_PROJECT_DB_OK)
+    return result;
+
+  char query[1800];
+  int length = snprintf(
+      query, sizeof(query),
+      "SELECT "
+      "a.applicability_id,a.calibration_profile_id,p.sparse_calibration_id "
+      "FROM capture_geometric_states t JOIN "
+      "optical_calibration_applicabilities_v2 a ON "
+      "a.optical_configuration_id=t.optical_configuration_id JOIN "
+      "capture_geometric_states e ON e.capture_id=a.exemplar_capture_id JOIN "
+      "optical_calibration_profiles p ON "
+      "p.calibration_profile_id=a.calibration_profile_id AND "
+      "p.optical_configuration_id=a.optical_configuration_id JOIN "
+      "sparse_calibrations s ON s.calibration_id=p.sparse_calibration_id WHERE "
+      "t.capture_id=?1 AND %s%s ORDER BY a.applicability_id LIMIT 2",
+      exact_state_predicate,
+      required_applicability ? " AND a.applicability_id=?2" : "");
+  sqlite3_stmt *statement = NULL;
+  result = length < 0 || (size_t)length >= sizeof(query)
+               ? LARDON3D_PROJECT_DB_IO_ERROR
+               : prepare(database, query, &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+    if (required_applicability)
+      sqlite3_bind_int64(statement, 2, (sqlite3_int64)required_applicability);
+    int code;
+    *count = 0;
+    while (*count < 2 && (code = sqlite3_step(statement)) == SQLITE_ROW) {
+      if (sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 1) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 2) != SQLITE_INTEGER ||
+          sqlite3_column_int64(statement, 0) <= 0 ||
+          sqlite3_column_int64(statement, 1) <= 0 ||
+          sqlite3_column_int64(statement, 2) <= 0) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      if (*count == 0) {
+        output->applicability_id = (uint64_t)sqlite3_column_int64(statement, 0);
+        output->calibration_profile_id =
+            (uint64_t)sqlite3_column_int64(statement, 1);
+        output->sparse_calibration_id =
+            (uint64_t)sqlite3_column_int64(statement, 2);
+      }
+      ++*count;
+    }
+    if (result == LARDON3D_PROJECT_DB_OK && code != SQLITE_DONE && *count < 2)
+      result =
+          sqlite_result(database, code, "resolve calibration applicability v2");
+  }
+  (void)sqlite3_finalize(statement);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_optical_capture_calibration_resolve_v2(
+    Lardon3DProjectDb *database, uint64_t capture_id,
+    Lardon3DOpticalCalibrationResolutionV2 *output) {
+  if (output)
+    memset(output, 0, sizeof(*output));
+  if (!database || !optical_id(capture_id) || !output)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  Lardon3DOpticalCaptureGeometricState state;
+  Lardon3DProjectDbResult result =
+      lardon3d_optical_capture_geometric_state_load(database, capture_id,
+                                                    &state);
+  if (result == LARDON3D_PROJECT_DB_NOT_FOUND) {
+    /* A real Capture with no observed tuple has no valid applicability. Absence
+       is not permission to fabricate an unknown/default tuple. */
+    Lardon3DProjectDbCapture capture;
+    result = lardon3d_project_db_load_capture(database, capture_id, &capture);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      output->kind = LARDON3D_OPTICAL_CALIBRATION_REQUIRED;
+      return LARDON3D_PROJECT_DB_OK;
+    }
+  }
+  if (result != LARDON3D_PROJECT_DB_OK)
+    return result;
+  if (!geometric_state_complete(&state)) {
+    output->kind = LARDON3D_OPTICAL_CALIBRATION_REQUIRED;
+    return LARDON3D_PROJECT_DB_OK;
+  }
+  Lardon3DOpticalCaptureCalibrationSelectionV2 selection;
+  result = lardon3d_optical_capture_calibration_selection_load_v2(
+      database, capture_id, &selection);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    output->kind = LARDON3D_OPTICAL_CALIBRATION_RESOLVED;
+    output->applicability_id = selection.applicability_id;
+    output->calibration_profile_id = selection.calibration_profile_id;
+    output->sparse_calibration_id = selection.sparse_calibration_id;
+    return LARDON3D_PROJECT_DB_OK;
+  }
+  if (result != LARDON3D_PROJECT_DB_NOT_FOUND)
+    return result;
+  (void)pthread_mutex_lock(&database->mutex);
+  size_t count = 0;
+  result = exact_candidates_locked(database, capture_id, 0, output, &count);
+  (void)pthread_mutex_unlock(&database->mutex);
+  if (result != LARDON3D_PROJECT_DB_OK) {
+    memset(output, 0, sizeof(*output));
+    return result;
+  }
+  if (count == 0)
+    output->kind = LARDON3D_OPTICAL_CALIBRATION_REQUIRED;
+  else if (count == 1)
+    output->kind = LARDON3D_OPTICAL_CALIBRATION_RESOLVED;
+  else {
+    memset(output, 0, sizeof(*output));
+    output->kind = LARDON3D_OPTICAL_CALIBRATION_SELECTION_REQUIRED;
+  }
+  return LARDON3D_PROJECT_DB_OK;
+}
+
+Lardon3DProjectDbResult
+lardon3d_optical_capture_calibration_select_v2(Lardon3DProjectDb *database,
+                                               uint64_t capture_id,
+                                               uint64_t applicability_id) {
+  if (!database || !optical_id(capture_id) || !optical_id(applicability_id))
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  (void)pthread_mutex_lock(&database->mutex);
+  Lardon3DOpticalCalibrationResolutionV2 candidate = {0};
+  size_t count = 0;
+  Lardon3DProjectDbResult result = execute(
+      database, "BEGIN IMMEDIATE", "begin Capture calibration selection v2");
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = exact_candidates_locked(database, capture_id, applicability_id,
+                                     &candidate, &count);
+  if (result == LARDON3D_PROJECT_DB_OK && count != 1)
+    result = LARDON3D_PROJECT_DB_CONSTRAINT;
+  Lardon3DOpticalCaptureGeometricState state = {0};
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = geometric_state_load_locked(database, capture_id, &state);
+  sqlite3_stmt *statement = NULL;
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = prepare(database,
+                     "INSERT OR IGNORE INTO capture_calibration_selections_v2 "
+                     "VALUES(?1,?2,?3,?4)",
+                     &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+    sqlite3_bind_int64(statement, 2, (sqlite3_int64)applicability_id);
+    sqlite3_bind_int64(statement, 3,
+                       (sqlite3_int64)candidate.calibration_profile_id);
+    sqlite3_bind_int64(statement, 4,
+                       (sqlite3_int64)state.optical_configuration_id);
+    result = step_done(database, statement,
+                       "insert Capture calibration selection v2");
+    statement = NULL;
+  }
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result =
+        prepare(database,
+                "SELECT "
+                "applicability_id,calibration_profile_id,optical_configuration_"
+                "id FROM capture_calibration_selections_v2 WHERE capture_id=?1",
+                &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+    int code = sqlite3_step(statement);
+    if (code != SQLITE_ROW)
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    else if (sqlite3_column_int64(statement, 0) !=
+                 (sqlite3_int64)applicability_id ||
+             sqlite3_column_int64(statement, 1) !=
+                 (sqlite3_int64)candidate.calibration_profile_id ||
+             sqlite3_column_int64(statement, 2) !=
+                 (sqlite3_int64)state.optical_configuration_id)
+      result = LARDON3D_PROJECT_DB_CONSTRAINT;
+  }
+  (void)sqlite3_finalize(statement);
+  result = optical_commit_or_rollback(
+      database, result, "commit Capture calibration selection v2",
+      "rollback Capture calibration selection v2");
+  (void)pthread_mutex_unlock(&database->mutex);
+  return result;
+}
+
+Lardon3DProjectDbResult lardon3d_optical_capture_calibration_selection_load_v2(
+    Lardon3DProjectDb *database, uint64_t capture_id,
+    Lardon3DOpticalCaptureCalibrationSelectionV2 *output) {
+  if (output)
+    memset(output, 0, sizeof(*output));
+  if (!database || !optical_id(capture_id) || !output)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+  (void)pthread_mutex_lock(&database->mutex);
+  sqlite3_stmt *statement = NULL;
+  Lardon3DProjectDbResult result = prepare(
+      database,
+      "SELECT "
+      "x.capture_id,x.applicability_id,x.calibration_profile_id,x.optical_"
+      "configuration_id,p.sparse_calibration_id FROM "
+      "capture_calibration_selections_v2 x LEFT JOIN "
+      "optical_calibration_applicabilities_v2 a ON "
+      "a.applicability_id=x.applicability_id AND "
+      "a.calibration_profile_id=x.calibration_profile_id AND "
+      "a.optical_configuration_id=x.optical_configuration_id LEFT JOIN "
+      "optical_calibration_profiles p ON "
+      "p.calibration_profile_id=x.calibration_profile_id WHERE x.capture_id=?1",
+      &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE)
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    else if (code != SQLITE_ROW)
+      result = sqlite_result(database, code,
+                             "load Capture calibration selection v2");
+    else {
+      for (int i = 0; i < 5; ++i)
+        if (sqlite3_column_type(statement, i) != SQLITE_INTEGER ||
+            sqlite3_column_int64(statement, i) <= 0)
+          result = LARDON3D_PROJECT_DB_CORRUPT;
+      if (result == LARDON3D_PROJECT_DB_OK) {
+        output->capture_id = (uint64_t)sqlite3_column_int64(statement, 0);
+        output->applicability_id = (uint64_t)sqlite3_column_int64(statement, 1);
+        output->calibration_profile_id =
+            (uint64_t)sqlite3_column_int64(statement, 2);
+        output->optical_configuration_id =
+            (uint64_t)sqlite3_column_int64(statement, 3);
+        output->sparse_calibration_id =
+            (uint64_t)sqlite3_column_int64(statement, 4);
+      }
+    }
+  }
+  (void)sqlite3_finalize(statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    Lardon3DOpticalCalibrationResolutionV2 candidate = {0};
+    size_t count = 0;
+    result = exact_candidates_locked(
+        database, capture_id, output->applicability_id, &candidate, &count);
+    if (result == LARDON3D_PROJECT_DB_OK &&
+        (count != 1 ||
+         candidate.calibration_profile_id != output->calibration_profile_id ||
+         candidate.sparse_calibration_id != output->sparse_calibration_id))
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+  }
+  (void)pthread_mutex_unlock(&database->mutex);
+  if (result != LARDON3D_PROJECT_DB_OK)
+    memset(output, 0, sizeof(*output));
+  return result;
+}

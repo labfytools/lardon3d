@@ -882,6 +882,84 @@ static const char schema_feature_extract_batch_v25[] =
     "parameter_fingerprint BLOB NOT NULL CHECK(typeof(parameter_fingerprint)='blob' AND "
     "length(parameter_fingerprint)=32));";
 
+/* PERSISTENCE CONTRACT v26: state is immutable Capture-owned evidence. An
+   applicability uses an exemplar only as the exact tuple source; the Capture
+   ID is not calibration identity. DDL-only migration fabricates no evidence. */
+static const char schema_optical_geometric_state_v26[] =
+    "CREATE TABLE capture_geometric_states("
+    "capture_id INTEGER PRIMARY KEY REFERENCES captures(capture_id) ON DELETE "
+    "CASCADE,"
+    "optical_configuration_id INTEGER NOT NULL,state_version INTEGER NOT NULL "
+    "CHECK(state_version>0 AND state_version<=4294967295),"
+    "provenance INTEGER NOT NULL CHECK(provenance IN(1,2)),focus_state INTEGER "
+    "NOT NULL CHECK(focus_state IN(1,2)),"
+    "focus_observation TEXT NOT NULL CHECK(typeof(focus_observation)='text' "
+    "AND length(focus_observation)<128 AND ((focus_state=1 AND "
+    "length(focus_observation)=0) OR (focus_state=2 AND "
+    "length(focus_observation)>0))),"
+    "aperture_state INTEGER NOT NULL CHECK(aperture_state "
+    "IN(1,2)),aperture_x1000 INTEGER NOT NULL CHECK(aperture_x1000>=0 AND "
+    "aperture_x1000<=4294967295 AND ((aperture_state=1 AND aperture_x1000=0) "
+    "OR (aperture_state=2 AND aperture_x1000>0))),"
+    "stabilization INTEGER NOT NULL CHECK(stabilization IN(1,2,3)),crop_state "
+    "INTEGER NOT NULL CHECK(crop_state IN(1,2)),"
+    "crop_observation TEXT NOT NULL CHECK(typeof(crop_observation)='text' AND "
+    "length(crop_observation)<128 AND ((crop_state=1 AND "
+    "length(crop_observation)=0) OR (crop_state=2 AND "
+    "length(crop_observation)>0))),"
+    "pipeline_state INTEGER NOT NULL CHECK(pipeline_state "
+    "IN(1,2)),pipeline_observation TEXT NOT NULL "
+    "CHECK(typeof(pipeline_observation)='text' AND "
+    "length(pipeline_observation)<128 AND ((pipeline_state=1 AND "
+    "length(pipeline_observation)=0) OR (pipeline_state=2 AND "
+    "length(pipeline_observation)>0))),"
+    "representation_state INTEGER NOT NULL CHECK(representation_state "
+    "IN(1,2)),representation_observation TEXT NOT NULL "
+    "CHECK(typeof(representation_observation)='text' AND "
+    "length(representation_observation)<128 AND ((representation_state=1 AND "
+    "length(representation_observation)=0) OR (representation_state=2 AND "
+    "length(representation_observation)>0))),"
+    "decoded_geometry_state INTEGER NOT NULL CHECK(decoded_geometry_state "
+    "IN(1,2)),decoded_width INTEGER NOT NULL CHECK(decoded_width>=0 AND "
+    "decoded_width<=4294967295),decoded_height INTEGER NOT NULL "
+    "CHECK(decoded_height>=0 AND decoded_height<=4294967295),"
+    "CHECK((decoded_geometry_state=1 AND decoded_width=0 AND decoded_height=0) "
+    "OR (decoded_geometry_state=2 AND decoded_width>0 AND decoded_height>0)),"
+    "UNIQUE(capture_id,optical_configuration_id),FOREIGN "
+    "KEY(capture_id,optical_configuration_id) REFERENCES "
+    "capture_optical_configurations(capture_id,optical_configuration_id));"
+    "CREATE INDEX capture_geometric_states_exact_idx ON "
+    "capture_geometric_states(optical_configuration_id,state_version,focus_"
+    "state,focus_observation,aperture_state,aperture_x1000,stabilization,crop_"
+    "state,crop_observation,pipeline_state,pipeline_observation,representation_"
+    "state,representation_observation,decoded_geometry_state,decoded_width,"
+    "decoded_height);"
+    "CREATE TABLE optical_calibration_applicabilities_v2(applicability_id "
+    "INTEGER PRIMARY KEY AUTOINCREMENT "
+    "CHECK(applicability_id>0),calibration_profile_id INTEGER NOT "
+    "NULL,optical_configuration_id INTEGER NOT NULL,exemplar_capture_id "
+    "INTEGER NOT NULL,"
+    "UNIQUE(calibration_profile_id,exemplar_capture_id),UNIQUE(applicability_"
+    "id,calibration_profile_id,optical_configuration_id),"
+    "FOREIGN KEY(calibration_profile_id,optical_configuration_id) REFERENCES "
+    "optical_calibration_profiles(calibration_profile_id,optical_configuration_"
+    "id),"
+    "FOREIGN KEY(exemplar_capture_id,optical_configuration_id) REFERENCES "
+    "capture_geometric_states(capture_id,optical_configuration_id));"
+    "CREATE INDEX optical_calibration_applicabilities_v2_config_idx ON "
+    "optical_calibration_applicabilities_v2(optical_configuration_id,"
+    "applicability_id);"
+    "CREATE TABLE capture_calibration_selections_v2(capture_id INTEGER PRIMARY "
+    "KEY,applicability_id INTEGER NOT NULL,calibration_profile_id INTEGER NOT "
+    "NULL,optical_configuration_id INTEGER NOT NULL,"
+    "FOREIGN KEY(capture_id,optical_configuration_id) REFERENCES "
+    "capture_geometric_states(capture_id,optical_configuration_id),"
+    "FOREIGN "
+    "KEY(applicability_id,calibration_profile_id,optical_configuration_id) "
+    "REFERENCES "
+    "optical_calibration_applicabilities_v2(applicability_id,calibration_"
+    "profile_id,optical_configuration_id));";
+
 static void copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text) {
   if (destination) {
     (void)snprintf(destination, LARDON3D_PROJECT_DB_ERROR_CAPACITY, "%s", text ? text : "");
@@ -975,7 +1053,7 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
       from_version != 12 && from_version != 13 && from_version != 14 &&
       from_version != 15 && from_version != 16 && from_version != 17 && from_version != 18 &&
       from_version != 19 && from_version != 20 && from_version != 21 && from_version != 22 &&
-      from_version != 23 && from_version != 24) {
+      from_version != 23 && from_version != 24 && from_version != 25) {
     return LARDON3D_PROJECT_DB_CORRUPT;
   }
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
@@ -1486,6 +1564,21 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
         result = LARDON3D_PROJECT_DB_CORRUPT;
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version < 26) {
+    /* Historical rows do not contain focus/pipeline/decode observations, so
+       migration is strictly additive DDL and leaves every v2 table empty. */
+    result = execute(database, schema_optical_geometric_state_v26,
+                     "migrate optical geometric state v25 to v26");
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database,
+                       "UPDATE metadata SET value=26 WHERE "
+                       "key='schema_version' AND value=25",
+                       "finish schema v26 migration");
+      if (result == LARDON3D_PROJECT_DB_OK &&
+          sqlite3_changes(database->connection) != 1)
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit migration");
   }
@@ -1641,11 +1734,24 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
                                "capture_optical_configurations",
                                "optical_calibration_profiles",
                                "capture_calibration_selections"};
+    const char *required_v26[] = {"capture_geometric_states",
+                                  "optical_calibration_applicabilities_v2",
+                                  "capture_calibration_selections_v2"};
     for (size_t index = 0; index < sizeof(required) / sizeof(required[0]) &&
                            result == LARDON3D_PROJECT_DB_OK;
          ++index) {
       if (!table_exists(database->connection, required[index])) {
         copy_error(database->error, "Schéma Project DB courant incomplet.");
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+    }
+    for (size_t index = 0;
+         index < sizeof(required_v26) / sizeof(required_v26[0]) &&
+         result == LARDON3D_PROJECT_DB_OK;
+         ++index) {
+      if (!table_exists(database->connection, required_v26[index])) {
+        copy_error(database->error,
+                   "Current Project DB v26 schema is incomplete.");
         result = LARDON3D_PROJECT_DB_CORRUPT;
       }
     }

@@ -111,7 +111,7 @@ This document may freeze a product requirement while its implementation remains 
 The following existing boundaries are consumed as-is:
 
 ```text
-Project DB head                         v25
+Project DB head                         v26
 Production Task kinds                   16
 Capture / Asset Provenance              PASS/FROZEN
 Acquisition / campaign execution        PASS/FROZEN

@@ -11,10 +11,10 @@
 #include <lardon3d/sparse_sfm_incremental.h>
 
 enum {
-  /* v25 adds only durable features.extract.batch/1 operational state. The
-   * selected execution remains the immutable ordered image domain; migration
-   * creates no batch association, cursor, Feature Set, or inferred identity. */
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 25,
+  /* v26 additively stores Capture-owned observed geometric state and exact
+   * calibration applicability. Migration does not infer state from v23
+   * configuration or historical calibration selections. */
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 26,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,

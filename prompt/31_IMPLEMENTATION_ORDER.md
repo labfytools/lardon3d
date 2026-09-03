@@ -6,7 +6,7 @@
 IMPLEMENTATION_ORDER=DEPENDENCY_DRIVEN
 IMPLEMENTATION_AUTHORIZATION=NO
 STEP_0_USER_FACING_LANGUAGE_NORMALIZATION=PASS
-CURRENT_NEXT=CALIBRATION_V2_HETEROGENEOUS_OPTICS_FOUNDATION
+CURRENT_NEXT=CALIBRATION_V2_HETEROGENEOUS_CALIBRATION_PUBLICATION
 ```
 
 ## Authority
@@ -22,23 +22,24 @@ Default dependency order:
 0. user-facing repository/UI language normalization where appropriate — PASS;
 1. final usable Calibration Science/Tooling/Bootstrap/Workflow v1 compatibility path — PASS/FROZEN;
 2. Calibration Science v2 design for heterogeneous cameras/lenses/focals, adaptive capture settings and autofocus — PASS/FROZEN;
-3. Calibration v2 heterogeneous-optics persistence / Tooling / Bootstrap / workflow foundation — CURRENT;
-4. physical autofocus/optical applicability validation and dedicated calibrated real campaign;
-5. real Sparse SfM proof;
-6. durable Dense/OpenMVS orchestration;
-7. mesh / refinement / texturing / export;
-8. viewer foundation;
-9. offline Coverage Analysis scientific contract and implementation;
-10. multi-campaign registration / fusion;
-11. generic live acquisition adapter foundation;
-12. A6000 HDMI integration;
-13. S21 integration;
-14. live camera localization;
-15. live coverage overlay;
-16. actionable Capture Guidance;
-17. video ingestion / deterministic keyframes;
-18. final integration, UX, restart and performance proof;
-19. Product Definition v1 Definition-of-Done closure.
+3. Calibration v2 heterogeneous-optics persistence foundation — PASS/FROZEN;
+4. Heterogeneous calibration publication / Tooling / Bootstrap evolution — CURRENT;
+5. physical autofocus/optical applicability validation and dedicated calibrated real campaign;
+6. real Sparse SfM proof;
+7. durable Dense/OpenMVS orchestration;
+8. mesh / refinement / texturing / export;
+9. viewer foundation;
+10. offline Coverage Analysis scientific contract and implementation;
+11. multi-campaign registration / fusion;
+12. generic live acquisition adapter foundation;
+13. A6000 HDMI integration;
+14. S21 integration;
+15. live camera localization;
+16. live coverage overlay;
+17. actionable Capture Guidance;
+18. video ingestion / deterministic keyframes;
+19. final integration, UX, restart and performance proof;
+20. Product Definition v1 Definition-of-Done closure.
 
 ## Adjustment rule
 

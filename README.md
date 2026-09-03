@@ -30,7 +30,7 @@ progressive observations and constraints
 
 ### Current Project Database
 
-The current Project DB schema is **v25**.
+The current Project DB schema is **v26**.
 
 The current head is additive:
 
@@ -39,6 +39,7 @@ v22  Selected scientific execution foundation
 v23  Generic optical-context overlay
 v24  raw.develop.batch/1 persistence
 v25  features.extract.batch/1 persistence
+v26  Capture geometric state and exact calibration applicability
 ```
 
 Earlier schema versions remain valid historical contracts where their own documentation says so.
@@ -120,7 +121,7 @@ The following major foundations are implemented and validated at their documente
 - **Calibration Solver Preflight v1 — PASS**
 - **Calibration Evidence Solver v1 — IMPLEMENTED / VALIDATED**
 - **Calibration Tooling planarity alignment — PASS / FROZEN**
-- **Project DB v24/v25 operational overlays — IMPLEMENTED / VALIDATED**
+- **Project DB v24/v25/v26 operational overlays — IMPLEMENTED / VALIDATED**
  - raw.develop.batch/1 durable selected-execution path
  - features.extract.batch/1 durable selected-execution path
 

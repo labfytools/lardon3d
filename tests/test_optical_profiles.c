@@ -1147,6 +1147,9 @@ static bool downgrade_to_v22_fixture(const char *path) {
   return raw_sql(
       path,
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE IF EXISTS capture_calibration_selections_v2;"
+      "DROP TABLE IF EXISTS optical_calibration_applicabilities_v2;"
+      "DROP TABLE IF EXISTS capture_geometric_states;"
       "DROP TABLE IF EXISTS feature_extract_batch_tasks;"
       "DROP TABLE raw_development_batch_tasks;"
       "DROP TABLE capture_calibration_selections;"
@@ -1158,6 +1161,275 @@ static bool downgrade_to_v22_fixture(const char *path) {
       "DROP TABLE lens_profile_aliases;DROP TABLE lens_profiles;"
       "DROP TABLE camera_body_aliases;DROP TABLE camera_body_profiles;"
       "UPDATE metadata SET value=22 WHERE key='schema_version';COMMIT;");
+}
+
+static bool test_v26_exact_geometric_applicability(void) {
+  char directory[64];
+  char path[256];
+  CHECK(make_database_path(directory, path));
+  Lardon3DProjectDb *database = NULL;
+  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
+  CHECK(lardon3d_project_db_open(path, &database, error) ==
+        LARDON3D_PROJECT_DB_OK);
+  RepairOpticalFixture fixture;
+  CHECK(seed_repair_optical_fixture(database, &fixture));
+  CHECK(lardon3d_optical_capture_assign_explicit(database, fixture.capture_id,
+                                                 fixture.configuration_id) ==
+        LARDON3D_PROJECT_DB_OK);
+
+  Lardon3DProjectDbCapture peer;
+  Lardon3DProjectDbCapture alternate;
+  CHECK(lardon3d_project_db_create_capture(database, fixture.scanset_id, 2,
+                                           &peer) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_create_capture(database, fixture.scanset_id, 3,
+                                           &alternate) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_assign_explicit(database, peer.capture_id,
+                                                 fixture.configuration_id) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_assign_explicit(
+            database, alternate.capture_id,
+            fixture.alternate_configuration_id) == LARDON3D_PROJECT_DB_OK);
+
+  Lardon3DOpticalCalibrationResolutionV2 resolution;
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, fixture.capture_id, &resolution) ==
+            LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_REQUIRED);
+
+  /* Positive applicability fixtures must fully observe every field capable of
+     changing geometry; UNKNOWN is exercised separately below. */
+  Lardon3DOpticalCaptureGeometricState state = {
+      .capture_id = fixture.capture_id,
+      .optical_configuration_id = fixture.configuration_id,
+      .state_version = 1,
+      .provenance = LARDON3D_OPTICAL_GEOMETRIC_STATE_METADATA,
+      .focus_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .aperture_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .aperture_x1000 = 5600,
+      .stabilization = LARDON3D_OPTICAL_STABILIZATION_OFF,
+      .crop_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .pipeline_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .representation_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .decoded_geometry_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .decoded_width = 6000,
+      .decoded_height = 4000,
+  };
+  memcpy(state.focus_observation, "af-s", sizeof("af-s"));
+  memcpy(state.crop_observation, "full-sensor", sizeof("full-sensor"));
+  memcpy(state.pipeline_observation, "raw-policy-v1", sizeof("raw-policy-v1"));
+  memcpy(state.representation_observation, "L3DRAWD1-png",
+         sizeof("L3DRAWD1-png"));
+  Lardon3DOpticalCaptureGeometricState stored;
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &stored) == LARDON3D_PROJECT_DB_OK);
+  CHECK(stored.focus_state == LARDON3D_OPTICAL_OBSERVATION_OBSERVED &&
+        strcmp(stored.focus_observation, "af-s") == 0);
+  Lardon3DOpticalCaptureGeometricState retry;
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &retry) == LARDON3D_PROJECT_DB_OK &&
+        retry.capture_id == state.capture_id);
+  state.decoded_width = 5999;
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &retry) == LARDON3D_PROJECT_DB_CONSTRAINT);
+  state.decoded_width = 6000;
+
+  state.capture_id = peer.capture_id;
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &stored) == LARDON3D_PROJECT_DB_OK);
+  state.capture_id = alternate.capture_id;
+  state.optical_configuration_id = fixture.alternate_configuration_id;
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &stored) == LARDON3D_PROJECT_DB_OK);
+  state.optical_configuration_id = fixture.configuration_id;
+
+  Lardon3DSparseCalibration calibration;
+  CHECK(create_sparse_calibration(database, 0xa6, 6000, 4000, &calibration));
+  Lardon3DOpticalCalibrationProfile profile_input = {
+      .optical_configuration_id = fixture.configuration_id,
+      .sparse_calibration_id = calibration.calibration_id,
+      .profile_version = 2,
+      .applicability = LARDON3D_OPTICAL_CALIBRATION_EXACT_CONFIGURATION,
+      .created_at = 100,
+  };
+  memcpy(profile_input.name, "v26 exact A", sizeof("v26 exact A"));
+  memcpy(profile_input.provenance, "v26 test", sizeof("v26 test"));
+  Lardon3DOpticalCalibrationProfile profile_a;
+  CHECK(lardon3d_optical_calibration_profile_create(
+            database, &profile_input, &profile_a) == LARDON3D_PROJECT_DB_OK);
+  memcpy(profile_input.name, "v26 exact B", sizeof("v26 exact B"));
+  Lardon3DOpticalCalibrationProfile profile_b;
+  CHECK(lardon3d_optical_calibration_profile_create(
+            database, &profile_input, &profile_b) == LARDON3D_PROJECT_DB_OK);
+
+  Lardon3DProjectDbCapture incomplete_exemplar;
+  CHECK(lardon3d_project_db_create_capture(database, fixture.scanset_id, 11,
+                                           &incomplete_exemplar) ==
+            LARDON3D_PROJECT_DB_OK &&
+        lardon3d_optical_capture_assign_explicit(
+            database, incomplete_exemplar.capture_id,
+            fixture.configuration_id) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DOpticalCaptureGeometricState incomplete_state = state;
+  incomplete_state.capture_id = incomplete_exemplar.capture_id;
+  incomplete_state.focus_state = LARDON3D_OPTICAL_OBSERVATION_UNKNOWN;
+  incomplete_state.focus_observation[0] = '\0';
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &incomplete_state, &stored) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DOpticalCalibrationApplicabilityV2 rejected_applicability;
+  CHECK(lardon3d_optical_calibration_applicability_v2_create(
+            database, profile_a.calibration_profile_id,
+            incomplete_exemplar.capture_id, &rejected_applicability) ==
+            LARDON3D_PROJECT_DB_CONSTRAINT &&
+        rejected_applicability.applicability_id == 0);
+
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, peer.capture_id, &resolution) == LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_REQUIRED);
+  Lardon3DOpticalCalibrationApplicabilityV2 applicability_a;
+  CHECK(lardon3d_optical_calibration_applicability_v2_create(
+            database, profile_a.calibration_profile_id, fixture.capture_id,
+            &applicability_a) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DOpticalCalibrationApplicabilityV2 applicability_retry;
+  CHECK(lardon3d_optical_calibration_applicability_v2_create(
+            database, profile_a.calibration_profile_id, fixture.capture_id,
+            &applicability_retry) == LARDON3D_PROJECT_DB_OK &&
+        applicability_retry.applicability_id ==
+            applicability_a.applicability_id);
+
+  for (uint32_t unknown_field = 0; unknown_field < 7; ++unknown_field) {
+    Lardon3DProjectDbCapture unresolved;
+    CHECK(lardon3d_project_db_create_capture(
+              database, fixture.scanset_id, 4 + unknown_field, &unresolved) ==
+              LARDON3D_PROJECT_DB_OK &&
+          lardon3d_optical_capture_assign_explicit(
+              database, unresolved.capture_id, fixture.configuration_id) ==
+              LARDON3D_PROJECT_DB_OK);
+    Lardon3DOpticalCaptureGeometricState unresolved_state = state;
+    unresolved_state.capture_id = unresolved.capture_id;
+    if (unknown_field == 0) {
+      unresolved_state.focus_state = LARDON3D_OPTICAL_OBSERVATION_UNKNOWN;
+      unresolved_state.focus_observation[0] = '\0';
+    } else if (unknown_field == 1) {
+      unresolved_state.aperture_state = LARDON3D_OPTICAL_OBSERVATION_UNKNOWN;
+      unresolved_state.aperture_x1000 = 0;
+    } else if (unknown_field == 2) {
+      unresolved_state.stabilization = LARDON3D_OPTICAL_STABILIZATION_UNKNOWN;
+    } else if (unknown_field == 3) {
+      unresolved_state.crop_state = LARDON3D_OPTICAL_OBSERVATION_UNKNOWN;
+      unresolved_state.crop_observation[0] = '\0';
+    } else if (unknown_field == 4) {
+      unresolved_state.pipeline_state = LARDON3D_OPTICAL_OBSERVATION_UNKNOWN;
+      unresolved_state.pipeline_observation[0] = '\0';
+    } else if (unknown_field == 5) {
+      unresolved_state.representation_state =
+          LARDON3D_OPTICAL_OBSERVATION_UNKNOWN;
+      unresolved_state.representation_observation[0] = '\0';
+    } else {
+      unresolved_state.decoded_geometry_state =
+          LARDON3D_OPTICAL_OBSERVATION_UNKNOWN;
+      unresolved_state.decoded_width = 0;
+      unresolved_state.decoded_height = 0;
+    }
+    CHECK(lardon3d_optical_capture_geometric_state_create(
+              database, &unresolved_state, &stored) ==
+          LARDON3D_PROJECT_DB_OK);
+    CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+              database, unresolved.capture_id, &resolution) ==
+              LARDON3D_PROJECT_DB_OK &&
+          resolution.kind == LARDON3D_OPTICAL_CALIBRATION_REQUIRED);
+    CHECK(lardon3d_optical_capture_calibration_select_v2(
+              database, unresolved.capture_id,
+              applicability_a.applicability_id) ==
+          LARDON3D_PROJECT_DB_CONSTRAINT);
+    Lardon3DOpticalCaptureCalibrationSelectionV2 unresolved_selection;
+    CHECK(lardon3d_optical_capture_calibration_selection_load_v2(
+              database, unresolved.capture_id, &unresolved_selection) ==
+              LARDON3D_PROJECT_DB_NOT_FOUND &&
+          unresolved_selection.capture_id == 0);
+  }
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, peer.capture_id, &resolution) == LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_RESOLVED &&
+        resolution.calibration_profile_id == profile_a.calibration_profile_id);
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, alternate.capture_id, &resolution) ==
+            LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_REQUIRED);
+
+  Lardon3DOpticalCalibrationApplicabilityV2 applicability_b;
+  CHECK(lardon3d_optical_calibration_applicability_v2_create(
+            database, profile_b.calibration_profile_id, fixture.capture_id,
+            &applicability_b) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, peer.capture_id, &resolution) == LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_SELECTION_REQUIRED);
+  CHECK(lardon3d_optical_capture_calibration_select_v2(
+            database, peer.capture_id, applicability_a.applicability_id) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_calibration_select_v2(
+            database, peer.capture_id, applicability_a.applicability_id) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_calibration_select_v2(
+            database, peer.capture_id, applicability_b.applicability_id) ==
+        LARDON3D_PROJECT_DB_CONSTRAINT);
+  CHECK(lardon3d_optical_capture_calibration_select_v2(
+            database, alternate.capture_id, applicability_a.applicability_id) ==
+        LARDON3D_PROJECT_DB_CONSTRAINT);
+  Lardon3DOpticalCaptureCalibrationSelectionV2 selection;
+  CHECK(lardon3d_optical_capture_calibration_selection_load_v2(
+            database, peer.capture_id, &selection) == LARDON3D_PROJECT_DB_OK &&
+        selection.calibration_profile_id == profile_a.calibration_profile_id &&
+        selection.sparse_calibration_id == calibration.calibration_id);
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, peer.capture_id, &resolution) == LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_RESOLVED &&
+        resolution.applicability_id == applicability_a.applicability_id);
+
+  lardon3d_project_db_close(database);
+  char corruption[256];
+  int corruption_bytes = snprintf(
+      corruption, sizeof(corruption),
+      "PRAGMA foreign_keys=OFF;DELETE FROM capture_geometric_states WHERE "
+      "capture_id=%llu;",
+      (unsigned long long)fixture.capture_id);
+  CHECK(corruption_bytes > 0 &&
+        (size_t)corruption_bytes < sizeof(corruption) &&
+        raw_sql(path, corruption));
+  database = NULL;
+  CHECK(lardon3d_project_db_open(path, &database, error) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, peer.capture_id, &resolution) ==
+        LARDON3D_PROJECT_DB_CORRUPT);
+  lardon3d_project_db_close(database);
+  /* A v25 project contains no durable observation from which v26 state could
+     be inferred. Re-migration therefore recreates only empty additive tables.
+   */
+  CHECK(raw_sql(
+      path, "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+            "DROP TABLE capture_calibration_selections_v2;"
+            "DROP TABLE optical_calibration_applicabilities_v2;"
+            "DROP TABLE capture_geometric_states;"
+            "UPDATE metadata SET value=25 WHERE key='schema_version';COMMIT;"));
+  database = NULL;
+  CHECK(lardon3d_project_db_open(path, &database, error) ==
+        LARDON3D_PROJECT_DB_OK);
+  lardon3d_project_db_close(database);
+  sqlite3_int64 migrated_count = -1;
+  CHECK(raw_integer(path, "SELECT COUNT(*) FROM capture_geometric_states",
+                    &migrated_count) &&
+        migrated_count == 0);
+  CHECK(raw_integer(
+            path, "SELECT COUNT(*) FROM optical_calibration_applicabilities_v2",
+            &migrated_count) &&
+        migrated_count == 0);
+  CHECK(raw_integer(path,
+                    "SELECT COUNT(*) FROM capture_calibration_selections_v2",
+                    &migrated_count) &&
+        migrated_count == 0);
+  CHECK(unlink(path) == 0);
+  CHECK(rmdir(directory) == 0);
+  return true;
 }
 
 static bool test_migration_rollback_retry_and_equivalence(void) {
@@ -1232,6 +1504,9 @@ static bool test_migration_rollback_retry_and_equivalence(void) {
       "capture_optical_configurations",
       "optical_calibration_profiles",
       "capture_calibration_selections",
+      "capture_geometric_states",
+      "optical_calibration_applicabilities_v2",
+      "capture_calibration_selections_v2",
   };
   char query[256];
   for (size_t index = 0; index < sizeof(empty_tables) / sizeof(empty_tables[0]);
@@ -1263,6 +1538,11 @@ static bool test_migration_rollback_retry_and_equivalence(void) {
       "optical_calibration_profiles_config_idx",
       "optical_calibration_profiles_sparse_idx",
       "capture_calibration_selections",
+      "capture_geometric_states",
+      "capture_geometric_states_exact_idx",
+      "optical_calibration_applicabilities_v2",
+      "optical_calibration_applicabilities_v2_config_idx",
+      "capture_calibration_selections_v2",
   };
   char migrated_sql[8192];
   char fresh_sql[8192];
@@ -1283,6 +1563,7 @@ static bool test_migration_rollback_retry_and_equivalence(void) {
 
 int main(void) {
   return test_profiles_assignments_and_calibrations() &&
+                 test_v26_exact_geometric_applicability() &&
                  test_calibration_conflict_result_contract() &&
                  test_calibration_dependency_corruption_precedence() &&
                  test_campaign_request_corruption_prevents_optics_mutation() &&
