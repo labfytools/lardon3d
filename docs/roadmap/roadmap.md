@@ -24,7 +24,7 @@ SOURCE_COMMENT_AUDIT                  PASS
 PRODUCT_DEFINITION                    PASS/FROZEN
 PROMPT_TREE                           CURRENT
 USER_FACING_UI_LANGUAGE_NORMALIZATION PASS
-CURRENT_NEXT                          FINAL_USABLE_CALIBRATION_WORKFLOW
+CURRENT_NEXT                          CALIBRATION_WORKFLOW_COORDINATOR
 ```
 
 The current Project DB head is additive:
@@ -515,8 +515,29 @@ contract and produces deterministic `L3DCALB1` v1.
 
 Calibration Bootstrap v1 imports the explicit artifact.
 
-Calibration Solver Preflight v1 selects the future external OpenCV 5.0.x solver path. That solver is
-not a runtime dependency and does not itself execute reconstruction.
+Calibration Evidence Solver v1 implements the external OpenCV 5.x evidence path selected by
+Calibration Solver Preflight v1. It remains outside the Lardon3D runtime and Project DB and its
+deterministic synthetic CPU1 self-test is validated.
+
+A bounded Tooling correction aligned planarity handling with Calibration Science v1: Science v1
+defines a categorical physical planarity attestation, not a numeric flatness threshold. Tooling
+therefore rejects invented finite `target_flatness_mm` values. `L3DCALB1` v1 and Calibration
+Bootstrap remain unchanged.
+
+The current implementation dependency is the calibration workflow coordinator:
+
+```text
+immutable session.l3dcal
++ detection.json
++ solve.json
++ evidence.json
++ exact selected execution
++ exact optical state
+-> bounded Calibration Tooling evidence
+-> L3DCALB1 v1
+-> Bootstrap
+-> READY
+```
 
 No calibration component silently turns metadata into scientific calibration.
 
@@ -857,18 +878,19 @@ The established Queue/Governor plus bounded internal fan-out are sufficient to e
 
 ## Current next
 
-The immediate repository work is:
+The repository execution contract is active:
 
 ```text
-DOCUMENTATION_FINDING_REMEDIATION  PASS
-SOURCE_COMMENT_AUDIT               PASS
-SOURCE_COMMENT_REMEDIATION         PASS
-PRODUCT_DEFINITION_V1              PASS/FROZEN
-PROMPT_TREE                        NEXT
+DOCUMENTATION_FINDING_REMEDIATION   PASS
+SOURCE_COMMENT_AUDIT                PASS
+SOURCE_COMMENT_REMEDIATION          PASS
+PRODUCT_DEFINITION_V1               PASS/FROZEN
+PROMPT_TREE                         CURRENT
+CALIBRATION_EVIDENCE_SOLVER_V1      IMPLEMENTED/VALIDATED
+CALIBRATION_TOOLING_ALIGNMENT       PASS/FROZEN
+CURRENT_NEXT                        CALIBRATION_WORKFLOW_COORDINATOR
 ```
 
-No new Lardon3D implementation is authorized by this roadmap update.
-
-Implementation order is the next preparation phase and will be frozen in `prompt.md` and the numbered
-`prompt/` execution contract under explicit human authority. Product Definition v1 is the product-intent input to
-that tree; it is not implementation authorization.
+Implementation proceeds only through explicitly human-authorized tranches under `prompt.md` and the
+numbered `prompt/` execution contract. The current authorized dependency is the final usable
+calibration workflow; its next missing sub-boundary is the workflow coordinator.

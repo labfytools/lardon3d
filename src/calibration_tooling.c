@@ -79,7 +79,7 @@ Lardon3DCalibrationToolingResult lardon3d_calibration_tooling_validate(
       !finite_value(e->target_white_border_mm) || e->target_white_border_mm < 30.0 ||
       e->extra_distortion_coefficient_count != 0 || !finite_value(e->measurement_resolution_mm) ||
       e->measurement_resolution_mm <= 0 || e->measurement_resolution_mm > 0.1 ||
-      !finite_value(e->target_flatness_mm) || e->target_flatness_mm < 0 || e->target_flatness_mm > 0.20)
+      !isnan(e->target_flatness_mm))
     return LARDON3D_CALIBRATION_TOOLING_SCIENCE_REJECTED;
   double lo = 30.0, hi = 30.0;
   for (size_t i = 0; i < LARDON3D_CALIBRATION_TOOLING_TARGET_MEASUREMENTS; ++i) {

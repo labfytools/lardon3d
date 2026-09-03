@@ -118,6 +118,8 @@ The following major foundations are implemented and validated at their documente
 - **Calibration Science v1 — PASS / FROZEN**
 - **Calibration Tooling v1 — PASS / FROZEN**
 - **Calibration Solver Preflight v1 — PASS**
+- **Calibration Evidence Solver v1 — IMPLEMENTED / VALIDATED**
+- **Calibration Tooling planarity alignment — PASS / FROZEN**
 - **Project DB v24/v25 operational overlays — IMPLEMENTED / VALIDATED**
  - raw.develop.batch/1 durable selected-execution path
  - features.extract.batch/1 durable selected-execution path
@@ -188,9 +190,13 @@ BLOCKED_BY_KNOWN_CALIBRATION_DATA
 ```
 
 Calibration Science v1 defines the protocol for future physically controlled calibration
-acquisitions. Calibration Tooling v1 validates an already acquired Science v1 evidence bundle and
-produces the bounded L3DCALB1 artifact; Calibration Bootstrap v1 imports that artifact. Neither
-stage solves calibration internally or turns EXIF into scientific calibration.
+acquisitions. The external Calibration Evidence Solver v1 implements the qualified OpenCV 5.x
+evidence path. Calibration Tooling v1 validates bounded Science v1 evidence and produces the
+L3DCALB1 artifact; Calibration Bootstrap v1 imports that artifact. None of these stages turns EXIF
+into scientific calibration.
+
+The current missing product boundary is the workflow coordinator that binds the immutable physical
+session and solver bundle to one exact selected execution and drives Tooling/Bootstrap to `READY`.
 
 ## Architecture
 

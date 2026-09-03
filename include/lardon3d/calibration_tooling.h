@@ -103,6 +103,12 @@ typedef struct {
   double target_white_border_mm;
   double target_measurements_mm[LARDON3D_CALIBRATION_TOOLING_TARGET_MEASUREMENTS];
   double measurement_resolution_mm;
+  /* Calibration Science v1 defines planarity as a categorical physical
+   * attestation, not a numeric flatness tolerance. This legacy ABI field is
+   * therefore a required NAN sentinel and MUST NOT carry an invented physical
+   * measurement. The future workflow coordinator binds the canonical session
+   * manifest containing `planarity PASS <sha256>` through
+   * initialization_evidence_sha256. */
   double target_flatness_mm;
   double holdout_rmse_px;
   double holdout_maximum_residual_px;

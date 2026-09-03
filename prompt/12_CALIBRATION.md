@@ -5,15 +5,22 @@
 ```text
 CALIBRATION_SCIENCE_V1=PASS/FROZEN
 CALIBRATION_TOOLING_V1=PASS/FROZEN
+CALIBRATION_TOOLING_PLANARITY_ALIGNMENT=PASS/FROZEN
 CALIBRATION_BOOTSTRAP_V1=PASS/FROZEN
-CALIBRATION_WORKFLOW=PLANNED
+CALIBRATION_EVIDENCE_SOLVER_V1=IMPLEMENTED/VALIDATED
+CALIBRATION_WORKFLOW=IN_PROGRESS
+CURRENT_CALIBRATION_NEXT=WORKFLOW_COORDINATOR
 ```
 
 ## Authority
 
 `docs/architecture/calibration_science_v1.md`, `docs/architecture/calibration_bootstrap.md` and `docs/architecture/calibration_solver_preflight_v1.md` are the current specialized calibration documents.
 
-At this checkpoint there is no `docs/architecture/calibration_tooling.md`. Calibration Tooling v1 is nevertheless an acquired PASS/FROZEN implementation boundary. For its exact current API/constant behavior, inspect the executable/public implementation authority, beginning with `include/lardon3d/calibration_tooling.h`, together with the lifecycle declarations in `README.md`, `docs/roadmap/roadmap.md` and `docs/product/product_definition.md`. Do not invent a missing documentation file or treat this prompt file as a replacement architecture specification.
+`docs/architecture/calibration_tooling.md` is the specialized Tooling authority. The public API remains `include/lardon3d/calibration_tooling.h`.
+
+A bounded corrective review established that Calibration Science v1 defines target planarity as a categorical physical attestation, not a numeric flatness tolerance. Tooling preserves its public structure layout while requiring `target_flatness_mm` to be NaN, so callers cannot invent a millimetre measurement. The canonical session's `planarity PASS <sha256>` evidence is bound through immutable initialization evidence.
+
+The external `tools/calibration_evidence_solver/` implementation is present and validated by its deterministic synthetic CPU1 self-test. It remains external to the Lardon3D runtime and Project DB.
 
 ## CURRENT
 
@@ -30,14 +37,18 @@ Do not retro-calibrate them by invention.
 
 ```text
 dedicated physical calibration acquisition
--> external OpenCV 5.x solver
+-> external OpenCV 5.x Calibration Evidence Solver v1
+-> immutable session manifest + complete solver bundle
+-> workflow coordinator
 -> Calibration Tooling v1
 -> deterministic L3DCALB1 v1
 -> Calibration Bootstrap v1
--> exact optical assignment
+-> exact selected-execution calibration scope attachment
 -> READY
 -> real Sparse SfM
 ```
+
+The current implementation gap is the workflow coordinator. It consumes the immutable `session.l3dcal` plus `detection.json`, `solve.json` and `evidence.json`, binds them to the exact selected execution and optical state, constructs the bounded Tooling evidence and never manufactures missing physical evidence.
 
 ## REQUIRED_PRODUCT_TARGET
 

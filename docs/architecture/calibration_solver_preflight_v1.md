@@ -124,3 +124,23 @@ optique, acquérir au moins 40 vues, hacher, résoudre trois fois, vérifier
 Science v1, passer le bundle à Calibration Tooling dans un projet dédié et
 vérifier `CALIBRATION → READY`. La preuve s'arrête avant Sparse SfM ; S21 ne
 participe jamais.
+
+## Current lifecycle update
+
+The preflight decision above has now been implemented.
+
+```text
+CALIBRATION_EVIDENCE_SOLVER_V1=IMPLEMENTED/VALIDATED
+```
+
+`tools/calibration_evidence_solver/` contains the external OpenCV 5.x solver selected by this
+preflight. Its deterministic synthetic CPU1 self-test passes. It remains external to Lardon3D
+runtime linkage and Project DB mutation.
+
+The current missing implementation boundary is no longer the solver. It is the higher-level
+calibration workflow coordinator that binds an immutable physical session plus the complete solver
+bundle to the exact selected execution, constructs `Lardon3DCalibrationToolingEvidence`, invokes the
+frozen Tooling/Bootstrap path and reaches `READY` without manufacturing evidence.
+
+The original preflight text is retained as decision history; this section owns its later lifecycle
+status.

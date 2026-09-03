@@ -10,7 +10,8 @@ CURRENT_PRODUCTION_TASK_KINDS=16
 REAL_S21_TRACKS=PASS/FROZEN
 REAL_A6000_PRE_SFM=PASS/FROZEN
 PRODUCT_DEFINITION_V1=PASS/FROZEN
-PROMPT_TREE=NEXT
+PROMPT_TREE=CURRENT
+CURRENT_NEXT=CALIBRATION_WORKFLOW_COORDINATOR
 ```
 
 This index separates current authority, historical evidence and future product-definition work.
@@ -147,6 +148,7 @@ Historical verifier results are never relabelled.
 ## Calibration
 
 - [Calibration Science v1](architecture/calibration_science_v1.md)
+- [Calibration Tooling v1](architecture/calibration_tooling.md)
 - [Calibration Bootstrap v1](architecture/calibration_bootstrap.md)
 - [Calibration Solver Preflight v1](architecture/calibration_solver_preflight_v1.md)
 
@@ -212,7 +214,7 @@ Canonical target-product authority:
 ```text
 PRODUCT_DEFINITION_V1=PASS/FROZEN
 IMPLEMENTATION_AUTHORIZATION=NO
-PROMPT_TREE=NEXT
+PROMPT_TREE=CURRENT
 ```
 
 The product definition freezes desired end-product behavior without reopening existing FROZEN

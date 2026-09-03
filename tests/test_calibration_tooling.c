@@ -1,4 +1,5 @@
 #include <sqlite3.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,7 +38,7 @@ static void fixture(Lardon3DCalibrationToolingEvidence *e, Lardon3DCalibrationTo
   e->target_family=LARDON3D_CALIBRATION_TOOLING_TARGET_CHARUCO_9X7_DICT_5X5_100; e->target_squares_x=9; e->target_squares_y=7;
   e->target_square_length_mm=30; e->target_marker_length_mm=21; e->target_active_width_mm=270; e->target_active_height_mm=210; e->target_white_border_mm=30;
   for (size_t i=0;i<10;++i) e->target_measurements_mm[i]=30.0;
-  e->measurement_resolution_mm=.1; e->target_flatness_mm=.1; e->holdout_rmse_px=.4; e->holdout_maximum_residual_px=.8;
+  e->measurement_resolution_mm=.1; e->target_flatness_mm=NAN; e->holdout_rmse_px=.4; e->holdout_maximum_residual_px=.8;
   for (size_t i=0;i<60;++i) {
     static const uint32_t quadrants[10]={0,0,1,1,2,2,3,3,4,4};
     static const uint32_t distances[10]={0,1,2,0,1,2,0,1,2,0};
