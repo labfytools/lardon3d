@@ -529,6 +529,8 @@ The solver session contract now also requires explicit measured `white_border >=
 
 `CALIBRATION_WORKFLOW_INPUT_BOUNDARY_V1=PASS/FROZEN`: the workflow now has a bounded non-mutating input boundary for session, solver bundle and campaign optical-state evidence. It rejects special/symlink/oversize files, invalid JSON, provenance digest mismatches and incompatible optical state. The next boundary is Evidence Materialization v1.
 
+`CALIBRATION_WORKFLOW_EVIDENCE_MATERIALIZATION_V1=PASS/FROZEN`: the validated external calibration inputs are now materialized into bounded Science v1 target, per-view, coordinate, repeated-solve, fit, residual, hold-out and provenance evidence without Project DB access or mutation. The next boundary is exact Selected Execution Binding v1 before any Tooling/Bootstrap import.
+
 A bounded Tooling correction aligned planarity handling with Calibration Science v1: Science v1
 defines a categorical physical planarity attestation, not a numeric flatness threshold. Tooling
 therefore rejects invented finite `target_flatness_mm` values. `L3DCALB1` v1 and Calibration

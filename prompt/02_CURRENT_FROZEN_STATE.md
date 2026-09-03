@@ -6,7 +6,7 @@
 CURRENT_PROJECT_DB_SCHEMA=v25
 PRODUCTION_TASK_KINDS=16
 USER_FACING_UI_LANGUAGE_NORMALIZATION=PASS
-CURRENT_IMPLEMENTATION_CURSOR=1_CALIBRATION_WORKFLOW_EVIDENCE_MATERIALIZATION
+CURRENT_IMPLEMENTATION_CURSOR=1_CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING
 ```
 
 ## Authority
@@ -32,6 +32,7 @@ Calibration solver producer identity        PASS/FROZEN
 Calibration solver per-view evidence        PASS/FROZEN
 Calibration solver bundle repair            PASS/FROZEN
 Calibration workflow input boundary         PASS/FROZEN
+Calibration workflow evidence materialization PASS/FROZEN
 Calibration Tooling planarity alignment     PASS/FROZEN
 ```
 

@@ -14,7 +14,8 @@ CALIBRATION_SOLVER_PER_VIEW_EVIDENCE_V1=PASS/FROZEN
 CALIBRATION_SOLVER_BUNDLE_REPAIR_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW=IN_PROGRESS
 CALIBRATION_WORKFLOW_INPUT_BOUNDARY_V1=PASS/FROZEN
-CURRENT_CALIBRATION_NEXT=WORKFLOW_EVIDENCE_MATERIALIZATION_V1
+CALIBRATION_WORKFLOW_EVIDENCE_MATERIALIZATION_V1=PASS/FROZEN
+CURRENT_CALIBRATION_NEXT=WORKFLOW_SELECTED_EXECUTION_BINDING_V1
 ```
 
 ## Authority
@@ -23,7 +24,7 @@ CURRENT_CALIBRATION_NEXT=WORKFLOW_EVIDENCE_MATERIALIZATION_V1
 
 `docs/architecture/calibration_tooling.md` is the specialized Tooling authority.
 
-`docs/architecture/calibration_workflow.md` is the specialized workflow authority. The public API remains `include/lardon3d/calibration_tooling.h`.
+`docs/architecture/calibration_workflow.md` is the specialized workflow authority. Its public API is `include/lardon3d/calibration_workflow.h`; the FROZEN Tooling API remains `include/lardon3d/calibration_tooling.h`.
 
 A bounded corrective review established that Calibration Science v1 defines target planarity as a categorical physical attestation, not a numeric flatness tolerance. Tooling preserves its public structure layout while requiring `target_flatness_mm` to be NaN, so callers cannot invent a millimetre measurement. The canonical session's `planarity PASS <sha256>` evidence is bound through immutable initialization evidence.
 
@@ -57,7 +58,7 @@ dedicated physical calibration acquisition
 -> real Sparse SfM
 ```
 
-The workflow coordinator is now implemented through its first bounded checkpoint. Input Boundary v1 validates immutable files, hashes, formats and complete optical-state equality without Project DB mutation. The current implementation gap is Evidence Materialization v1. It consumes the immutable `session.l3dcal` plus `detection.json`, `solve.json` and `evidence.json`, binds them to the exact selected execution and optical state, constructs the bounded Tooling evidence and never manufactures missing physical evidence.
+The workflow coordinator now has two PASS/FROZEN non-mutating checkpoints. Input Boundary v1 validates immutable files, hashes, formats and complete optical-state equality. Evidence Materialization v1 parses the retained session and solver bundle into bounded Science v1 target, per-view, coordinate, repeated-solve, fit, residual, hold-out and provenance evidence without opening Project DB. The current implementation gap is Selected Execution Binding v1: bind this external evidence to the exact selected execution, Capture optical assignments and campaign representation bytes, then construct the per-image Tooling entries. Missing or mismatched evidence is rejected; nothing is inferred.
 
 ## REQUIRED_PRODUCT_TARGET
 

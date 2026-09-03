@@ -6,7 +6,7 @@
 IMPLEMENTATION_ORDER=DEPENDENCY_DRIVEN
 IMPLEMENTATION_AUTHORIZATION=NO
 STEP_0_USER_FACING_LANGUAGE_NORMALIZATION=PASS
-CURRENT_NEXT=1_CALIBRATION_WORKFLOW_EVIDENCE_MATERIALIZATION
+CURRENT_NEXT=1_CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING
 ```
 
 ## Authority
@@ -20,7 +20,7 @@ Implementation remains unauthorized until the human explicitly authorizes a tran
 Default dependency order:
 
 0. user-facing repository/UI language normalization where appropriate — PASS;
-1. final usable calibration workflow — IN PROGRESS; Input Boundary v1 PASS/FROZEN; current next sub-boundary: Evidence Materialization v1;
+1. final usable calibration workflow — IN PROGRESS; Input Boundary v1 and Evidence Materialization v1 PASS/FROZEN; current next sub-boundary: Selected Execution Binding v1;
 2. dedicated physical calibrated real campaign;
 3. real Sparse SfM proof;
 4. durable Dense/OpenMVS orchestration;

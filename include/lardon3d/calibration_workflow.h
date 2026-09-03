@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <lardon3d/calibration_tooling.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -71,6 +73,69 @@ typedef struct {
 Lardon3DCalibrationWorkflowResult lardon3d_calibration_workflow_validate_input_boundary(
     const Lardon3DCalibrationWorkflowInputFiles *files,
     Lardon3DCalibrationWorkflowInputBoundary *boundary);
+
+
+typedef enum {
+  LARDON3D_CALIBRATION_WORKFLOW_REJECTION_SOURCE_SIZE = 1,
+  LARDON3D_CALIBRATION_WORKFLOW_REJECTION_DECODE = 2,
+  LARDON3D_CALIBRATION_WORKFLOW_REJECTION_DECODED_DIMENSIONS = 3,
+  LARDON3D_CALIBRATION_WORKFLOW_REJECTION_INSUFFICIENT_CHARUCO = 4,
+  LARDON3D_CALIBRATION_WORKFLOW_REJECTION_INVALID_CHARUCO_ID = 5,
+  LARDON3D_CALIBRATION_WORKFLOW_REJECTION_OCCUPANCY = 6,
+  LARDON3D_CALIBRATION_WORKFLOW_REJECTION_TARGET_PHYSICAL_QUADRANTS = 7,
+  LARDON3D_CALIBRATION_WORKFLOW_REJECTION_CLIPPING = 8,
+  LARDON3D_CALIBRATION_WORKFLOW_REJECTION_PRE_SOLVE_CORNER_RMS = 9,
+  LARDON3D_CALIBRATION_WORKFLOW_REJECTION_COORDINATE_EQUIVALENCE = 10,
+} Lardon3DCalibrationWorkflowRejectionReason;
+
+typedef struct {
+  Lardon3DCalibrationWorkflowInputBoundary boundary;
+  unsigned char target_sha256[32];
+  unsigned char optical_state_sha256[32];
+  unsigned char solver_executable_sha256[32];
+  unsigned char solver_configuration_sha256[32];
+  unsigned char initialization_evidence_sha256[32];
+  unsigned char validation_evidence_sha256[32];
+  uint32_t target_family;
+  uint32_t target_squares_x;
+  uint32_t target_squares_y;
+  double target_square_length_mm;
+  double target_marker_length_mm;
+  double target_active_width_mm;
+  double target_active_height_mm;
+  double target_white_border_mm;
+  double target_measurements_mm[LARDON3D_CALIBRATION_TOOLING_TARGET_MEASUREMENTS];
+  double measurement_resolution_mm;
+  double target_flatness_mm;
+  double holdout_rmse_px;
+  double holdout_maximum_residual_px;
+  uint32_t extra_distortion_coefficient_count;
+  const Lardon3DCalibrationToolingView *views;
+  size_t view_count;
+  const Lardon3DCalibrationToolingCoordinateCheck *coordinate_checks;
+  size_t coordinate_check_count;
+  double repeated_parameters[3][8];
+  double fit_parameters[8];
+  uint32_t support_images;
+  uint32_t support_observations;
+  double reprojection_rmse_px;
+  double maximum_residual_px;
+  double high_residual_fraction;
+  double maximum_parameter_delta;
+  uint32_t validation_flags;
+} Lardon3DCalibrationWorkflowExternalEvidence;
+
+/* Materialize the already validated external session and solver bundle into
+ * bounded Science-v1 evidence. Caller owns `views` and `coordinate_checks`;
+ * output borrows those arrays on success. This stage performs no Project DB
+ * access, no Tooling import and no selected-execution mutation. */
+Lardon3DCalibrationWorkflowResult
+lardon3d_calibration_workflow_materialize_external_evidence(
+    const Lardon3DCalibrationWorkflowInputFiles *files,
+    Lardon3DCalibrationToolingView *views, size_t view_capacity,
+    Lardon3DCalibrationToolingCoordinateCheck *coordinate_checks,
+    size_t coordinate_check_capacity,
+    Lardon3DCalibrationWorkflowExternalEvidence *output);
 
 #ifdef __cplusplus
 }
