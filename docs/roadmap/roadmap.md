@@ -24,7 +24,7 @@ SOURCE_COMMENT_AUDIT                  PASS
 PRODUCT_DEFINITION                    PASS/FROZEN
 PROMPT_TREE                           CURRENT
 USER_FACING_UI_LANGUAGE_NORMALIZATION PASS
-CURRENT_NEXT                          CALIBRATION_SCIENCE_V2_DESIGN
+CURRENT_NEXT                          CALIBRATION_V2_HETEROGENEOUS_OPTICS_FOUNDATION
 ```
 
 The current Project DB head is additive:
@@ -510,10 +510,11 @@ S21 Engine Bay is permanently non-retro-calibrable under Calibration Science v1.
 
 Calibration Science v1 defines the frozen physical protocol for its compatibility path.
 
-Before the next physical campaign, the current dependency is Calibration Science v2. Real A6000
-engine-bay acquisition evidence established that normal operation must support autofocus and
-heterogeneous optical states without forcing the operator to maintain one locked focus or one optical
-configuration for the whole project.
+`CALIBRATION_SCIENCE_V2=PASS/FROZEN`: the generic additive contract now establishes
+heterogeneous optical states, adaptive photometric controls and evidence-bound autofocus
+applicability without changing Science v1. Real A6000 engine-bay acquisition evidence established
+that normal operation must support autofocus and heterogeneous optical states without forcing the
+operator to maintain one locked focus or one optical configuration for the whole project.
 
 Science v2 is additive and must preserve these product invariants:
 
@@ -527,9 +528,10 @@ autofocus is a normal supported mode when its applicability is physically valida
 silent calibration substitution remains forbidden
 ```
 
-The current Sparse calibration scope already models membership as `image_id -> calibration_id`; v2
-should reuse that capability rather than require one global calibration. Device-specific autofocus
-envelopes remain blocked until physical evidence validates them.
+The current Sparse calibration scope already models membership as `image_id -> calibration_id`; the
+next dependency is the additive durable heterogeneous-optics/applicability foundation, which must
+reuse that capability where it proves sufficient. Device-specific autofocus envelopes remain blocked
+until physical evidence validates them.
 
 Calibration Tooling v1 consumes an already acquired Science v1 evidence bundle, validates the bounded
 contract and produces deterministic `L3DCALB1` v1.

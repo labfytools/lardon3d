@@ -6,7 +6,7 @@
 CURRENT_PROJECT_DB_SCHEMA=v25
 PRODUCTION_TASK_KINDS=16
 USER_FACING_UI_LANGUAGE_NORMALIZATION=PASS
-CURRENT_IMPLEMENTATION_CURSOR=CALIBRATION_SCIENCE_V2_DESIGN
+CURRENT_IMPLEMENTATION_CURSOR=CALIBRATION_V2_HETEROGENEOUS_OPTICS_FOUNDATION
 ```
 
 ## Authority
@@ -35,7 +35,7 @@ Calibration workflow input boundary         PASS/FROZEN
 Calibration workflow evidence materialization PASS/FROZEN
 Calibration workflow selected-execution binding PASS/FROZEN
 Calibration workflow Tooling/Bootstrap READY PASS/FROZEN
-Calibration Science v2 heterogeneous optics  PLANNED
+Calibration Science v2 heterogeneous optics  PASS/FROZEN
 Adaptive capture settings semantics          PLANNED
 Autofocus v2 foundation                      PLANNED
 Calibration Tooling planarity alignment     PASS/FROZEN

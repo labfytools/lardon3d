@@ -6,7 +6,7 @@
 IMPLEMENTATION_ORDER=DEPENDENCY_DRIVEN
 IMPLEMENTATION_AUTHORIZATION=NO
 STEP_0_USER_FACING_LANGUAGE_NORMALIZATION=PASS
-CURRENT_NEXT=CALIBRATION_SCIENCE_V2_DESIGN
+CURRENT_NEXT=CALIBRATION_V2_HETEROGENEOUS_OPTICS_FOUNDATION
 ```
 
 ## Authority
@@ -21,8 +21,8 @@ Default dependency order:
 
 0. user-facing repository/UI language normalization where appropriate — PASS;
 1. final usable Calibration Science/Tooling/Bootstrap/Workflow v1 compatibility path — PASS/FROZEN;
-2. Calibration Science v2 design for heterogeneous cameras/lenses/focals, adaptive capture settings and autofocus — CURRENT;
-3. Calibration v2 heterogeneous-optics persistence / Tooling / Bootstrap / workflow foundation;
+2. Calibration Science v2 design for heterogeneous cameras/lenses/focals, adaptive capture settings and autofocus — PASS/FROZEN;
+3. Calibration v2 heterogeneous-optics persistence / Tooling / Bootstrap / workflow foundation — CURRENT;
 4. physical autofocus/optical applicability validation and dedicated calibrated real campaign;
 5. real Sparse SfM proof;
 6. durable Dense/OpenMVS orchestration;

@@ -1,6 +1,6 @@
 # Calibration Science v2 — heterogeneous optics and adaptive acquisition
 
-**Status: PLANNED — current additive design authority.**
+**Status: PASS/FROZEN — generic additive scientific contract.**
 
 Calibration Science v1 remains `PASS/FROZEN`. Science v2 does not weaken,
 reinterpret or retroactively replace v1 evidence. It defines the next
@@ -10,6 +10,16 @@ configurations and normal autofocus operation.
 
 No device-specific autofocus envelope is validated by this document. Numeric
 focus-domain limits require dedicated physical evidence.
+
+```text
+CALIBRATION_SCIENCE_V2=PASS/FROZEN
+```
+
+This freezes the generic heterogeneous-optics, adaptive-exposure and
+applicability contract only. It does not validate a device-specific optical
+state, focus envelope or calibration. In particular,
+`A6000_E_PZ_16_50_AF_APPLICABILITY=BLOCKED_BY_PHYSICAL_VALIDATION` remains
+unchanged until retained physical evidence satisfies the applicable rules.
 
 ## 1. Product/science problem
 
