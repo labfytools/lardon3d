@@ -3,11 +3,12 @@
 ## Status
 
 ```text
-CALIBRATION_WORKFLOW=IN_PROGRESS
+CALIBRATION_WORKFLOW=PASS/FROZEN
 CALIBRATION_WORKFLOW_INPUT_BOUNDARY_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW_EVIDENCE_MATERIALIZATION_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING_V1=PASS/FROZEN
-CURRENT_WORKFLOW_NEXT=TOOLING_BOOTSTRAP_READY
+CALIBRATION_WORKFLOW_TOOLING_BOOTSTRAP_READY_V1=PASS/FROZEN
+CURRENT_WORKFLOW_NEXT=DEDICATED_PHYSICAL_CALIBRATED_REAL_CAMPAIGN
 ```
 
 ## Authority
@@ -188,9 +189,19 @@ Bootstrap, or transition the selected execution to `READY`. It proves:
 Entries are staged internally and published to caller storage only after every
 selected item passes. Exact retries are read-only and deterministic.
 
-## Current next boundary
+## Tooling / Bootstrap READY v1
 
-The final calibration workflow boundary is:
+The final public composition validates and materializes input, performs the
+read-only selected-execution binding, then invokes only FROZEN Calibration
+Tooling. Tooling produces L3DCALB1 v1 and invokes FROZEN Bootstrap. Success
+requires the returned scope to be the exact scope attached to READY; exact
+retries converge through immutable importer semantics.
+
+The software workflow is PASS/FROZEN. It does not establish physical evidence:
+historical S21/A6000 campaigns remain CALIBRATION_UNAVAILABLE and
+BLOCKED_BY_KNOWN_CALIBRATION_DATA.
+
+## Current next boundary
 
 ```text
 validated input -> materialized evidence -> selected-execution binding

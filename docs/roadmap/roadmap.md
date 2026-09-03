@@ -24,7 +24,7 @@ SOURCE_COMMENT_AUDIT                  PASS
 PRODUCT_DEFINITION                    PASS/FROZEN
 PROMPT_TREE                           CURRENT
 USER_FACING_UI_LANGUAGE_NORMALIZATION PASS
-CURRENT_NEXT                          CALIBRATION_WORKFLOW_TOOLING_BOOTSTRAP_READY
+CURRENT_NEXT                          DEDICATED_PHYSICAL_CALIBRATED_REAL_CAMPAIGN
 ```
 
 The current Project DB head is additive:
@@ -533,6 +533,8 @@ The solver session contract now also requires explicit measured `white_border >=
 
 `CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING_V1=PASS/FROZEN`: a read-only coordinator boundary now proves the exact selected execution and Capture mapping, explicit optical configuration, managed representation size/SHA-256, safe project-relative file containment, decoded geometry dimensions, and deterministic ToolingEntry construction. It never invokes Tooling/Bootstrap or changes selected-execution state. The next boundary is the FROZEN Tooling -> Bootstrap -> truthful READY composition.
 
+`CALIBRATION_WORKFLOW_TOOLING_BOOTSTRAP_READY_V1=PASS/FROZEN`: valid retained external evidence now composes through the three workflow checkpoints and only the FROZEN Tooling/Bootstrap importer to truthful READY. This software proof does not acquire a physical calibration; historical S21/A6000 campaigns remain CALIBRATION_UNAVAILABLE.
+
 A bounded Tooling correction aligned planarity handling with Calibration Science v1: Science v1
 defines a categorical physical planarity attestation, not a numeric flatness threshold. Tooling
 therefore rejects invented finite `target_flatness_mm` values. `L3DCALB1` v1 and Calibration
@@ -902,7 +904,7 @@ PRODUCT_DEFINITION_V1               PASS/FROZEN
 PROMPT_TREE                         CURRENT
 CALIBRATION_EVIDENCE_SOLVER_V1      IMPLEMENTED/VALIDATED
 CALIBRATION_TOOLING_ALIGNMENT       PASS/FROZEN
-CURRENT_NEXT                        CALIBRATION_WORKFLOW_TOOLING_BOOTSTRAP_READY
+CURRENT_NEXT                        DEDICATED_PHYSICAL_CALIBRATED_REAL_CAMPAIGN
 ```
 
 Implementation proceeds only through explicitly human-authorized tranches under `prompt.md` and the

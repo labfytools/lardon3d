@@ -6,7 +6,7 @@
 CURRENT_PROJECT_DB_SCHEMA=v25
 PRODUCTION_TASK_KINDS=16
 USER_FACING_UI_LANGUAGE_NORMALIZATION=PASS
-CURRENT_IMPLEMENTATION_CURSOR=1_CALIBRATION_WORKFLOW_TOOLING_BOOTSTRAP_READY
+CURRENT_IMPLEMENTATION_CURSOR=2_DEDICATED_PHYSICAL_CALIBRATED_REAL_CAMPAIGN
 ```
 
 ## Authority
@@ -34,6 +34,7 @@ Calibration solver bundle repair            PASS/FROZEN
 Calibration workflow input boundary         PASS/FROZEN
 Calibration workflow evidence materialization PASS/FROZEN
 Calibration workflow selected-execution binding PASS/FROZEN
+Calibration workflow Tooling/Bootstrap READY PASS/FROZEN
 Calibration Tooling planarity alignment     PASS/FROZEN
 ```
 

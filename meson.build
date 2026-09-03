@@ -183,6 +183,7 @@ lardon3d_app = executable(
         'src/calibration_workflow.cpp',
         'src/calibration_workflow_materialize.cpp',
         'src/calibration_workflow_bind.cpp',
+        'src/calibration_workflow_complete.cpp',
         'src/sparse_sfm_geometry.cpp',
         'src/sparse_sfm_incremental.cpp',
         'src/sparse_sfm_bundle_adjustment.cpp',
@@ -946,6 +947,30 @@ calibration_workflow_binding_test = executable(
 test(
     'calibration-workflow-binding',
     calibration_workflow_binding_test,
+    timeout: 30,
+)
+
+calibration_workflow_ready_test = executable(
+    'test-calibration-workflow-ready',
+    sources: [
+        'tests/test_calibration_workflow_ready.cpp',
+        'src/calibration_workflow.cpp',
+        'src/calibration_workflow_materialize.cpp',
+        'src/calibration_workflow_bind.cpp',
+        'src/calibration_workflow_complete.cpp',
+        'src/calibration_tooling.c', 'src/calibration_bootstrap.c',
+        'src/optical_profiles.c',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, opencv, cc.find_library('m')],
+)
+
+test(
+    'calibration-workflow-ready',
+    calibration_workflow_ready_test,
     timeout: 30,
 )
 

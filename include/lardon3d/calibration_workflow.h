@@ -156,6 +156,22 @@ lardon3d_calibration_workflow_bind_selected_execution(
     Lardon3DCalibrationToolingEntry *entries, size_t entry_capacity,
     Lardon3DCalibrationToolingEvidence *output);
 
+/* Complete the bounded calibration workflow through the frozen Tooling and
+ * Bootstrap importer. All supplied arrays and artifact storage remain caller
+ * owned; `output` is cleared unless import reaches the exact READY transition.
+ * Input validation, materialization and selected-execution binding finish
+ * before this function invokes the only mutating operation. Exact retries use
+ * Bootstrap's immutable import semantics. */
+Lardon3DCalibrationWorkflowResult
+lardon3d_calibration_workflow_complete(
+    Lardon3DProjectDb *database, const char *project_path,
+    const Lardon3DCalibrationWorkflowInputFiles *files,
+    Lardon3DCalibrationToolingView *views, size_t view_capacity,
+    Lardon3DCalibrationToolingCoordinateCheck *coordinate_checks,
+    size_t coordinate_check_capacity, Lardon3DCalibrationToolingEntry *entries,
+    size_t entry_capacity, unsigned char *artifact, size_t artifact_capacity,
+    size_t *artifact_size, Lardon3DCalibrationBootstrapOutput *output);
+
 #ifdef __cplusplus
 }
 #endif
