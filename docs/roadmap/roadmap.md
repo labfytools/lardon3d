@@ -24,7 +24,7 @@ SOURCE_COMMENT_AUDIT                  PASS
 PRODUCT_DEFINITION                    PASS/FROZEN
 PROMPT_TREE                           CURRENT
 USER_FACING_UI_LANGUAGE_NORMALIZATION PASS
-CURRENT_NEXT                          CALIBRATION_WORKFLOW_COORDINATOR
+CURRENT_NEXT                          CALIBRATION_WORKFLOW_TOOLING_BOOTSTRAP_READY
 ```
 
 The current Project DB head is additive:
@@ -531,6 +531,8 @@ The solver session contract now also requires explicit measured `white_border >=
 
 `CALIBRATION_WORKFLOW_EVIDENCE_MATERIALIZATION_V1=PASS/FROZEN`: the validated external calibration inputs are now materialized into bounded Science v1 target, per-view, coordinate, repeated-solve, fit, residual, hold-out and provenance evidence without Project DB access or mutation. The next boundary is exact Selected Execution Binding v1 before any Tooling/Bootstrap import.
 
+`CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING_V1=PASS/FROZEN`: a read-only coordinator boundary now proves the exact selected execution and Capture mapping, explicit optical configuration, managed representation size/SHA-256, safe project-relative file containment, decoded geometry dimensions, and deterministic ToolingEntry construction. It never invokes Tooling/Bootstrap or changes selected-execution state. The next boundary is the FROZEN Tooling -> Bootstrap -> truthful READY composition.
+
 A bounded Tooling correction aligned planarity handling with Calibration Science v1: Science v1
 defines a categorical physical planarity attestation, not a numeric flatness threshold. Tooling
 therefore rejects invented finite `target_flatness_mm` values. `L3DCALB1` v1 and Calibration
@@ -900,9 +902,10 @@ PRODUCT_DEFINITION_V1               PASS/FROZEN
 PROMPT_TREE                         CURRENT
 CALIBRATION_EVIDENCE_SOLVER_V1      IMPLEMENTED/VALIDATED
 CALIBRATION_TOOLING_ALIGNMENT       PASS/FROZEN
-CURRENT_NEXT                        CALIBRATION_WORKFLOW_COORDINATOR
+CURRENT_NEXT                        CALIBRATION_WORKFLOW_TOOLING_BOOTSTRAP_READY
 ```
 
 Implementation proceeds only through explicitly human-authorized tranches under `prompt.md` and the
 numbered `prompt/` execution contract. The current authorized dependency is the final usable
-calibration workflow; its next missing sub-boundary is the workflow coordinator.
+calibration workflow; its next missing sub-boundary composes the FROZEN Tooling
+and Bootstrap importer to reach truthful READY from the validated binding.

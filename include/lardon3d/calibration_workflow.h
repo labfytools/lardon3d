@@ -25,6 +25,7 @@ typedef enum {
   LARDON3D_CALIBRATION_WORKFLOW_CAPACITY,
   LARDON3D_CALIBRATION_WORKFLOW_MALFORMED_EVIDENCE,
   LARDON3D_CALIBRATION_WORKFLOW_PROVENANCE_MISMATCH,
+  LARDON3D_CALIBRATION_WORKFLOW_PROJECT_DB_ERROR,
 } Lardon3DCalibrationWorkflowResult;
 
 /* `campaign_state_path` is a canonical external acquisition manifest:
@@ -110,6 +111,11 @@ typedef struct {
   double holdout_rmse_px;
   double holdout_maximum_residual_px;
   uint32_t extra_distortion_coefficient_count;
+  /* Exact decoded/oriented geometry shared by every accepted calibration view.
+   * It is retained from detection.json + coordinate evidence and is never
+   * inferred from camera parameters or campaign images. */
+  uint32_t oriented_width;
+  uint32_t oriented_height;
   const Lardon3DCalibrationToolingView *views;
   size_t view_count;
   const Lardon3DCalibrationToolingCoordinateCheck *coordinate_checks;
@@ -136,6 +142,19 @@ lardon3d_calibration_workflow_materialize_external_evidence(
     Lardon3DCalibrationToolingCoordinateCheck *coordinate_checks,
     size_t coordinate_check_capacity,
     Lardon3DCalibrationWorkflowExternalEvidence *output);
+
+/* Bind already materialized external evidence to the exact durable selected
+ * execution. This stage is read-only: it verifies selected item order/Capture
+ * identity, explicit v23 optical assignment, managed representation
+ * size/SHA-256, safe project-relative regular-file access and the exact
+ * OpenCV-decoded oriented dimensions. Caller owns `entries`; `output` borrows
+ * them on success. No Tooling import or selected-execution mutation occurs. */
+Lardon3DCalibrationWorkflowResult
+lardon3d_calibration_workflow_bind_selected_execution(
+    Lardon3DProjectDb *database, const char *project_path,
+    const Lardon3DCalibrationWorkflowExternalEvidence *external,
+    Lardon3DCalibrationToolingEntry *entries, size_t entry_capacity,
+    Lardon3DCalibrationToolingEvidence *output);
 
 #ifdef __cplusplus
 }

@@ -6,7 +6,8 @@
 CALIBRATION_WORKFLOW=IN_PROGRESS
 CALIBRATION_WORKFLOW_INPUT_BOUNDARY_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW_EVIDENCE_MATERIALIZATION_V1=PASS/FROZEN
-CURRENT_WORKFLOW_NEXT=SELECTED_EXECUTION_BINDING_V1
+CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING_V1=PASS/FROZEN
+CURRENT_WORKFLOW_NEXT=TOOLING_BOOTSTRAP_READY
 ```
 
 ## Authority
@@ -154,28 +155,47 @@ explicit Project DB optical configuration.
 
 Absence or disagreement remains `CALIBRATION_UNAVAILABLE`.
 
-## Current next boundary
+## Selected Execution Binding v1
 
 ```text
-CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING_V1
+CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING_V1=PASS/FROZEN
 ```
 
-The next stage may read Project DB, but must not mutate it. It must:
+The implementation is additive:
 
-- load the exact selected execution and require the calibration/ready stage
-  appropriate to the existing FROZEN contract;
-- require exact selected item count and order;
-- match every campaign-state Capture row to the selected item;
-- load each Capture's explicit v23 optical assignment and require the exact
-  declared optical configuration;
-- load every selected image/asset identity;
-- read the exact managed representation as a bounded regular file;
-- require asset byte size and SHA-256 equality;
-- decode the exact geometric representation and require oriented dimensions
-  compatible with the calibration evidence;
-- construct the per-image `Lardon3DCalibrationToolingEntry` rows without
-  changing any scientific value.
+```text
+src/calibration_workflow_bind.cpp
+tests/test_calibration_workflow_bind.cpp
+```
 
-Only after that read-only binding passes may a final workflow boundary invoke
-the FROZEN Tooling/Bootstrap path and transition the selected execution to
-truthful `READY`.
+This boundary is read-only. It may read Project DB and managed representation
+bytes, but does not attach a calibration scope, invoke Calibration Tooling or
+Bootstrap, or transition the selected execution to `READY`. It proves:
+
+- exact selected-execution stage, completion, item order and Capture mapping;
+- exact explicit v23 optical configuration, including campaign-origin facts
+  where present;
+- exact selected-image/Capture relation and READY image asset identity;
+- managed representation size and SHA-256 through project-relative `openat`
+  descent that rejects absolute paths, dot components, symlinks, non-directory
+  components and non-regular final files;
+- grayscale OpenCV decoded width/height equal to the accepted materialized
+  calibration geometry; and
+- deterministic selected-item-order `Lardon3DCalibrationToolingEntry`
+  construction from the published solve values, without averaging or solver
+  recomputation.
+
+Entries are staged internally and published to caller storage only after every
+selected item passes. Exact retries are read-only and deterministic.
+
+## Current next boundary
+
+The final calibration workflow boundary is:
+
+```text
+validated input -> materialized evidence -> selected-execution binding
+-> FROZEN Calibration Tooling -> FROZEN Calibration Bootstrap -> READY
+```
+
+It must preserve the binding's exact provenance and use only the FROZEN
+Tooling/Bootstrap import path. No failure before import may mutate Project DB.

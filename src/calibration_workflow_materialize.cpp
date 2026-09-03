@@ -554,6 +554,8 @@ bool parse_detection(std::string_view text, const SessionData& session,
       if (decision != "accepted" && decision != "rejected") return false;
       if (dv.tooling.accepted) {
         if (reason != "-" || !coordinate_pass || dv.width == 0 || dv.height == 0 ||
+            dv.width != sv.coordinate_width ||
+            dv.height != sv.coordinate_height ||
             dv.tooling.orientation_degrees != sv.orientation ||
             dv.tooling.corner_rms_px != sv.pre_solve ||
             dv.tooling.distance_metres != sv.distance ||
@@ -846,14 +848,25 @@ lardon3d_calibration_workflow_materialize_external_evidence(
 
   size_t accepted = 0;
   uint64_t support_observations = 0;
+  uint32_t oriented_width = 0;
+  uint32_t oriented_height = 0;
   for (const DetectionView& view : parsed_views) {
     if (view.tooling.accepted) {
+      if (accepted == 0) {
+        oriented_width = view.width;
+        oriented_height = view.height;
+      } else if (view.width != oriented_width ||
+                 view.height != oriented_height) {
+        return LARDON3D_CALIBRATION_WORKFLOW_PROVENANCE_MISMATCH;
+      }
       ++accepted;
       support_observations += view.tooling.residual_count;
       if (support_observations > UINT32_MAX)
         return LARDON3D_CALIBRATION_WORKFLOW_CAPACITY;
     }
   }
+  if (accepted == 0 || oriented_width == 0 || oriented_height == 0)
+    return LARDON3D_CALIBRATION_WORKFLOW_PROVENANCE_MISMATCH;
 
   SolveData solve;
   if (!parse_solve(solve_text, accepted, &solve))
@@ -906,6 +919,8 @@ lardon3d_calibration_workflow_materialize_external_evidence(
   output->holdout_rmse_px = evidence.holdout_rmse;
   output->holdout_maximum_residual_px = evidence.holdout_max;
   output->extra_distortion_coefficient_count = 0;
+  output->oriented_width = oriented_width;
+  output->oriented_height = oriented_height;
   output->views = views;
   output->view_count = parsed_views.size();
   output->coordinate_checks = coordinate_checks;

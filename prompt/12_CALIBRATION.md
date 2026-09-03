@@ -15,7 +15,8 @@ CALIBRATION_SOLVER_BUNDLE_REPAIR_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW=IN_PROGRESS
 CALIBRATION_WORKFLOW_INPUT_BOUNDARY_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW_EVIDENCE_MATERIALIZATION_V1=PASS/FROZEN
-CURRENT_CALIBRATION_NEXT=WORKFLOW_SELECTED_EXECUTION_BINDING_V1
+CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING_V1=PASS/FROZEN
+CURRENT_CALIBRATION_NEXT=WORKFLOW_TOOLING_BOOTSTRAP_READY
 ```
 
 ## Authority
@@ -58,7 +59,7 @@ dedicated physical calibration acquisition
 -> real Sparse SfM
 ```
 
-The workflow coordinator now has two PASS/FROZEN non-mutating checkpoints. Input Boundary v1 validates immutable files, hashes, formats and complete optical-state equality. Evidence Materialization v1 parses the retained session and solver bundle into bounded Science v1 target, per-view, coordinate, repeated-solve, fit, residual, hold-out and provenance evidence without opening Project DB. The current implementation gap is Selected Execution Binding v1: bind this external evidence to the exact selected execution, Capture optical assignments and campaign representation bytes, then construct the per-image Tooling entries. Missing or mismatched evidence is rejected; nothing is inferred.
+The workflow coordinator now has three PASS/FROZEN non-mutating checkpoints. Input Boundary v1 validates immutable files, hashes, formats and complete optical-state equality. Evidence Materialization v1 parses the retained session and solver bundle into bounded Science v1 target, per-view, coordinate, repeated-solve, fit, residual, hold-out and provenance evidence without opening Project DB. Selected Execution Binding v1 is read-only: it proves the exact selected execution and Capture mapping, explicit optical configuration, managed representation size/SHA-256, safe project-relative file containment, decoded geometry dimensions, and deterministic `Lardon3DCalibrationToolingEntry` construction. Missing or mismatched evidence is rejected; nothing is inferred. The final remaining boundary composes the validated binding with the FROZEN Tooling and Bootstrap import path to reach truthful `READY`.
 
 ## REQUIRED_PRODUCT_TARGET
 

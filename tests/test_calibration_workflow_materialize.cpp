@@ -229,6 +229,7 @@ bool valid() {
   CHECK(lardon3d_calibration_workflow_materialize_external_evidence(
       &f.files,views,2,checks,40,&out)==LARDON3D_CALIBRATION_WORKFLOW_OK);
   CHECK(out.view_count==2 && out.coordinate_check_count==40);
+  CHECK(out.oriented_width==1000 && out.oriented_height==800);
   CHECK(out.support_images==2 && out.support_observations==40);
   CHECK(out.validation_flags==15 && out.target_white_border_mm==30.0);
   CHECK(out.repeated_parameters[0][0]==1000.0 && out.fit_parameters[0]==1000.0);
