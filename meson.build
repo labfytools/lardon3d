@@ -180,6 +180,7 @@ lardon3d_app = executable(
         'src/optical_profiles.c',
         'src/calibration_bootstrap.c',
         'src/calibration_bootstrap_v2.c',
+        'src/calibration_workflow_v2.c',
         'src/calibration_tooling.c',
         'src/calibration_tooling_v2.c',
         'src/calibration_workflow.cpp',
@@ -915,6 +916,23 @@ calibration_publication_v2_test = executable(
 )
 
 test('calibration-publication-v2', calibration_publication_v2_test, timeout: 30)
+
+calibration_workflow_v2_test = executable(
+    'test-calibration-workflow-v2',
+    sources: [
+        'tests/test_calibration_workflow_v2.c',
+        'src/calibration_workflow_v2.c',
+        'src/calibration_tooling_v2.c', 'src/calibration_bootstrap_v2.c',
+        'src/optical_profiles.c',
+        'src/project_db.c', 'src/project_db_sparse_sfm.c',
+        'src/task.c', 'src/resource_governor.c', 'src/resource_snapshot.c',
+    ],
+    c_args: ['-DLARDON3D_PROJECT_DB_TESTING'],
+    include_directories: include_directories('include'),
+    dependencies: [threads, sqlite3, openssl, cc.find_library('m')],
+)
+
+test('calibration-workflow-v2', calibration_workflow_v2_test, timeout: 30)
 
 calibration_workflow_test = executable(
     'test-calibration-workflow',

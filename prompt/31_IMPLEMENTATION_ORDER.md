@@ -6,7 +6,7 @@
 IMPLEMENTATION_ORDER=DEPENDENCY_DRIVEN
 IMPLEMENTATION_AUTHORIZATION=NO
 STEP_0_USER_FACING_LANGUAGE_NORMALIZATION=PASS
-CURRENT_NEXT=CALIBRATION_V2_WORKFLOW_READY
+CURRENT_NEXT=AUTOFOCUS_V2_FOUNDATION
 ```
 
 ## Authority
@@ -24,23 +24,24 @@ Default dependency order:
 2. Calibration Science v2 design for heterogeneous cameras/lenses/focals, adaptive capture settings and autofocus — PASS/FROZEN;
 3. Calibration v2 heterogeneous-optics persistence foundation — PASS/FROZEN;
 4. Heterogeneous calibration publication / Tooling / Bootstrap evolution — PASS/FROZEN;
-5. Heterogeneous Workflow v2 truthful READY proof — CURRENT;
-6. physical autofocus/optical applicability validation and dedicated calibrated real campaign;
-7. real Sparse SfM proof;
-8. durable Dense/OpenMVS orchestration;
-9. mesh / refinement / texturing / export;
-10. viewer foundation;
-11. offline Coverage Analysis scientific contract and implementation;
-12. multi-campaign registration / fusion;
-13. generic live acquisition adapter foundation;
-14. A6000 HDMI integration;
-15. S21 integration;
-16. live camera localization;
-17. live coverage overlay;
-18. actionable Capture Guidance;
-19. video ingestion / deterministic keyframes;
-20. final integration, UX, restart and performance proof;
-21. Product Definition v1 Definition-of-Done closure.
+5. Heterogeneous Workflow v2 truthful READY proof — PASS/FROZEN;
+6. Adaptive capture settings / generic autofocus foundation — CURRENT;
+7. physical autofocus/optical applicability validation and dedicated calibrated real campaign;
+8. real Sparse SfM proof;
+9. durable Dense/OpenMVS orchestration;
+10. mesh / refinement / texturing / export;
+11. viewer foundation;
+12. offline Coverage Analysis scientific contract and implementation;
+13. multi-campaign registration / fusion;
+14. generic live acquisition adapter foundation;
+15. A6000 HDMI integration;
+16. S21 integration;
+17. live camera localization;
+18. live coverage overlay;
+19. actionable Capture Guidance;
+20. video ingestion / deterministic keyframes;
+21. final integration, UX, restart and performance proof;
+22. Product Definition v1 Definition-of-Done closure.
 
 ## Adjustment rule
 

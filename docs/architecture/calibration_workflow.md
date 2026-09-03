@@ -8,7 +8,8 @@ CALIBRATION_WORKFLOW_INPUT_BOUNDARY_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW_EVIDENCE_MATERIALIZATION_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW_TOOLING_BOOTSTRAP_READY_V1=PASS/FROZEN
-CURRENT_WORKFLOW_NEXT=DEDICATED_PHYSICAL_CALIBRATED_REAL_CAMPAIGN
+CALIBRATION_WORKFLOW_V2=PASS/FROZEN
+CURRENT_WORKFLOW_NEXT=ADAPTIVE_CAPTURE_SETTINGS_AND_AUTOFOCUS_V2_FOUNDATION
 ```
 
 ## Authority
@@ -200,6 +201,32 @@ retries converge through immutable importer semantics.
 The software workflow is PASS/FROZEN. It does not establish physical evidence:
 historical S21/A6000 campaigns remain CALIBRATION_UNAVAILABLE and
 BLOCKED_BY_KNOWN_CALIBRATION_DATA.
+
+## Additive heterogeneous Workflow v2
+
+`CALIBRATION_WORKFLOW_V2=PASS/FROZEN`. This additive composition leaves every
+v1 API, artifact and workflow meaning unchanged. It composes v26 Capture
+geometric state/applicability with the L3DCALB2 publication path for one
+heterogeneous selected execution.
+
+The workflow first verifies the exact durable selected-item-to-Capture mapping
+for every caller binding. It never recovers Capture identity from an image ID,
+path, SHA-256, filename or operational group ID. Every Capture must have a
+complete observed geometric state. Missing or incomplete state reports
+`CALIBRATION_REQUIRED`; multiple exact compatible applicability candidates
+report `SELECTION_REQUIRED`.
+
+L3DCALB2 is first published through its additive unattached primitive. This
+fully validates artifact bytes and selected image/representation bindings and
+may create reusable immutable calibrations and a complete scope, but cannot
+transition the execution to READY. Workflow v2 then binds each returned
+per-image calibration to an exact v26 applicability/selection and verifies the
+resolved `sparse_calibration_id` equals that scope member. Only after every
+selected item passes may the existing scope-attachment transaction set READY.
+
+Invalid artifact evidence and wrong optical assignments are distinct non-ready
+errors. No pre-final failure attaches a scope. Exact retries reuse immutable
+calibrations and the same complete scope deterministically.
 
 ## Current next boundary
 

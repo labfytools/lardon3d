@@ -79,10 +79,12 @@ static Lardon3DCalibrationBootstrapV2Result db_result(Lardon3DProjectDbResult re
   return LARDON3D_CALIBRATION_BOOTSTRAP_V2_DB_ERROR;
 }
 
-Lardon3DCalibrationBootstrapV2Result lardon3d_calibration_bootstrap_v2_import(
+static Lardon3DCalibrationBootstrapV2Result bootstrap_v2_publish(
     Lardon3DProjectDb *database, uint64_t execution_id,
     const unsigned char *artifact, size_t artifact_size,
     const unsigned char expected_artifact_sha256[32],
+    Lardon3DCalibrationBootstrapV2Member *published_members,
+    size_t member_capacity, bool attach_scope,
     Lardon3DCalibrationBootstrapV2Output *output) {
   if (!database || execution_id == 0 || !artifact || !expected_artifact_sha256 || !output ||
       artifact_size < BOOTSTRAP_V2_HEADER_SIZE ||
@@ -109,6 +111,8 @@ Lardon3DCalibrationBootstrapV2Result lardon3d_calibration_bootstrap_v2_import(
       group_count > LARDON3D_CALIBRATION_BOOTSTRAP_V2_MAX_GROUPS || entry_count == 0 ||
       entry_count > LARDON3D_CALIBRATION_BOOTSTRAP_V2_MAX_ENTRIES)
     return LARDON3D_CALIBRATION_BOOTSTRAP_V2_MALFORMED_ARTIFACT;
+  if (!attach_scope && (!published_members || member_capacity < entry_count))
+    return LARDON3D_CALIBRATION_BOOTSTRAP_V2_INVALID_ARGUMENT;
   size_t expected_size = BOOTSTRAP_V2_HEADER_SIZE + (size_t)group_count * BOOTSTRAP_V2_GROUP_SIZE;
   if (entry_count > (SIZE_MAX - expected_size) / BOOTSTRAP_V2_ENTRY_SIZE)
     return LARDON3D_CALIBRATION_BOOTSTRAP_V2_MALFORMED_ARTIFACT;
@@ -295,7 +299,7 @@ Lardon3DCalibrationBootstrapV2Result lardon3d_calibration_bootstrap_v2_import(
       if (db_status != LARDON3D_PROJECT_DB_OK) result = db_result(db_status);
     }
   }
-  if (result == LARDON3D_CALIBRATION_BOOTSTRAP_V2_OK) {
+  if (result == LARDON3D_CALIBRATION_BOOTSTRAP_V2_OK && attach_scope) {
     db_status = lardon3d_project_db_assign_selected_calibration_scope(database, execution_id,
                                                                       scope.scope_id);
     if (db_status != LARDON3D_PROJECT_DB_OK) result = db_result(db_status);
@@ -305,8 +309,42 @@ Lardon3DCalibrationBootstrapV2Result lardon3d_calibration_bootstrap_v2_import(
     output->scope = scope;
     output->calibration_count = entry_count;
     output->group_count = group_count;
+    if (!attach_scope) {
+      /* Item order, not artifact group order, is the durable composition key.
+       * Workflow must bind it back to selected_execution_items.capture_id and
+       * must never reverse-map Capture identity from image_id. */
+      for (size_t index = 0; index < entry_count; ++index) {
+        BootstrapV2Entry *entry = &entries[index];
+        Lardon3DCalibrationBootstrapV2Member *member =
+            &published_members[entry->selected_item_index];
+        member->selected_item_index = entry->selected_item_index;
+        member->image_id = entry->member.image_id;
+        member->calibration_id = entry->member.calibration_id;
+      }
+    }
   }
   free(entries);
   free(covered);
   return result;
+}
+
+Lardon3DCalibrationBootstrapV2Result
+lardon3d_calibration_bootstrap_v2_publish_unattached(
+    Lardon3DProjectDb *database, uint64_t execution_id,
+    const unsigned char *artifact, size_t artifact_size,
+    const unsigned char expected_artifact_sha256[32],
+    Lardon3DCalibrationBootstrapV2Member *members, size_t member_capacity,
+    Lardon3DCalibrationBootstrapV2Output *output) {
+  return bootstrap_v2_publish(database, execution_id, artifact, artifact_size,
+                              expected_artifact_sha256, members,
+                              member_capacity, false, output);
+}
+
+Lardon3DCalibrationBootstrapV2Result lardon3d_calibration_bootstrap_v2_import(
+    Lardon3DProjectDb *database, uint64_t execution_id,
+    const unsigned char *artifact, size_t artifact_size,
+    const unsigned char expected_artifact_sha256[32],
+    Lardon3DCalibrationBootstrapV2Output *output) {
+  return bootstrap_v2_publish(database, execution_id, artifact, artifact_size,
+                              expected_artifact_sha256, NULL, 0, true, output);
 }

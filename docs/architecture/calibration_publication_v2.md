@@ -82,8 +82,36 @@ Bootstrap validates the whole artifact and then verifies every entry against
 the immutable selected execution's exact item index, `image_id`, and current
 representation asset SHA-256 before its first write. It creates or reuses the
 existing content-addressed Sparse calibrations per entry, creates or reuses one
-scope over every selected image across all groups, and attaches only that
-complete scope. A pre-publication error attaches no scope. A later failure may
-retain immutable calibration evidence but cannot make the execution READY.
-Exact retries reuse calibrations and the scope and converge on the same
-attachment.
+scope over every selected image across all groups. The original Bootstrap v2
+import attaches that complete scope and retains its existing public behavior.
+The separately named `publish_unattached` primitive returns the exact
+selected-item/image/calibration mapping without attaching the scope; it exists
+only so Workflow v2 can establish v26 compatibility before READY. A
+pre-publication error attaches no scope. A later failure may retain immutable
+calibration evidence but cannot make the execution READY. Exact retries reuse
+calibrations and the scope and converge on the same attachment.
+
+## Heterogeneous Workflow v2 composition
+
+Workflow v2 consumes the L3DCALB2 artifact and a complete caller-owned binding
+for every selected item. Each binding repeats the selected execution's durable
+`item_index -> capture_id` relation. Capture identity is never recovered from
+an image ID, path, SHA-256, filename, artifact group identity, or numeric group
+ID.
+
+Before unattached publication, Workflow v2 requires complete observed v26
+geometric state for every selected Capture. Automatic resolution reports zero
+exact candidates as `CALIBRATION_REQUIRED` and multiple exact candidates as
+`SELECTION_REQUIRED`. Explicit existing applicability must be exactly
+compatible. Explicit publication creates/reuses deterministic profile metadata
+from the immutable artifact calibration and its group-local provenance, then
+creates/reuses applicability from the declared exact-state exemplar. It does
+not create scientific Capture identity or authorize interpolation.
+
+For every selected item, the final resolved v26 sparse `calibration_id` must
+equal that image's calibration member in the complete unattached scope. Only
+after all items pass that equality does Workflow v2 attach the scope and return
+`READY`. Invalid evidence or a wrong assignment is a distinct non-ready error.
+Any earlier failure leaves the selected execution unattached; exact retries are
+deterministic and converge through the immutable Bootstrap/profile/
+applicability/selection APIs. No Project DB schema change is required.

@@ -35,6 +35,33 @@ typedef struct {
   uint32_t group_count;
 } Lardon3DCalibrationBootstrapV2Output;
 
+typedef struct {
+  uint32_t selected_item_index;
+  uint64_t image_id;
+  uint64_t calibration_id;
+} Lardon3DCalibrationBootstrapV2Member;
+
+/* Validate and publish one complete artifact without attaching its scope.
+ * `members` is caller-owned storage of at least V2_MAX_ENTRIES only when that
+ * many entries are accepted; `member_capacity` may be smaller and yields
+ * INVALID_ARGUMENT before database mutation when the artifact will not fit.
+ * Successful members are ordered by selected_item_index and expose the exact
+ * immutable calibration created/reused for each selected image.
+ *
+ * This primitive exists so Workflow v2 can establish exact Capture-owned v26
+ * applicability and selection before the single READY attachment. It never
+ * infers Capture identity from image, path, digest, or group identity, and it
+ * never attaches the returned complete scope. Exact retry is deterministic;
+ * immutable calibrations and the unattached scope may survive later workflow
+ * failure under the existing publication contract. */
+Lardon3DCalibrationBootstrapV2Result
+lardon3d_calibration_bootstrap_v2_publish_unattached(
+    Lardon3DProjectDb *database, uint64_t execution_id,
+    const unsigned char *artifact, size_t artifact_size,
+    const unsigned char expected_artifact_sha256[LARDON3D_PROJECT_DB_SHA256_SIZE],
+    Lardon3DCalibrationBootstrapV2Member *members, size_t member_capacity,
+    Lardon3DCalibrationBootstrapV2Output *output);
+
 /* Import one complete L3DCALB2 artifact for an immutable selected execution.
  * All pointers are required and borrowed only for the call; artifact_size is
  * bounded by V2_MAX_BYTES and must match expected_artifact_sha256 before any
