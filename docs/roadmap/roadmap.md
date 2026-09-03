@@ -525,6 +525,8 @@ The solver session contract now also requires explicit measured `white_border >=
 
 `CALIBRATION_SOLVER_PER_VIEW_EVIDENCE_V1=PASS/FROZEN`: `detection.json` now retains the exact per-view Science v1 classifications and residual-support evidence required by the future workflow coordinator; downstream code must consume rather than recompute them.
 
+`CALIBRATION_SOLVER_BUNDLE_REPAIR_V1=PASS/FROZEN`: retained per-view fields are now present in the actual solver output, `producer.json` is valid canonical JSON, solver-configuration records contain real line feeds, and the deterministic self-test checks these contents rather than byte identity alone.
+
 A bounded Tooling correction aligned planarity handling with Calibration Science v1: Science v1
 defines a categorical physical planarity attestation, not a numeric flatness threshold. Tooling
 therefore rejects invented finite `target_flatness_mm` values. `L3DCALB1` v1 and Calibration

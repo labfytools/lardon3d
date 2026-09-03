@@ -30,6 +30,7 @@ Calibration Evidence Solver v1              IMPLEMENTED/VALIDATED
 Calibration solver white-border evidence    PASS/FROZEN
 Calibration solver producer identity        PASS/FROZEN
 Calibration solver per-view evidence        PASS/FROZEN
+Calibration solver bundle repair            PASS/FROZEN
 Calibration Tooling planarity alignment     PASS/FROZEN
 ```
 

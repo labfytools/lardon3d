@@ -75,6 +75,7 @@ struct View {
   std::vector<cv::Point2d> image;
   std::vector<cv::Point3d> object;
   std::vector<cv::Point2d> residuals;
+  size_t high_residual_count = 0;
   double occupancy = 0, angle = 0, distance = 0, rmse = 0, max_residual = 0;
   double image_conversion_max = 0, object_conversion_max = 0;
   double pre_solve_corner_rms = -1, clipping_fraction = -1;
@@ -231,9 +232,9 @@ bool residuals(std::vector<View>* views,const std::vector<size_t>& indices,
                std::string* why) {
   long double sum=0; size_t n=0; *maximum=0; *high=0;
   if(s.rvec.size()!=indices.size()||s.tvec.size()!=indices.size()){*why="pose count";return false;}
-  for(size_t j=0;j<indices.size();++j){View& v=(*views)[indices[j]];v.residuals.clear();v.rmse=0;v.max_residual=0;
+  for(size_t j=0;j<indices.size();++j){View& v=(*views)[indices[j]];v.residuals.clear();v.high_residual_count=0;v.rmse=0;v.max_residual=0;
     for(size_t i=0;i<v.object.size();++i){const cv::Point2d q=project(s.p,s.rvec[j],s.tvec[j],v.object[i]);const cv::Point2d e=q-v.image[i];
-      if(!finite(e.x)||!finite(e.y)){*why="nonfinite residual";return false;}const double d=cv::norm(e);v.residuals.push_back(e);v.rmse+=d*d;v.max_residual=std::max(v.max_residual,d);*maximum=std::max(*maximum,d);if(d>1.0)++*high;sum+=static_cast<long double>(d)*d;++n;}
+      if(!finite(e.x)||!finite(e.y)){*why="nonfinite residual";return false;}const double d=cv::norm(e);v.residuals.push_back(e);v.rmse+=d*d;v.max_residual=std::max(v.max_residual,d);*maximum=std::max(*maximum,d);if(d>1.0){++v.high_residual_count;++*high;}sum+=static_cast<long double>(d)*d;++n;}
     if(v.object.empty()){*why="empty view";return false;}v.rmse=std::sqrt(v.rmse/static_cast<double>(v.object.size()));}
   if(n==0){*why="no residuals";return false;}*count=n;*rms=std::sqrt(static_cast<double>(sum/static_cast<long double>(n)));return true;
 }
@@ -251,19 +252,20 @@ bool exact_solve(const Solve& a, const Solve& b) {
 }
 std::string number(double x) { std::ostringstream o; o.imbue(std::locale::classic()); o<<std::hexfloat<<x; return o.str(); }
 std::string solver_configuration_record() {
-  std::ostringstream o; o.imbue(std::locale::classic());
-  o<<"L3DCAL_SOLVER_CONFIGURATION_V1\\n"
-   <<"opencv_version "<<CV_VERSION<<"\\n"
-   <<"target DICT_5X5_100 9 7 30 21\\n"
-   <<"legacy_pattern 0\\n"
-   <<"charuco_min_markers 2\\n"
-   <<"charuco_try_refine_markers 0\\n"
-   <<"charuco_check_markers 1\\n"
-   <<"calibrate_flags CALIB_FIX_K3\\n"
-   <<"criteria COUNT_EPS 500 "<<std::hexfloat<<DBL_EPSILON<<"\\n"
-   <<"threads 1\\n"
-   <<"rng_seed "<<std::dec<<kSeed<<"\\n"
-   <<"opencv_build_sha256 "<<hex(text_hash(cv::getBuildInformation()))<<"\\n";
+  std::ostringstream o;
+  o.imbue(std::locale::classic());
+  o << "L3DCAL_SOLVER_CONFIGURATION_V1\n"
+    << "opencv_version " << CV_VERSION << "\n"
+    << "target DICT_5X5_100 9 7 30 21\n"
+    << "legacy_pattern 0\n"
+    << "charuco_min_markers 2\n"
+    << "charuco_try_refine_markers 0\n"
+    << "charuco_check_markers 1\n"
+    << "calibrate_flags CALIB_FIX_K3\n"
+    << "criteria COUNT_EPS 500 " << std::hexfloat << DBL_EPSILON << "\n"
+    << "threads 1\n"
+    << "rng_seed " << std::dec << kSeed << "\n"
+    << "opencv_build_sha256 " << hex(text_hash(cv::getBuildInformation())) << "\n";
   return o.str();
 }
 /* WHY: evidence must be inspectable before a future importer sees it.
@@ -284,28 +286,77 @@ bool write_bundle(const std::string& session, const SessionEvidence& e, const st
   auto fail=[&](const std::string& x){std::filesystem::remove_all(temp,ec);*why=x;return false;};
   std::ofstream d(temp/"detection.json",std::ios::binary); if(!d)return fail("detection output");
   d<<"{\n\"format\":\"L3DCAL_DETECTION_V1\",\n\"decoder\":\""<<e.decoder<<"\",\n\"decoder_version\":\""<<e.decoder_version<<"\",\n\"views\":[\n";
-  for(size_t i=0;i<views.size();++i){const View&v=views[i];d<<"{\"source_sha256\":\""<<hex(v.hash)<<"\",\"orientation\":"<<v.orientation<<",\"oriented_width\":"<<v.width<<",\"oriented_height\":"<<v.height<<",\"decision\":\""<<(v.accepted?"accepted":"rejected")<<"\",\"reason\":\""<<(v.reject.empty()?"-":v.reject)<<"\",\"pre_solve_corner_rms_px\":\""<<number(v.pre_solve_corner_rms)<<"\",\"clipping_fraction\":\""<<number(v.clipping_fraction)<<"\",\"physical_target_quadrants\":";
-    int q[4]{};for(const auto&p:v.object)q[(p.x>=.135?1:0)+(p.y>=.105?2:0)]=1;d<<(q[0]+q[1]+q[2]+q[3])<<",\"coordinate_equivalence\":{\"comparison_points\":"<<v.coordinate_comparison_count<<",\"max_abs_dx_px\":\""<<number(v.coordinate_dx_max)<<"\",\"max_abs_dy_px\":\""<<number(v.coordinate_dy_max)<<"\",\"pass\":"<<(v.coordinate_ok?"true":"false")<<"},\"corners\":[";
-    for(size_t j=0;j<v.ids.size();++j){if(j)d<<',';d<<"{\"id\":"<<v.ids[j]<<",\"x\":\""<<number(v.image[j].x)<<"\",\"y\":\""<<number(v.image[j].y)<<"\"}";}d<<"]}"<<(i+1==views.size()?"\n":" ,\n");}
+  for (size_t i = 0; i < views.size(); ++i) {
+    const View& v = views[i];
+
+    unsigned target_mask = 0;
+    for (const cv::Point3d& point : v.object) {
+      const unsigned quadrant = static_cast<unsigned>(
+          (point.x >= .135 ? 1 : 0) + (point.y >= .105 ? 2 : 0));
+      target_mask |= 1u << quadrant;
+    }
+    unsigned target_quadrants = 0;
+    for (unsigned bit = 0; bit < 4; ++bit) {
+      target_quadrants += (target_mask >> bit) & 1u;
+    }
+
+    d << "{\"source_sha256\":\"" << hex(v.hash)
+      << "\",\"orientation\":" << v.orientation
+      << ",\"oriented_width\":" << v.width
+      << ",\"oriented_height\":" << v.height
+      << ",\"decision\":\"" << (v.accepted ? "accepted" : "rejected")
+      << "\",\"reason\":\"" << (v.reject.empty() ? "-" : v.reject)
+      << "\",\"frame_region\":" << v.quadrant
+      << ",\"distance_band\":" << v.distance_band
+      << ",\"holdout\":" << (v.holdout ? "true" : "false")
+      << ",\"target_occupancy\":\"" << number(v.occupancy)
+      << "\",\"normal_angle_degrees\":\"" << number(v.angle)
+      << "\",\"measured_distance_metres\":\"" << number(v.distance)
+      << "\",\"pre_solve_corner_rms_px\":\"" << number(v.pre_solve_corner_rms)
+      << "\",\"clipping_fraction\":\"" << number(v.clipping_fraction)
+      << "\",\"physical_target_quadrants\":" << target_quadrants
+      << ",\"target_corner_quadrant_mask\":" << target_mask
+      << ",\"corner_count\":" << v.ids.size()
+      << ",\"residual_count\":" << v.residuals.size()
+      << ",\"high_residual_count\":" << v.high_residual_count
+      << ",\"reprojection_rmse_px\":\"" << number(v.rmse)
+      << "\",\"maximum_residual_px\":\"" << number(v.max_residual)
+      << "\",\"coordinate_equivalence\":{\"comparison_points\":"
+      << v.coordinate_comparison_count
+      << ",\"max_abs_dx_px\":\"" << number(v.coordinate_dx_max)
+      << "\",\"max_abs_dy_px\":\"" << number(v.coordinate_dy_max)
+      << "\",\"pass\":" << (v.coordinate_ok ? "true" : "false")
+      << "},\"corners\":[";
+
+    for (size_t j = 0; j < v.ids.size(); ++j) {
+      if (j) d << ',';
+      d << "{\"id\":" << v.ids[j]
+        << ",\"x\":\"" << number(v.image[j].x)
+        << "\",\"y\":\"" << number(v.image[j].y) << "\"}";
+    }
+    d << "]}" << (i + 1 == views.size() ? "\n" : " ,\n");
+  }
   d<<"]\n}\n";d.close();if(!d)return fail("detection write");
   std::ofstream s(temp/"solve.json",std::ios::binary);if(!s)return fail("solve output");
   s<<"{\n\"format\":\"L3DCAL_SOLVE_V1\",\n\"runs\":[\n";for(int run=0;run<3;++run){const Solve&z=full[run];s<<"{\"run\":"<<run<<",\"params\":[\""<<number(z.p.fx)<<"\",\""<<number(z.p.fy)<<"\",\""<<number(z.p.cx)<<"\",\""<<number(z.p.cy)<<"\",\""<<number(z.p.k1)<<"\",\""<<number(z.p.k2)<<"\",\""<<number(z.p.p1)<<"\",\""<<number(z.p.p2)<<"\"],\"opencv_rms_px\":\""<<number(z.rms)<<"\",\"poses\":[";for(size_t i=0;i<z.rvec.size();++i){if(i)s<<',';s<<"{\"rvec\":[\""<<number(z.rvec[i][0])<<"\",\""<<number(z.rvec[i][1])<<"\",\""<<number(z.rvec[i][2])<<"\"],\"tvec_m\":[\""<<number(z.tvec[i][0])<<"\",\""<<number(z.tvec[i][1])<<"\",\""<<number(z.tvec[i][2])<<"\"]}";}s<<"]}"<<(run==2?"\n":" ,\n");}s<<"],\n\"fit_params\":[\""<<number(fit.p.fx)<<"\",\""<<number(fit.p.fy)<<"\",\""<<number(fit.p.cx)<<"\",\""<<number(fit.p.cy)<<"\",\""<<number(fit.p.k1)<<"\",\""<<number(fit.p.k2)<<"\",\""<<number(fit.p.p1)<<"\",\""<<number(fit.p.p2)<<"\"]\n}\n";s.close();if(!s)return fail("solve write");
   std::ofstream f(temp/"evidence.json",std::ios::binary);if(!f)return fail("final evidence output");
   f<<"{\n\"format\":\"L3DCAL_EVIDENCE_BUNDLE_V1\",\n\"target\":{\"id\":\""<<e.target_id<<"\",\"generator_sha256\":\""<<hex(e.generator_hash)<<"\",\"instrument\":\""<<e.instrument<<"\",\"resolution_mm\":\""<<number(e.resolution_mm)<<"\",\"planarity_evidence_sha256\":\""<<hex(e.planarity_hash)<<"\"},\n\"optical_sha256\":\""<<hex(optical)<<"\",\n\"optical_state\":\""<<e.optical_state_fields<<"\",\n\"validation_flags\":\"0x"<<std::hex<<flags<<std::dec<<"\",\n\"global_rmse_px\":\""<<number(rms)<<"\",\"maximum_residual_px\":\""<<number(maximum)<<"\",\"high_residual_fraction\":\""<<number(static_cast<double>(high)/static_cast<double>(count))<<"\",\n\"holdout\":{\"rmse_px\":\""<<number(hold_rms)<<"\",\"maximum_px\":\""<<number(hold_max)<<"\"},\n\"maximum_parameter_delta_px\":\""<<number(delta)<<"\",\n\"deterministic_full_solve_equality\":"<<((flags&4)?"true":"false")<<",\n\"residuals\":[";
   bool first=true;for(const View&v:views)if(v.accepted)for(size_t i=0;i<v.residuals.size();++i){if(!first)f<<',';first=false;f<<"{\"source_sha256\":\""<<hex(v.hash)<<"\",\"corner_id\":"<<v.ids[i]<<",\"dx_px\":\""<<number(v.residuals[i].x)<<"\",\"dy_px\":\""<<number(v.residuals[i].y)<<"\",\"rmse_px\":\""<<number(v.rmse)<<"\"}";}f<<"]\n}\n";f.close();if(!f)return fail("final evidence write");
-  std::ofstream p(temp/"producer.json",std::ios::binary);if(!p)return fail("producer output");
-  p<<"{\\n"
-   <<"\\\"format\\\":\\\"L3DCAL_PRODUCER_V1\\\",\\n"
-   <<"\\\"solver_executable_sha256\\\":\\\""<<hex(solver_executable_sha256)<<"\\\",\\n"
-   <<"\\\"solver_configuration_sha256\\\":\\\""<<hex(solver_configuration_sha256)<<"\\\",\\n"
-   <<"\\\"session_sha256\\\":\\\""<<hex(session_sha256)<<"\\\",\\n"
-   <<"\\\"opencv_version\\\":\\\""<<CV_VERSION<<"\\\",\\n"
-   <<"\\\"opencv_build_sha256\\\":\\\""<<hex(text_hash(cv::getBuildInformation()))<<"\\\",\\n"
-   <<"\\\"threads\\\":1,\\n"
-   <<"\\\"rng_seed\\\":"<<kSeed<<",\\n"
-   <<"\\\"optical_sha256\\\":\\\""<<hex(optical)<<"\\\"\\n"
-   <<"}\\n";
-  p.close();if(!p)return fail("producer write");
+  std::ofstream p(temp/"producer.json",std::ios::binary);
+  if(!p)return fail("producer output");
+  p << "{\n"
+    << "\"format\":\"L3DCAL_PRODUCER_V1\",\n"
+    << "\"solver_executable_sha256\":\"" << hex(solver_executable_sha256) << "\",\n"
+    << "\"solver_configuration_sha256\":\"" << hex(solver_configuration_sha256) << "\",\n"
+    << "\"session_sha256\":\"" << hex(session_sha256) << "\",\n"
+    << "\"opencv_version\":\"" << CV_VERSION << "\",\n"
+    << "\"opencv_build_sha256\":\"" << hex(text_hash(cv::getBuildInformation())) << "\",\n"
+    << "\"threads\":1,\n"
+    << "\"rng_seed\":" << kSeed << ",\n"
+    << "\"optical_sha256\":\"" << hex(optical) << "\"\n"
+    << "}\n";
+  p.close();
+  if(!p)return fail("producer write");
   std::filesystem::rename(temp,final,ec);if(ec)return fail("evidence publication");return true;
 }
 void report(const std::vector<View>&v,const Solve&s,double independent_rms,
@@ -322,7 +373,7 @@ void report(const std::vector<View>&v,const Solve&s,double independent_rms,
 bool run_session(const std::string& session) {
   std::vector<View> v;std::array<unsigned char,32> optical{};SessionEvidence evidence;std::string why;
   std::array<unsigned char,32> solver_executable_sha256{},session_sha256{};
-  if(!file_hash("/proc/self/exe",&solver_executable_sha256)||!file_hash(session,&session_sha256)){std::cerr<<"FAIL producer/session hash\\n";return false;}
+  if(!file_hash("/proc/self/exe",&solver_executable_sha256)||!file_hash(session,&session_sha256)){std::cerr<<"FAIL producer/session hash\n";return false;}
   const std::array<unsigned char,32> solver_configuration_sha256=text_hash(solver_configuration_record());
   if(!read_session(session,&v,&optical,&evidence,&why)||!detect(&v,&why)){std::cerr<<"FAIL "<<why<<'\n';return false;}
   std::vector<size_t> all;cv::Size size;for(size_t i=0;i<v.size();++i)if(v[i].accepted){all.push_back(i);if(size.empty())size={v[i].width,v[i].height};else if(size.width!=v[i].width||size.height!=v[i].height){std::cerr<<"FAIL dimensions\n";return false;}}
@@ -378,7 +429,36 @@ bool synthetic_test() {
   const std::filesystem::path right=std::filesystem::temp_directory_path()/"l3dcal_byte_identity_right";std::error_code ec;std::filesystem::remove_all(left.string()+".bundle",ec);std::filesystem::remove_all(right.string()+".bundle",ec);
   const bool written=write_bundle(left.string(),evidence,v,runs,f,rr,rm,rh,rc,rr,rm,delta,0x0f,optical,solver_executable_sha256,solver_configuration_sha256,session_sha256,&bundle_why)&&write_bundle(right.string(),evidence,v,runs,f,rr,rm,rh,rc,rr,rm,delta,0x0f,optical,solver_executable_sha256,solver_configuration_sha256,session_sha256,&bundle_why);
   auto identical=[&](const char* name){std::ifstream x(left.string()+".bundle/"+name,std::ios::binary),y(right.string()+".bundle/"+name,std::ios::binary);std::ostringstream xs,ys;xs<<x.rdbuf();ys<<y.rdbuf();return x&&y&&xs.str()==ys.str();};
-  const bool bytes=written&&identical("detection.json")&&identical("solve.json")&&identical("evidence.json")&&identical("producer.json");std::filesystem::remove_all(left.string()+".bundle",ec);std::filesystem::remove_all(right.string()+".bundle",ec);
+  auto bundle_text=[&](const char* name){
+    std::ifstream z(left.string()+".bundle/"+name,std::ios::binary);
+    std::ostringstream content;
+    content << z.rdbuf();
+    return z ? content.str() : std::string();
+  };
+  const std::string detection_text=bundle_text("detection.json");
+  const std::string producer_text=bundle_text("producer.json");
+  const bool producer_json_valid=
+      producer_text.rfind("{\n\"format\":\"L3DCAL_PRODUCER_V1\",\n",0)==0 &&
+      producer_text.size()>=2 &&
+      producer_text.compare(producer_text.size()-2,2,"}\n")==0 &&
+      producer_text.find("\\n")==std::string::npos &&
+      producer_text.find("\\\"")==std::string::npos;
+  const bool per_view_fields=
+      detection_text.find("\"frame_region\"")!=std::string::npos &&
+      detection_text.find("\"distance_band\"")!=std::string::npos &&
+      detection_text.find("\"holdout\"")!=std::string::npos &&
+      detection_text.find("\"target_occupancy\"")!=std::string::npos &&
+      detection_text.find("\"normal_angle_degrees\"")!=std::string::npos &&
+      detection_text.find("\"measured_distance_metres\"")!=std::string::npos &&
+      detection_text.find("\"target_corner_quadrant_mask\"")!=std::string::npos &&
+      detection_text.find("\"corner_count\"")!=std::string::npos &&
+      detection_text.find("\"residual_count\"")!=std::string::npos &&
+      detection_text.find("\"high_residual_count\"")!=std::string::npos &&
+      detection_text.find("\"reprojection_rmse_px\"")!=std::string::npos &&
+      detection_text.find("\"maximum_residual_px\"")!=std::string::npos;
+  const bool bytes=written&&identical("detection.json")&&identical("solve.json")&&
+      identical("evidence.json")&&identical("producer.json")&&
+      producer_json_valid&&per_view_fields;
   std::cout<<std::hexfloat<<"synthetic_image_conversion_max "<<iq<<"\nsynthetic_object_conversion_max_m "<<oq<<"\n";
   std::cout<<"synthetic_opencv_rms "<<a.rms<<"\nsynthetic_parameter_delta "<<delta<<"\n"<<std::defaultfloat;
   if (!bytes) std::cerr << "synthetic byte identity failure: " << bundle_why << '\n';
