@@ -519,6 +519,8 @@ Calibration Evidence Solver v1 implements the external OpenCV 5.x evidence path 
 Calibration Solver Preflight v1. It remains outside the Lardon3D runtime and Project DB and its
 deterministic synthetic CPU1 self-test is validated.
 
+The solver session contract now also requires explicit measured `white_border >= 30 mm` evidence. This closes the previous gap between the physical target requirement and the future coordinator input; no default border width is inferred.
+
 A bounded Tooling correction aligned planarity handling with Calibration Science v1: Science v1
 defines a categorical physical planarity attestation, not a numeric flatness threshold. Tooling
 therefore rejects invented finite `target_flatness_mm` values. `L3DCALB1` v1 and Calibration

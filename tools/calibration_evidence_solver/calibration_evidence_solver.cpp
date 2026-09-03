@@ -50,10 +50,10 @@ constexpr int kSquaresX = 9, kSquaresY = 7;
 struct SessionEvidence {
   std::string target_id, instrument, decoder, decoder_version;
   std::array<unsigned char, 32> generator_hash{}, planarity_hash{};
-  double resolution_mm = -1, planarity_pass = 0;
+  double resolution_mm = -1, planarity_pass = 0, white_border_mm = -1;
   std::array<double, 10> measurements{};
   bool target = false, measurement = false, planarity = false;
-  bool decoder_set = false, optical_state = false;
+  bool white_border = false, decoder_set = false, optical_state = false;
   std::string optical_state_fields;
 };
 
@@ -140,6 +140,7 @@ bool read_session(const std::string& path,std::vector<View>* views,std::array<un
         if(!(s>>m)||!finite(m)){*why="measurement values";return false;}
       }
       evidence->measurement=true;
+    } else if(tag=="white_border") { if(evidence->white_border || !(s>>evidence->white_border_mm) || !finite(evidence->white_border_mm) || evidence->white_border_mm < 30.0) {*why="white border evidence";return false;} evidence->white_border=true;
     } else if(tag=="planarity") { std::string result,h; if(evidence->planarity || !(s>>result>>h) || !hex(h,&evidence->planarity_hash) || (result!="PASS"&&result!="FAIL")) {*why="planarity evidence";return false;} evidence->planarity=true; evidence->planarity_pass=result=="PASS";
     } else if(tag=="decoder") { if(evidence->decoder_set || !(s>>evidence->decoder>>evidence->decoder_version) || evidence->decoder.size()>128 || evidence->decoder_version.size()>128 || !json_token(evidence->decoder) || !json_token(evidence->decoder_version)) {*why="decoder identity/version";return false;} evidence->decoder_set=true;
     } else if(tag=="optical_state") { std::string h; if(evidence->optical_state || !(s>>h>>evidence->optical_state_fields) || !hex(h,optical) || evidence->optical_state_fields.size()>1024 || !json_token(evidence->optical_state_fields) || evidence->optical_state_fields=="UNKNOWN") {*why="optical-state evidence";return false;} evidence->optical_state=true; have=true;
@@ -150,7 +151,7 @@ bool read_session(const std::string& path,std::vector<View>* views,std::array<un
     else if(tag=="distance") { std::string h;std::array<unsigned char,32>a{};double meters=0;int band=-1;if(!(s>>h>>meters>>band)||!hex(h,&a)||!finite(meters)||meters<=0||band<0||band>2){*why="distance evidence";return false;}View*v=find_view(views,a);if(!v||v->measured_distance>0){*why="distance source";return false;}v->measured_distance=meters;v->declared_distance_band=band; }
     else {*why="unknown session record";return false;}
   }
-  if(!have||!evidence->target||!evidence->measurement||!evidence->planarity||!evidence->planarity_pass||!evidence->decoder_set||!evidence->optical_state||views->empty()||views->size()>kMaxViews){*why="required session evidence";return false;}
+  if(!have||!evidence->target||!evidence->measurement||!evidence->white_border||!evidence->planarity||!evidence->planarity_pass||!evidence->decoder_set||!evidence->optical_state||views->empty()||views->size()>kMaxViews){*why="required session evidence";return false;}
   double lo=std::numeric_limits<double>::infinity(),hi=-lo;for(double m:evidence->measurements){lo=std::min(lo,m);hi=std::max(hi,m);if(std::abs(m-30.0)>.30){*why="target measurement tolerance";return false;}}if(hi-lo>.20){*why="target measurement range";return false;}
   std::sort(views->begin(),views->end(),[](const View&a,const View&b){return a.hash<b.hash;});
   for(size_t i=1;i<views->size();++i) {
@@ -335,7 +336,7 @@ bool synthetic_test() {
   double delta=0;for(auto ray:std::array<cv::Point2d,5>{{{0,0},{-.7,-.7},{.7,-.7},{-.7,.7},{.7,.7}}}){auto eval=[](const Params&p,cv::Point2d q){double r2=q.x*q.x+q.y*q.y,rad=1+p.k1*r2+p.k2*r2*r2;return cv::Point2d(p.fx*(q.x*rad+2*p.p1*q.x*q.y+p.p2*(r2+2*q.x*q.x))+p.cx,p.fy*(q.y*rad+p.p1*(r2+2*q.y*q.y)+2*p.p2*q.x*q.y)+p.cy);};delta=std::max(delta,cv::norm(eval(a.p,ray)-eval(f.p,ray)));}
   double iq=0,oq=0;for(const auto&x:v){iq=std::max(iq,x.image_conversion_max);oq=std::max(oq,x.object_conversion_max);}
   double rr=0,rm=0;size_t rh=0,rc=0;if(!residuals(&v,all,a,&rr,&rm,&rh,&rc,&why))return false;
-  SessionEvidence evidence; evidence.target=true;evidence.measurement=true;evidence.planarity=true;evidence.planarity_pass=1;evidence.decoder_set=true;evidence.optical_state=true;evidence.target_id="synthetic";evidence.instrument="synthetic";evidence.decoder="synthetic_decoder";evidence.decoder_version="1";evidence.optical_state_fields="synthetic_only";evidence.resolution_mm=.1;evidence.measurements.fill(30.0);
+  SessionEvidence evidence; evidence.target=true;evidence.measurement=true;evidence.white_border=true;evidence.planarity=true;evidence.planarity_pass=1;evidence.decoder_set=true;evidence.optical_state=true;evidence.target_id="synthetic";evidence.instrument="synthetic";evidence.decoder="synthetic_decoder";evidence.decoder_version="1";evidence.optical_state_fields="synthetic_only";evidence.resolution_mm=.1;evidence.white_border_mm=30.0;evidence.measurements.fill(30.0);
   Solve runs[3]={a,b,c};std::array<unsigned char,32> optical{};std::string bundle_why;
   const std::filesystem::path left=std::filesystem::temp_directory_path()/"l3dcal_byte_identity_left";
   const std::filesystem::path right=std::filesystem::temp_directory_path()/"l3dcal_byte_identity_right";std::error_code ec;std::filesystem::remove_all(left.string()+".bundle",ec);std::filesystem::remove_all(right.string()+".bundle",ec);
@@ -355,6 +356,7 @@ bool manifest_negative_tests() {
     x<<"L3DCAL_SESSION_V1\n"
      <<"target board "<<h<<" DICT_5X5_100 9 7 30 21\n"
      <<"measurement caliper 0.1 30 30 30 30 30 30 30 30 30 30\n"
+     <<"white_border 30\n"
      <<"planarity PASS "<<h<<"\n"
      <<"decoder qualified_decoder 1\n"
      <<"optical_state "<<h<<" body_objective_zoom_focus_stabilization_format_pipeline\n"
@@ -374,7 +376,7 @@ bool manifest_negative_tests() {
   const std::string good=make("");
   bool ok=parse(good); if(!ok)std::cerr<<"negative good\n";
   auto altered=[&](const std::string& from,const std::string& to){std::string t=good;const size_t n=t.find(from);if(n==std::string::npos)return false;t.replace(n,from.size(),to);return !parse(t);};
-  const bool n1=altered("target board", "target_bad board"),n2=altered("planarity PASS", "planarity FAIL"),n3=altered(" 20 0 0\ncoordinate_point", " 19 0 0\ncoordinate_point"),n4=altered("qualified_decoder 1 0 100", "qualified_decoder 1 90 100");ok=ok&&n1&&n2&&n3&&n4;
+  const bool n1=altered("target board", "target_bad board"),n2=altered("planarity PASS", "planarity FAIL"),n3=altered(" 20 0 0\ncoordinate_point", " 19 0 0\ncoordinate_point"),n4=altered("qualified_decoder 1 0 100", "qualified_decoder 1 90 100"),n5=altered("white_border 30", "white_border 29");ok=ok&&n1&&n2&&n3&&n4&&n5;
   std::error_code ec;std::filesystem::remove(p,ec);return ok;
 }
 } // namespace

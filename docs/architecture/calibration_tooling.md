@@ -59,6 +59,7 @@ Tooling continues to validate the frozen Science v1 requirements, including:
 - exact ChArUco 9 x 7 / DICT_5X5_100 target identity;
 - 30.000 mm squares and 21.000 mm markers;
 - ten physical square measurements and instrument resolution;
+- measured free white border of at least 30 mm, supplied explicitly by the session;
 - immutable target, optical-state, solver and evidence digests;
 - accepted and rejected view evidence;
 - field-region, distance and angle diversity;

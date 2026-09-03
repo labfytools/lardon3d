@@ -22,6 +22,7 @@ Un fichier texte ASCII, sans commentaire ni espace dans les chemins, contient :
 L3DCAL_SESSION_V1
 target <target-id> <generator-sha256> DICT_5X5_100 9 7 30 21
 measurement <instrument-id> <resolution-mm> <10-real-square-mm-values>
+white_border <measured-free-white-border-mm>
 planarity PASS <planarity-evidence-sha256>
 decoder <decoder-identity> <decoder-version>
 optical_state <optical-state-sha256> <complete-state-token>
@@ -37,9 +38,10 @@ Il y a entre 1 et 4096 lignes `image`, chaque source SHA est unique, et chaque
 image a exactement une preuve pré-solve, clipping et coordinate. Les dix
 mesures réelles doivent être à 0.30 mm de 30.000 mm et leur étendue ne doit pas
 dépasser 0.20 mm; l'instrument doit annoncer une résolution de 0.1 mm ou
-meilleure. `planarity` est une attestation PASS hachée : Science v1 impose une
-planche rigide plane mais ne fixe pas de seuil numérique que l'outil pourrait
-inventer. `optical_state` est un jeton atomique complet du manifeste d'état
+meilleure. `white_border` archive la bordure blanche physique libre mesurée et
+doit être d'au moins 30 mm; aucune valeur par défaut n'est inventée.
+`planarity` est une attestation PASS hachée : Science v1 impose une planche
+rigide plane mais ne fixe pas de seuil numérique que l'outil pourrait inventer. `optical_state` est un jeton atomique complet du manifeste d'état
 optique; aucune valeur inconnue n'est acceptée par convention.
 
 Les `coordinate_point` consomment exactement les `N` comparaisons annoncées.

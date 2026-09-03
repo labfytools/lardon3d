@@ -27,6 +27,7 @@ User-facing TUI/control language         PASS
 External SSD controller                 VALIDATED
 Calibration Solver Preflight v1         PASS
 Calibration Evidence Solver v1              IMPLEMENTED/VALIDATED
+Calibration solver white-border evidence    PASS/FROZEN
 Calibration Tooling planarity alignment     PASS/FROZEN
 ```
 

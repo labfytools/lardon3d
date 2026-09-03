@@ -8,6 +8,7 @@ CALIBRATION_TOOLING_V1=PASS/FROZEN
 CALIBRATION_TOOLING_PLANARITY_ALIGNMENT=PASS/FROZEN
 CALIBRATION_BOOTSTRAP_V1=PASS/FROZEN
 CALIBRATION_EVIDENCE_SOLVER_V1=IMPLEMENTED/VALIDATED
+CALIBRATION_SOLVER_WHITE_BORDER_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW=IN_PROGRESS
 CURRENT_CALIBRATION_NEXT=WORKFLOW_COORDINATOR
 ```
@@ -21,6 +22,8 @@ CURRENT_CALIBRATION_NEXT=WORKFLOW_COORDINATOR
 A bounded corrective review established that Calibration Science v1 defines target planarity as a categorical physical attestation, not a numeric flatness tolerance. Tooling preserves its public structure layout while requiring `target_flatness_mm` to be NaN, so callers cannot invent a millimetre measurement. The canonical session's `planarity PASS <sha256>` evidence is bound through immutable initialization evidence.
 
 The external `tools/calibration_evidence_solver/` implementation is present and validated by its deterministic synthetic CPU1 self-test. It remains external to the Lardon3D runtime and Project DB.
+
+Its session v1 now requires an explicit measured `white_border` of at least 30 mm. No default border width may be invented by the solver or the future coordinator.
 
 ## CURRENT
 
