@@ -102,6 +102,8 @@ the bounded `Lardon3DCalibrationToolingEvidence`.
 
 `producer.json` binds the exact solver executable SHA-256, canonical solver-configuration SHA-256, exact session SHA-256, OpenCV build identity, CPU1 policy and optical-state SHA-256.
 
+`detection.json` also retains the exact per-view Science v1 decisions used by the solver: frame region, distance band, hold-out membership, target occupancy, normal angle, measured distance, target-quadrant mask, corner/residual counts, high-residual count, reprojection RMSE and maximum residual. The coordinator consumes these published values and does not reconstruct them from a later solve.
+
 The coordinator must verify regular bounded files, immutable digests,
 session/bundle identity, categorical planarity PASS, selected-execution image
 binding and optical-state equality. It must never manufacture missing evidence.

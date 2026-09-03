@@ -61,6 +61,12 @@ immuable si déjà présent : `detection.json`, `solve.json`, `evidence.json` et
 `producer.json`. Ce dernier lie le SHA-256 du binaire solveur en cours, le
 SHA-256 de sa configuration canonique, le SHA-256 exact du manifeste de
 session, la version/build OpenCV, la politique CPU1 et le SHA de l’état optique.
+
+`detection.json` archive également les classifications effectivement utilisées
+par Science v1 : région de cadre, bande de distance, hold-out, occupation,
+angle, distance physique, masque de quadrants de cible et métriques
+résiduelles par vue. Ces valeurs sont publiées comme évidence et ne doivent
+pas être recalculées par le coordinator.
 Les documents ont un ordre déterministe et encodent les valeurs faisant
 autorité comme chaînes `hexfloat` binary64. `solve.json` archive les trois
 sorties complètes (paramètres et poses); `evidence.json` archive les vecteurs

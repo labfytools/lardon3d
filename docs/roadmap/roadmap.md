@@ -523,6 +523,8 @@ The solver session contract now also requires explicit measured `white_border >=
 
 `CALIBRATION_SOLVER_PRODUCER_IDENTITY_V1=PASS/FROZEN`: the solver bundle now includes deterministic `producer.json` evidence binding the exact solver executable, canonical solver configuration, session manifest, OpenCV build, CPU1 policy and optical-state SHA-256.
 
+`CALIBRATION_SOLVER_PER_VIEW_EVIDENCE_V1=PASS/FROZEN`: `detection.json` now retains the exact per-view Science v1 classifications and residual-support evidence required by the future workflow coordinator; downstream code must consume rather than recompute them.
+
 A bounded Tooling correction aligned planarity handling with Calibration Science v1: Science v1
 defines a categorical physical planarity attestation, not a numeric flatness threshold. Tooling
 therefore rejects invented finite `target_flatness_mm` values. `L3DCALB1` v1 and Calibration
