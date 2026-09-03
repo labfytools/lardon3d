@@ -183,6 +183,7 @@ lardon3d_app = executable(
         'src/calibration_workflow_v2.c',
         'src/calibration_tooling.c',
         'src/calibration_tooling_v2.c',
+        'src/calibration_af_study.c',
         'src/calibration_workflow.cpp',
         'src/calibration_workflow_materialize.cpp',
         'src/calibration_workflow_bind.cpp',
@@ -916,6 +917,18 @@ calibration_publication_v2_test = executable(
 )
 
 test('calibration-publication-v2', calibration_publication_v2_test, timeout: 30)
+
+calibration_af_study_test = executable(
+    'test-calibration-af-study',
+    sources: [
+        'tests/test_calibration_af_study.c',
+        'src/calibration_af_study.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [openssl, cc.find_library('m')],
+)
+
+test('calibration-af-study', calibration_af_study_test, timeout: 30)
 
 calibration_workflow_v2_test = executable(
     'test-calibration-workflow-v2',

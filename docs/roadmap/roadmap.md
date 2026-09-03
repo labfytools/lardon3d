@@ -542,8 +542,10 @@ publication. `CALIBRATION_WORKFLOW_V2=PASS/FROZEN`: the workflow now proves exac
 applicability and matching per-image calibration IDs before its sole final scope attachment. The next
 dependency is physical autofocus/optical applicability validation and a dedicated calibrated real
 campaign. The generic adaptive-settings audit and bounded exact-token autofocus foundation are
-PASS/FROZEN. Device-specific autofocus envelopes remain blocked until physical evidence validates
-them.
+PASS/FROZEN. `CALIBRATION_AF_STUDY_EVIDENCE_V1=PASS/FROZEN` now provides a deterministic
+`L3DAFST1` measurement artifact for repeated/split-focus calibration results, including centre,
+edge/corner and FIT/HOLDOUT projection deltas without freezing an acceptance threshold. Device-specific
+autofocus envelopes remain blocked until physical evidence validates them.
 
 Calibration Tooling v1 consumes an already acquired Science v1 evidence bundle, validates the bounded
 contract and produces deterministic `L3DCALB1` v1.

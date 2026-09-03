@@ -41,6 +41,7 @@ Calibration v2 heterogeneous publication     PASS/FROZEN
 Calibration Workflow v2                     PASS/FROZEN
 Adaptive capture settings semantics         PASS/FROZEN
 Autofocus v2 foundation                     PASS/FROZEN
+Calibration AF study evidence v1            PASS/FROZEN
 Calibration Tooling planarity alignment     PASS/FROZEN
 ```
 

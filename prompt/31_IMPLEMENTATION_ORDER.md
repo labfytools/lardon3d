@@ -26,7 +26,7 @@ Default dependency order:
 4. Heterogeneous calibration publication / Tooling / Bootstrap evolution — PASS/FROZEN;
 5. Heterogeneous Workflow v2 truthful READY proof — PASS/FROZEN;
 6. Adaptive capture settings / generic autofocus foundation — PASS/FROZEN;
-7. physical autofocus/optical applicability validation and dedicated calibrated real campaign — CURRENT;
+7. physical autofocus/optical applicability validation and dedicated calibrated real campaign — CURRENT; `CALIBRATION_AF_STUDY_EVIDENCE_V1=PASS/FROZEN` supplies deterministic measurement evidence but makes no physical applicability decision;
 8. real Sparse SfM proof;
 9. durable Dense/OpenMVS orchestration;
 10. mesh / refinement / texturing / export;
