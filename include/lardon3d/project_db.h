@@ -11,10 +11,10 @@
 #include <lardon3d/sparse_sfm_incremental.h>
 
 enum {
-  /* v26 additively stores Capture-owned observed geometric state and exact
-   * calibration applicability. Migration does not infer state from v23
-   * configuration or historical calibration selections. */
-  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 26,
+  /* v27 additively stores validated focus domains as bounded sets of exact
+   * observed tokens attached to v26 applicability. Migration creates no
+   * domain or token from historical geometric state. */
+  LARDON3D_PROJECT_DB_SCHEMA_VERSION = 27,
   LARDON3D_PROJECT_DB_ID_CAPACITY = 65,
   LARDON3D_PROJECT_DB_KIND_CAPACITY = 65,
   LARDON3D_PROJECT_DB_PATH_CAPACITY = 4096,

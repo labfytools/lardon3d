@@ -265,6 +265,36 @@ Historical EXIF/MakerNote values such as Sony `FocusPosition2` or derived
 `FocusDistance2` may inform experiment design. They are not by themselves
 physical calibration evidence.
 
+The implemented generic Stage E foundation represents a validated discrete
+domain as:
+
+```text
+existing exact calibration applicability
++ positive domain format/version
++ nonzero retained-evidence/provenance SHA-256
++ exact complete exemplar state for every non-focus geometry field
++ 1..64 explicit opaque observed focus tokens
+```
+
+The 64-token limit is an operational persistence/API bound, not a scientific
+focus range. Domain membership is exact token equality. Tokens have no numeric
+distance, order, magnitude, adjacency or EXIF interpretation, and the generic
+machinery performs no interpolation or extrapolation. The target configuration
+and every non-focus geometric-state and provenance field must exactly match the
+exemplar. Unknown/incomplete focus remains `CALIBRATION_REQUIRED`.
+
+An exact applicability and its attached domain retain one applicability and
+calibration identity. Candidate enumeration deduplicates that identity if both
+the exact exemplar state and a domain member match. Distinct overlapping
+applicabilities remain ambiguous and produce `SELECTION_REQUIRED`.
+
+This generic representation does not itself validate a real device domain.
+In particular:
+
+```text
+A6000_E_PZ_16_50_AF_APPLICABILITY=BLOCKED_BY_PHYSICAL_VALIDATION
+```
+
 ### 9.3 Discrete focus bands
 
 If one calibration is not valid across the complete autofocus range, v2 may

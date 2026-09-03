@@ -6,7 +6,7 @@
 IMPLEMENTATION_ORDER=DEPENDENCY_DRIVEN
 IMPLEMENTATION_AUTHORIZATION=NO
 STEP_0_USER_FACING_LANGUAGE_NORMALIZATION=PASS
-CURRENT_NEXT=AUTOFOCUS_V2_FOUNDATION
+CURRENT_NEXT=PHYSICAL_AUTOFOCUS_OPTICAL_APPLICABILITY_VALIDATION
 ```
 
 ## Authority
@@ -25,8 +25,8 @@ Default dependency order:
 3. Calibration v2 heterogeneous-optics persistence foundation — PASS/FROZEN;
 4. Heterogeneous calibration publication / Tooling / Bootstrap evolution — PASS/FROZEN;
 5. Heterogeneous Workflow v2 truthful READY proof — PASS/FROZEN;
-6. Adaptive capture settings / generic autofocus foundation — CURRENT;
-7. physical autofocus/optical applicability validation and dedicated calibrated real campaign;
+6. Adaptive capture settings / generic autofocus foundation — PASS/FROZEN;
+7. physical autofocus/optical applicability validation and dedicated calibrated real campaign — CURRENT;
 8. real Sparse SfM proof;
 9. durable Dense/OpenMVS orchestration;
 10. mesh / refinement / texturing / export;

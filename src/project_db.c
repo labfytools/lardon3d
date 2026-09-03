@@ -960,6 +960,29 @@ static const char schema_optical_geometric_state_v26[] =
     "optical_calibration_applicabilities_v2(applicability_id,calibration_"
     "profile_id,optical_configuration_id));";
 
+/* PERSISTENCE CONTRACT v27: a focus domain is evidence attached to one v26
+   applicability, not a numeric focus interval or a new calibration identity.
+   Token order is canonical insertion order only; matching is exact text
+   equality. DDL-only migration cannot infer a domain from historical tokens. */
+static const char schema_optical_focus_domains_v27[] =
+    "CREATE TABLE optical_focus_domains_v2("
+    "focus_domain_id INTEGER PRIMARY KEY AUTOINCREMENT CHECK(focus_domain_id>0),"
+    "applicability_id INTEGER NOT NULL UNIQUE REFERENCES "
+    "optical_calibration_applicabilities_v2(applicability_id),"
+    "domain_version INTEGER NOT NULL CHECK(domain_version>0 "
+    "AND domain_version<=4294967295),evidence_sha256 BLOB NOT NULL "
+    "CHECK(typeof(evidence_sha256)='blob' AND length(evidence_sha256)=32 AND "
+    "evidence_sha256!=zeroblob(32)),token_count INTEGER NOT NULL "
+    "CHECK(token_count>0 AND token_count<=64));"
+    "CREATE TABLE optical_focus_domain_tokens_v2(focus_domain_id INTEGER NOT NULL "
+    "REFERENCES optical_focus_domains_v2(focus_domain_id) ON DELETE CASCADE,"
+    "token_ordinal INTEGER NOT NULL CHECK(token_ordinal>=0 AND token_ordinal<64),"
+    "focus_token TEXT NOT NULL CHECK(typeof(focus_token)='text' AND "
+    "length(focus_token)>0 AND length(focus_token)<128),PRIMARY KEY(focus_domain_id,"
+    "token_ordinal),UNIQUE(focus_domain_id,focus_token));"
+    "CREATE INDEX optical_focus_domain_tokens_v2_token_idx ON "
+    "optical_focus_domain_tokens_v2(focus_token,focus_domain_id);";
+
 static void copy_error(char destination[LARDON3D_PROJECT_DB_ERROR_CAPACITY], const char *text) {
   if (destination) {
     (void)snprintf(destination, LARDON3D_PROJECT_DB_ERROR_CAPACITY, "%s", text ? text : "");
@@ -1053,7 +1076,8 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
       from_version != 12 && from_version != 13 && from_version != 14 &&
       from_version != 15 && from_version != 16 && from_version != 17 && from_version != 18 &&
       from_version != 19 && from_version != 20 && from_version != 21 && from_version != 22 &&
-      from_version != 23 && from_version != 24 && from_version != 25) {
+      from_version != 23 && from_version != 24 && from_version != 25 &&
+      from_version != 26) {
     return LARDON3D_PROJECT_DB_CORRUPT;
   }
   Lardon3DProjectDbResult result = execute(database, "BEGIN IMMEDIATE", "begin migration");
@@ -1579,6 +1603,27 @@ static Lardon3DProjectDbResult migrate(Lardon3DProjectDb *database, unsigned int
         result = LARDON3D_PROJECT_DB_CORRUPT;
     }
   }
+  if (result == LARDON3D_PROJECT_DB_OK && from_version < 27) {
+    /* A v26 focus token is only an observation. It is never sufficient
+       physical evidence to manufacture an applicability domain. */
+    result = execute(database, schema_optical_focus_domains_v27,
+                     "migrate optical focus domains v26 to v27");
+#ifdef LARDON3D_PROJECT_DB_TESTING
+    if (result == LARDON3D_PROJECT_DB_OK &&
+        getenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V27"))
+      result = execute(database, "INSERT INTO missing_v27_test_table VALUES(1)",
+                       "forced migration v27 failure");
+#endif
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      result = execute(database,
+                       "UPDATE metadata SET value=27 WHERE "
+                       "key='schema_version' AND value=26",
+                       "finish schema v27 migration");
+      if (result == LARDON3D_PROJECT_DB_OK &&
+          sqlite3_changes(database->connection) != 1)
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+    }
+  }
   if (result == LARDON3D_PROJECT_DB_OK) {
     result = execute(database, "COMMIT", "commit migration");
   }
@@ -1736,7 +1781,9 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
                                "capture_calibration_selections"};
     const char *required_v26[] = {"capture_geometric_states",
                                   "optical_calibration_applicabilities_v2",
-                                  "capture_calibration_selections_v2"};
+                                  "capture_calibration_selections_v2",
+                                  "optical_focus_domains_v2",
+                                  "optical_focus_domain_tokens_v2"};
     for (size_t index = 0; index < sizeof(required) / sizeof(required[0]) &&
                            result == LARDON3D_PROJECT_DB_OK;
          ++index) {
@@ -1751,7 +1798,7 @@ Lardon3DProjectDbResult lardon3d_project_db_open(const char *path, Lardon3DProje
          ++index) {
       if (!table_exists(database->connection, required_v26[index])) {
         copy_error(database->error,
-                   "Current Project DB v26 schema is incomplete.");
+                   "Current Project DB v27 optical schema is incomplete.");
         result = LARDON3D_PROJECT_DB_CORRUPT;
       }
     }

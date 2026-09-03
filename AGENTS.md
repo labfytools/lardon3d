@@ -81,12 +81,18 @@ Detailed subcontracts remain defined by their canonical documents. This file
 must not duplicate every S3 substage, scientific threshold, migration detail,
 or persistence format.
 
-Project DB v25 is the current additive operational schema. It preserves v24 RAW batch, the v23
+Project DB v25 is an additive operational schema in the retained lineage. It preserves v24 RAW batch, the v23
 optical overlay and the v22 scientific/persistence foundation. Its additive purpose is typed durable
 persistence for `features.extract.batch/1` through `feature_extract_batch_tasks`; it adds no
 scientific identity and must not reinterpret historical rows. The v25 Feature-batch path has completed
 its retained real A6000 proof. Historical references to older Project DB versions remain valid where
 they describe the actual historical contract or migration path.
+
+Project DB v27 is the current additive operational schema. It preserves the v22 scientific/
+persistence foundation, v23 optical overlay, v24 RAW batch, v25 Feature batch and v26 exact
+Capture geometric-state/applicability foundation. Its v27 focus-domain rows are generic bounded
+exact-token machinery with no historical backfill and no device-specific physical applicability
+claim. Future schema changes beyond v27 require explicit human authorization.
 
 The global maintenance implementation, fresh portable/Vulkan/sanitizer/
 concurrency validation and independent final review are acquired. Its lifecycle
@@ -802,7 +808,7 @@ For Project DB:
   must not reinterpret scientific history;
 - v25 is the additive Feature-batch migration for `features.extract.batch/1` and
  must preserve v22/v23/v24 identities, rows and semantics;
-- future schema-version changes beyond the current v25 head require
+- future schema-version changes beyond the current v27 head require
   explicit human authorization;
 - migrations must be additive unless a different migration is explicitly
   authorized;
@@ -1020,7 +1026,7 @@ Every completed ticket report must include:
 STOP and request a human decision only when resolution requires:
 
 - changing a FROZEN scientific contract;
-- changing Project DB schema/version beyond the current v25 head without
+- changing Project DB schema/version beyond the current v27 head without
   prior authorization;
 - introducing a genuinely new subsystem outside authorized scope;
 - files outside the authorized scope;

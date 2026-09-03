@@ -2338,6 +2338,21 @@ static const char exact_state_predicate[] =
     "t.decoded_geometry_state=e.decoded_geometry_state AND "
     "t.decoded_width=e.decoded_width AND t.decoded_height=e.decoded_height";
 
+/* A discrete focus domain varies only the exact opaque focus token. Every
+   other geometry and observation-provenance field remains exemplar-exact. */
+static const char exact_nonfocus_state_predicate[] =
+    "t.optical_configuration_id=e.optical_configuration_id AND "
+    "t.state_version=e.state_version AND t.provenance=e.provenance AND "
+    "t.aperture_state=e.aperture_state AND t.aperture_x1000=e.aperture_x1000 "
+    "AND t.stabilization=e.stabilization AND t.crop_state=e.crop_state AND "
+    "t.crop_observation=e.crop_observation AND "
+    "t.pipeline_state=e.pipeline_state AND "
+    "t.pipeline_observation=e.pipeline_observation AND "
+    "t.representation_state=e.representation_state AND "
+    "t.representation_observation=e.representation_observation AND "
+    "t.decoded_geometry_state=e.decoded_geometry_state AND "
+    "t.decoded_width=e.decoded_width AND t.decoded_height=e.decoded_height";
+
 Lardon3DProjectDbResult lardon3d_optical_calibration_applicability_v2_create(
     Lardon3DProjectDb *database, uint64_t calibration_profile_id,
     uint64_t exemplar_capture_id,
@@ -2429,11 +2444,233 @@ Lardon3DProjectDbResult lardon3d_optical_calibration_applicability_v2_create(
   return result;
 }
 
+static bool focus_domain_digest_valid(
+    const unsigned char digest[LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE]) {
+  if (!digest)
+    return false;
+  for (size_t index = 0; index < LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE;
+       ++index)
+    if (digest[index] != 0)
+      return true;
+  return false;
+}
+
+static bool focus_domain_tokens_valid(const char *const *tokens, size_t count) {
+  if (!tokens || count == 0 ||
+      count > LARDON3D_OPTICAL_FOCUS_DOMAIN_TOKEN_MAX)
+    return false;
+  for (size_t index = 0; index < count; ++index) {
+    if (!optical_text(tokens[index], LARDON3D_OPTICAL_TEXT_CAPACITY, false))
+      return false;
+    for (size_t previous = 0; previous < index; ++previous)
+      if (strcmp(tokens[index], tokens[previous]) == 0)
+        return false;
+  }
+  return true;
+}
+
+Lardon3DProjectDbResult lardon3d_optical_focus_domain_v2_create(
+    Lardon3DProjectDb *database, uint64_t applicability_id,
+    uint32_t domain_version,
+    const unsigned char evidence_sha256[LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE],
+    const char *const *focus_tokens, size_t token_count,
+    Lardon3DOpticalFocusDomainV2 *output) {
+  if (output)
+    memset(output, 0, sizeof(*output));
+  if (!database || !optical_id(applicability_id) || domain_version == 0 ||
+      !focus_domain_digest_valid(evidence_sha256) ||
+      !focus_domain_tokens_valid(focus_tokens, token_count) || !output)
+    return LARDON3D_PROJECT_DB_INVALID_ARGUMENT;
+
+  /* Canonical lexical order makes a domain's durable representation
+     independent of caller ordering while retaining tokens byte-for-byte. */
+  const char *ordered[LARDON3D_OPTICAL_FOCUS_DOMAIN_TOKEN_MAX];
+  for (size_t index = 0; index < token_count; ++index) {
+    size_t position = index;
+    while (position > 0 && strcmp(focus_tokens[index], ordered[position - 1]) < 0) {
+      ordered[position] = ordered[position - 1];
+      --position;
+    }
+    ordered[position] = focus_tokens[index];
+  }
+
+  (void)pthread_mutex_lock(&database->mutex);
+  Lardon3DProjectDbResult result = execute(
+      database, "BEGIN IMMEDIATE", "begin optical focus domain v2");
+  sqlite3_stmt *statement = NULL;
+  uint64_t calibration_profile_id = 0;
+  uint64_t optical_configuration_id = 0;
+  uint64_t exemplar_capture_id = 0;
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = prepare(
+        database,
+        "SELECT calibration_profile_id,optical_configuration_id,"
+        "exemplar_capture_id FROM optical_calibration_applicabilities_v2 "
+        "WHERE applicability_id=?1",
+        &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)applicability_id);
+    int code = sqlite3_step(statement);
+    if (code == SQLITE_DONE)
+      result = LARDON3D_PROJECT_DB_NOT_FOUND;
+    else if (code != SQLITE_ROW)
+      result = sqlite_result(database, code, "load focus domain applicability");
+    else if (sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
+             sqlite3_column_type(statement, 1) != SQLITE_INTEGER ||
+             sqlite3_column_type(statement, 2) != SQLITE_INTEGER ||
+             sqlite3_column_int64(statement, 0) <= 0 ||
+             sqlite3_column_int64(statement, 1) <= 0 ||
+             sqlite3_column_int64(statement, 2) <= 0)
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    else {
+      calibration_profile_id = (uint64_t)sqlite3_column_int64(statement, 0);
+      optical_configuration_id = (uint64_t)sqlite3_column_int64(statement, 1);
+      exemplar_capture_id = (uint64_t)sqlite3_column_int64(statement, 2);
+      if (sqlite3_step(statement) != SQLITE_DONE)
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+    }
+  }
+  (void)sqlite3_finalize(statement);
+  statement = NULL;
+
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = prepare(
+        database,
+        "INSERT OR IGNORE INTO optical_focus_domains_v2(applicability_id,"
+        "domain_version,evidence_sha256,token_count) VALUES(?1,?2,?3,?4)",
+        &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)applicability_id);
+    sqlite3_bind_int64(statement, 2, (sqlite3_int64)domain_version);
+    sqlite3_bind_blob(statement, 3, evidence_sha256,
+                      LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 4, (sqlite3_int64)token_count);
+    result = step_done(database, statement, "insert optical focus domain v2");
+    statement = NULL;
+  }
+
+  uint64_t focus_domain_id = 0;
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = prepare(
+        database,
+        "SELECT focus_domain_id,domain_version,evidence_sha256,token_count FROM "
+        "optical_focus_domains_v2 WHERE applicability_id=?1",
+        &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)applicability_id);
+    int code = sqlite3_step(statement);
+    if (code != SQLITE_ROW)
+      result = code == SQLITE_DONE
+                   ? LARDON3D_PROJECT_DB_CORRUPT
+                   : sqlite_result(database, code, "load optical focus domain v2");
+    else {
+      sqlite3_int64 stored_id = sqlite3_column_int64(statement, 0);
+      sqlite3_int64 stored_version = sqlite3_column_int64(statement, 1);
+      sqlite3_int64 stored_count = sqlite3_column_int64(statement, 3);
+      const unsigned char *stored_digest = sqlite3_column_blob(statement, 2);
+      if (sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 1) != SQLITE_INTEGER ||
+          sqlite3_column_type(statement, 2) != SQLITE_BLOB ||
+          sqlite3_column_type(statement, 3) != SQLITE_INTEGER || stored_id <= 0 ||
+          stored_version <= 0 || stored_version > UINT32_MAX ||
+          sqlite3_column_bytes(statement, 2) !=
+              LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE ||
+          !focus_domain_digest_valid(stored_digest) || stored_count <= 0 ||
+          stored_count > LARDON3D_OPTICAL_FOCUS_DOMAIN_TOKEN_MAX) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+      } else if (stored_version != (sqlite3_int64)domain_version ||
+                 memcmp(stored_digest, evidence_sha256,
+                        LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE) != 0 ||
+                 stored_count != (sqlite3_int64)token_count) {
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+      } else {
+        focus_domain_id = (uint64_t)stored_id;
+        if (sqlite3_step(statement) != SQLITE_DONE)
+          result = LARDON3D_PROJECT_DB_CORRUPT;
+      }
+    }
+  }
+  (void)sqlite3_finalize(statement);
+  statement = NULL;
+
+  for (size_t index = 0; index < token_count &&
+                         result == LARDON3D_PROJECT_DB_OK;
+       ++index) {
+    result = prepare(
+        database,
+        "INSERT OR IGNORE INTO optical_focus_domain_tokens_v2 "
+        "VALUES(?1,?2,?3)",
+        &statement);
+    if (result == LARDON3D_PROJECT_DB_OK) {
+      sqlite3_bind_int64(statement, 1, (sqlite3_int64)focus_domain_id);
+      sqlite3_bind_int64(statement, 2, (sqlite3_int64)index);
+      sqlite3_bind_text(statement, 3, ordered[index], -1, SQLITE_TRANSIENT);
+      result = step_done(database, statement, "insert focus domain token v2");
+      statement = NULL;
+    }
+  }
+  if (result == LARDON3D_PROJECT_DB_OK)
+    result = prepare(
+        database,
+        "SELECT token_ordinal,focus_token FROM optical_focus_domain_tokens_v2 "
+        "WHERE focus_domain_id=?1 ORDER BY token_ordinal",
+        &statement);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(statement, 1, (sqlite3_int64)focus_domain_id);
+    for (size_t index = 0; index < token_count; ++index) {
+      int code = sqlite3_step(statement);
+      if (code != SQLITE_ROW) {
+        result = code == SQLITE_DONE ? LARDON3D_PROJECT_DB_CORRUPT
+                                     : sqlite_result(database, code,
+                                                     "load focus domain token v2");
+        break;
+      }
+      if (sqlite3_column_type(statement, 0) != SQLITE_INTEGER ||
+          sqlite3_column_int64(statement, 0) != (sqlite3_int64)index ||
+          sqlite3_column_type(statement, 1) != SQLITE_TEXT ||
+          sqlite3_column_bytes(statement, 1) <= 0 ||
+          sqlite3_column_bytes(statement, 1) >= LARDON3D_OPTICAL_TEXT_CAPACITY) {
+        result = LARDON3D_PROJECT_DB_CORRUPT;
+        break;
+      }
+      if (!optical_column_equals(statement, 1, ordered[index])) {
+        result = LARDON3D_PROJECT_DB_CONSTRAINT;
+        break;
+      }
+    }
+    if (result == LARDON3D_PROJECT_DB_OK &&
+        sqlite3_step(statement) != SQLITE_DONE)
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+  }
+  (void)sqlite3_finalize(statement);
+
+  result = optical_commit_or_rollback(database, result,
+                                      "commit optical focus domain v2",
+                                      "rollback optical focus domain v2");
+  (void)pthread_mutex_unlock(&database->mutex);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    output->focus_domain_id = focus_domain_id;
+    output->applicability_id = applicability_id;
+    output->calibration_profile_id = calibration_profile_id;
+    output->optical_configuration_id = optical_configuration_id;
+    output->exemplar_capture_id = exemplar_capture_id;
+    output->domain_version = domain_version;
+    memcpy(output->evidence_sha256, evidence_sha256,
+           LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE);
+    output->token_count = (uint32_t)token_count;
+  } else {
+    memset(output, 0, sizeof(*output));
+  }
+  return result;
+}
+
 static Lardon3DProjectDbResult
-exact_candidates_locked(Lardon3DProjectDb *database, uint64_t capture_id,
-                        uint64_t required_applicability,
-                        Lardon3DOpticalCalibrationResolutionV2 *output,
-                        size_t *count) {
+applicability_candidates_locked(Lardon3DProjectDb *database,
+                                uint64_t capture_id,
+                                uint64_t required_applicability,
+                                Lardon3DOpticalCalibrationResolutionV2 *output,
+                                size_t *count) {
   /* A broken v2 dependency is corruption, not evidence that calibration is
      required. Validate the target configuration before exact-state filtering. */
   sqlite3_stmt *validation = NULL;
@@ -2461,13 +2698,58 @@ exact_candidates_locked(Lardon3DProjectDb *database, uint64_t capture_id,
   (void)sqlite3_finalize(validation);
   if (result != LARDON3D_PROJECT_DB_OK)
     return result;
+  validation = NULL;
 
-  char query[1800];
+  /* Domain rows are retained scientific evidence. Broken dependencies,
+     incomplete exemplars or token-set corruption must fail closed before
+     enumeration; a domain never supplies evidence missing from its exemplar. */
+  result = prepare(
+      database,
+      "SELECT d.focus_domain_id FROM optical_focus_domains_v2 d LEFT JOIN "
+      "optical_calibration_applicabilities_v2 a ON "
+      "a.applicability_id=d.applicability_id LEFT JOIN capture_geometric_states e "
+      "ON e.capture_id=a.exemplar_capture_id AND "
+      "e.optical_configuration_id=a.optical_configuration_id WHERE "
+      "a.applicability_id IS NULL OR (a.optical_configuration_id=(SELECT "
+      "optical_configuration_id FROM capture_geometric_states WHERE capture_id=?1) "
+      "AND (e.capture_id IS NULL OR e.focus_state!=2 OR e.aperture_state!=2 OR "
+      "e.stabilization=0 OR e.crop_state!=2 OR e.pipeline_state!=2 OR "
+      "e.representation_state!=2 OR e.decoded_geometry_state!=2 OR "
+      "typeof(d.domain_version)!='integer' OR d.domain_version<=0 OR "
+      "typeof(d.evidence_sha256)!='blob' OR length(d.evidence_sha256)!=32 OR "
+      "d.evidence_sha256=zeroblob(32) OR typeof(d.token_count)!='integer' OR "
+      "d.token_count<=0 OR d.token_count>64 OR d.token_count!=(SELECT COUNT(*) "
+      "FROM optical_focus_domain_tokens_v2 k WHERE "
+      "k.focus_domain_id=d.focus_domain_id) OR (SELECT MIN(k.token_ordinal) FROM "
+      "optical_focus_domain_tokens_v2 k WHERE k.focus_domain_id=d.focus_domain_id)"
+      "!=0 OR (SELECT MAX(k.token_ordinal) FROM optical_focus_domain_tokens_v2 k "
+      "WHERE k.focus_domain_id=d.focus_domain_id)!=d.token_count-1 OR EXISTS("
+      "SELECT 1 FROM optical_focus_domain_tokens_v2 k WHERE "
+      "k.focus_domain_id=d.focus_domain_id AND (typeof(k.token_ordinal)!='integer' "
+      "OR k.token_ordinal<0 OR k.token_ordinal>=64 OR "
+      "typeof(k.focus_token)!='text' OR length(k.focus_token)=0 OR "
+      "length(k.focus_token)>=128)))) LIMIT 1",
+      &validation);
+  if (result == LARDON3D_PROJECT_DB_OK) {
+    sqlite3_bind_int64(validation, 1, (sqlite3_int64)capture_id);
+    int code = sqlite3_step(validation);
+    if (code == SQLITE_ROW)
+      result = LARDON3D_PROJECT_DB_CORRUPT;
+    else if (code != SQLITE_DONE)
+      result = sqlite_result(database, code, "validate optical focus domain v2");
+  }
+  (void)sqlite3_finalize(validation);
+  if (result != LARDON3D_PROJECT_DB_OK)
+    return result;
+
+  char query[4096];
   int length = snprintf(
       query, sizeof(query),
-      "SELECT "
-      "a.applicability_id,a.calibration_profile_id,p.sparse_calibration_id "
-      "FROM capture_geometric_states t JOIN "
+      "SELECT applicability_id,calibration_profile_id,sparse_calibration_id "
+      "FROM (SELECT a.applicability_id AS applicability_id,"
+      "a.calibration_profile_id AS calibration_profile_id,"
+      "p.sparse_calibration_id AS sparse_calibration_id FROM "
+      "capture_geometric_states t JOIN "
       "optical_calibration_applicabilities_v2 a ON "
       "a.optical_configuration_id=t.optical_configuration_id JOIN "
       "capture_geometric_states e ON e.capture_id=a.exemplar_capture_id JOIN "
@@ -2475,17 +2757,29 @@ exact_candidates_locked(Lardon3DProjectDb *database, uint64_t capture_id,
       "p.calibration_profile_id=a.calibration_profile_id AND "
       "p.optical_configuration_id=a.optical_configuration_id JOIN "
       "sparse_calibrations s ON s.calibration_id=p.sparse_calibration_id WHERE "
-      "t.capture_id=?1 AND %s%s ORDER BY a.applicability_id LIMIT 2",
-      exact_state_predicate,
-      required_applicability ? " AND a.applicability_id=?2" : "");
+      "t.capture_id=?1 AND %s UNION SELECT a.applicability_id,"
+      "a.calibration_profile_id,p.sparse_calibration_id FROM "
+      "capture_geometric_states t JOIN optical_focus_domains_v2 d ON "
+      "1=1 JOIN optical_calibration_applicabilities_v2 a ON "
+      "a.applicability_id=d.applicability_id AND "
+      "a.optical_configuration_id=t.optical_configuration_id JOIN "
+      "capture_geometric_states e ON e.capture_id=a.exemplar_capture_id JOIN "
+      "optical_focus_domain_tokens_v2 k ON "
+      "k.focus_domain_id=d.focus_domain_id AND "
+      "k.focus_token=t.focus_observation JOIN optical_calibration_profiles p ON "
+      "p.calibration_profile_id=a.calibration_profile_id AND "
+      "p.optical_configuration_id=a.optical_configuration_id JOIN "
+      "sparse_calibrations s ON s.calibration_id=p.sparse_calibration_id WHERE "
+      "t.capture_id=?1 AND t.focus_state=2 AND %s) candidates WHERE "
+      "(?2=0 OR applicability_id=?2) ORDER BY applicability_id LIMIT 2",
+      exact_state_predicate, exact_nonfocus_state_predicate);
   sqlite3_stmt *statement = NULL;
   result = length < 0 || (size_t)length >= sizeof(query)
                ? LARDON3D_PROJECT_DB_IO_ERROR
                : prepare(database, query, &statement);
   if (result == LARDON3D_PROJECT_DB_OK) {
     sqlite3_bind_int64(statement, 1, (sqlite3_int64)capture_id);
-    if (required_applicability)
-      sqlite3_bind_int64(statement, 2, (sqlite3_int64)required_applicability);
+    sqlite3_bind_int64(statement, 2, (sqlite3_int64)required_applicability);
     int code;
     *count = 0;
     while (*count < 2 && (code = sqlite3_step(statement)) == SQLITE_ROW) {
@@ -2556,7 +2850,8 @@ Lardon3DProjectDbResult lardon3d_optical_capture_calibration_resolve_v2(
     return result;
   (void)pthread_mutex_lock(&database->mutex);
   size_t count = 0;
-  result = exact_candidates_locked(database, capture_id, 0, output, &count);
+  result = applicability_candidates_locked(database, capture_id, 0, output,
+                                            &count);
   (void)pthread_mutex_unlock(&database->mutex);
   if (result != LARDON3D_PROJECT_DB_OK) {
     memset(output, 0, sizeof(*output));
@@ -2585,8 +2880,9 @@ lardon3d_optical_capture_calibration_select_v2(Lardon3DProjectDb *database,
   Lardon3DProjectDbResult result = execute(
       database, "BEGIN IMMEDIATE", "begin Capture calibration selection v2");
   if (result == LARDON3D_PROJECT_DB_OK)
-    result = exact_candidates_locked(database, capture_id, applicability_id,
-                                     &candidate, &count);
+    result = applicability_candidates_locked(database, capture_id,
+                                              applicability_id, &candidate,
+                                              &count);
   if (result == LARDON3D_PROJECT_DB_OK && count != 1)
     result = LARDON3D_PROJECT_DB_CONSTRAINT;
   Lardon3DOpticalCaptureGeometricState state = {0};
@@ -2688,7 +2984,7 @@ Lardon3DProjectDbResult lardon3d_optical_capture_calibration_selection_load_v2(
   if (result == LARDON3D_PROJECT_DB_OK) {
     Lardon3DOpticalCalibrationResolutionV2 candidate = {0};
     size_t count = 0;
-    result = exact_candidates_locked(
+    result = applicability_candidates_locked(
         database, capture_id, output->applicability_id, &candidate, &count);
     if (result == LARDON3D_PROJECT_DB_OK &&
         (count != 1 ||

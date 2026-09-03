@@ -4,14 +4,14 @@
 
 ```text
 DOCUMENTATION_INDEX=CURRENT
-CURRENT_PROJECT_DB_SCHEMA=v26
+CURRENT_PROJECT_DB_SCHEMA=v27
 CURRENT_PRODUCTION_TASK_KINDS=16
 
 REAL_S21_TRACKS=PASS/FROZEN
 REAL_A6000_PRE_SFM=PASS/FROZEN
 PRODUCT_DEFINITION_V1=PASS/FROZEN
 PROMPT_TREE=CURRENT
-CURRENT_NEXT=AUTOFOCUS_V2_FOUNDATION
+CURRENT_NEXT=PHYSICAL_AUTOFOCUS_OPTICAL_APPLICABILITY_VALIDATION
 ```
 
 This index separates current authority, historical evidence and future product-definition work.
@@ -35,7 +35,7 @@ quote an exact API, DDL or constant.
 ## Current repository state
 
 ```text
-Project DB head          v26
+Project DB head          v27
 Production Task kinds    16
 
 v22 selected scientific execution foundation
@@ -43,6 +43,7 @@ v23 generic optical-context overlay
 v24 raw.develop.batch/1 persistence
 v25 features.extract.batch/1 persistence
 v26 Capture geometric state/applicability
+v27 generic bounded exact-token focus domains
 ```
 
 Canonical resource objective:

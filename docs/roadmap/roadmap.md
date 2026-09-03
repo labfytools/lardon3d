@@ -11,7 +11,7 @@ It must not be used to reinterpret FROZEN scientific evidence.
 ## Current repository state
 
 ```text
-Project DB current schema             v26
+Project DB current schema             v27
 Production Task kinds                 16
 GLOBAL_MAINTENANCE_AUDIT              PASS/FROZEN
 REAL_S21_TRACKS                       PASS/FROZEN
@@ -24,7 +24,7 @@ SOURCE_COMMENT_AUDIT                  PASS
 PRODUCT_DEFINITION                    PASS/FROZEN
 PROMPT_TREE                           CURRENT
 USER_FACING_UI_LANGUAGE_NORMALIZATION PASS
-CURRENT_NEXT                          AUTOFOCUS_V2_FOUNDATION
+CURRENT_NEXT                          PHYSICAL_AUTOFOCUS_OPTICAL_APPLICABILITY_VALIDATION
 ```
 
 The current Project DB head is additive:
@@ -35,6 +35,7 @@ v23  generic optical-context overlay
 v24  raw.develop.batch/1 persistence
 v25  features.extract.batch/1 persistence
 v26  Capture geometric state + exact calibration applicability
+v27  generic bounded exact-token focus domains
 ```
 
 Historical references to earlier versions remain valid when they describe the state of their own
@@ -539,8 +540,10 @@ additive L3DCALB2/Tooling/Bootstrap v2 now retains independent group-local prove
 complete exact selected-image coverage, and attaches one existing per-image scope only after complete
 publication. `CALIBRATION_WORKFLOW_V2=PASS/FROZEN`: the workflow now proves exact Capture/state
 applicability and matching per-image calibration IDs before its sole final scope attachment. The next
-dependency is the generic adaptive-settings/autofocus foundation. Device-specific autofocus envelopes
-remain blocked until physical evidence validates them.
+dependency is physical autofocus/optical applicability validation and a dedicated calibrated real
+campaign. The generic adaptive-settings audit and bounded exact-token autofocus foundation are
+PASS/FROZEN. Device-specific autofocus envelopes remain blocked until physical evidence validates
+them.
 
 Calibration Tooling v1 consumes an already acquired Science v1 evidence bundle, validates the bounded
 contract and produces deterministic `L3DCALB1` v1.
@@ -934,12 +937,16 @@ SOURCE_COMMENT_AUDIT                PASS
 SOURCE_COMMENT_REMEDIATION          PASS
 PRODUCT_DEFINITION_V1               PASS/FROZEN
 PROMPT_TREE                         CURRENT
-CALIBRATION_EVIDENCE_SOLVER_V1      IMPLEMENTED/VALIDATED
-CALIBRATION_TOOLING_ALIGNMENT       PASS/FROZEN
-CURRENT_NEXT                        DEDICATED_PHYSICAL_CALIBRATED_REAL_CAMPAIGN
+CALIBRATION_SCIENCE_V2              PASS/FROZEN
+CALIBRATION_V2_HETEROGENEOUS_OPTICS PASS/FROZEN
+CALIBRATION_WORKFLOW_V2             PASS/FROZEN
+ADAPTIVE_CAPTURE_SETTINGS_CONTRACT  PASS/FROZEN
+AUTOFOCUS_V2_FOUNDATION             PASS/FROZEN
+CURRENT_NEXT                        PHYSICAL_AUTOFOCUS_OPTICAL_APPLICABILITY_VALIDATION
 ```
 
 Implementation proceeds only through explicitly human-authorized tranches under `prompt.md` and the
-numbered `prompt/` execution contract. The current authorized dependency is the final usable
-calibration workflow; its next missing sub-boundary composes the FROZEN Tooling
-and Bootstrap importer to reach truthful READY from the validated binding.
+numbered `prompt/` execution contract. The current dependency is physical autofocus/optical
+applicability validation for real equipment, followed by a dedicated calibrated real campaign.
+Generic autofocus applicability machinery is available, but the real
+A6000 + E PZ 16-50 autofocus applicability remains blocked until physical evidence validates it.

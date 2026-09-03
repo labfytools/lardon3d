@@ -7,7 +7,7 @@ span schema versions. Historical sections remain authoritative for the version t
 present-tense statements in this document use the current schema head.
 
 ```text
-CURRENT_PROJECT_DB_SCHEMA=v26
+CURRENT_PROJECT_DB_SCHEMA=v27
 ```
 
 The current head is additive:
@@ -18,10 +18,11 @@ v23  Generic optical-context overlay                          IMPLEMENTED / VALI
 v24  raw.develop.batch/1 persistence                          IMPLEMENTED / VALIDATED
 v25  features.extract.batch/1 persistence                     IMPLEMENTED / VALIDATED
 v26  Capture geometric state and exact calibration applicability PASS / FROZEN
+v27  Generic exact-token focus-domain applicability              PASS / FROZEN
 ```
 
-Project DB v26 preserves the scientific and persistence meaning of every earlier retained row. No
-migration from v22 through v26 backfills scientific identity, infers camera/lens identity, invents
+Project DB v27 preserves the scientific and persistence meaning of every earlier retained row. No
+migration from v22 through v27 backfills scientific identity, infers camera/lens identity, invents
 calibration, rewrites Capture identity, or changes historical Task payload interpretation.
 
 The current real A6000 pre-SfM proof completed the v24 RAW-batch and v25 Feature-batch paths before
@@ -232,6 +233,37 @@ exactly compatible.
 The v1 optical-profile and calibration-selection APIs/tables remain unchanged.
 The v26 tables are a separate additive foundation; they do not attach a Sparse
 calibration scope or transition a selected execution to `READY`.
+
+### Project DB v27 - generic validated focus domains
+
+**PASS / FROZEN.**
+
+The v26 -> v27 migration is transactional, additive and DDL-only. It creates
+empty `optical_focus_domains_v2` and `optical_focus_domain_tokens_v2` tables.
+Historical focus observations are not physical validation, so migration
+creates no inferred domain, token member, applicability, selection or
+calibration identity.
+
+A v27 domain attaches to one existing v26 applicability. It durably retains a
+positive version, a nonzero 32-byte retained-evidence/provenance digest and a
+bounded set of 1..64 distinct opaque focus tokens. Tokens are stored in
+deterministic lexical order, but scientific matching is exact byte-for-byte
+token membership; there is no numeric distance/range comparison, EXIF
+assumption, interpolation or extrapolation. The operational 64-token capacity
+is not a scientific dataset or focus-range limit.
+
+Resolution preserves the v26 zero/one/many contract while enumerating the
+distinct union of exact v26 matches and eligible domain matches. A domain match
+requires the exact configuration, exact complete exemplar state for every
+non-focus geometry/provenance field, observed target focus and exact token
+membership. Exact and domain paths for the same applicability are deduplicated;
+different overlapping applicabilities produce `SELECTION_REQUIRED`. The
+existing v2 selection API remains immutable/idempotent and accepts a domain
+applicability only while it is exactly eligible.
+
+This schema is generic machinery, not device-specific autofocus evidence.
+`A6000_E_PZ_16_50_AF_APPLICABILITY=BLOCKED_BY_PHYSICAL_VALIDATION` remains in
+force.
 
 ## Optical TUI workflow
 
@@ -893,6 +925,7 @@ v22 -> v23  generic optical-context overlay
 v23 -> v24  selected RAW-batch Task persistence
 v24 -> v25  selected Feature-batch Task persistence
 v25 -> v26  Capture geometric state + exact calibration applicability
+v26 -> v27  generic bounded exact-token focus domains
 ```
 
 Historical version-specific contracts remain valid for the rows and checkpoints they describe.
@@ -900,9 +933,9 @@ An older version number is not stale when the text explicitly describes historic
 
 ## Opening and migration
 
-An empty Project DB is created and migrated through the complete known chain to v26.
+An empty Project DB is created and migrated through the complete known chain to v27.
 
-A supported historical DB is migrated sequentially to v26. Each migration is transactional. A
+A supported historical DB is migrated sequentially to v27. Each migration is transactional. A
 migration failure rolls back both newly created objects and the schema-version marker for that step,
 leaving the prior version complete and retryable.
 
@@ -913,7 +946,7 @@ The implementation rejects:
 - impossible version/storage-class combinations;
 - malformed required durable relationships.
 
-The migration implementation must recognize only the known sequential range through v26. It must not
+The migration implementation must recognize only the known sequential range through v27. It must not
 skip an intermediate contract.
 
 Important rollback properties retained from historical tests include:
@@ -927,6 +960,7 @@ Important rollback properties retained from historical tests include:
 - v24 failure leaves no partial RAW-batch table/marker and a true v23;
 - v25 failure leaves no partial Feature-batch table/marker and a true v24.
 - v26 failure leaves no partial geometric-state/applicability tables or marker and a true v25.
+- v27 failure leaves no partial focus-domain tables or marker and a true v26.
 
 Exact executable migration SQL is owned by `src/project_db.c`. Documentation may summarize it, but
 must not contradict the source or the FROZEN migration tests.
@@ -1089,20 +1123,21 @@ must not be silently reinterpreted as a scientific dataset limit.
 ## Status summary
 
 ```text
-CURRENT_PROJECT_DB_SCHEMA=v26
+CURRENT_PROJECT_DB_SCHEMA=v27
 
 v22 selected scientific execution foundation       PASS/FROZEN
 v23 generic optical-context overlay                IMPLEMENTED/VALIDATED/REVIEWED
 v24 raw.develop.batch/1 persistence                IMPLEMENTED/VALIDATED
 v25 features.extract.batch/1 persistence           IMPLEMENTED/VALIDATED
 v26 Capture geometric state/applicability           PASS/FROZEN
+v27 generic exact-token focus domains               PASS/FROZEN
 
 REAL_S21_TRACKS                                    PASS/FROZEN
 REAL_A6000_PRE_SFM                                 PASS/FROZEN
 ```
 
 Current Project DB opens and migrates supported historical databases through the sequential known
-chain to v26.
+chain to v27.
 
 Historical contracts for Candidate Pair, Matcher, Geometric Verification, Tracks, Sparse SfM,
 Phase H, Capture/Asset Provenance, campaign execution, Photo Quality and selected scientific
@@ -1119,4 +1154,4 @@ No current Project DB migration:
 - creates a generic dependency DAG;
 - persists active Resource Governor reservations.
 
-Future schema changes beyond v26 require explicit human authorization.
+Future schema changes beyond v27 require explicit human authorization.

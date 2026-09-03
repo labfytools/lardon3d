@@ -79,7 +79,7 @@ Do not return after each file. Do not repeat global A-to-Z audits when unchanged
 This contract was prepared against the repository state that declares:
 
 ```text
-CURRENT_PROJECT_DB_SCHEMA=v26
+CURRENT_PROJECT_DB_SCHEMA=v27
 PRODUCTION_TASK_KINDS=16
 PRODUCT_DEFINITION_V1=PASS/FROZEN
 PROMPT_TREE=NEXT

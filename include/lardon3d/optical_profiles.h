@@ -15,6 +15,10 @@ enum {
   LARDON3D_OPTICAL_TEXT_CAPACITY = 128,
   LARDON3D_OPTICAL_PROVENANCE_CAPACITY = 256,
   LARDON3D_OPTICAL_PAGE_MAX = 128,
+  LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE = 32,
+  /* This is an operational persistence/API bound, not a scientific focus
+   * range. Every member remains one opaque exact observation token. */
+  LARDON3D_OPTICAL_FOCUS_DOMAIN_TOKEN_MAX = 64,
 };
 
 typedef enum {
@@ -170,6 +174,19 @@ typedef struct {
   uint64_t optical_configuration_id;
   uint64_t exemplar_capture_id;
 } Lardon3DOpticalCalibrationApplicabilityV2;
+
+typedef struct {
+  uint64_t focus_domain_id;
+  /* The v26 applicability retains calibration/configuration identity and its
+   * exemplar retains the exact complete non-focus geometric tuple. */
+  uint64_t applicability_id;
+  uint64_t calibration_profile_id;
+  uint64_t optical_configuration_id;
+  uint64_t exemplar_capture_id;
+  uint32_t domain_version;
+  unsigned char evidence_sha256[LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE];
+  uint32_t token_count;
+} Lardon3DOpticalFocusDomainV2;
 
 typedef struct {
   Lardon3DOpticalCalibrationResolutionKind kind;
@@ -333,15 +350,35 @@ Lardon3DProjectDbResult lardon3d_optical_calibration_applicability_v2_create(
     uint64_t exemplar_capture_id,
     Lardon3DOpticalCalibrationApplicabilityV2 *output);
 
-/* Resolution counts exact valid applicability rows. NONE is CALIBRATION_REQUIRED,
- * ONE is RESOLVED, and MANY is SELECTION_REQUIRED. All are successful outcomes. */
+/* Attach one physically validated discrete focus domain to an existing exact
+ * v26 applicability. evidence_sha256 must be a nonzero retained-evidence or
+ * provenance digest. focus_tokens contains 1..FOCUS_DOMAIN_TOKEN_MAX distinct,
+ * nonempty, NUL-terminated opaque tokens; the call borrows the array and
+ * strings only for its duration. Members are stored as a deterministic exact
+ * set: order has no meaning, exact retry is idempotent, and conflicting reuse
+ * of the applicability is CONSTRAINT. The API performs no numeric conversion,
+ * EXIF interpretation, interpolation, extrapolation, or physical validation.
+ * output is mandatory. On OK, it receives the durable focus domain and its
+ * attached applicability identity; for valid calls it is zeroed on non-OK. */
+Lardon3DProjectDbResult lardon3d_optical_focus_domain_v2_create(
+    Lardon3DProjectDb *database, uint64_t applicability_id,
+    uint32_t domain_version,
+    const unsigned char evidence_sha256[LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE],
+    const char *const *focus_tokens, size_t token_count,
+    Lardon3DOpticalFocusDomainV2 *output);
+
+/* Resolution counts distinct eligible applicability rows: exact v26 state
+ * matches plus v27 domains whose non-focus geometry is exact and whose focus
+ * token is an exact member. NONE is CALIBRATION_REQUIRED, ONE is RESOLVED, and
+ * MANY is SELECTION_REQUIRED. All are successful outcomes. */
 Lardon3DProjectDbResult lardon3d_optical_capture_calibration_resolve_v2(
     Lardon3DProjectDb *database, uint64_t capture_id,
     Lardon3DOpticalCalibrationResolutionV2 *output);
-/* Selection requires a complete observed geometric-state tuple and an exactly
- * compatible applicability; UNKNOWN in any geometry-relevant field is a
- * CONSTRAINT. The first selection is immutable, exact retry is idempotent, and
- * a conflicting applicability is rejected without changing the selection. */
+/* Selection requires a complete observed geometric-state tuple and an
+ * applicability currently eligible by exact v26 match or exact v27 domain
+ * membership; UNKNOWN in any geometry-relevant field is a CONSTRAINT. The
+ * first selection is immutable, exact retry is idempotent, and a conflicting
+ * applicability is rejected without changing the selection. */
 Lardon3DProjectDbResult lardon3d_optical_capture_calibration_select_v2(
     Lardon3DProjectDb *database, uint64_t capture_id, uint64_t applicability_id);
 /* Loads the Capture's durable v2 selection without creating or changing it.

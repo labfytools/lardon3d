@@ -22,9 +22,14 @@
   } while (0)
 
 /* Historical migration fixtures are produced from a temporary current DB.
- * Remove every additive v23/v24/v25 object first so the fixture really is historical
- * rather than a lower version number with future tables left behind. */
+ * Remove every additive v23..v27 object first so the fixture really is
+ * historical rather than a lower version number with future tables left behind. */
 #define DROP_OPTICAL_V23_SQL                                                   \
+  "DROP TABLE IF EXISTS optical_focus_domain_tokens_v2;"                      \
+  "DROP TABLE IF EXISTS optical_focus_domains_v2;"                            \
+  "DROP TABLE IF EXISTS capture_calibration_selections_v2;"                   \
+  "DROP TABLE IF EXISTS optical_calibration_applicabilities_v2;"              \
+  "DROP TABLE IF EXISTS capture_geometric_states;"                            \
   "DROP TABLE IF EXISTS feature_extract_batch_tasks;"                       \
   "DROP TABLE IF EXISTS raw_development_batch_tasks;"                        \
   "DROP TABLE IF EXISTS capture_calibration_selections;"                      \
@@ -129,12 +134,12 @@ static bool create_future_database(const char *path) {
   if (sqlite3_open(path, &connection) != SQLITE_OK) {
     return false;
   }
-  bool ok =
-      sqlite3_exec(
-          connection,
-          "CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
-          "INSERT INTO metadata VALUES('schema_version',26);",
-          NULL, NULL, NULL) == SQLITE_OK;
+  char *sql = sqlite3_mprintf(
+      "CREATE TABLE metadata(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
+      "INSERT INTO metadata VALUES('schema_version',%u);",
+      LARDON3D_PROJECT_DB_SCHEMA_VERSION + 1U);
+  bool ok = sql && sqlite3_exec(connection, sql, NULL, NULL, NULL) == SQLITE_OK;
+  sqlite3_free(sql);
   return sqlite3_close(connection) == SQLITE_OK && ok;
 }
 
@@ -963,12 +968,18 @@ static bool run_test(void) {
 
   char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
   Lardon3DProjectDb *database = NULL;
-  /* v25 is DDL-only: an injected failure rolls back table and marker, and a
-   * retry creates no fabricated association or historical cursor. */
+  /* Remove later empty overlays to form a true v24 fixture. The v25 injected
+   * failure must roll back its table/marker, and retry through current head
+   * creates no fabricated association, observation, domain, or cursor. */
   CHECK(lardon3d_project_db_open(v24_path, &database, error) == LARDON3D_PROJECT_DB_OK);
   lardon3d_project_db_close(database);
   database = NULL;
   CHECK(execute_test_sql(v24_path,
+      "DROP TABLE optical_focus_domain_tokens_v2;"
+      "DROP TABLE optical_focus_domains_v2;"
+      "DROP TABLE capture_calibration_selections_v2;"
+      "DROP TABLE optical_calibration_applicabilities_v2;"
+      "DROP TABLE capture_geometric_states;"
       "DROP TABLE feature_extract_batch_tasks;"
       "UPDATE metadata SET value=24 WHERE key='schema_version';"));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V25", "1", 1) == 0);
@@ -987,6 +998,26 @@ static bool run_test(void) {
   lardon3d_project_db_close(database);
   database = NULL;
   CHECK(query_integer(v24_path, "SELECT count(*) FROM feature_extract_batch_tasks", 0));
+  CHECK(execute_test_sql(v24_path,
+      "DROP TABLE optical_focus_domain_tokens_v2;"
+      "DROP TABLE optical_focus_domains_v2;"
+      "UPDATE metadata SET value=26 WHERE key='schema_version';"));
+  CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V27", "1", 1) == 0);
+  CHECK(lardon3d_project_db_open(v24_path, &database, error) !=
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(database == NULL);
+  CHECK(unsetenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V27") == 0);
+  CHECK(query_integer(v24_path,
+      "SELECT value FROM metadata WHERE key='schema_version'", 26));
+  CHECK(query_integer(v24_path,
+      "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN "
+      "('optical_focus_domains_v2','optical_focus_domain_tokens_v2')", 0));
+  CHECK(lardon3d_project_db_open(v24_path, &database, error) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_project_db_schema_version(database) ==
+        LARDON3D_PROJECT_DB_SCHEMA_VERSION);
+  lardon3d_project_db_close(database);
+  database = NULL;
   CHECK(lardon3d_project_db_open(database_path, &database, error) ==
         LARDON3D_PROJECT_DB_OK);
   CHECK(database && lardon3d_project_db_schema_version(database) ==

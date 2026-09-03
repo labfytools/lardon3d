@@ -3,10 +3,10 @@
 ## Status
 
 ```text
-CURRENT_PROJECT_DB_SCHEMA=v26
+CURRENT_PROJECT_DB_SCHEMA=v27
 PRODUCTION_TASK_KINDS=16
 USER_FACING_UI_LANGUAGE_NORMALIZATION=PASS
-CURRENT_IMPLEMENTATION_CURSOR=ADAPTIVE_CAPTURE_SETTINGS_AND_AUTOFOCUS_V2_FOUNDATION
+CURRENT_IMPLEMENTATION_CURSOR=PHYSICAL_AUTOFOCUS_OPTICAL_APPLICABILITY_VALIDATION
 ```
 
 ## Authority
@@ -16,7 +16,7 @@ CURRENT_IMPLEMENTATION_CURSOR=ADAPTIVE_CAPTURE_SETTINGS_AND_AUTOFOCUS_V2_FOUNDAT
 ## CURRENT
 
 ```text
-Project DB head                         v26
+Project DB head                         v27
 Production Task kinds                   16
 Feature Store                           IMPLEMENTED
 Visual Index                            IMPLEMENTED
@@ -39,8 +39,8 @@ Calibration Science v2 heterogeneous optics  PASS/FROZEN
 Calibration v2 optical-state foundation       PASS/FROZEN
 Calibration v2 heterogeneous publication     PASS/FROZEN
 Calibration Workflow v2                     PASS/FROZEN
-Adaptive capture settings semantics          PLANNED
-Autofocus v2 foundation                      PLANNED
+Adaptive capture settings semantics         PASS/FROZEN
+Autofocus v2 foundation                     PASS/FROZEN
 Calibration Tooling planarity alignment     PASS/FROZEN
 ```
 

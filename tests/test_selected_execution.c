@@ -64,6 +64,11 @@ static bool seed_v21(const char *path) {
       "INSERT INTO sparse_calibration_scope_images VALUES(1,1,1);"
       /* This fixture is a true v21 database; future additive objects must not
          remain merely because it was generated from a temporary current DB. */
+      "DROP TABLE optical_focus_domain_tokens_v2;"
+      "DROP TABLE optical_focus_domains_v2;"
+      "DROP TABLE capture_calibration_selections_v2;"
+      "DROP TABLE optical_calibration_applicabilities_v2;"
+      "DROP TABLE capture_geometric_states;"
       "DROP TABLE feature_extract_batch_tasks;"
       "DROP TABLE raw_development_batch_tasks;"
       "DROP TABLE capture_calibration_selections;"
@@ -110,7 +115,12 @@ static bool run(void) {
   CHECK(sql(path, "SELECT 1 FROM raw_development_batch_tasks WHERE 0;"));
   lardon3d_project_db_close(database);
   database = NULL;
-  CHECK(sql(path, "DROP TABLE feature_extract_batch_tasks;"
+  CHECK(sql(path, "DROP TABLE optical_focus_domain_tokens_v2;"
+                  "DROP TABLE optical_focus_domains_v2;"
+                  "DROP TABLE capture_calibration_selections_v2;"
+                  "DROP TABLE optical_calibration_applicabilities_v2;"
+                  "DROP TABLE capture_geometric_states;"
+                  "DROP TABLE feature_extract_batch_tasks;"
                   "DROP TABLE raw_development_batch_tasks;"
                   "UPDATE metadata SET value=23 WHERE key='schema_version';"));
   CHECK(setenv("LARDON3D_TEST_PROJECT_DB_FAIL_MIGRATION_V24", "1", 1) == 0);

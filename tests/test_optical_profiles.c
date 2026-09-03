@@ -1147,6 +1147,8 @@ static bool downgrade_to_v22_fixture(const char *path) {
   return raw_sql(
       path,
       "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+      "DROP TABLE IF EXISTS optical_focus_domain_tokens_v2;"
+      "DROP TABLE IF EXISTS optical_focus_domains_v2;"
       "DROP TABLE IF EXISTS capture_calibration_selections_v2;"
       "DROP TABLE IF EXISTS optical_calibration_applicabilities_v2;"
       "DROP TABLE IF EXISTS capture_geometric_states;"
@@ -1407,6 +1409,8 @@ static bool test_v26_exact_geometric_applicability(void) {
    */
   CHECK(raw_sql(
       path, "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+            "DROP TABLE optical_focus_domain_tokens_v2;"
+            "DROP TABLE optical_focus_domains_v2;"
             "DROP TABLE capture_calibration_selections_v2;"
             "DROP TABLE optical_calibration_applicabilities_v2;"
             "DROP TABLE capture_geometric_states;"
@@ -1427,6 +1431,296 @@ static bool test_v26_exact_geometric_applicability(void) {
                     "SELECT COUNT(*) FROM capture_calibration_selections_v2",
                     &migrated_count) &&
         migrated_count == 0);
+  CHECK(unlink(path) == 0);
+  CHECK(rmdir(directory) == 0);
+  return true;
+}
+
+static Lardon3DOpticalCaptureGeometricState complete_focus_state(
+    uint64_t capture_id, uint64_t configuration_id, const char *focus_token) {
+  Lardon3DOpticalCaptureGeometricState state = {
+      .capture_id = capture_id,
+      .optical_configuration_id = configuration_id,
+      .state_version = 1,
+      .provenance = LARDON3D_OPTICAL_GEOMETRIC_STATE_METADATA,
+      .focus_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .aperture_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .aperture_x1000 = 5600,
+      .stabilization = LARDON3D_OPTICAL_STABILIZATION_OFF,
+      .crop_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .pipeline_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .representation_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .decoded_geometry_state = LARDON3D_OPTICAL_OBSERVATION_OBSERVED,
+      .decoded_width = 6000,
+      .decoded_height = 4000,
+  };
+  (void)snprintf(state.focus_observation, sizeof(state.focus_observation),
+                 "%s", focus_token);
+  memcpy(state.crop_observation, "full-sensor", sizeof("full-sensor"));
+  memcpy(state.pipeline_observation, "raw-policy-v1",
+         sizeof("raw-policy-v1"));
+  memcpy(state.representation_observation, "L3DRAWD1-png",
+         sizeof("L3DRAWD1-png"));
+  return state;
+}
+
+static bool test_v27_discrete_focus_domains(void) {
+  char directory[64];
+  char path[256];
+  CHECK(make_database_path(directory, path));
+  Lardon3DProjectDb *database = NULL;
+  char error[LARDON3D_PROJECT_DB_ERROR_CAPACITY];
+  CHECK(lardon3d_project_db_open(path, &database, error) ==
+        LARDON3D_PROJECT_DB_OK);
+  RepairOpticalFixture fixture;
+  CHECK(seed_repair_optical_fixture(database, &fixture));
+
+  Lardon3DOpticalConfiguration base_configuration;
+  CHECK(lardon3d_optical_configuration_load(
+            database, fixture.configuration_id, &base_configuration) ==
+        LARDON3D_PROJECT_DB_OK);
+  Lardon3DOpticalCameraBodyProfile other_body_input = {0};
+  memcpy(other_body_input.manufacturer, "Generic", sizeof("Generic"));
+  memcpy(other_body_input.model, "Other body", sizeof("Other body"));
+  memcpy(other_body_input.name, "Other body profile",
+         sizeof("Other body profile"));
+  Lardon3DOpticalCameraBodyProfile other_body;
+  CHECK(lardon3d_optical_camera_body_create(database, &other_body_input,
+                                             &other_body) ==
+        LARDON3D_PROJECT_DB_OK);
+  Lardon3DOpticalLensProfile other_lens_input = {
+      .interface_kind = LARDON3D_OPTICAL_LENS_ELECTRONIC,
+      .focal_range_kind = LARDON3D_OPTICAL_FOCAL_RANGE_PRIME,
+      .minimum_focal_um = 16000,
+      .maximum_focal_um = 16000,
+  };
+  memcpy(other_lens_input.manufacturer, "Generic", sizeof("Generic"));
+  memcpy(other_lens_input.model, "Other lens", sizeof("Other lens"));
+  memcpy(other_lens_input.name, "Other lens profile",
+         sizeof("Other lens profile"));
+  Lardon3DOpticalLensProfile other_lens;
+  CHECK(lardon3d_optical_lens_create(database, &other_lens_input, &other_lens) ==
+        LARDON3D_PROJECT_DB_OK);
+  Lardon3DOpticalConfiguration configuration_input = {
+      .camera_body_profile_id = other_body.camera_body_profile_id,
+      .lens_profile_id = base_configuration.lens_profile_id,
+      .has_focal_length = true,
+      .focal_length_um = 16000,
+  };
+  Lardon3DOpticalConfiguration other_body_configuration;
+  CHECK(lardon3d_optical_configuration_create(
+            database, &configuration_input, &other_body_configuration) ==
+        LARDON3D_PROJECT_DB_OK);
+  configuration_input.camera_body_profile_id =
+      base_configuration.camera_body_profile_id;
+  configuration_input.lens_profile_id = other_lens.lens_profile_id;
+  Lardon3DOpticalConfiguration other_lens_configuration;
+  CHECK(lardon3d_optical_configuration_create(
+            database, &configuration_input, &other_lens_configuration) ==
+        LARDON3D_PROJECT_DB_OK);
+
+  enum { TARGET_COUNT = 5 };
+  Lardon3DProjectDbCapture targets[TARGET_COUNT];
+  for (size_t index = 0; index < TARGET_COUNT; ++index)
+    CHECK(lardon3d_project_db_create_capture(database, fixture.scanset_id,
+                                             (uint32_t)(index + 2),
+                                             &targets[index]) ==
+          LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_assign_explicit(
+            database, fixture.capture_id, fixture.configuration_id) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_assign_explicit(
+            database, targets[0].capture_id, fixture.configuration_id) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_assign_explicit(
+            database, targets[1].capture_id, fixture.configuration_id) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_assign_explicit(
+            database, targets[2].capture_id,
+            fixture.alternate_configuration_id) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_assign_explicit(
+            database, targets[3].capture_id,
+            other_body_configuration.optical_configuration_id) ==
+        LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_assign_explicit(
+            database, targets[4].capture_id,
+            other_lens_configuration.optical_configuration_id) ==
+        LARDON3D_PROJECT_DB_OK);
+
+  Lardon3DOpticalCaptureGeometricState state = complete_focus_state(
+      fixture.capture_id, fixture.configuration_id, "synthetic-focus-a");
+  Lardon3DOpticalCaptureGeometricState stored;
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &stored) == LARDON3D_PROJECT_DB_OK);
+  state = complete_focus_state(
+      targets[3].capture_id,
+      other_body_configuration.optical_configuration_id, "synthetic-focus-b");
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &stored) == LARDON3D_PROJECT_DB_OK);
+  state = complete_focus_state(
+      targets[4].capture_id,
+      other_lens_configuration.optical_configuration_id, "synthetic-focus-b");
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &stored) == LARDON3D_PROJECT_DB_OK);
+  state = complete_focus_state(targets[0].capture_id, fixture.configuration_id,
+                               "synthetic-focus-b");
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &stored) == LARDON3D_PROJECT_DB_OK);
+  state = complete_focus_state(targets[1].capture_id, fixture.configuration_id,
+                               "synthetic-focus-outside");
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &stored) == LARDON3D_PROJECT_DB_OK);
+  /* The identical focus token at another focal configuration must not cross
+     the exact body/lens/focal applicability boundary. */
+  state = complete_focus_state(targets[2].capture_id,
+                               fixture.alternate_configuration_id,
+                               "synthetic-focus-b");
+  CHECK(lardon3d_optical_capture_geometric_state_create(
+            database, &state, &stored) == LARDON3D_PROJECT_DB_OK);
+
+  Lardon3DSparseCalibration calibration;
+  CHECK(create_sparse_calibration(database, 0xd1, 6000, 4000, &calibration));
+  Lardon3DOpticalCalibrationProfile profile_input = {
+      .optical_configuration_id = fixture.configuration_id,
+      .sparse_calibration_id = calibration.calibration_id,
+      .profile_version = 2,
+      .applicability = LARDON3D_OPTICAL_CALIBRATION_EXACT_CONFIGURATION,
+      .created_at = 200,
+  };
+  memcpy(profile_input.name, "focus domain A", sizeof("focus domain A"));
+  memcpy(profile_input.provenance, "synthetic physical evidence",
+         sizeof("synthetic physical evidence"));
+  Lardon3DOpticalCalibrationProfile profile_a;
+  CHECK(lardon3d_optical_calibration_profile_create(
+            database, &profile_input, &profile_a) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DOpticalCalibrationApplicabilityV2 applicability_a;
+  CHECK(lardon3d_optical_calibration_applicability_v2_create(
+            database, profile_a.calibration_profile_id, fixture.capture_id,
+            &applicability_a) == LARDON3D_PROJECT_DB_OK);
+
+  const char *tokens[] = {"synthetic-focus-b", "synthetic-focus-a"};
+  unsigned char evidence[LARDON3D_OPTICAL_FOCUS_DOMAIN_DIGEST_SIZE] = {0};
+  evidence[0] = 0x71;
+  Lardon3DOpticalFocusDomainV2 domain_a;
+  CHECK(lardon3d_optical_focus_domain_v2_create(
+            database, applicability_a.applicability_id, 1, evidence, tokens,
+            2, &domain_a) == LARDON3D_PROJECT_DB_OK &&
+        domain_a.token_count == 2);
+  const char *retry_tokens[] = {"synthetic-focus-a", "synthetic-focus-b"};
+  Lardon3DOpticalFocusDomainV2 domain_retry;
+  CHECK(lardon3d_optical_focus_domain_v2_create(
+            database, applicability_a.applicability_id, 1, evidence,
+            retry_tokens, 2, &domain_retry) == LARDON3D_PROJECT_DB_OK &&
+        domain_retry.focus_domain_id == domain_a.focus_domain_id);
+  evidence[1] = 1;
+  CHECK(lardon3d_optical_focus_domain_v2_create(
+            database, applicability_a.applicability_id, 1, evidence,
+            retry_tokens, 2, &domain_retry) == LARDON3D_PROJECT_DB_CONSTRAINT &&
+        domain_retry.focus_domain_id == 0);
+  evidence[1] = 0;
+
+  Lardon3DOpticalCalibrationResolutionV2 resolution;
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, targets[0].capture_id, &resolution) ==
+            LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_RESOLVED &&
+        resolution.applicability_id == applicability_a.applicability_id);
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, targets[1].capture_id, &resolution) ==
+            LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_REQUIRED);
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, targets[2].capture_id, &resolution) ==
+            LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_REQUIRED);
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, targets[3].capture_id, &resolution) ==
+            LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_REQUIRED);
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, targets[4].capture_id, &resolution) ==
+            LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_REQUIRED);
+
+  /* A domain cannot repair incomplete exemplar evidence. Corrupting the
+     schema-valid focus state must fail closed before candidate enumeration. */
+  lardon3d_project_db_close(database);
+  database = NULL;
+  char corruption[512];
+  int corruption_bytes = snprintf(
+      corruption, sizeof(corruption),
+      "UPDATE capture_geometric_states SET focus_state=1,"
+      "focus_observation='' WHERE capture_id=%llu;",
+      (unsigned long long)fixture.capture_id);
+  CHECK(corruption_bytes > 0 &&
+        (size_t)corruption_bytes < sizeof(corruption) &&
+        raw_sql(path, corruption));
+  CHECK(lardon3d_project_db_open(path, &database, error) ==
+        LARDON3D_PROJECT_DB_OK);
+  memset(&resolution, 0x7f, sizeof(resolution));
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, targets[0].capture_id, &resolution) ==
+            LARDON3D_PROJECT_DB_CORRUPT &&
+        resolution.kind == 0 &&
+        resolution.applicability_id == 0);
+  lardon3d_project_db_close(database);
+  database = NULL;
+  corruption_bytes = snprintf(
+      corruption, sizeof(corruption),
+      "UPDATE capture_geometric_states SET focus_state=2,"
+      "focus_observation='synthetic-focus-a' WHERE capture_id=%llu;",
+      (unsigned long long)fixture.capture_id);
+  CHECK(corruption_bytes > 0 &&
+        (size_t)corruption_bytes < sizeof(corruption) &&
+        raw_sql(path, corruption));
+  CHECK(lardon3d_project_db_open(path, &database, error) ==
+        LARDON3D_PROJECT_DB_OK);
+
+  memcpy(profile_input.name, "focus domain B", sizeof("focus domain B"));
+  Lardon3DOpticalCalibrationProfile profile_b;
+  CHECK(lardon3d_optical_calibration_profile_create(
+            database, &profile_input, &profile_b) == LARDON3D_PROJECT_DB_OK);
+  Lardon3DOpticalCalibrationApplicabilityV2 applicability_b;
+  CHECK(lardon3d_optical_calibration_applicability_v2_create(
+            database, profile_b.calibration_profile_id, fixture.capture_id,
+            &applicability_b) == LARDON3D_PROJECT_DB_OK);
+  evidence[0] = 0x72;
+  const char *overlap_tokens[] = {"synthetic-focus-b"};
+  Lardon3DOpticalFocusDomainV2 domain_b;
+  CHECK(lardon3d_optical_focus_domain_v2_create(
+            database, applicability_b.applicability_id, 1, evidence,
+            overlap_tokens, 1, &domain_b) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_calibration_resolve_v2(
+            database, targets[0].capture_id, &resolution) ==
+            LARDON3D_PROJECT_DB_OK &&
+        resolution.kind == LARDON3D_OPTICAL_CALIBRATION_SELECTION_REQUIRED);
+  CHECK(lardon3d_optical_capture_calibration_select_v2(
+            database, targets[0].capture_id,
+            applicability_a.applicability_id) == LARDON3D_PROJECT_DB_OK);
+  CHECK(lardon3d_optical_capture_calibration_select_v2(
+            database, targets[0].capture_id,
+            applicability_a.applicability_id) == LARDON3D_PROJECT_DB_OK);
+
+  lardon3d_project_db_close(database);
+  /* v26 contains observations but no retained physical-domain evidence. The
+     additive migration must recreate empty domain tables without inference. */
+  CHECK(raw_sql(path, "PRAGMA foreign_keys=OFF;BEGIN IMMEDIATE;"
+                      "DROP TABLE optical_focus_domain_tokens_v2;"
+                      "DROP TABLE optical_focus_domains_v2;"
+                      "UPDATE metadata SET value=26 WHERE key='schema_version';"
+                      "COMMIT;"));
+  database = NULL;
+  CHECK(lardon3d_project_db_open(path, &database, error) ==
+        LARDON3D_PROJECT_DB_OK);
+  lardon3d_project_db_close(database);
+  sqlite3_int64 count = -1;
+  CHECK(raw_integer(path, "SELECT COUNT(*) FROM optical_focus_domains_v2",
+                    &count) &&
+        count == 0);
+  CHECK(raw_integer(path,
+                    "SELECT COUNT(*) FROM optical_focus_domain_tokens_v2",
+                    &count) &&
+        count == 0);
   CHECK(unlink(path) == 0);
   CHECK(rmdir(directory) == 0);
   return true;
@@ -1507,6 +1801,8 @@ static bool test_migration_rollback_retry_and_equivalence(void) {
       "capture_geometric_states",
       "optical_calibration_applicabilities_v2",
       "capture_calibration_selections_v2",
+      "optical_focus_domains_v2",
+      "optical_focus_domain_tokens_v2",
   };
   char query[256];
   for (size_t index = 0; index < sizeof(empty_tables) / sizeof(empty_tables[0]);
@@ -1543,6 +1839,9 @@ static bool test_migration_rollback_retry_and_equivalence(void) {
       "optical_calibration_applicabilities_v2",
       "optical_calibration_applicabilities_v2_config_idx",
       "capture_calibration_selections_v2",
+      "optical_focus_domains_v2",
+      "optical_focus_domain_tokens_v2",
+      "optical_focus_domain_tokens_v2_token_idx",
   };
   char migrated_sql[8192];
   char fresh_sql[8192];
@@ -1564,6 +1863,7 @@ static bool test_migration_rollback_retry_and_equivalence(void) {
 int main(void) {
   return test_profiles_assignments_and_calibrations() &&
                  test_v26_exact_geometric_applicability() &&
+                 test_v27_discrete_focus_domains() &&
                  test_calibration_conflict_result_contract() &&
                  test_calibration_dependency_corruption_precedence() &&
                  test_campaign_request_corruption_prevents_optics_mutation() &&
