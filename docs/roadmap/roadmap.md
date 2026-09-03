@@ -22,7 +22,9 @@ Real A6000 Dense/MVS                  NOT EXECUTED
 DOCUMENTATION_FINDING_REMEDIATION     PASS
 SOURCE_COMMENT_AUDIT                  PASS
 PRODUCT_DEFINITION                    PASS/FROZEN
-PROMPT_TREE                           NEXT
+PROMPT_TREE                           CURRENT
+USER_FACING_UI_LANGUAGE_NORMALIZATION PASS
+CURRENT_NEXT                          FINAL_USABLE_CALIBRATION_WORKFLOW
 ```
 
 The current Project DB head is additive:
@@ -523,38 +525,43 @@ No calibration component silently turns metadata into scientific calibration.
 The current repository-maintenance sequence is:
 
 ```text
-Documentation Inventory Audit      PASS_WITH_FINDINGS
-Documentation Finding Remediation  PASS
-Source Comment Audit               PASS
-Source Comment Remediation         PASS
-Product Definition v1              PASS/FROZEN
--> prompt.md / prompt/ contract tree NEXT
--> implementation only after explicit human authorization
+Documentation Inventory Audit       PASS_WITH_FINDINGS
+Documentation Finding Remediation   PASS
+Source Comment Audit                PASS
+Source Comment Remediation          PASS
+Product Definition v1               PASS/FROZEN
+Prompt execution contract tree      CURRENT
+User-facing UI/control normalization PASS
+-> final usable calibration workflow CURRENT NEXT
+-> each implementation tranche requires explicit human authorization
 ```
 
-This work is documentation and contract preparation.
+The repository contract phase is complete and the implementation cursor has moved to the final usable calibration workflow.
 
-It does not authorize:
+This cursor does not itself authorize:
 
 - scientific threshold changes;
 - new Project DB schema versions;
 - new Task kinds;
-- Sparse SfM execution;
+- real Sparse SfM execution;
 - Dense/MVS execution;
 - Viewer implementation;
 - live-capture implementation;
 - Capture Guidance implementation.
 
+Those boundaries require their own explicitly authorized tranche when reached.
+
 ## Scientific next dependency
 
-After documentation/product-definition work, the next real scientific dependency for a new
-known-calibration campaign is a dedicated physical calibration acquisition that satisfies
-Calibration Science v1.
+The current implementation dependency is the final usable calibration workflow around the already acquired Calibration Science / Tooling / Bootstrap boundaries.
+
+The first new real scientific evidence after that workflow exists is a dedicated physical calibration acquisition that satisfies Calibration Science v1.
 
 The dependency order is:
 
 ```text
-dedicated physical calibration acquisition
+final usable calibration workflow
+-> dedicated physical calibration acquisition
 -> external solver evidence
 -> Calibration Tooling v1
 -> L3DCALB1 v1
@@ -606,8 +613,9 @@ configuration and optional SSD controls.
 
 The canonical repository and UI language is English.
 
-The remaining non-English executable UI strings are remediation work and must be changed only in an
-explicitly scoped UI-language pass.
+The direct TUI/control surface and user-facing project/import/catalog/runtime-session messages have completed their scoped English normalization and validation pass.
+
+Historical persisted labels, path names and deliberate UTF-8 fixtures remain unchanged where translation would alter historical meaning or test purpose. Persistence-sensitive/internal diagnostics are changed only in an explicitly owned scope rather than by mechanical repository-wide replacement.
 
 The TUI remains ncurses/main-thread owned according to its canonical contract.
 

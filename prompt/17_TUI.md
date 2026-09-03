@@ -5,6 +5,7 @@
 ```text
 TUI=PRIMARY_CONTROL_SURFACE
 USER_INTERFACE_LANGUAGE=ENGLISH
+USER_FACING_TUI_LANGUAGE_NORMALIZATION=PASS
 ```
 
 ## Authority
@@ -60,7 +61,9 @@ Diagnostics must distinguish at least:
 
 A generic unowned `failed` state is insufficient for final-product workflows.
 
-Remaining non-English executable UI text converges to English only in explicitly scoped implementation work.
+Direct TUI/control labels and the user-facing project/import/catalog/runtime-session surface have been normalized to English and validated.
+
+Historical persisted labels, path names and deliberate UTF-8 test fixtures are not renamed merely to satisfy a text scan. Internal subsystem diagnostics are not to be mechanically rewritten across FROZEN or persistence-sensitive boundaries; any diagnostic intentionally exposed to the final user-facing product must converge to English when its owning subsystem is explicitly scoped.
 
 ## Canonical-reference rule
 

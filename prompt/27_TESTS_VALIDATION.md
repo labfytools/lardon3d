@@ -28,6 +28,8 @@ For each tranche:
 
 Do not claim blanket TSan validity for Vulkan unless explicitly proven.
 
+Historical schema downgrade fixtures must be structurally truthful. A fixture targeting schema version N must remove every schema object introduced after N before rewriting `schema_version`; changing metadata alone is not a valid historical fixture. In particular, v25-aware downgrade fixtures must account for the additive v24 `raw_development_batch_tasks` and v25 `feature_extract_batch_tasks` overlays when targeting earlier versions.
+
 Do not rerun full historical A-to-Z qualification merely for confidence theater.
 
 ## Canonical-reference rule

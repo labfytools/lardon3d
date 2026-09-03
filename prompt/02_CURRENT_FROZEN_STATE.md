@@ -5,6 +5,8 @@
 ```text
 CURRENT_PROJECT_DB_SCHEMA=v25
 PRODUCTION_TASK_KINDS=16
+USER_FACING_UI_LANGUAGE_NORMALIZATION=PASS
+CURRENT_IMPLEMENTATION_CURSOR=1_FINAL_USABLE_CALIBRATION_WORKFLOW
 ```
 
 ## Authority
@@ -21,6 +23,7 @@ Visual Index                            IMPLEMENTED
 Candidate Pair                          IMPLEMENTED
 Matcher                                 IMPLEMENTED
 TUI operational observatory            VALIDATED
+User-facing TUI/control language         PASS
 External SSD controller                 VALIDATED
 Calibration Solver Preflight v1         PASS
 ```
