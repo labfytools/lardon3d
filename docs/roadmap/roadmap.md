@@ -521,6 +521,8 @@ deterministic synthetic CPU1 self-test is validated.
 
 The solver session contract now also requires explicit measured `white_border >= 30 mm` evidence. This closes the previous gap between the physical target requirement and the future coordinator input; no default border width is inferred.
 
+`CALIBRATION_SOLVER_PRODUCER_IDENTITY_V1=PASS/FROZEN`: the solver bundle now includes deterministic `producer.json` evidence binding the exact solver executable, canonical solver configuration, session manifest, OpenCV build, CPU1 policy and optical-state SHA-256.
+
 A bounded Tooling correction aligned planarity handling with Calibration Science v1: Science v1
 defines a categorical physical planarity attestation, not a numeric flatness threshold. Tooling
 therefore rejects invented finite `target_flatness_mm` values. `L3DCALB1` v1 and Calibration

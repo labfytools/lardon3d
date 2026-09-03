@@ -250,13 +250,33 @@ bool exact_solve(const Solve& a, const Solve& b) {
   return true;
 }
 std::string number(double x) { std::ostringstream o; o.imbue(std::locale::classic()); o<<std::hexfloat<<x; return o.str(); }
+std::string solver_configuration_record() {
+  std::ostringstream o; o.imbue(std::locale::classic());
+  o<<"L3DCAL_SOLVER_CONFIGURATION_V1\\n"
+   <<"opencv_version "<<CV_VERSION<<"\\n"
+   <<"target DICT_5X5_100 9 7 30 21\\n"
+   <<"legacy_pattern 0\\n"
+   <<"charuco_min_markers 2\\n"
+   <<"charuco_try_refine_markers 0\\n"
+   <<"charuco_check_markers 1\\n"
+   <<"calibrate_flags CALIB_FIX_K3\\n"
+   <<"criteria COUNT_EPS 500 "<<std::hexfloat<<DBL_EPSILON<<"\\n"
+   <<"threads 1\\n"
+   <<"rng_seed "<<std::dec<<kSeed<<"\\n"
+   <<"opencv_build_sha256 "<<hex(text_hash(cv::getBuildInformation()))<<"\\n";
+  return o.str();
+}
 /* WHY: evidence must be inspectable before a future importer sees it.
  * CONTRACT: these JSON documents are canonically ordered and atomically
  * published as one new sidecar directory; an existing bundle is immutable. */
 bool write_bundle(const std::string& session, const SessionEvidence& e, const std::vector<View>& views,
                   const Solve full[3], const Solve& fit, double rms, double maximum, size_t high,
                   size_t count, double hold_rms, double hold_max, double delta, unsigned flags,
-                  const std::array<unsigned char,32>& optical, std::string* why) {
+                  const std::array<unsigned char,32>& optical,
+                  const std::array<unsigned char,32>& solver_executable_sha256,
+                  const std::array<unsigned char,32>& solver_configuration_sha256,
+                  const std::array<unsigned char,32>& session_sha256,
+                  std::string* why) {
   const std::filesystem::path final = session + ".bundle";
   const std::filesystem::path temp = session + ".bundle.tmp";
   std::error_code ec; if(std::filesystem::exists(final,ec)||ec||std::filesystem::exists(temp,ec)){*why="evidence bundle already exists";return false;}
@@ -273,6 +293,19 @@ bool write_bundle(const std::string& session, const SessionEvidence& e, const st
   std::ofstream f(temp/"evidence.json",std::ios::binary);if(!f)return fail("final evidence output");
   f<<"{\n\"format\":\"L3DCAL_EVIDENCE_BUNDLE_V1\",\n\"target\":{\"id\":\""<<e.target_id<<"\",\"generator_sha256\":\""<<hex(e.generator_hash)<<"\",\"instrument\":\""<<e.instrument<<"\",\"resolution_mm\":\""<<number(e.resolution_mm)<<"\",\"planarity_evidence_sha256\":\""<<hex(e.planarity_hash)<<"\"},\n\"optical_sha256\":\""<<hex(optical)<<"\",\n\"optical_state\":\""<<e.optical_state_fields<<"\",\n\"validation_flags\":\"0x"<<std::hex<<flags<<std::dec<<"\",\n\"global_rmse_px\":\""<<number(rms)<<"\",\"maximum_residual_px\":\""<<number(maximum)<<"\",\"high_residual_fraction\":\""<<number(static_cast<double>(high)/static_cast<double>(count))<<"\",\n\"holdout\":{\"rmse_px\":\""<<number(hold_rms)<<"\",\"maximum_px\":\""<<number(hold_max)<<"\"},\n\"maximum_parameter_delta_px\":\""<<number(delta)<<"\",\n\"deterministic_full_solve_equality\":"<<((flags&4)?"true":"false")<<",\n\"residuals\":[";
   bool first=true;for(const View&v:views)if(v.accepted)for(size_t i=0;i<v.residuals.size();++i){if(!first)f<<',';first=false;f<<"{\"source_sha256\":\""<<hex(v.hash)<<"\",\"corner_id\":"<<v.ids[i]<<",\"dx_px\":\""<<number(v.residuals[i].x)<<"\",\"dy_px\":\""<<number(v.residuals[i].y)<<"\",\"rmse_px\":\""<<number(v.rmse)<<"\"}";}f<<"]\n}\n";f.close();if(!f)return fail("final evidence write");
+  std::ofstream p(temp/"producer.json",std::ios::binary);if(!p)return fail("producer output");
+  p<<"{\\n"
+   <<"\\\"format\\\":\\\"L3DCAL_PRODUCER_V1\\\",\\n"
+   <<"\\\"solver_executable_sha256\\\":\\\""<<hex(solver_executable_sha256)<<"\\\",\\n"
+   <<"\\\"solver_configuration_sha256\\\":\\\""<<hex(solver_configuration_sha256)<<"\\\",\\n"
+   <<"\\\"session_sha256\\\":\\\""<<hex(session_sha256)<<"\\\",\\n"
+   <<"\\\"opencv_version\\\":\\\""<<CV_VERSION<<"\\\",\\n"
+   <<"\\\"opencv_build_sha256\\\":\\\""<<hex(text_hash(cv::getBuildInformation()))<<"\\\",\\n"
+   <<"\\\"threads\\\":1,\\n"
+   <<"\\\"rng_seed\\\":"<<kSeed<<",\\n"
+   <<"\\\"optical_sha256\\\":\\\""<<hex(optical)<<"\\\"\\n"
+   <<"}\\n";
+  p.close();if(!p)return fail("producer write");
   std::filesystem::rename(temp,final,ec);if(ec)return fail("evidence publication");return true;
 }
 void report(const std::vector<View>&v,const Solve&s,double independent_rms,
@@ -288,6 +321,9 @@ void report(const std::vector<View>&v,const Solve&s,double independent_rms,
 }
 bool run_session(const std::string& session) {
   std::vector<View> v;std::array<unsigned char,32> optical{};SessionEvidence evidence;std::string why;
+  std::array<unsigned char,32> solver_executable_sha256{},session_sha256{};
+  if(!file_hash("/proc/self/exe",&solver_executable_sha256)||!file_hash(session,&session_sha256)){std::cerr<<"FAIL producer/session hash\\n";return false;}
+  const std::array<unsigned char,32> solver_configuration_sha256=text_hash(solver_configuration_record());
   if(!read_session(session,&v,&optical,&evidence,&why)||!detect(&v,&why)){std::cerr<<"FAIL "<<why<<'\n';return false;}
   std::vector<size_t> all;cv::Size size;for(size_t i=0;i<v.size();++i)if(v[i].accepted){all.push_back(i);if(size.empty())size={v[i].width,v[i].height};else if(size.width!=v[i].width||size.height!=v[i].height){std::cerr<<"FAIL dimensions\n";return false;}}
   Solve initial;if(!solve(v,all,size,&initial,&why)||!classify(&v,initial,&why)){std::cerr<<"FAIL "<<why<<'\n';return false;}std::vector<size_t>fit,hold;if(!validate_and_split(&v,&fit,&hold,&why)){std::cerr<<"FAIL "<<why<<'\n';return false;}
@@ -305,7 +341,7 @@ bool run_session(const std::string& session) {
   unsigned flags=0; if(quantitative_ok)flags|=0x01; if(!fit.empty()&&!hold.empty())flags|=0x02;
   if(exact_solve(full[0],full[1])&&exact_solve(full[0],full[2])) flags|=0x04;
   if(coordinate_ok) flags|=0x08;
-  if(flags!=0x0f||!write_bundle(session,evidence,v,full,fit_s,rms,mx,high,residual_count,hr,hm,delta,flags,optical,&why)){std::cerr<<"FAIL "<<(flags!=0x0f?"validation flags":why)<<'\n';return false;}
+  if(flags!=0x0f||!write_bundle(session,evidence,v,full,fit_s,rms,mx,high,residual_count,hr,hm,delta,flags,optical,solver_executable_sha256,solver_configuration_sha256,session_sha256,&why)){std::cerr<<"FAIL "<<(flags!=0x0f?"validation flags":why)<<'\n';return false;}
   report(v,full[0],rms,mx,high,delta,optical);return true;
 }
 
@@ -337,12 +373,12 @@ bool synthetic_test() {
   double iq=0,oq=0;for(const auto&x:v){iq=std::max(iq,x.image_conversion_max);oq=std::max(oq,x.object_conversion_max);}
   double rr=0,rm=0;size_t rh=0,rc=0;if(!residuals(&v,all,a,&rr,&rm,&rh,&rc,&why))return false;
   SessionEvidence evidence; evidence.target=true;evidence.measurement=true;evidence.white_border=true;evidence.planarity=true;evidence.planarity_pass=1;evidence.decoder_set=true;evidence.optical_state=true;evidence.target_id="synthetic";evidence.instrument="synthetic";evidence.decoder="synthetic_decoder";evidence.decoder_version="1";evidence.optical_state_fields="synthetic_only";evidence.resolution_mm=.1;evidence.white_border_mm=30.0;evidence.measurements.fill(30.0);
-  Solve runs[3]={a,b,c};std::array<unsigned char,32> optical{};std::string bundle_why;
+  Solve runs[3]={a,b,c};std::array<unsigned char,32> optical{},solver_executable_sha256{},solver_configuration_sha256{},session_sha256{};solver_executable_sha256.fill(0xa1);solver_configuration_sha256.fill(0xa2);session_sha256.fill(0xa3);std::string bundle_why;
   const std::filesystem::path left=std::filesystem::temp_directory_path()/"l3dcal_byte_identity_left";
   const std::filesystem::path right=std::filesystem::temp_directory_path()/"l3dcal_byte_identity_right";std::error_code ec;std::filesystem::remove_all(left.string()+".bundle",ec);std::filesystem::remove_all(right.string()+".bundle",ec);
-  const bool written=write_bundle(left.string(),evidence,v,runs,f,rr,rm,rh,rc,rr,rm,delta,0x0f,optical,&bundle_why)&&write_bundle(right.string(),evidence,v,runs,f,rr,rm,rh,rc,rr,rm,delta,0x0f,optical,&bundle_why);
+  const bool written=write_bundle(left.string(),evidence,v,runs,f,rr,rm,rh,rc,rr,rm,delta,0x0f,optical,solver_executable_sha256,solver_configuration_sha256,session_sha256,&bundle_why)&&write_bundle(right.string(),evidence,v,runs,f,rr,rm,rh,rc,rr,rm,delta,0x0f,optical,solver_executable_sha256,solver_configuration_sha256,session_sha256,&bundle_why);
   auto identical=[&](const char* name){std::ifstream x(left.string()+".bundle/"+name,std::ios::binary),y(right.string()+".bundle/"+name,std::ios::binary);std::ostringstream xs,ys;xs<<x.rdbuf();ys<<y.rdbuf();return x&&y&&xs.str()==ys.str();};
-  const bool bytes=written&&identical("detection.json")&&identical("solve.json")&&identical("evidence.json");std::filesystem::remove_all(left.string()+".bundle",ec);std::filesystem::remove_all(right.string()+".bundle",ec);
+  const bool bytes=written&&identical("detection.json")&&identical("solve.json")&&identical("evidence.json")&&identical("producer.json");std::filesystem::remove_all(left.string()+".bundle",ec);std::filesystem::remove_all(right.string()+".bundle",ec);
   std::cout<<std::hexfloat<<"synthetic_image_conversion_max "<<iq<<"\nsynthetic_object_conversion_max_m "<<oq<<"\n";
   std::cout<<"synthetic_opencv_rms "<<a.rms<<"\nsynthetic_parameter_delta "<<delta<<"\n"<<std::defaultfloat;
   if (!bytes) std::cerr << "synthetic byte identity failure: " << bundle_why << '\n';

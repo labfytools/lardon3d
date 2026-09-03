@@ -57,7 +57,10 @@ d'orientation, dimensions et mesures de coordonnées plutôt que d'émettre le
 bit `0x08` par défaut.
 
 Sur réussite, le solveur crée de manière atomique `<session>.bundle/`, qui est
-immuable si déjà présent : `detection.json`, `solve.json` et `evidence.json`.
+immuable si déjà présent : `detection.json`, `solve.json`, `evidence.json` et
+`producer.json`. Ce dernier lie le SHA-256 du binaire solveur en cours, le
+SHA-256 de sa configuration canonique, le SHA-256 exact du manifeste de
+session, la version/build OpenCV, la politique CPU1 et le SHA de l’état optique.
 Les documents ont un ordre déterministe et encodent les valeurs faisant
 autorité comme chaînes `hexfloat` binary64. `solve.json` archive les trois
 sorties complètes (paramètres et poses); `evidence.json` archive les vecteurs

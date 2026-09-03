@@ -94,10 +94,13 @@ session.l3dcal
 session.l3dcal.bundle/detection.json
 session.l3dcal.bundle/solve.json
 session.l3dcal.bundle/evidence.json
+session.l3dcal.bundle/producer.json
 ```
 
 together with the exact selected execution and optical state, then construct
 the bounded `Lardon3DCalibrationToolingEvidence`.
+
+`producer.json` binds the exact solver executable SHA-256, canonical solver-configuration SHA-256, exact session SHA-256, OpenCV build identity, CPU1 policy and optical-state SHA-256.
 
 The coordinator must verify regular bounded files, immutable digests,
 session/bundle identity, categorical planarity PASS, selected-execution image
