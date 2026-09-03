@@ -188,3 +188,38 @@ calibration evidence.
 
 The bridge performs no DB access, metadata interpretation, physical AF decision,
 thresholding, interpolation or extrapolation.
+
+## Materialized study assembly v1
+
+**Status: PASS / FROZEN.**
+
+`CALIBRATION_AF_STUDY_ASSEMBLY_V1` composes the frozen Workflow bridge and
+`L3DAFST1` producer so a physical AF study does not need caller-written sample
+arrays.
+
+The caller supplies:
+
+```text
+study_context_sha256
+2..64 entries {
+  materialized Calibration Workflow evidence
+  exact opaque focus token
+  FIT or HOLDOUT role
+}
+```
+
+The assembly:
+
+1. converts every entry through the frozen Workflow bridge;
+2. requires one exact oriented width/height for the whole study;
+3. rejects a repeated `calibration_evidence_sha256` even when the caller changes
+   focus token or FIT/HOLDOUT role;
+4. passes the resulting bounded samples to the frozen AF-study producer;
+5. returns deterministic `L3DAFST1`, artifact SHA-256 and summary.
+
+`study_context_sha256` remains caller-retained and explicit. This layer does not
+derive body/lens/focal/non-focus state from solver metadata and does not decide
+whether different focus observations belong to one physically valid domain.
+
+No Project DB access, solver execution, metadata inference, thresholding,
+interpolation or extrapolation is introduced.

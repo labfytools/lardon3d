@@ -43,6 +43,7 @@ Adaptive capture settings semantics         PASS/FROZEN
 Autofocus v2 foundation                     PASS/FROZEN
 Calibration AF study evidence v1            PASS/FROZEN
 Calibration AF study Workflow bridge v1     PASS/FROZEN
+Calibration AF study assembly v1            PASS/FROZEN
 Calibration Tooling planarity alignment     PASS/FROZEN
 ```
 
