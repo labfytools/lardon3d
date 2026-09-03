@@ -527,6 +527,8 @@ The solver session contract now also requires explicit measured `white_border >=
 
 `CALIBRATION_SOLVER_BUNDLE_REPAIR_V1=PASS/FROZEN`: retained per-view fields are now present in the actual solver output, `producer.json` is valid canonical JSON, solver-configuration records contain real line feeds, and the deterministic self-test checks these contents rather than byte identity alone.
 
+`CALIBRATION_WORKFLOW_INPUT_BOUNDARY_V1=PASS/FROZEN`: the workflow now has a bounded non-mutating input boundary for session, solver bundle and campaign optical-state evidence. It rejects special/symlink/oversize files, invalid JSON, provenance digest mismatches and incompatible optical state. The next boundary is Evidence Materialization v1.
+
 A bounded Tooling correction aligned planarity handling with Calibration Science v1: Science v1
 defines a categorical physical planarity attestation, not a numeric flatness threshold. Tooling
 therefore rejects invented finite `target_flatness_mm` values. `L3DCALB1` v1 and Calibration

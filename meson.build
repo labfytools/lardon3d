@@ -180,6 +180,7 @@ lardon3d_app = executable(
         'src/optical_profiles.c',
         'src/calibration_bootstrap.c',
         'src/calibration_tooling.c',
+        'src/calibration_workflow.cpp',
         'src/sparse_sfm_geometry.cpp',
         'src/sparse_sfm_incremental.cpp',
         'src/sparse_sfm_bundle_adjustment.cpp',
@@ -894,6 +895,18 @@ calibration_tooling_test = executable(
 )
 
 test('calibration-tooling', calibration_tooling_test, timeout: 30)
+
+calibration_workflow_test = executable(
+    'test-calibration-workflow',
+    sources: [
+        'tests/test_calibration_workflow.cpp',
+        'src/calibration_workflow.cpp',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [openssl],
+)
+
+test('calibration-workflow', calibration_workflow_test, timeout: 30)
 
 optical_profiles_test = executable(
     'test-optical-profiles',
