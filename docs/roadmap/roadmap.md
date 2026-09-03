@@ -24,7 +24,7 @@ SOURCE_COMMENT_AUDIT                  PASS
 PRODUCT_DEFINITION                    PASS/FROZEN
 PROMPT_TREE                           CURRENT
 USER_FACING_UI_LANGUAGE_NORMALIZATION PASS
-CURRENT_NEXT                          CALIBRATION_V2_HETEROGENEOUS_CALIBRATION_PUBLICATION
+CURRENT_NEXT                          CALIBRATION_V2_WORKFLOW_READY
 ```
 
 The current Project DB head is additive:
@@ -534,8 +534,11 @@ v26 heterogeneous-optics foundation now durably records Capture geometric state 
 applicability while retaining that per-image scope model. Unknown state remains retained but
 `CALIBRATION_REQUIRED`, and exact compatibility resolves none/one/many candidates to
 `CALIBRATION_REQUIRED`/resolved/`SELECTION_REQUIRED`. The next dependency is heterogeneous
-calibration publication. Device-specific autofocus envelopes remain blocked until physical evidence
-validates them.
+calibration publication. `CALIBRATION_V2_HETEROGENEOUS_CALIBRATION_PUBLICATION=PASS/FROZEN`:
+additive L3DCALB2/Tooling/Bootstrap v2 now retains independent group-local provenance, validates
+complete exact selected-image coverage, and attaches one existing per-image scope only after complete
+publication. The next dependency is heterogeneous Workflow v2 truthful READY. Device-specific
+autofocus envelopes remain blocked until physical evidence validates them.
 
 Calibration Tooling v1 consumes an already acquired Science v1 evidence bundle, validates the bounded
 contract and produces deterministic `L3DCALB1` v1.

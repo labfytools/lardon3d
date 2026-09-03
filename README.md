@@ -340,6 +340,7 @@ The final product contracts for these areas are being defined separately before 
 - [Track Builder](docs/architecture/track_builder.md)
 - [Sparse SfM](docs/architecture/sparse_sfm.md)
 - [Calibration Bootstrap v1](docs/architecture/calibration_bootstrap.md)
+- [Calibration Publication v2](docs/architecture/calibration_publication_v2.md)
 - [Calibration Science v1](docs/architecture/calibration_science_v1.md)
 - [Calibration Solver Preflight v1](docs/architecture/calibration_solver_preflight_v1.md)
 - [Photo Quality Triage](docs/architecture/photo_quality_triage.md)

@@ -6,7 +6,7 @@
 CURRENT_PROJECT_DB_SCHEMA=v26
 PRODUCTION_TASK_KINDS=16
 USER_FACING_UI_LANGUAGE_NORMALIZATION=PASS
-CURRENT_IMPLEMENTATION_CURSOR=CALIBRATION_V2_HETEROGENEOUS_CALIBRATION_PUBLICATION
+CURRENT_IMPLEMENTATION_CURSOR=CALIBRATION_V2_WORKFLOW_READY
 ```
 
 ## Authority
@@ -37,6 +37,7 @@ Calibration workflow selected-execution binding PASS/FROZEN
 Calibration workflow Tooling/Bootstrap READY PASS/FROZEN
 Calibration Science v2 heterogeneous optics  PASS/FROZEN
 Calibration v2 optical-state foundation       PASS/FROZEN
+Calibration v2 heterogeneous publication     PASS/FROZEN
 Adaptive capture settings semantics          PLANNED
 Autofocus v2 foundation                      PLANNED
 Calibration Tooling planarity alignment     PASS/FROZEN
