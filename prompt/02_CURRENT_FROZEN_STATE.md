@@ -6,7 +6,7 @@
 CURRENT_PROJECT_DB_SCHEMA=v25
 PRODUCTION_TASK_KINDS=16
 USER_FACING_UI_LANGUAGE_NORMALIZATION=PASS
-CURRENT_IMPLEMENTATION_CURSOR=2_DEDICATED_PHYSICAL_CALIBRATED_REAL_CAMPAIGN
+CURRENT_IMPLEMENTATION_CURSOR=CALIBRATION_SCIENCE_V2_DESIGN
 ```
 
 ## Authority
@@ -35,6 +35,9 @@ Calibration workflow input boundary         PASS/FROZEN
 Calibration workflow evidence materialization PASS/FROZEN
 Calibration workflow selected-execution binding PASS/FROZEN
 Calibration workflow Tooling/Bootstrap READY PASS/FROZEN
+Calibration Science v2 heterogeneous optics  PLANNED
+Adaptive capture settings semantics          PLANNED
+Autofocus v2 foundation                      PLANNED
 Calibration Tooling planarity alignment     PASS/FROZEN
 ```
 
@@ -71,6 +74,35 @@ Preserve at their documented boundaries:
 - Real A6000 pre-SfM.
 
 `FROZEN` protects meaning and boundary, not necessarily every file byte.
+
+## Current calibration-v2 design intent
+
+Calibration v1 remains a valid frozen compatibility path. It is not weakened or
+retroactively reinterpreted.
+
+The current product dependency has changed before the physical campaign because
+real A6000 engine-bay acquisition evidence showed that normal operation requires
+heterogeneous optics and autofocus. Calibration Science v2 must therefore define
+an additive path in which:
+
+```text
+one project may mix camera bodies
+one project may mix lenses
+one project may mix focal configurations
+one selected execution may use multiple calibrations
+each selected image must resolve to exactly one compatible calibration
+autofocus is a normal supported acquisition mode
+exposure settings are adaptive rather than fixed scientific constants
+```
+
+Capture/quality acceptance and calibration readiness are distinct. A sharp,
+usable image with unresolved optics is retained and reported as
+`CALIBRATION_REQUIRED`; it is not discarded merely because calibration evidence
+is not yet available.
+
+No v2 rule may silently substitute another body, lens, focal state, focus state
+or calibration.
+
 
 ## Retained real S21 checkpoint
 

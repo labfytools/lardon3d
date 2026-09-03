@@ -6,7 +6,7 @@
 IMPLEMENTATION_ORDER=DEPENDENCY_DRIVEN
 IMPLEMENTATION_AUTHORIZATION=NO
 STEP_0_USER_FACING_LANGUAGE_NORMALIZATION=PASS
-CURRENT_NEXT=2_DEDICATED_PHYSICAL_CALIBRATED_REAL_CAMPAIGN
+CURRENT_NEXT=CALIBRATION_SCIENCE_V2_DESIGN
 ```
 
 ## Authority
@@ -20,23 +20,25 @@ Implementation remains unauthorized until the human explicitly authorizes a tran
 Default dependency order:
 
 0. user-facing repository/UI language normalization where appropriate — PASS;
-1. final usable calibration workflow — PASS/FROZEN; valid external evidence now composes through FROZEN Tooling and Bootstrap to truthful READY;
-2. dedicated physical calibrated real campaign;
-3. real Sparse SfM proof;
-4. durable Dense/OpenMVS orchestration;
-5. mesh / refinement / texturing / export;
-6. viewer foundation;
-7. offline Coverage Analysis scientific contract and implementation;
-8. multi-campaign registration / fusion;
-9. generic live acquisition adapter foundation;
-10. A6000 HDMI integration;
-11. S21 integration;
-12. live camera localization;
-13. live coverage overlay;
-14. actionable Capture Guidance;
-15. video ingestion / deterministic keyframes;
-16. final integration, UX, restart and performance proof;
-17. Product Definition v1 Definition-of-Done closure.
+1. final usable Calibration Science/Tooling/Bootstrap/Workflow v1 compatibility path — PASS/FROZEN;
+2. Calibration Science v2 design for heterogeneous cameras/lenses/focals, adaptive capture settings and autofocus — CURRENT;
+3. Calibration v2 heterogeneous-optics persistence / Tooling / Bootstrap / workflow foundation;
+4. physical autofocus/optical applicability validation and dedicated calibrated real campaign;
+5. real Sparse SfM proof;
+6. durable Dense/OpenMVS orchestration;
+7. mesh / refinement / texturing / export;
+8. viewer foundation;
+9. offline Coverage Analysis scientific contract and implementation;
+10. multi-campaign registration / fusion;
+11. generic live acquisition adapter foundation;
+12. A6000 HDMI integration;
+13. S21 integration;
+14. live camera localization;
+15. live coverage overlay;
+16. actionable Capture Guidance;
+17. video ingestion / deterministic keyframes;
+18. final integration, UX, restart and performance proof;
+19. Product Definition v1 Definition-of-Done closure.
 
 ## Adjustment rule
 
@@ -45,3 +47,10 @@ Change this order only when current repository inspection proves a real dependen
 Step 0 closure does not authorize mechanical rewriting of historical persisted labels, path names, deliberate UTF-8 fixtures or persistence-sensitive internal strings. Such text is changed only when its owning scope requires it.
 
 Do not jump to A6000 live work merely because it is visually interesting. Reconstruction/viewer/coverage foundations required for truthful guidance come first.
+
+The calibration-v2 insertion before the physical campaign is dependency-driven,
+not feature creep: real acquisition evidence established that the v1 locked-focus
+single-optical-state path would make normal engine-bay capture impractical and
+would contradict the already-FROZEN product requirement for multiple optical
+configurations per project. Science v2 must be defined before collecting the
+physical evidence intended to validate it.

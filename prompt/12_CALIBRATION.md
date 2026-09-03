@@ -16,14 +16,17 @@ CALIBRATION_WORKFLOW=PASS/FROZEN
 CALIBRATION_WORKFLOW_INPUT_BOUNDARY_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW_EVIDENCE_MATERIALIZATION_V1=PASS/FROZEN
 CALIBRATION_WORKFLOW_SELECTED_EXECUTION_BINDING_V1=PASS/FROZEN
-CURRENT_CALIBRATION_NEXT=WORKFLOW_TOOLING_BOOTSTRAP_READY
 CALIBRATION_WORKFLOW_TOOLING_BOOTSTRAP_READY_V1=PASS/FROZEN
-CURRENT_CALIBRATION_NEXT=DEDICATED_PHYSICAL_CALIBRATED_REAL_CAMPAIGN
+CALIBRATION_SCIENCE_V2=PLANNED
+CALIBRATION_V2_HETEROGENEOUS_OPTICS=PLANNED
+ADAPTIVE_CAPTURE_SETTINGS_CONTRACT=PLANNED
+AUTOFOCUS_V2_FOUNDATION=PLANNED
+CURRENT_CALIBRATION_NEXT=CALIBRATION_SCIENCE_V2_DESIGN
 ```
 
 ## Authority
 
-`docs/architecture/calibration_science_v1.md`, `docs/architecture/calibration_bootstrap.md` and `docs/architecture/calibration_solver_preflight_v1.md` are the current specialized calibration documents.
+`docs/architecture/calibration_science_v1.md`, `docs/architecture/calibration_science_v2.md`, `docs/architecture/calibration_bootstrap.md` and `docs/architecture/calibration_solver_preflight_v1.md` are the current specialized calibration documents. Science v1 remains FROZEN; the v2 document is the current additive design authority until its contract is validated and frozen.
 
 `docs/architecture/calibration_tooling.md` is the specialized Tooling authority.
 
@@ -46,7 +49,65 @@ BLOCKED_BY_KNOWN_CALIBRATION_DATA
 
 Do not retro-calibrate them by invention.
 
-## FROZEN flow
+## Calibration Science v2 product requirements
+
+Science v2 is additive. It does not weaken or rewrite Science v1.
+
+The product requirement is:
+
+```text
+ONE_PROJECT_MAY_MIX_CAMERAS=YES
+ONE_PROJECT_MAY_MIX_LENSES=YES
+ONE_PROJECT_MAY_MIX_FOCAL_CONFIGURATIONS=YES
+PER_IMAGE_COMPATIBLE_CALIBRATION=REQUIRED
+
+AUTOFOCUS_NORMAL_OPERATION=SUPPORTED_TARGET
+MANUAL_FOCUS_LOCK_REQUIRED_FOR_NORMAL_CAPTURE=NO
+
+SHUTTER_SPEED_FIXED=NO
+ISO_FIXED=NO
+WHITE_BALANCE_FIXED=NO
+EXPOSURE_SETTINGS_ADAPTIVE=YES
+
+PHOTO_REJECTION_BASED_SOLELY_ON_EXPOSURE_METADATA=FORBIDDEN
+UNKNOWN_OPTICS_REJECT_CAPTURE=NO
+UNKNOWN_OPTICS_STATE=CALIBRATION_REQUIRED
+
+SILENT_CALIBRATION_SUBSTITUTION=FORBIDDEN
+```
+
+The core separation is:
+
+```text
+CAPTURE / PHOTO QUALITY
+!=
+CALIBRATION READINESS
+```
+
+A Capture may be sharp, non-clipped and scientifically useful as image data
+while still being `CALIBRATION_REQUIRED`. It remains durable in the project.
+
+Purely photometric settings such as shutter speed, ISO, white balance and
+exposure compensation may vary according to conditions. Their numeric values
+alone are not scientific rejection criteria. Actual decoded-image evidence
+remains authoritative for quality: sharpness/defocus/motion blur, clipping,
+usable tonal information, contrast/texture, noise or local SNR where available,
+and downstream feature usability.
+
+Camera/lens/focal/focus/aperture/stabilization/crop/pipeline state is treated
+according to whether it can alter geometry. Lardon3D must observe and classify
+that state, automatically select an exactly compatible validated calibration
+when one exists, expose `CALIBRATION_REQUIRED` when none exists, and expose
+`SELECTION_REQUIRED` when compatibility remains ambiguous.
+
+Autofocus is a normal v2 acquisition mode. A real autofocus applicability
+envelope must be supported only by physical calibration/hold-out evidence.
+Historical EXIF or MakerNote focus observations may guide experiment design but
+must never fabricate such evidence.
+
+See `docs/architecture/calibration_science_v2.md`.
+
+## FROZEN v1 flow
 
 ```text
 dedicated physical calibration acquisition

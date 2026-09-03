@@ -24,7 +24,7 @@ SOURCE_COMMENT_AUDIT                  PASS
 PRODUCT_DEFINITION                    PASS/FROZEN
 PROMPT_TREE                           CURRENT
 USER_FACING_UI_LANGUAGE_NORMALIZATION PASS
-CURRENT_NEXT                          DEDICATED_PHYSICAL_CALIBRATED_REAL_CAMPAIGN
+CURRENT_NEXT                          CALIBRATION_SCIENCE_V2_DESIGN
 ```
 
 The current Project DB head is additive:
@@ -508,7 +508,28 @@ BLOCKED_BY_KNOWN_CALIBRATION_DATA
 
 S21 Engine Bay is permanently non-retro-calibrable under Calibration Science v1.
 
-Calibration Science v1 defines the physical protocol for future calibration acquisitions.
+Calibration Science v1 defines the frozen physical protocol for its compatibility path.
+
+Before the next physical campaign, the current dependency is Calibration Science v2. Real A6000
+engine-bay acquisition evidence established that normal operation must support autofocus and
+heterogeneous optical states without forcing the operator to maintain one locked focus or one optical
+configuration for the whole project.
+
+Science v2 is additive and must preserve these product invariants:
+
+```text
+one project may mix camera bodies, lenses and focal configurations
+one selected execution may use different calibrations per image
+unknown calibration state retains the Capture and reports CALIBRATION_REQUIRED
+shutter/ISO/white-balance values are adaptive, not image-validity constants
+image quality is judged from actual decoded-image evidence
+autofocus is a normal supported mode when its applicability is physically validated
+silent calibration substitution remains forbidden
+```
+
+The current Sparse calibration scope already models membership as `image_id -> calibration_id`; v2
+should reuse that capability rather than require one global calibration. Device-specific autofocus
+envelopes remain blocked until physical evidence validates them.
 
 Calibration Tooling v1 consumes an already acquired Science v1 evidence bundle, validates the bounded
 contract and produces deterministic `L3DCALB1` v1.
